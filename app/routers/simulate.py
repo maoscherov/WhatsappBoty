@@ -3,8 +3,11 @@ Endpoint de simulación para testing sin WhatsApp real.
 POST /simulate  →  procesa un mensaje y devuelve la respuesta del bot.
 """
 
-from fastapi import APIRouter
+import logging
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 from app.config import get_settings
 from app.services.sku_service import get_sku_service
@@ -36,7 +39,11 @@ class SimulateResponse(BaseModel):
 @router.post("/simulate", response_model=SimulateResponse)
 async def simulate(req: SimulateRequest):
     settings = get_settings()
-    sku_svc = get_sku_service(settings.sku_csv_path)
+    try:
+        sku_svc = get_sku_service(settings.sku_csv_path)
+    except FileNotFoundError:
+        logger.error(f"Catálogo no encontrado: {settings.sku_csv_path} — revisá SKU_CSV_PATH")
+        sku_svc = None
     session_svc = get_session_service(settings.redis_url)
     intent_svc = get_intent_service(settings.anthropic_api_key)
     payment_svc = get_payment_service(settings.mp_access_token, settings.mp_notification_url)
@@ -110,7 +117,7 @@ async def simulate(req: SimulateRequest):
             estado_sesion=session.get("estado", "idle"),
         )
 
-    if intencion in INTENCIONES_CON_SKU and entidad:
+    if intencion in INTENCIONES_CON_SKU and entidad and sku_svc:
         productos_encontrados = sku_svc.buscar(entidad)
         intent_result = await intent_svc.procesar(
             mensaje=texto,
