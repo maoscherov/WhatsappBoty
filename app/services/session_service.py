@@ -23,6 +23,7 @@ _EMPTY_SESSION = lambda: {
     "pending_sku_nombre": None,
     "pending_precio": None,
     "pending_cantidad": 1,
+    "pending_opciones": [],
     "estado": "idle",
 }
 
@@ -68,13 +69,15 @@ class SessionService:
         session["history"].append({"role": role, "content": content})
         await self.save(phone, session)
 
-    async def set_pending(self, phone: str, sku_id: str, sku_nombre: str, precio: float, cantidad: int = 1):
+    async def set_pending(self, phone: str, sku_id: str, sku_nombre: str, precio: float,
+                          cantidad: int = 1, opciones: list | None = None):
         session = await self.get(phone)
         session.update({
             "pending_sku_id": sku_id,
             "pending_sku_nombre": sku_nombre,
             "pending_precio": precio,
             "pending_cantidad": max(1, int(cantidad)),
+            "pending_opciones": opciones if opciones is not None else session.get("pending_opciones", []),
             "estado": "esperando_confirmacion",
         })
         await self.save(phone, session)
@@ -86,6 +89,7 @@ class SessionService:
             "pending_sku_nombre": None,
             "pending_precio": None,
             "pending_cantidad": 1,
+            "pending_opciones": [],
             "estado": "idle",
         })
         await self.save(phone, session)

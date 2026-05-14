@@ -199,6 +199,44 @@ async def receive_message(request: Request):
                     sku_nombre=primer_producto["nombre"],
                     precio=primer_producto["precio"],
                     cantidad=cantidad,
+                    opciones=resultados_sku,
+                )
+
+        elif ya_tiene_pending:
+            pending_opciones = session.get("pending_opciones", [])
+            intent_result = await deps["intent"].procesar(
+                mensaje=texto,
+                history=session.get("history", []),
+                resultados_sku=pending_opciones if pending_opciones else None,
+                label_sku="OPCIONES MOSTRADAS",
+            )
+            sku_index = intent_result.get("sku_seleccionado_index")
+            cantidad_nueva = intent_result.get("cantidad")
+            respuesta = intent_result.get("respuesta", "")
+
+            if sku_index is not None and pending_opciones:
+                try:
+                    idx = int(sku_index)
+                    if 0 <= idx < len(pending_opciones):
+                        elegido = pending_opciones[idx]
+                        nueva_cantidad = max(1, int(cantidad_nueva or session.get("pending_cantidad", 1)))
+                        await deps["session"].set_pending(
+                            phone=phone,
+                            sku_id=elegido["sku_id"],
+                            sku_nombre=elegido["nombre"],
+                            precio=elegido["precio"],
+                            cantidad=nueva_cantidad,
+                            opciones=pending_opciones,
+                        )
+                except (ValueError, TypeError):
+                    pass
+            elif cantidad_nueva and int(cantidad_nueva) > 0 and int(cantidad_nueva) != session.get("pending_cantidad", 1):
+                await deps["session"].set_pending(
+                    phone=phone,
+                    sku_id=session["pending_sku_id"],
+                    sku_nombre=session["pending_sku_nombre"],
+                    precio=session["pending_precio"],
+                    cantidad=int(cantidad_nueva),
                 )
 
         await deps["wa"].send_text(phone, respuesta)

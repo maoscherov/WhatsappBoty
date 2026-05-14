@@ -50,10 +50,12 @@ Respondé SIEMPRE con un JSON con este esquema (sin texto extra):
   "intencion": "saludo|social|consulta_precio|consulta_stock|pedido|consulta_abierta|agradecimiento|cambio_postventa|desconocido",
   "entidad_producto": "nombre del producto mencionado o null",
   "cantidad": 1,
+  "sku_seleccionado_index": null,
   "respuesta": "texto que se envía al cliente por WhatsApp"
 }
 
-El campo "cantidad" es la cantidad de unidades que el cliente quiere comprar (número entero, mínimo 1)."""
+El campo "cantidad" es la cantidad de unidades que el cliente quiere comprar (número entero, mínimo 1).
+El campo "sku_seleccionado_index" es el índice (0-based) del producto elegido cuando el mensaje aparece bajo [OPCIONES MOSTRADAS], o null si no seleccionó ninguno específico."""
 
 
 class IntentService:
@@ -65,6 +67,7 @@ class IntentService:
         mensaje: str,
         history: list[dict],
         resultados_sku: Optional[list[dict]] = None,
+        label_sku: str = "RESULTADOS DEL CATÁLOGO",
     ) -> dict:
         """
         Clasifica intención y genera respuesta.
@@ -75,7 +78,7 @@ class IntentService:
         user_content = mensaje
         if resultados_sku is not None:
             productos_txt = self._formatear_productos(resultados_sku)
-            user_content = f"{mensaje}\n\n[RESULTADOS DEL CATÁLOGO]\n{productos_txt}"
+            user_content = f"{mensaje}\n\n[{label_sku}]\n{productos_txt}"
 
         messages.append({"role": "user", "content": user_content})
 

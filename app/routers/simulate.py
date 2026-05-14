@@ -164,18 +164,40 @@ async def simulate(req: SimulateRequest):
                 sku_nombre=primer_producto["nombre"],
                 precio=primer_producto["precio"],
                 cantidad=cantidad,
+                opciones=productos_encontrados,
             )
     elif ya_tiene_pending:
-        # Hay pending activo: Claude responde en contexto sin nueva búsqueda.
-        # Puede ser que el usuario refine cantidad ("en realidad 3") o confirme.
+        # Hay pending activo: el usuario puede refinar la selección o la cantidad.
+        # Pasamos las opciones guardadas para que Claude identifique cuál eligió.
+        pending_opciones = session.get("pending_opciones", [])
         intent_result = await intent_svc.procesar(
             mensaje=texto,
             history=session.get("history", []),
+            resultados_sku=pending_opciones if pending_opciones else None,
+            label_sku="OPCIONES MOSTRADAS",
         )
         cantidad_nueva = intent_result.get("cantidad")
+        sku_index = intent_result.get("sku_seleccionado_index")
         respuesta = intent_result.get("respuesta", "")
-        # Actualizar cantidad si Claude detectó una nueva
-        if cantidad_nueva and int(cantidad_nueva) > 0 and int(cantidad_nueva) != session.get("pending_cantidad", 1):
+
+        # Si Claude identificó un producto específico de las opciones, actualizar pending
+        if sku_index is not None and pending_opciones:
+            try:
+                idx = int(sku_index)
+                if 0 <= idx < len(pending_opciones):
+                    elegido = pending_opciones[idx]
+                    nueva_cantidad = max(1, int(cantidad_nueva or session.get("pending_cantidad", 1)))
+                    await session_svc.set_pending(
+                        phone=req.phone,
+                        sku_id=elegido["sku_id"],
+                        sku_nombre=elegido["nombre"],
+                        precio=elegido["precio"],
+                        cantidad=nueva_cantidad,
+                        opciones=pending_opciones,
+                    )
+            except (ValueError, TypeError):
+                pass
+        elif cantidad_nueva and int(cantidad_nueva) > 0 and int(cantidad_nueva) != session.get("pending_cantidad", 1):
             await session_svc.set_pending(
                 phone=req.phone,
                 sku_id=session["pending_sku_id"],
