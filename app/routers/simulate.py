@@ -34,6 +34,8 @@ class SimulateResponse(BaseModel):
     productos_encontrados: list[dict]
     estado_sesion: str
     link_pago: str | None = None
+    mp_error: str | None = None       # detalle del error de MP si falla
+    mp_token_ok: bool | None = None   # True si el token no es placeholder
 
 
 @router.post("/simulate", response_model=SimulateResponse)
@@ -52,12 +54,14 @@ async def simulate(req: SimulateRequest):
     texto = req.message.strip()
     productos_encontrados: list[dict] = []
     link_pago = None
+    mp_error = None
+    mp_token_ok = not settings.mp_access_token.startswith("placeholder")
 
     # ── Confirmación de pedido pendiente ─────────────────────────────────────
     if session.get("estado") == "esperando_confirmacion" and session.get("pending_sku_id"):
         texto_lower = texto.lower()
         if any(p in texto_lower for p in PALABRAS_SI):
-            link = await payment_svc.crear_link(
+            link, mp_error = await payment_svc.crear_link(
                 sku_id=session["pending_sku_id"],
                 nombre=session["pending_sku_nombre"],
                 precio=session["pending_precio"],
@@ -73,6 +77,7 @@ async def simulate(req: SimulateRequest):
                 )
                 await session_svc.set_estado(req.phone, "esperando_pago")
             else:
+                logger.error(f"MP error para {req.phone}: {mp_error}")
                 respuesta = "Tuve un problema generando el link de pago. Te paso con alguien del equipo."
                 await session_svc.clear_pending(req.phone)
             await session_svc.add_message(req.phone, "user", texto)
@@ -81,7 +86,7 @@ async def simulate(req: SimulateRequest):
                 respuesta=respuesta, intencion="pedido",
                 entidad_producto=session.get("pending_sku_nombre"),
                 productos_encontrados=[], estado_sesion=session.get("estado", "idle"),
-                link_pago=link_pago,
+                link_pago=link_pago, mp_error=mp_error, mp_token_ok=mp_token_ok,
             )
 
         elif any(p in texto_lower for p in PALABRAS_NO):
@@ -154,6 +159,8 @@ async def simulate(req: SimulateRequest):
         productos_encontrados=productos_encontrados,
         estado_sesion=session.get("estado", "idle"),
         link_pago=link_pago,
+        mp_error=mp_error,
+        mp_token_ok=mp_token_ok,
     )
 
 

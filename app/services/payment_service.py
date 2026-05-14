@@ -1,13 +1,9 @@
-"""
-Genera links de pago con Mercado Pago Checkout API.
-POST /checkout/preferences → devuelve init_point (link de pago).
-El link tiene vigencia de 24hs configurada en el preference.
-"""
-
 import httpx
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+logger = logging.getLogger(__name__)
 
 MP_BASE_URL = "https://api.mercadopago.com"
 
@@ -27,10 +23,11 @@ class PaymentService:
         nombre: str,
         precio: float,
         phone: str,
-    ) -> Optional[str]:
+    ) -> tuple[Optional[str], Optional[str]]:
         """
-        Crea una preferencia de pago y devuelve el init_point (link).
-        Retorna None si falla.
+        Crea una preferencia de pago.
+        Retorna (init_point, error_detail).
+        Si falla: (None, "descripción del error")
         """
         expiration = (datetime.now(timezone.utc) + timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%S.000-00:00")
 
@@ -50,6 +47,8 @@ class PaymentService:
         if self._notification_url:
             payload["notification_url"] = self._notification_url
 
+        logger.info(f"MP request → sku_id={sku_id} precio={precio} token_prefix={self._token[:12]}...")
+
         async with httpx.AsyncClient() as client:
             try:
                 resp = await client.post(
@@ -58,11 +57,23 @@ class PaymentService:
                     json=payload,
                     timeout=10,
                 )
-                resp.raise_for_status()
                 data = resp.json()
-                return data.get("init_point")
-            except Exception:
-                return None
+                logger.info(f"MP response status={resp.status_code} body={data}")
+
+                if resp.status_code != 201:
+                    error = data.get("message") or data.get("error") or str(data)
+                    return None, f"HTTP {resp.status_code}: {error}"
+
+                link = data.get("init_point")
+                if not link:
+                    return None, f"MP respondió 201 pero sin init_point: {data}"
+
+                return link, None
+
+            except httpx.TimeoutException:
+                return None, "Timeout conectando a Mercado Pago"
+            except Exception as e:
+                return None, str(e)
 
 
 _instance: Optional[PaymentService] = None

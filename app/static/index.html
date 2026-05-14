@@ -467,12 +467,17 @@ function renderDebug(data, error) {
     html += `<div class="debug-block"><h3>Productos encontrados</h3><div class="kv"><span class="v null">Sin resultados</span></div></div>`;
   }
 
-  // Link de pago
+  // Mercado Pago
+  const mpSection = [];
+  mpSection.push(kv('mp_token_ok', val(data.mp_token_ok)));
   if (data.link_pago) {
-    html += `<div class="debug-block">
-      <h3>Link de pago generado</h3>
-      <div class="link-pago-box"><a href="${escHtml(data.link_pago)}" target="_blank">${escHtml(data.link_pago)}</a></div>
-    </div>`;
+    mpSection.push(`<div class="link-pago-box"><a href="${escHtml(data.link_pago)}" target="_blank">${escHtml(data.link_pago)}</a></div>`);
+  }
+  if (data.mp_error) {
+    mpSection.push(`<div class="error-box">⚠ ${escHtml(data.mp_error)}</div>`);
+  }
+  if (data.mp_error || data.link_pago || data.mp_token_ok !== undefined) {
+    html += `<div class="debug-block"><h3>Mercado Pago</h3>${mpSection.join('')}</div>`;
   }
 
   // Respuesta raw
