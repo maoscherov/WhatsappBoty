@@ -12,10 +12,13 @@ Claude hace dos cosas en un único llamado:
 """
 
 import json
+import logging
 import re
 from typing import Optional
 
 import anthropic
+
+logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """Sos el asistente virtual de Farmacia Mutual Independencia. Tu nombre es Farma.
 
@@ -50,7 +53,7 @@ Respondé SIEMPRE con un JSON con este esquema (sin texto extra):
 
 class IntentService:
     def __init__(self, api_key: str):
-        self._client = anthropic.Anthropic(api_key=api_key)
+        self._client = anthropic.AsyncAnthropic(api_key=api_key)
 
     async def procesar(
         self,
@@ -71,15 +74,29 @@ class IntentService:
 
         messages.append({"role": "user", "content": user_content})
 
-        response = self._client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=512,
-            system=SYSTEM_PROMPT,
-            messages=messages,
-        )
-
-        raw = response.content[0].text.strip()
-        return self._parse_response(raw)
+        try:
+            response = await self._client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=512,
+                system=SYSTEM_PROMPT,
+                messages=messages,
+            )
+            raw = response.content[0].text.strip()
+            return self._parse_response(raw)
+        except anthropic.AuthenticationError:
+            logger.error("ANTHROPIC_API_KEY inválida o no configurada")
+            return {
+                "intencion": "desconocido",
+                "entidad_producto": None,
+                "respuesta": "Estamos teniendo un problema técnico. Por favor intentá más tarde.",
+            }
+        except Exception as e:
+            logger.error(f"Error llamando Claude API: {e}")
+            return {
+                "intencion": "desconocido",
+                "entidad_producto": None,
+                "respuesta": "Disculpá, tuve un problema procesando tu mensaje. ¿Me lo repetís?",
+            }
 
     def _formatear_productos(self, productos: list[dict]) -> str:
         if not productos:
