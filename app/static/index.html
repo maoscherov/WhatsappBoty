@@ -386,7 +386,7 @@ function appendMsg(text, dir) {
   const bubble = document.createElement('div');
   bubble.className = 'bubble';
   bubble.innerHTML =
-    escHtml(text).replace(/\n/g, '<br>') +
+    linkify(escHtml(text)).replace(/\n/g, '<br>') +
     `<span class="time">${now()}</span>` +
     (dir === 'out' ? '<span class="tick">✓✓</span>' : '');
   row.appendChild(bubble);
@@ -401,6 +401,14 @@ function showTyping() {
 
 function escHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function linkify(s) {
+  // Convierte URLs en <a> clickeables (después de escHtml)
+  return s.replace(
+    /(https?:\/\/[^\s<>"]+)/g,
+    '<a href="$1" target="_blank" rel="noopener" style="color:#007bff;word-break:break-all;">$1</a>'
+  );
 }
 
 // ── Intent color ─────────────────────────────────────────────────────────────
