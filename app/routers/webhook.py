@@ -31,8 +31,18 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 INTENCIONES_CON_SKU = {"consulta_precio", "consulta_stock", "pedido", "consulta_abierta"}
-PALABRAS_SI = {"si", "sí", "dale", "ok", "listo", "perfecto", "confirmo", "quiero", "sí quiero"}
-PALABRAS_NO = {"no", "cancel", "cancela", "nope", "no quiero", "mejor no"}
+import re as _re
+
+_PALABRAS_SI = [r"\bsi\b", r"\bsí\b", r"\bdale\b", r"\bok\b", r"\blisto\b",
+                r"\bperfecto\b", r"\bconfirmo\b", r"\bvamos\b"]
+_PALABRAS_NO = [r"\bno\b", r"\bcancel\b", r"\bcancela\b", r"\bnope\b",
+                r"\bmejor no\b", r"\bno quiero\b"]
+
+def _match_si(t: str) -> bool:
+    return any(_re.search(p, t, _re.IGNORECASE) for p in _PALABRAS_SI)
+
+def _match_no(t: str) -> bool:
+    return any(_re.search(p, t, _re.IGNORECASE) for p in _PALABRAS_NO)
 
 
 def _deps(settings=None):
@@ -103,7 +113,7 @@ async def receive_message(request: Request):
         # ── Caso especial: hay producto pendiente de confirmar ───────────────
         if session.get("estado") == "esperando_confirmacion" and session.get("pending_sku_id"):
             texto_lower = texto.lower().strip()
-            if any(p in texto_lower for p in PALABRAS_SI):
+            if _match_si(texto_lower):
                 cantidad = session.get("pending_cantidad", 1)
                 precio_unitario = session["pending_precio"]
                 total = precio_unitario * cantidad
@@ -130,7 +140,7 @@ async def receive_message(request: Request):
                 await deps["session"].add_message(phone, "assistant", respuesta)
                 continue
 
-            elif any(p in texto_lower for p in PALABRAS_NO):
+            elif _match_no(texto_lower):
                 await deps["session"].clear_pending(phone)
                 respuesta = "Dale, sin problema. ¿En qué más te puedo ayudar?"
                 await deps["wa"].send_text(phone, respuesta)

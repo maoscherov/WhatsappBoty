@@ -4,6 +4,7 @@ POST /simulate  →  procesa un mensaje y devuelve la respuesta del bot.
 """
 
 import logging
+import re
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -18,8 +19,18 @@ from app.services.payment_service import get_payment_service
 router = APIRouter()
 
 INTENCIONES_CON_SKU = {"consulta_precio", "consulta_stock", "pedido", "consulta_abierta"}
-PALABRAS_SI = {"si", "sí", "dale", "ok", "listo", "perfecto", "confirmo", "quiero", "sí quiero"}
-PALABRAS_NO = {"no", "cancel", "cancela", "nope", "no quiero", "mejor no"}
+
+# Usar palabra completa (word boundary) para evitar que "ibuprofeno" matchee "no"
+_PALABRAS_SI = [r"\bsi\b", r"\bsí\b", r"\bdale\b", r"\bok\b", r"\blisto\b",
+                r"\bperfecto\b", r"\bconfirmo\b", r"\bvamos\b", r"\bbuenisimo\b"]
+_PALABRAS_NO = [r"\bno\b", r"\bcancel\b", r"\bcancela\b", r"\bnope\b",
+                r"\bmejor no\b", r"\bno quiero\b"]
+
+def _match_si(texto: str) -> bool:
+    return any(re.search(p, texto, re.IGNORECASE) for p in _PALABRAS_SI)
+
+def _match_no(texto: str) -> bool:
+    return any(re.search(p, texto, re.IGNORECASE) for p in _PALABRAS_NO)
 
 
 class SimulateRequest(BaseModel):
@@ -59,8 +70,7 @@ async def simulate(req: SimulateRequest):
 
     # ── Confirmación de pedido pendiente ─────────────────────────────────────
     if session.get("estado") == "esperando_confirmacion" and session.get("pending_sku_id"):
-        texto_lower = texto.lower()
-        if any(p in texto_lower for p in PALABRAS_SI):
+        if _match_si(texto):
             cantidad = session.get("pending_cantidad", 1)
             precio_unitario = session["pending_precio"]
             total = precio_unitario * cantidad
@@ -93,7 +103,7 @@ async def simulate(req: SimulateRequest):
                 link_pago=link_pago, mp_error=mp_error, mp_token_ok=mp_token_ok,
             )
 
-        elif any(p in texto_lower for p in PALABRAS_NO):
+        elif _match_no(texto):
             await session_svc.clear_pending(req.phone)
             respuesta = "Dale, sin problema. ¿En qué más te puedo ayudar?"
             await session_svc.add_message(req.phone, "user", texto)
