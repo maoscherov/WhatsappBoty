@@ -171,8 +171,8 @@ async def receive_message(request: Request):
             entidad = intent_result.get("entidad_producto")
             respuesta = intent_result.get("respuesta", "")
 
-            # Si es pedido y hay producto disponible → guardar pendiente
-            if intencion == "pedido" and resultados_sku:
+            # Guardar pending siempre que haya un producto disponible
+            if resultados_sku:
                 primer_disponible = next((r for r in resultados_sku if r["estado"] == "disponible"), None)
                 if primer_disponible:
                     await deps["session"].set_pending(

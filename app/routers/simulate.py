@@ -128,7 +128,10 @@ async def simulate(req: SimulateRequest):
         entidad = intent_result.get("entidad_producto")
         respuesta = intent_result.get("respuesta", "")
 
-        if intencion == "pedido" and productos_encontrados:
+        # Guardar pending siempre que haya un producto disponible,
+        # sin importar si la intención es "pedido" o "consulta_*".
+        # Claude puede preguntar "¿querés proceder?" con cualquier intención.
+        if productos_encontrados:
             primer_disponible = next(
                 (r for r in productos_encontrados if r["estado"] == "disponible"), None
             )
