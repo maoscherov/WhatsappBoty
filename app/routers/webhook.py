@@ -26,6 +26,7 @@ from app.services.intent_service import get_intent_service
 from app.services.payment_service import get_payment_service
 from app.services.whatsapp_service import get_whatsapp_service
 from app.services.audio_service import get_audio_service
+from app.services.image_service import get_image_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -53,7 +54,8 @@ def _deps(settings=None):
         "session": get_session_service(s.redis_url),
         "intent": get_intent_service(s.anthropic_api_key),
         "payment": get_payment_service(s.mp_access_token, s.mp_notification_url),
-        "audio": get_audio_service(s.anthropic_api_key),  # reutiliza la misma key si usás OpenAI
+        "audio": get_audio_service(s.anthropic_api_key),
+        "image": get_image_service(s.anthropic_api_key),
     }
 
 
@@ -103,6 +105,19 @@ async def receive_message(request: Request):
                     continue
             else:
                 await deps["wa"].send_text(phone, "No pude procesar el audio. ¿Me lo mandás por texto?")
+                continue
+
+        # Imagen → extracción de medicamentos
+        if msg_type == "image" and msg.get("image_id"):
+            image_bytes = await deps["wa"].download_image(msg["image_id"])
+            if image_bytes:
+                mime = msg.get("image_mime_type", "image/jpeg")
+                texto = await deps["image"].extraer_medicamentos(image_bytes, mime) or ""
+                if not texto:
+                    await deps["wa"].send_text(phone, "No pude identificar medicamentos en la imagen. ¿Me lo escribís?")
+                    continue
+            else:
+                await deps["wa"].send_text(phone, "No pude procesar la imagen. ¿Me lo escribís?")
                 continue
 
         if not texto.strip():

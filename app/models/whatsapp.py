@@ -18,6 +18,8 @@ class WhatsAppMessage(BaseModel):
                         "type": msg.get("type"),
                         "text": msg.get("text", {}).get("body", ""),
                         "audio_id": msg.get("audio", {}).get("id"),
+                        "image_id": msg.get("image", {}).get("id"),
+                        "image_mime_type": msg.get("image", {}).get("mime_type", "image/jpeg"),
                         "phone_number_id": value.get("metadata", {}).get("phone_number_id"),
                     })
         return msgs

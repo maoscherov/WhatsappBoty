@@ -50,10 +50,9 @@ class WhatsAppService:
             except Exception:
                 pass
 
-    async def download_audio(self, media_id: str) -> Optional[bytes]:
+    async def _download_media(self, media_id: str) -> Optional[bytes]:
         async with httpx.AsyncClient() as client:
             try:
-                # Paso 1: obtener URL del archivo
                 resp = await client.get(
                     f"{WA_BASE}/{media_id}",
                     headers=self._headers,
@@ -63,13 +62,17 @@ class WhatsAppService:
                 url = resp.json().get("url")
                 if not url:
                     return None
-
-                # Paso 2: descargar el archivo
-                audio_resp = await client.get(url, headers=self._headers, timeout=30)
-                audio_resp.raise_for_status()
-                return audio_resp.content
+                media_resp = await client.get(url, headers=self._headers, timeout=30)
+                media_resp.raise_for_status()
+                return media_resp.content
             except Exception:
                 return None
+
+    async def download_audio(self, media_id: str) -> Optional[bytes]:
+        return await self._download_media(media_id)
+
+    async def download_image(self, media_id: str) -> Optional[bytes]:
+        return await self._download_media(media_id)
 
 
 _instance: Optional[WhatsAppService] = None

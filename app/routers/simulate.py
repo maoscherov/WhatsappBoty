@@ -5,7 +5,7 @@ POST /simulate  →  procesa un mensaje y devuelve la respuesta del bot.
 
 import logging
 import re
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -15,6 +15,7 @@ from app.services.sku_service import get_sku_service
 from app.services.session_service import get_session_service
 from app.services.intent_service import get_intent_service
 from app.services.payment_service import get_payment_service
+from app.services.image_service import get_image_service
 
 router = APIRouter()
 
@@ -45,8 +46,9 @@ class SimulateResponse(BaseModel):
     productos_encontrados: list[dict]
     estado_sesion: str
     link_pago: str | None = None
-    mp_error: str | None = None       # detalle del error de MP si falla
-    mp_token_ok: bool | None = None   # True si el token no es placeholder
+    mp_error: str | None = None
+    mp_token_ok: bool | None = None
+    texto_extraido: str | None = None   # texto extraído de imagen o audio
 
 
 @router.post("/simulate", response_model=SimulateResponse)
@@ -220,6 +222,36 @@ async def simulate(req: SimulateRequest):
         mp_error=mp_error,
         mp_token_ok=mp_token_ok,
     )
+
+
+@router.post("/simulate/image", response_model=SimulateResponse)
+async def simulate_image(
+    phone: str = Form("5491100000000"),
+    image: UploadFile = File(...),
+):
+    """Procesa una imagen (receta, foto de producto) y responde igual que /simulate."""
+    settings = get_settings()
+    image_svc = get_image_service(settings.anthropic_api_key)
+
+    image_bytes = await image.read()
+    media_type = image.content_type or "image/jpeg"
+
+    texto_extraido = await image_svc.extraer_medicamentos(image_bytes, media_type)
+    if not texto_extraido:
+        return SimulateResponse(
+            respuesta="No pude identificar medicamentos en la imagen. ¿Me lo escribís?",
+            intencion="desconocido",
+            entidad_producto=None,
+            productos_encontrados=[],
+            estado_sesion="idle",
+            texto_extraido=None,
+        )
+
+    # Procesamos el texto extraído igual que un mensaje normal
+    req = SimulateRequest(phone=phone, message=texto_extraido)
+    result = await simulate(req)
+    result.texto_extraido = texto_extraido
+    return result
 
 
 @router.delete("/simulate/session/{phone}")
