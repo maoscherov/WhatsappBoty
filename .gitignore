@@ -1,0 +1,10 @@
+.env
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+data/*.csv
+data/*.xlsx
+data/*.xls
+# excepciones: el catálogo base SÍ se versiona
+!data/catalogo_base.csv

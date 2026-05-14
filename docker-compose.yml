@@ -1,0 +1,15 @@
+services:
+  bot:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file: .env
+    depends_on:
+      - redis
+    volumes:
+      - ./data:/app/data   # monta el directorio de CSVs sin rebuild
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"

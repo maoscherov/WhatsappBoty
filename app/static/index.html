@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Farma Bot — Simulador</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --wa-bg: #eae6df;
+    --wa-header: #075e54;
+    --wa-header-text: #fff;
+    --wa-bubble-in: #fff;
+    --wa-bubble-out: #dcf8c6;
+    --wa-input-bg: #fff;
+    --wa-time: #999;
+    --wa-blue: #34b7f1;
+    --debug-bg: #1e1e2e;
+    --debug-text: #cdd6f4;
+    --debug-key: #89b4fa;
+    --debug-val: #a6e3a1;
+    --debug-str: #f9e2af;
+    --pill-saludo: #34b7f1;
+    --pill-pedido: #25d366;
+    --pill-consulta: #f39c12;
+    --pill-social: #9b59b6;
+    --pill-default: #7f8c8d;
+  }
+
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #111; display: flex; height: 100vh; overflow: hidden; }
+
+  /* ── PANEL IZQUIERDO: chat ─────────────────────────────── */
+  #chat-panel {
+    width: 420px;
+    min-width: 320px;
+    display: flex;
+    flex-direction: column;
+    background: var(--wa-bg);
+    flex-shrink: 0;
+  }
+
+  /* Header */
+  #chat-header {
+    background: var(--wa-header);
+    padding: 10px 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    color: var(--wa-header-text);
+  }
+  #chat-header .avatar {
+    width: 40px; height: 40px; border-radius: 50%;
+    background: #25d366;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 20px; flex-shrink: 0;
+  }
+  #chat-header .info { flex: 1; }
+  #chat-header .info .name { font-weight: 600; font-size: 15px; }
+  #chat-header .info .sub { font-size: 12px; opacity: .8; }
+  #btn-reset {
+    background: rgba(255,255,255,.15);
+    border: none; color: #fff;
+    border-radius: 6px; padding: 5px 10px;
+    cursor: pointer; font-size: 12px;
+    white-space: nowrap;
+  }
+  #btn-reset:hover { background: rgba(255,255,255,.25); }
+
+  /* Phone input */
+  #phone-bar {
+    background: #054d44;
+    padding: 6px 16px;
+    display: flex; align-items: center; gap: 8px;
+    font-size: 12px; color: rgba(255,255,255,.7);
+  }
+  #phone-input {
+    flex: 1; background: rgba(255,255,255,.1);
+    border: none; border-radius: 4px;
+    color: #fff; padding: 4px 8px; font-size: 12px;
+    outline: none;
+  }
+  #phone-input::placeholder { color: rgba(255,255,255,.4); }
+
+  /* Messages area */
+  #messages {
+    flex: 1; overflow-y: auto;
+    padding: 12px 16px;
+    display: flex; flex-direction: column; gap: 4px;
+    background-image: url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23c5b8a8' fill-opacity='0.15'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
+  }
+  #messages::-webkit-scrollbar { width: 4px; }
+  #messages::-webkit-scrollbar-track { background: transparent; }
+  #messages::-webkit-scrollbar-thumb { background: #bbb; border-radius: 2px; }
+
+  .msg-row {
+    display: flex;
+    margin: 1px 0;
+  }
+  .msg-row.out { justify-content: flex-end; }
+  .msg-row.in  { justify-content: flex-start; }
+
+  .bubble {
+    max-width: 78%;
+    padding: 6px 10px 18px;
+    border-radius: 8px;
+    font-size: 14px;
+    line-height: 1.4;
+    position: relative;
+    word-break: break-word;
+    white-space: pre-wrap;
+    box-shadow: 0 1px 2px rgba(0,0,0,.12);
+  }
+  .msg-row.out .bubble {
+    background: var(--wa-bubble-out);
+    border-top-right-radius: 2px;
+  }
+  .msg-row.in .bubble {
+    background: var(--wa-bubble-in);
+    border-top-left-radius: 2px;
+  }
+  .bubble .time {
+    position: absolute; bottom: 4px; right: 8px;
+    font-size: 10px; color: var(--wa-time);
+  }
+  .msg-row.out .bubble .time { right: 26px; }
+  .bubble .tick {
+    position: absolute; bottom: 5px; right: 6px;
+    font-size: 11px; color: var(--wa-blue);
+  }
+
+  /* Typing indicator */
+  #typing-indicator {
+    display: none;
+    align-items: center; gap: 4px;
+    padding: 4px 0 0 2px;
+  }
+  #typing-indicator.visible { display: flex; }
+  .dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: #888; animation: bounce .8s infinite;
+  }
+  .dot:nth-child(2) { animation-delay: .15s; }
+  .dot:nth-child(3) { animation-delay: .3s; }
+  @keyframes bounce {
+    0%,80%,100% { transform: scale(1); opacity:.5; }
+    40% { transform: scale(1.3); opacity:1; }
+  }
+  #typing-bubble {
+    background: var(--wa-bubble-in);
+    padding: 10px 14px;
+    border-radius: 8px; border-top-left-radius: 2px;
+    box-shadow: 0 1px 2px rgba(0,0,0,.12);
+  }
+
+  /* Input area */
+  #input-area {
+    padding: 8px 12px;
+    background: #f0f2f5;
+    display: flex; align-items: center; gap: 8px;
+  }
+  #msg-input {
+    flex: 1;
+    border: none; outline: none;
+    background: #fff; border-radius: 20px;
+    padding: 10px 16px;
+    font-size: 14px;
+    resize: none;
+    max-height: 120px;
+    overflow-y: auto;
+    line-height: 1.4;
+    font-family: inherit;
+  }
+  #btn-send {
+    width: 44px; height: 44px; border-radius: 50%;
+    background: var(--wa-header);
+    border: none; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0; transition: background .2s;
+  }
+  #btn-send:hover { background: #128c7e; }
+  #btn-send svg { fill: #fff; width: 20px; height: 20px; }
+
+  /* Quick replies */
+  #quick-replies {
+    padding: 6px 12px 2px;
+    display: flex; flex-wrap: wrap; gap: 6px;
+    background: #f0f2f5;
+  }
+  .qr-btn {
+    background: #fff; border: 1px solid #ddd;
+    border-radius: 16px; padding: 5px 12px;
+    font-size: 12px; cursor: pointer;
+    color: #128c7e; font-weight: 500;
+    transition: background .15s;
+  }
+  .qr-btn:hover { background: #e8f5e9; }
+
+  /* ── PANEL DERECHO: debug ──────────────────────────────── */
+  #debug-panel {
+    flex: 1;
+    background: var(--debug-bg);
+    color: var(--debug-text);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  #debug-header {
+    background: #181825;
+    padding: 12px 20px;
+    font-size: 13px;
+    color: var(--debug-key);
+    font-weight: 600;
+    border-bottom: 1px solid #313244;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  #debug-header span { opacity: .6; font-weight: 400; font-size: 12px; }
+
+  #debug-content {
+    flex: 1; overflow-y: auto;
+    padding: 16px 20px;
+    display: flex; flex-direction: column; gap: 16px;
+  }
+  #debug-content::-webkit-scrollbar { width: 4px; }
+  #debug-content::-webkit-scrollbar-thumb { background: #45475a; border-radius: 2px; }
+
+  .debug-empty {
+    color: #45475a; font-size: 13px;
+    text-align: center; margin-top: 40px;
+    line-height: 1.8;
+  }
+
+  .debug-block { display: flex; flex-direction: column; gap: 8px; }
+
+  .debug-block h3 {
+    font-size: 11px; text-transform: uppercase;
+    letter-spacing: .08em; color: #6c7086;
+    border-bottom: 1px solid #313244;
+    padding-bottom: 6px;
+  }
+
+  .intent-badge {
+    display: inline-block;
+    padding: 4px 12px; border-radius: 12px;
+    font-size: 13px; font-weight: 600;
+    color: #1e1e2e;
+  }
+
+  .kv { display: flex; gap: 8px; font-size: 13px; line-height: 1.6; }
+  .kv .k { color: var(--debug-key); min-width: 140px; flex-shrink: 0; }
+  .kv .v { color: var(--debug-val); }
+  .kv .v.str { color: var(--debug-str); }
+  .kv .v.null { color: #6c7086; font-style: italic; }
+
+  .product-card {
+    background: #181825;
+    border: 1px solid #313244;
+    border-radius: 8px;
+    padding: 10px 12px;
+    display: flex; flex-direction: column; gap: 4px;
+    font-size: 12px;
+  }
+  .product-card .pname { font-size: 13px; font-weight: 600; color: var(--debug-str); }
+  .product-card .pmeta { color: #6c7086; }
+  .product-card .pestado {
+    display: inline-block; padding: 2px 8px;
+    border-radius: 10px; font-size: 11px; font-weight: 600;
+    margin-top: 2px;
+  }
+  .pestado.disponible { background: #a6e3a1; color: #1e1e2e; }
+  .pestado.consultar  { background: #f9e2af; color: #1e1e2e; }
+  .pestado.pausado    { background: #f38ba8; color: #1e1e2e; }
+
+  .link-pago-box {
+    background: #1e1e2e;
+    border: 1px solid #a6e3a1;
+    border-radius: 8px; padding: 10px 12px;
+    font-size: 12px;
+  }
+  .link-pago-box a {
+    color: #a6e3a1; word-break: break-all;
+    text-decoration: none;
+  }
+  .link-pago-box a:hover { text-decoration: underline; }
+
+  .error-box {
+    background: #2a1a1a; border: 1px solid #f38ba8;
+    border-radius: 8px; padding: 10px 12px;
+    font-size: 12px; color: #f38ba8;
+  }
+</style>
+</head>
+<body>
+
+<!-- ── CHAT ─────────────────────────────────────────────── -->
+<div id="chat-panel">
+
+  <div id="chat-header">
+    <div class="avatar">💊</div>
+    <div class="info">
+      <div class="name">Farma</div>
+      <div class="sub">Farmacia Mutual Independencia</div>
+    </div>
+    <button id="btn-reset" title="Reiniciar sesión">↺ Reset</button>
+  </div>
+
+  <div id="phone-bar">
+    <span>Teléfono:</span>
+    <input id="phone-input" value="5491100000000" placeholder="5491100000000" />
+  </div>
+
+  <div id="messages">
+    <div class="msg-row in">
+      <div class="bubble">
+        ¡Hola! Soy Farma, tu asistente de Farmacia Mutual Independencia 💊<br>¿En qué te puedo ayudar?
+        <span class="time">ahora</span>
+      </div>
+    </div>
+    <div id="typing-row" class="msg-row in" style="display:none">
+      <div id="typing-bubble">
+        <div id="typing-indicator" class="visible">
+          <div class="dot"></div><div class="dot"></div><div class="dot"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="quick-replies">
+    <button class="qr-btn">Hola!</button>
+    <button class="qr-btn">Ibuprofeno 600</button>
+    <button class="qr-btn">Cuánto sale el omeprazol</button>
+    <button class="qr-btn">Tienen amoxicilina?</button>
+    <button class="qr-btn">Quiero tafirol</button>
+    <button class="qr-btn">Gracias</button>
+    <button class="qr-btn">Tuve un problema con mi pedido</button>
+  </div>
+
+  <div id="input-area">
+    <textarea id="msg-input" rows="1" placeholder="Escribí un mensaje..." maxlength="500"></textarea>
+    <button id="btn-send">
+      <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+    </button>
+  </div>
+
+</div>
+
+<!-- ── DEBUG PANEL ───────────────────────────────────────── -->
+<div id="debug-panel">
+  <div id="debug-header">
+    Inspector de respuestas
+    <span>Última llamada a /simulate</span>
+  </div>
+  <div id="debug-content">
+    <div class="debug-empty">
+      Enviá un mensaje para ver<br>el análisis del bot aquí →
+    </div>
+  </div>
+</div>
+
+<script>
+const API = '';  // mismo origen; si el backend corre en otro puerto → 'http://localhost:8000'
+
+const messagesEl = document.getElementById('messages');
+const inputEl    = document.getElementById('msg-input');
+const sendBtn    = document.getElementById('btn-send');
+const resetBtn   = document.getElementById('btn-reset');
+const phoneInput = document.getElementById('phone-input');
+const typingRow  = document.getElementById('typing-row');
+const debugEl    = document.getElementById('debug-content');
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+function now() {
+  return new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' });
+}
+
+function scrollBottom() {
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+function appendMsg(text, dir) {
+  typingRow.style.display = 'none';
+  const row = document.createElement('div');
+  row.className = 'msg-row ' + dir;
+  const bubble = document.createElement('div');
+  bubble.className = 'bubble';
+  bubble.innerHTML =
+    escHtml(text).replace(/\n/g, '<br>') +
+    `<span class="time">${now()}</span>` +
+    (dir === 'out' ? '<span class="tick">✓✓</span>' : '');
+  row.appendChild(bubble);
+  messagesEl.insertBefore(row, typingRow);
+  scrollBottom();
+}
+
+function showTyping() {
+  typingRow.style.display = 'flex';
+  scrollBottom();
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ── Intent color ─────────────────────────────────────────────────────────────
+
+const INTENT_COLORS = {
+  saludo: '#34b7f1', social: '#9b59b6',
+  consulta_precio: '#f39c12', consulta_stock: '#e67e22',
+  pedido: '#25d366', consulta_abierta: '#3498db',
+  agradecimiento: '#1abc9c', cambio_postventa: '#e74c3c',
+  desconocido: '#7f8c8d',
+};
+
+function intentColor(i) { return INTENT_COLORS[i] || '#7f8c8d'; }
+
+// ── Debug render ─────────────────────────────────────────────────────────────
+
+function renderDebug(data, error) {
+  if (error) {
+    debugEl.innerHTML = `<div class="error-box">⚠ ${escHtml(String(error))}</div>`;
+    return;
+  }
+
+  const kv = (k, v, type='') =>
+    `<div class="kv"><span class="k">${k}</span><span class="v ${type}">${v}</span></div>`;
+
+  const val = (v) => {
+    if (v === null || v === undefined) return `<span class="null">null</span>`;
+    if (typeof v === 'string') return `<span class="str">"${escHtml(v)}"</span>`;
+    if (typeof v === 'boolean') return `<span style="color:#cba6f7">${v}</span>`;
+    return `<span>${escHtml(String(v))}</span>`;
+  };
+
+  let html = '';
+
+  // Intención
+  const color = intentColor(data.intencion);
+  html += `<div class="debug-block">
+    <h3>Intención detectada</h3>
+    <div><span class="intent-badge" style="background:${color}">${data.intencion}</span></div>
+    ${kv('entidad_producto', val(data.entidad_producto))}
+    ${kv('estado_sesion', val(data.estado_sesion))}
+  </div>`;
+
+  // Productos
+  if (data.productos_encontrados && data.productos_encontrados.length > 0) {
+    const cards = data.productos_encontrados.map(p => `
+      <div class="product-card">
+        <div class="pname">${escHtml(p.nombre)}</div>
+        <div class="pmeta">${escHtml(p.marca||'')} · ${escHtml(p.categoria||'')}</div>
+        <div class="pmeta">SKU: ${p.sku_id} · Barcode: ${escHtml(p.barcode||'—')}</div>
+        <div class="pmeta">Precio: <strong>$${Number(p.precio).toFixed(2)}</strong> · Visible: ${p.cantidad_visible}</div>
+        <span class="pestado ${p.estado}">${p.estado}</span>
+      </div>`).join('');
+    html += `<div class="debug-block"><h3>Productos encontrados (${data.productos_encontrados.length})</h3>${cards}</div>`;
+  } else {
+    html += `<div class="debug-block"><h3>Productos encontrados</h3><div class="kv"><span class="v null">Sin resultados</span></div></div>`;
+  }
+
+  // Link de pago
+  if (data.link_pago) {
+    html += `<div class="debug-block">
+      <h3>Link de pago generado</h3>
+      <div class="link-pago-box"><a href="${escHtml(data.link_pago)}" target="_blank">${escHtml(data.link_pago)}</a></div>
+    </div>`;
+  }
+
+  // Respuesta raw
+  html += `<div class="debug-block">
+    <h3>Respuesta completa del bot</h3>
+    <div style="background:#181825;border-radius:6px;padding:10px 12px;font-size:12px;color:#cdd6f4;white-space:pre-wrap;line-height:1.5">${escHtml(data.respuesta)}</div>
+  </div>`;
+
+  debugEl.innerHTML = html;
+}
+
+// ── Send ─────────────────────────────────────────────────────────────────────
+
+async function send() {
+  const text = inputEl.value.trim();
+  if (!text) return;
+  const phone = phoneInput.value.trim() || '5491100000000';
+
+  appendMsg(text, 'out');
+  inputEl.value = '';
+  inputEl.style.height = 'auto';
+  showTyping();
+
+  try {
+    const resp = await fetch(`${API}/simulate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone, message: text }),
+    });
+
+    if (!resp.ok) {
+      const err = await resp.text();
+      appendMsg('Error del servidor: ' + resp.status, 'in');
+      renderDebug(null, err);
+      return;
+    }
+
+    const data = await resp.json();
+    appendMsg(data.respuesta, 'in');
+    renderDebug(data, null);
+  } catch (e) {
+    appendMsg('No se pudo conectar con el servidor.', 'in');
+    renderDebug(null, e.message);
+  }
+}
+
+// ── Reset session ─────────────────────────────────────────────────────────────
+
+async function resetSession() {
+  const phone = phoneInput.value.trim() || '5491100000000';
+  try {
+    await fetch(`${API}/simulate/session/${phone}`, { method: 'DELETE' });
+  } catch (_) {}
+  messagesEl.innerHTML = `
+    <div class="msg-row in">
+      <div class="bubble">
+        ¡Hola! Soy Farma, tu asistente de Farmacia Mutual Independencia 💊<br>¿En qué te puedo ayudar?
+        <span class="time">${now()}</span>
+      </div>
+    </div>
+    <div id="typing-row" class="msg-row in" style="display:none">
+      <div id="typing-bubble">
+        <div id="typing-indicator" class="visible">
+          <div class="dot"></div><div class="dot"></div><div class="dot"></div>
+        </div>
+      </div>
+    </div>`;
+  document.getElementById('typing-row').style.display = 'none';
+  debugEl.innerHTML = '<div class="debug-empty">Sesión reseteada.<br>Enviá un mensaje para empezar.</div>';
+}
+
+// ── Event listeners ──────────────────────────────────────────────────────────
+
+sendBtn.addEventListener('click', send);
+
+inputEl.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+});
+
+inputEl.addEventListener('input', () => {
+  inputEl.style.height = 'auto';
+  inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px';
+});
+
+resetBtn.addEventListener('click', resetSession);
+
+document.querySelectorAll('.qr-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    inputEl.value = btn.textContent;
+    send();
+  });
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,6 @@
+sku_id,sku_nombre,sku_nombre_original,categoria,subcategoria,precio_venta,stock_actual,ventas_mes,prom_semanal,cantidad_visible,tipo_producto,pausado
+7790020004501,Ibuprofeno 600 x10,G-IBUPROFENO 600 COM x 10,Medicamentos,Antiinflamatorios,850.00,336,64,16.0,11,regular,False
+7790020003201,Omeprazol 20mg x14,G-OMEPRAZOL 20MG CAP x 14,Medicamentos,Gastrointestinales,720.00,120,58,14.5,9,regular,False
+7791104001234,Tafirol 1g x50,TAFIROL 1G COM x 50,Medicamentos,Analgesicos,1200.00,8,32,8.0,5,regular,False
+7794000500123,T4 Montpellier 100mcg,T4 MONTPELLIER 100MCG COM x 50,Medicamentos,Tiroides,650.00,13,26,6.5,4,regular,False
+7798020025001,Influvac 0.5ml,INFLUVAC SUSP INY 0.5ML,Vacunas,Influenza,3500.00,190,99,24.75,16,estacional,False
