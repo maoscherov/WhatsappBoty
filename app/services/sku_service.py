@@ -135,21 +135,32 @@ class SKUService:
         if not self._skus or not query.strip():
             return []
 
-        matches = process.extract(
-            query.lower(),
-            self._search_index,
-            scorer=fuzz.WRatio,
-            limit=top_n * 4,
-            score_cutoff=score_cutoff,
-        )
+        # Limpiar la query: quitar cantidades ("dame 2", "necesito 3") y
+        # palabras de intención que confunden el fuzzy match
+        import re as _re
+        clean_query = _re.sub(r'\b(dame|quiero|necesito|tenés|hay|tienen|precio|cuánto|sale|\d+)\b', '', query.lower()).strip()
+        if not clean_query:
+            clean_query = query.lower()
 
-        candidatos: list[SKU] = []
         seen_ids: set[str] = set()
-        for _text, _score, idx in matches:
-            sku = self._skus[idx]
-            if sku.sku_id not in seen_ids and not sku.pausado:
-                candidatos.append(sku)
-                seen_ids.add(sku.sku_id)
+        candidatos: list[SKU] = []
+
+        # Búsqueda con query limpia (scorer partial_ratio para substrings)
+        for scorer in [fuzz.WRatio, fuzz.partial_ratio]:
+            matches = process.extract(
+                clean_query,
+                self._search_index,
+                scorer=scorer,
+                limit=top_n * 6,
+                score_cutoff=score_cutoff,
+            )
+            for _text, _score, idx in matches:
+                sku = self._skus[idx]
+                if sku.sku_id not in seen_ids and not sku.pausado:
+                    candidatos.append(sku)
+                    seen_ids.add(sku.sku_id)
+            if len(candidatos) >= top_n:
+                break
 
         # Ordenar: disponibles primero, luego por más vendido
         candidatos.sort(key=lambda s: (0 if s.disponible else 1, -(s.ventas_mes or 0)))

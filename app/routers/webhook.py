@@ -171,16 +171,18 @@ async def receive_message(request: Request):
             entidad = intent_result.get("entidad_producto")
             respuesta = intent_result.get("respuesta", "")
 
-            # Guardar pending siempre que haya un producto disponible
+            # Guardar pending con el mejor producto encontrado
             if resultados_sku:
-                primer_disponible = next((r for r in resultados_sku if r["estado"] == "disponible"), None)
-                if primer_disponible:
-                    await deps["session"].set_pending(
-                        phone=phone,
-                        sku_id=primer_disponible["sku_id"],
-                        sku_nombre=primer_disponible["nombre"],
-                        precio=primer_disponible["precio"],
-                    )
+                primer_producto = (
+                    next((r for r in resultados_sku if r["estado"] == "disponible"), None)
+                    or resultados_sku[0]
+                )
+                await deps["session"].set_pending(
+                    phone=phone,
+                    sku_id=primer_producto["sku_id"],
+                    sku_nombre=primer_producto["nombre"],
+                    precio=primer_producto["precio"],
+                )
 
         await deps["wa"].send_text(phone, respuesta)
         await deps["session"].add_message(phone, "user", texto)

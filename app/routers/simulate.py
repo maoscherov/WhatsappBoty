@@ -133,20 +133,20 @@ async def simulate(req: SimulateRequest):
         entidad = intent_result.get("entidad_producto")
         respuesta = intent_result.get("respuesta", "")
 
-        # Guardar pending siempre que haya un producto disponible,
-        # sin importar si la intención es "pedido" o "consulta_*".
-        # Claude puede preguntar "¿querés proceder?" con cualquier intención.
+        # Guardar pending con el mejor producto encontrado.
+        # Preferimos disponible, pero si todos son "consultar" usamos el primero igual
+        # (el cliente puede comprar como encargo).
         if productos_encontrados:
-            primer_disponible = next(
-                (r for r in productos_encontrados if r["estado"] == "disponible"), None
+            primer_producto = (
+                next((r for r in productos_encontrados if r["estado"] == "disponible"), None)
+                or productos_encontrados[0]
             )
-            if primer_disponible:
-                await session_svc.set_pending(
-                    phone=req.phone,
-                    sku_id=primer_disponible["sku_id"],
-                    sku_nombre=primer_disponible["nombre"],
-                    precio=primer_disponible["precio"],
-                )
+            await session_svc.set_pending(
+                phone=req.phone,
+                sku_id=primer_producto["sku_id"],
+                sku_nombre=primer_producto["nombre"],
+                precio=primer_producto["precio"],
+            )
 
     await session_svc.add_message(req.phone, "user", texto)
     await session_svc.add_message(req.phone, "assistant", respuesta)
