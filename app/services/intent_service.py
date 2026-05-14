@@ -49,8 +49,11 @@ Respondé SIEMPRE con un JSON con este esquema (sin texto extra):
 {
   "intencion": "saludo|social|consulta_precio|consulta_stock|pedido|consulta_abierta|agradecimiento|cambio_postventa|desconocido",
   "entidad_producto": "nombre del producto mencionado o null",
+  "cantidad": 1,
   "respuesta": "texto que se envía al cliente por WhatsApp"
-}"""
+}
+
+El campo "cantidad" es la cantidad de unidades que el cliente quiere comprar (número entero, mínimo 1)."""
 
 
 class IntentService:

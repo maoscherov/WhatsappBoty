@@ -104,17 +104,21 @@ async def receive_message(request: Request):
         if session.get("estado") == "esperando_confirmacion" and session.get("pending_sku_id"):
             texto_lower = texto.lower().strip()
             if any(p in texto_lower for p in PALABRAS_SI):
-                link = await deps["payment"].crear_link(
+                cantidad = session.get("pending_cantidad", 1)
+                precio_unitario = session["pending_precio"]
+                total = precio_unitario * cantidad
+                link, _ = await deps["payment"].crear_link(
                     sku_id=session["pending_sku_id"],
                     nombre=session["pending_sku_nombre"],
-                    precio=session["pending_precio"],
+                    precio=precio_unitario,
                     phone=phone,
+                    cantidad=cantidad,
                 )
                 if link:
+                    nombre_con_cant = session["pending_sku_nombre"] + (f" x{cantidad}" if cantidad > 1 else "")
                     respuesta = (
                         f"Perfecto! Acá te mando el link de pago para "
-                        f"{session['pending_sku_nombre']} "
-                        f"(${session['pending_precio']:.2f}):\n\n{link}\n\n"
+                        f"{nombre_con_cant} (${total:,.2f}):\n\n{link}\n\n"
                         "Tiene vigencia de 24hs. ¡Cualquier cosa me avisás!"
                     )
                     await deps["session"].set_estado(phone, "esperando_pago")
@@ -159,8 +163,10 @@ async def receive_message(request: Request):
             await deps["session"].add_message(phone, "assistant", respuesta)
             continue
 
-        # Si menciona un producto → buscar en catálogo y regenerar respuesta con contexto
-        if intencion in INTENCIONES_CON_SKU and entidad:
+        ya_tiene_pending = session.get("estado") == "esperando_confirmacion"
+
+        # Si menciona un producto y NO hay confirmación pendiente → buscar y guardar
+        if intencion in INTENCIONES_CON_SKU and entidad and not ya_tiene_pending:
             resultados_sku = deps["sku"].buscar(entidad)
             intent_result = await deps["intent"].procesar(
                 mensaje=texto,
@@ -169,9 +175,9 @@ async def receive_message(request: Request):
             )
             intencion = intent_result.get("intencion", "desconocido")
             entidad = intent_result.get("entidad_producto")
+            cantidad = max(1, int(intent_result.get("cantidad") or 1))
             respuesta = intent_result.get("respuesta", "")
 
-            # Guardar pending con el mejor producto encontrado
             if resultados_sku:
                 primer_producto = (
                     next((r for r in resultados_sku if r["estado"] == "disponible"), None)
@@ -182,6 +188,7 @@ async def receive_message(request: Request):
                     sku_id=primer_producto["sku_id"],
                     sku_nombre=primer_producto["nombre"],
                     precio=primer_producto["precio"],
+                    cantidad=cantidad,
                 )
 
         await deps["wa"].send_text(phone, respuesta)

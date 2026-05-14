@@ -61,18 +61,22 @@ async def simulate(req: SimulateRequest):
     if session.get("estado") == "esperando_confirmacion" and session.get("pending_sku_id"):
         texto_lower = texto.lower()
         if any(p in texto_lower for p in PALABRAS_SI):
+            cantidad = session.get("pending_cantidad", 1)
+            precio_unitario = session["pending_precio"]
+            total = precio_unitario * cantidad
             link, mp_error = await payment_svc.crear_link(
                 sku_id=session["pending_sku_id"],
                 nombre=session["pending_sku_nombre"],
-                precio=session["pending_precio"],
+                precio=precio_unitario,
                 phone=req.phone,
+                cantidad=cantidad,
             )
             link_pago = link
             if link:
+                nombre_con_cant = f"{session['pending_sku_nombre']}" + (f" x{cantidad}" if cantidad > 1 else "")
                 respuesta = (
                     f"Perfecto! Acá te mando el link de pago para "
-                    f"{session['pending_sku_nombre']} "
-                    f"(${session['pending_precio']:.2f}):\n\n{link}\n\n"
+                    f"{nombre_con_cant} (${total:,.2f}):\n\n{link}\n\n"
                     "Tiene vigencia de 24hs. ¡Cualquier cosa me avisás!"
                 )
                 await session_svc.set_estado(req.phone, "esperando_pago")
@@ -122,7 +126,12 @@ async def simulate(req: SimulateRequest):
             estado_sesion=session.get("estado", "idle"),
         )
 
-    if intencion in INTENCIONES_CON_SKU and entidad and sku_svc:
+    ya_tiene_pending = session.get("estado") == "esperando_confirmacion"
+
+    if intencion in INTENCIONES_CON_SKU and entidad and sku_svc and not ya_tiene_pending:
+        # Solo buscar productos si NO hay una confirmación pendiente.
+        # Si hay pending, el usuario está refinando la selección (ej: "el de x20"),
+        # Claude lo maneja con el historial sin pisar el producto guardado.
         productos_encontrados = sku_svc.buscar(entidad)
         intent_result = await intent_svc.procesar(
             mensaje=texto,
@@ -131,11 +140,9 @@ async def simulate(req: SimulateRequest):
         )
         intencion = intent_result.get("intencion", "desconocido")
         entidad = intent_result.get("entidad_producto")
+        cantidad = max(1, int(intent_result.get("cantidad") or 1))
         respuesta = intent_result.get("respuesta", "")
 
-        # Guardar pending con el mejor producto encontrado.
-        # Preferimos disponible, pero si todos son "consultar" usamos el primero igual
-        # (el cliente puede comprar como encargo).
         if productos_encontrados:
             primer_producto = (
                 next((r for r in productos_encontrados if r["estado"] == "disponible"), None)
@@ -146,6 +153,25 @@ async def simulate(req: SimulateRequest):
                 sku_id=primer_producto["sku_id"],
                 sku_nombre=primer_producto["nombre"],
                 precio=primer_producto["precio"],
+                cantidad=cantidad,
+            )
+    elif ya_tiene_pending:
+        # Hay pending activo: Claude responde en contexto sin nueva búsqueda.
+        # Puede ser que el usuario refine cantidad ("en realidad 3") o confirme.
+        intent_result = await intent_svc.procesar(
+            mensaje=texto,
+            history=session.get("history", []),
+        )
+        cantidad_nueva = intent_result.get("cantidad")
+        respuesta = intent_result.get("respuesta", "")
+        # Actualizar cantidad si Claude detectó una nueva
+        if cantidad_nueva and int(cantidad_nueva) > 0 and int(cantidad_nueva) != session.get("pending_cantidad", 1):
+            await session_svc.set_pending(
+                phone=req.phone,
+                sku_id=session["pending_sku_id"],
+                sku_nombre=session["pending_sku_nombre"],
+                precio=session["pending_precio"],
+                cantidad=int(cantidad_nueva),
             )
 
     await session_svc.add_message(req.phone, "user", texto)

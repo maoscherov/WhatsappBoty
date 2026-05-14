@@ -23,6 +23,7 @@ class PaymentService:
         nombre: str,
         precio: float,
         phone: str,
+        cantidad: int = 1,
     ) -> tuple[Optional[str], Optional[str]]:
         """
         Crea una preferencia de pago.
@@ -35,7 +36,7 @@ class PaymentService:
             "items": [{
                 "id": sku_id,
                 "title": nombre,
-                "quantity": 1,
+                "quantity": max(1, int(cantidad)),
                 "unit_price": round(precio, 2),
                 "currency_id": "ARS",
             }],
