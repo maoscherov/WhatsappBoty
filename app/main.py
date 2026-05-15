@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
-from app.routers import webhook, simulate
+from app.routers import webhook, simulate, backoffice
 from app.services.sku_service import get_sku_service
 from app.services.session_service import get_session_service
 
@@ -55,6 +55,7 @@ app.add_middleware(
 
 app.include_router(webhook.router)
 app.include_router(simulate.router)
+app.include_router(backoffice.router)
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -62,6 +63,10 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 @app.get("/")
 async def root():
     return FileResponse(STATIC_DIR / "index.html")
+
+@app.get("/bo")
+async def backoffice_ui():
+    return FileResponse(STATIC_DIR / "backoffice.html")
 
 
 @app.get("/health")

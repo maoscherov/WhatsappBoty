@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Farma BO — Backoffice</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg: #0f1117;
+  --surface: #1a1d27;
+  --border: #2a2d3e;
+  --text: #e2e8f0;
+  --text-muted: #64748b;
+  --accent: #25d366;
+  --accent2: #128c7e;
+  --warn: #f59e0b;
+  --danger: #ef4444;
+  --info: #3b82f6;
+  --purple: #8b5cf6;
+}
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+
+/* ── Header ── */
+#header {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 14px 28px;
+  display: flex; align-items: center; gap: 16px;
+}
+#header .logo { font-size: 22px; font-weight: 700; color: var(--accent); }
+#header .sub { font-size: 13px; color: var(--text-muted); }
+#header .spacer { flex: 1; }
+#header .refresh-info { font-size: 12px; color: var(--text-muted); }
+#btn-refresh {
+  background: var(--accent2); color: #fff;
+  border: none; border-radius: 6px; padding: 7px 14px;
+  cursor: pointer; font-size: 13px; font-weight: 500;
+}
+#btn-refresh:hover { background: var(--accent); }
+
+/* ── Key input ── */
+#key-bar {
+  background: #12151f;
+  border-bottom: 1px solid var(--border);
+  padding: 8px 28px;
+  display: flex; align-items: center; gap: 10px;
+  font-size: 12px; color: var(--text-muted);
+}
+#key-input {
+  background: var(--surface); border: 1px solid var(--border);
+  color: var(--text); border-radius: 5px; padding: 4px 10px;
+  font-size: 12px; width: 200px; outline: none;
+}
+
+/* ── Content ── */
+#content { padding: 24px 28px; max-width: 1400px; }
+
+/* ── Status bar ── */
+#status-bar {
+  display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 24px;
+}
+.status-pill {
+  display: flex; align-items: center; gap: 6px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 20px; padding: 5px 12px; font-size: 12px;
+}
+.status-pill .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.dot.ok { background: var(--accent); }
+.dot.err { background: var(--danger); }
+.dot.unk { background: var(--text-muted); }
+
+/* ── Stat cards ── */
+#stats-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 16px; margin-bottom: 28px;
+}
+.stat-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 10px; padding: 18px 20px;
+}
+.stat-card .label { font-size: 12px; color: var(--text-muted); margin-bottom: 8px; text-transform: uppercase; letter-spacing: .06em; }
+.stat-card .value { font-size: 30px; font-weight: 700; line-height: 1; }
+.stat-card .sub { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+.val-green { color: var(--accent); }
+.val-warn  { color: var(--warn); }
+.val-info  { color: var(--info); }
+.val-purple{ color: var(--purple); }
+
+/* ── Sessions table ── */
+#sessions-section h2 {
+  font-size: 15px; font-weight: 600; margin-bottom: 14px;
+  color: var(--text-muted);
+}
+.table-wrap {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 10px; overflow: hidden;
+}
+table { width: 100%; border-collapse: collapse; }
+thead th {
+  text-align: left; font-size: 11px; text-transform: uppercase;
+  letter-spacing: .07em; color: var(--text-muted);
+  padding: 12px 16px; border-bottom: 1px solid var(--border);
+  background: #12151f;
+}
+tbody tr {
+  border-bottom: 1px solid var(--border);
+  cursor: pointer; transition: background .12s;
+}
+tbody tr:last-child { border-bottom: none; }
+tbody tr:hover { background: #1f2235; }
+tbody tr.expanded { background: #1f2235; }
+td { padding: 12px 16px; font-size: 13px; vertical-align: middle; }
+td .phone { font-weight: 600; font-family: monospace; font-size: 13px; }
+td .msgs-count { color: var(--text-muted); font-size: 12px; }
+td .ultimo { color: var(--text-muted); font-size: 12px; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+td .product-name { font-weight: 500; }
+td .product-price { color: var(--accent); font-size: 12px; }
+
+/* Estado badges */
+.badge {
+  display: inline-block; padding: 3px 10px; border-radius: 10px;
+  font-size: 11px; font-weight: 600;
+}
+.badge.idle { background: #1e293b; color: var(--text-muted); }
+.badge.esperando_confirmacion { background: #2d1f00; color: var(--warn); }
+.badge.esperando_pago { background: #0f2d1a; color: var(--accent); }
+
+/* ── Conversation expand ── */
+.conv-row { display: none; }
+.conv-row.visible { display: table-row; }
+.conv-cell {
+  padding: 0 16px 16px !important;
+  background: #12151f;
+}
+.conv-inner {
+  border: 1px solid var(--border); border-radius: 8px;
+  overflow: hidden; max-height: 320px; overflow-y: auto;
+}
+.conv-msg {
+  padding: 8px 14px; font-size: 13px; line-height: 1.5;
+  border-bottom: 1px solid var(--border);
+  display: flex; gap: 10px;
+}
+.conv-msg:last-child { border-bottom: none; }
+.conv-msg .role {
+  font-size: 11px; font-weight: 700; min-width: 70px;
+  padding-top: 2px; flex-shrink: 0;
+}
+.conv-msg .role.user { color: var(--info); }
+.conv-msg .role.assistant { color: var(--accent); }
+.conv-msg .text { color: var(--text); white-space: pre-wrap; }
+
+/* ── Empty state ── */
+.empty { color: var(--text-muted); font-size: 14px; text-align: center; padding: 48px; }
+
+/* ── Loading ── */
+.spinner {
+  display: inline-block; width: 16px; height: 16px;
+  border: 2px solid var(--border); border-top-color: var(--accent);
+  border-radius: 50%; animation: spin .7s linear infinite;
+  vertical-align: middle; margin-right: 6px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+#last-updated { font-size: 12px; color: var(--text-muted); margin-bottom: 14px; }
+</style>
+</head>
+<body>
+
+<div id="header">
+  <div class="logo">💊 Farma BO</div>
+  <div class="sub">Farmacia Mutual Independencia — Backoffice</div>
+  <div class="spacer"></div>
+  <span class="refresh-info">Auto-refresh 30s</span>
+  <button id="btn-refresh">↺ Actualizar</button>
+</div>
+
+<div id="key-bar">
+  🔑 Clave de acceso:
+  <input id="key-input" type="password" placeholder="Vacío si no configuraste BO_KEY" />
+</div>
+
+<div id="content">
+
+  <div id="status-bar">
+    <div class="status-pill"><div class="dot unk" id="dot-redis"></div> Redis</div>
+    <div class="status-pill"><div class="dot unk" id="dot-claude"></div> Claude API</div>
+    <div class="status-pill"><div class="dot unk" id="dot-mp"></div> Mercado Pago</div>
+    <div class="status-pill"><div class="dot unk" id="dot-wa"></div> WhatsApp</div>
+    <div class="status-pill"><div class="dot unk" id="dot-sku"></div> <span id="lbl-sku">Catálogo</span></div>
+  </div>
+
+  <div id="stats-row">
+    <div class="stat-card">
+      <div class="label">Sesiones activas</div>
+      <div class="value val-green" id="s-total">—</div>
+      <div class="sub">usuarios en chat</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Esperando confirmación</div>
+      <div class="value val-warn" id="s-confirmacion">—</div>
+      <div class="sub">pendientes de confirmar</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Esperando pago</div>
+      <div class="value val-info" id="s-pago">—</div>
+      <div class="sub">link enviado</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Total mensajes</div>
+      <div class="value val-purple" id="s-mensajes">—</div>
+      <div class="sub">en sesiones activas</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Valor pendiente</div>
+      <div class="value val-green" id="s-valor" style="font-size:22px">—</div>
+      <div class="sub">en pedidos activos</div>
+    </div>
+  </div>
+
+  <div id="sessions-section">
+    <p id="last-updated"></p>
+    <h2>Conversaciones activas</h2>
+    <div class="table-wrap">
+      <table id="sessions-table">
+        <thead>
+          <tr>
+            <th>Teléfono</th>
+            <th>Estado</th>
+            <th>Producto pendiente</th>
+            <th>Mensajes</th>
+            <th>Último mensaje del usuario</th>
+          </tr>
+        </thead>
+        <tbody id="sessions-body">
+          <tr><td colspan="5" class="empty"><span class="spinner"></span> Cargando...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const API = '';
+let expandedPhones = new Set();
+
+function key() {
+  return document.getElementById('key-input').value.trim();
+}
+
+function apiUrl(path) {
+  const k = key();
+  return `${API}${path}${k ? '?key=' + encodeURIComponent(k) : ''}`;
+}
+
+// ── Health ───────────────────────────────────────────────────────────────────
+
+async function loadHealth() {
+  try {
+    const r = await fetch(apiUrl('/bo/health'));
+    if (!r.ok) return;
+    const d = await r.json();
+    setDot('dot-redis',  d.redis);
+    setDot('dot-claude', d.anthropic_key_ok);
+    setDot('dot-mp',     d.mp_token_ok);
+    setDot('dot-wa',     d.whatsapp_ok);
+    setDot('dot-sku',    d.sku_total > 0);
+    document.getElementById('lbl-sku').textContent = `Catálogo (${d.sku_total.toLocaleString('es-AR')} SKUs)`;
+  } catch(_) {}
+}
+
+function setDot(id, ok) {
+  const el = document.getElementById(id);
+  el.className = 'dot ' + (ok ? 'ok' : 'err');
+}
+
+// ── Stats ────────────────────────────────────────────────────────────────────
+
+async function loadStats() {
+  try {
+    const r = await fetch(apiUrl('/bo/stats'));
+    if (!r.ok) return;
+    const d = await r.json();
+    document.getElementById('s-total').textContent       = d.sesiones_activas;
+    document.getElementById('s-confirmacion').textContent = d.by_estado?.esperando_confirmacion || 0;
+    document.getElementById('s-pago').textContent         = d.by_estado?.esperando_pago || 0;
+    document.getElementById('s-mensajes').textContent     = d.total_mensajes;
+    document.getElementById('s-valor').textContent        = '$' + Number(d.valor_pendiente).toLocaleString('es-AR', {minimumFractionDigits:2});
+  } catch(_) {}
+}
+
+// ── Sessions ─────────────────────────────────────────────────────────────────
+
+async function loadSessions() {
+  try {
+    const r = await fetch(apiUrl('/bo/sessions'));
+    if (r.status === 403) {
+      document.getElementById('sessions-body').innerHTML =
+        '<tr><td colspan="5" class="empty">🔒 Clave incorrecta</td></tr>';
+      return;
+    }
+    if (!r.ok) return;
+    const sessions = await r.json();
+    renderSessions(sessions);
+    document.getElementById('last-updated').textContent =
+      'Última actualización: ' + new Date().toLocaleTimeString('es-AR');
+  } catch(e) {
+    document.getElementById('sessions-body').innerHTML =
+      '<tr><td colspan="5" class="empty">Error conectando al servidor</td></tr>';
+  }
+}
+
+function estadoBadge(estado) {
+  const labels = {
+    idle: 'Idle',
+    esperando_confirmacion: 'Confirmación',
+    esperando_pago: 'Esperando pago',
+  };
+  return `<span class="badge ${estado}">${labels[estado] || estado}</span>`;
+}
+
+function renderSessions(sessions) {
+  const body = document.getElementById('sessions-body');
+  if (!sessions.length) {
+    body.innerHTML = '<tr><td colspan="5" class="empty">Sin sesiones activas en este momento</td></tr>';
+    return;
+  }
+
+  let html = '';
+  for (const s of sessions) {
+    const isExp = expandedPhones.has(s.phone);
+    const productHtml = s.pending_sku_nombre
+      ? `<div class="product-name">${esc(s.pending_sku_nombre)}</div>
+         <div class="product-price">$${Number(s.pending_precio).toLocaleString('es-AR',{minimumFractionDigits:2})} × ${s.pending_cantidad}</div>`
+      : `<span style="color:var(--text-muted);font-size:12px">—</span>`;
+
+    html += `
+      <tr class="${isExp ? 'expanded' : ''}" onclick="toggleSession('${esc(s.phone)}')">
+        <td><div class="phone">${esc(s.phone)}</div></td>
+        <td>${estadoBadge(s.estado)}</td>
+        <td>${productHtml}</td>
+        <td><span class="msgs-count">${s.mensajes}</span></td>
+        <td><div class="ultimo">${s.ultimo_mensaje ? esc(s.ultimo_mensaje) : '—'}</div></td>
+      </tr>
+      <tr class="conv-row ${isExp ? 'visible' : ''}" id="conv-${esc(s.phone)}">
+        <td colspan="5" class="conv-cell">
+          <div class="conv-inner" id="conv-inner-${esc(s.phone)}">
+            <div class="empty" style="padding:16px"><span class="spinner"></span> Cargando historial...</div>
+          </div>
+        </td>
+      </tr>`;
+  }
+  body.innerHTML = html;
+
+  // Recargar los que estaban expandidos
+  for (const phone of expandedPhones) {
+    fetchConversation(phone);
+  }
+}
+
+async function toggleSession(phone) {
+  if (expandedPhones.has(phone)) {
+    expandedPhones.delete(phone);
+  } else {
+    expandedPhones.add(phone);
+    fetchConversation(phone);
+  }
+  // Redraw without full reload
+  const row = document.querySelector(`tr[onclick="toggleSession('${phone}')"]`);
+  const convRow = document.getElementById(`conv-${phone}`);
+  if (row) row.classList.toggle('expanded', expandedPhones.has(phone));
+  if (convRow) convRow.classList.toggle('visible', expandedPhones.has(phone));
+}
+
+async function fetchConversation(phone) {
+  const inner = document.getElementById(`conv-inner-${phone}`);
+  if (!inner) return;
+  try {
+    const r = await fetch(apiUrl(`/bo/session/${encodeURIComponent(phone)}`));
+    if (!r.ok) return;
+    const d = await r.json();
+    const history = d.history || [];
+    if (!history.length) {
+      inner.innerHTML = '<div class="empty" style="padding:12px">Sin historial</div>';
+      return;
+    }
+    inner.innerHTML = history.map(m => `
+      <div class="conv-msg">
+        <div class="role ${m.role}">${m.role === 'user' ? '👤 Usuario' : '🤖 Farma'}</div>
+        <div class="text">${esc(m.content)}</div>
+      </div>`).join('');
+    inner.scrollTop = inner.scrollHeight;
+  } catch(_) {}
+}
+
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── Reload all ───────────────────────────────────────────────────────────────
+
+async function reload() {
+  await Promise.all([loadHealth(), loadStats(), loadSessions()]);
+}
+
+document.getElementById('btn-refresh').addEventListener('click', reload);
+document.getElementById('key-input').addEventListener('change', reload);
+
+// Auto-refresh cada 30 segundos
+setInterval(reload, 30_000);
+
+// Carga inicial
+reload();
+</script>
+</body>
+</html>

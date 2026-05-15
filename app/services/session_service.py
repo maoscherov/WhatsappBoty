@@ -99,6 +99,22 @@ class SessionService:
         session["estado"] = estado
         await self.save(phone, session)
 
+    async def list_all(self) -> list[tuple[str, dict]]:
+        """Devuelve todas las sesiones activas como lista de (phone, session)."""
+        if await self._use_redis():
+            try:
+                keys = await self._redis.keys("session:*")
+                result = []
+                for key in keys:
+                    raw = await self._redis.get(key)
+                    if raw:
+                        phone = key.removeprefix("session:")
+                        result.append((phone, json.loads(raw)))
+                return sorted(result, key=lambda x: x[0])
+            except Exception:
+                pass
+        return list(self._memory.items())
+
     async def ping(self) -> bool:
         try:
             return await self._redis.ping()

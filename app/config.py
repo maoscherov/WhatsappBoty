@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     env: str = "development"
     sku_csv_path: str = "data/catalogo_base.csv"
     log_level: str = "INFO"
+    bo_key: str = ""   # clave de acceso al backoffice (vacía = sin protección)
 
     class Config:
         env_file = ".env"
