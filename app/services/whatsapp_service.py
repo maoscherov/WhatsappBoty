@@ -2,8 +2,14 @@
 Envía mensajes y descarga archivos de audio a través de la API de WhatsApp Business.
 """
 
+import asyncio
 import httpx
 from typing import Optional
+
+# Velocidad de escritura simulada: ~60 palabras/min ≈ 5 chars/seg
+# Mínimo 1.2s, máximo 4s para no hacer esperar demasiado
+def _typing_delay(texto: str) -> float:
+    return min(max(len(texto) / 25, 1.2), 4.0)
 
 WA_BASE = "https://graph.facebook.com/v19.0"
 
@@ -14,7 +20,13 @@ class WhatsAppService:
         self._phone_id = phone_number_id
         self._headers = {"Authorization": f"Bearer {token}"}
 
-    async def send_text(self, to: str, text: str) -> bool:
+    async def send_text(self, to: str, text: str, simulate_typing: bool = True) -> bool:
+        # Delay proporcional al largo del mensaje antes de enviar.
+        # El mark_read previo ya muestra los ticks azules → pausa → aparece la respuesta.
+        # Simula el tiempo natural de escritura humana (1.2s–4s).
+        if simulate_typing:
+            await asyncio.sleep(_typing_delay(text))
+
         payload = {
             "messaging_product": "whatsapp",
             "to": to,
