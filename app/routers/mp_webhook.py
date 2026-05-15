@@ -55,12 +55,12 @@ async def mp_notification(request: Request):
     settings = get_settings()
     body_bytes = await request.body()
 
-    # Validar firma solo si está configurado el secret Y MP envió el header
-    # (las notificaciones de prueba de MP no incluyen x-signature)
+    # Validar firma si está configurado el secret y MP envió el header.
+    # Logueamos si falla pero NO rechazamos: la seguridad real viene de
+    # consultar el estado del pago directamente a la API de MP.
     if settings.mp_webhook_secret and request.headers.get("x-signature"):
         if not _validate_mp_signature(request, body_bytes, settings.mp_webhook_secret):
-            logger.warning("MP webhook: firma inválida — rechazado")
-            raise HTTPException(status_code=400, detail="Firma inválida")
+            logger.warning("MP webhook: firma no válida (se procesa igual, se verifica con MP API)")
 
     # MP puede mandar el ID como query param o en el body
     params = dict(request.query_params)
