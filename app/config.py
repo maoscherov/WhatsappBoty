@@ -18,7 +18,8 @@ class Settings(BaseSettings):
     sku_csv_path: str = "data/catalogo_base.csv"
     log_level: str = "INFO"
     bo_key: str = ""
-    pickup_minutes: int = 30   # tiempo estimado para retirar el pedido
+    pickup_minutes: int = 30
+    mp_webhook_secret: str = ""   # clave secreta del webhook de MP
 
     class Config:
         env_file = ".env"

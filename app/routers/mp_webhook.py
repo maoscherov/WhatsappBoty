@@ -10,8 +10,10 @@ Cuando el pago es aprobado:
   4. Actualiza la sesión a "pedido_confirmado"
 """
 
+import hashlib
+import hmac
 import logging
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, HTTPException
 
 from app.config import get_settings
 from app.services.payment_service import get_payment_service
@@ -22,6 +24,28 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _validate_mp_signature(request: Request, body_bytes: bytes, secret: str) -> bool:
+    """
+    Valida el header x-signature de MP.
+    Formato: ts=1;v1=hash
+    String a firmar: id:{query_id};request-id:{x-request-id};ts:{ts};
+    """
+    signature_header = request.headers.get("x-signature", "")
+    request_id = request.headers.get("x-request-id", "")
+    data_id = request.query_params.get("id", "")
+
+    if not signature_header:
+        return False
+
+    parts = dict(p.split("=", 1) for p in signature_header.split(";") if "=" in p)
+    ts = parts.get("ts", "")
+    v1 = parts.get("v1", "")
+
+    manifest = f"id:{data_id};request-id:{request_id};ts:{ts};"
+    expected = hmac.new(secret.encode(), manifest.encode(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, v1)
+
+
 @router.post("/mp/notification")
 async def mp_notification(request: Request):
     """
@@ -29,12 +53,20 @@ async def mp_notification(request: Request):
     También puede enviar como query param: ?id=xxx&topic=payment
     """
     settings = get_settings()
+    body_bytes = await request.body()
+
+    # Validar firma si está configurado el secret
+    if settings.mp_webhook_secret:
+        if not _validate_mp_signature(request, body_bytes, settings.mp_webhook_secret):
+            logger.warning("MP webhook: firma inválida — rechazado")
+            raise HTTPException(status_code=400, detail="Firma inválida")
 
     # MP puede mandar el ID como query param o en el body
     params = dict(request.query_params)
     body = {}
     try:
-        body = await request.json()
+        import json
+        body = json.loads(body_bytes) if body_bytes else {}
     except Exception:
         pass
 
