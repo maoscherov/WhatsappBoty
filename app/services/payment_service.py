@@ -76,6 +76,26 @@ class PaymentService:
             except Exception as e:
                 return None, str(e)
 
+    async def get_payment_info(self, payment_id: str) -> Optional[dict]:
+        """
+        Consulta el estado de un pago por su ID.
+        Retorna el dict completo de MP o None si falla.
+        """
+        async with httpx.AsyncClient() as client:
+            try:
+                resp = await client.get(
+                    f"{MP_BASE_URL}/v1/payments/{payment_id}",
+                    headers=self._headers,
+                    timeout=10,
+                )
+                if resp.status_code != 200:
+                    logger.warning(f"MP get_payment status={resp.status_code}")
+                    return None
+                return resp.json()
+            except Exception as e:
+                logger.error(f"Error consultando pago MP: {e}")
+                return None
+
 
 _instance: Optional[PaymentService] = None
 

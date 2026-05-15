@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
-from app.routers import webhook, simulate, backoffice
+from app.routers import webhook, simulate, backoffice, mp_webhook
 from app.services.sku_service import get_sku_service
 from app.services.session_service import get_session_service
 
@@ -56,6 +56,7 @@ app.add_middleware(
 app.include_router(webhook.router)
 app.include_router(simulate.router)
 app.include_router(backoffice.router)
+app.include_router(mp_webhook.router)
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 

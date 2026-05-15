@@ -126,6 +126,7 @@ td .product-price { color: var(--accent); font-size: 12px; }
 .badge.idle { background: #1e293b; color: var(--text-muted); }
 .badge.esperando_confirmacion { background: #2d1f00; color: var(--warn); }
 .badge.esperando_pago { background: #0f2d1a; color: var(--accent); }
+.badge.pedido_confirmado { background: #1a1060; color: #a78bfa; }
 
 /* ── Conversation expand ── */
 .conv-row { display: none; }
@@ -318,6 +319,7 @@ function estadoBadge(estado) {
     idle: 'Idle',
     esperando_confirmacion: 'Confirmación',
     esperando_pago: 'Esperando pago',
+    pedido_confirmado: '✅ Pago confirmado',
   };
   return `<span class="badge ${estado}">${labels[estado] || estado}</span>`;
 }
