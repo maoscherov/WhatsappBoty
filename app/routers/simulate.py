@@ -156,15 +156,27 @@ async def simulate(req: SimulateRequest):
         respuesta = intent_result.get("respuesta", "")
 
         if productos_encontrados:
-            primer_producto = (
-                next((r for r in productos_encontrados if r["estado"] == "disponible"), None)
-                or productos_encontrados[0]
-            )
+            # Usar sku_seleccionado_index si Claude identificó cuál eligió el usuario
+            # (1-based: "1"=primera opción, "2"=segunda, etc.)
+            sku_index = intent_result.get("sku_seleccionado_index")
+            producto_elegido = None
+            if sku_index is not None:
+                try:
+                    idx = int(sku_index) - 1  # convertir 1-based → 0-based
+                    if 0 <= idx < len(productos_encontrados):
+                        producto_elegido = productos_encontrados[idx]
+                except (ValueError, TypeError):
+                    pass
+            if not producto_elegido:
+                producto_elegido = (
+                    next((r for r in productos_encontrados if r["estado"] == "disponible"), None)
+                    or productos_encontrados[0]
+                )
             await session_svc.set_pending(
                 phone=req.phone,
-                sku_id=primer_producto["sku_id"],
-                sku_nombre=primer_producto["nombre"],
-                precio=primer_producto["precio"],
+                sku_id=producto_elegido["sku_id"],
+                sku_nombre=producto_elegido["nombre"],
+                precio=producto_elegido["precio"],
                 cantidad=cantidad,
                 opciones=productos_encontrados,
             )
@@ -183,9 +195,10 @@ async def simulate(req: SimulateRequest):
         respuesta = intent_result.get("respuesta", "")
 
         # Si Claude identificó un producto específico de las opciones, actualizar pending
+        # sku_seleccionado_index es 1-based (1=primera opción mostrada)
         if sku_index is not None and pending_opciones:
             try:
-                idx = int(sku_index)
+                idx = int(sku_index) - 1  # convertir 1-based → 0-based
                 if 0 <= idx < len(pending_opciones):
                     elegido = pending_opciones[idx]
                     nueva_cantidad = max(1, int(cantidad_nueva or session.get("pending_cantidad", 1)))
