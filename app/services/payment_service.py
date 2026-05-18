@@ -9,13 +9,16 @@ MP_BASE_URL = "https://api.mercadopago.com"
 
 
 class PaymentService:
-    def __init__(self, access_token: str, notification_url: str = ""):
+    def __init__(self, access_token: str, notification_url: str = "", sandbox: bool = False):
         self._token = access_token
         self._notification_url = notification_url
+        self._sandbox = sandbox
         self._headers = {
             "Authorization": f"Bearer {access_token}",
             "Content-Type": "application/json",
         }
+        if sandbox:
+            logger.info("PaymentService en modo SANDBOX")
 
     async def crear_link(
         self,
@@ -65,9 +68,10 @@ class PaymentService:
                     error = data.get("message") or data.get("error") or str(data)
                     return None, f"HTTP {resp.status_code}: {error}"
 
-                link = data.get("init_point")
+                key = "sandbox_init_point" if self._sandbox else "init_point"
+                link = data.get(key)
                 if not link:
-                    return None, f"MP respondió 201 pero sin init_point: {data}"
+                    return None, f"MP respondió 201 pero sin {key}: {data}"
 
                 return link, None
 
@@ -100,8 +104,8 @@ class PaymentService:
 _instance: Optional[PaymentService] = None
 
 
-def get_payment_service(access_token: str, notification_url: str = "") -> PaymentService:
+def get_payment_service(access_token: str, notification_url: str = "", sandbox: bool = False) -> PaymentService:
     global _instance
     if _instance is None:
-        _instance = PaymentService(access_token, notification_url)
+        _instance = PaymentService(access_token, notification_url, sandbox)
     return _instance

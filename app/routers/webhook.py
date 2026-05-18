@@ -60,7 +60,7 @@ def _deps(settings=None):
         "sku": get_sku_service(s.sku_csv_path),
         "session": get_session_service(s.redis_url),
         "intent": get_intent_service(s.anthropic_api_key),
-        "payment": get_payment_service(s.mp_access_token, s.mp_notification_url),
+        "payment": get_payment_service(s.mp_access_token, s.mp_notification_url, s.mp_sandbox),
         "audio": get_audio_service(audio_key, s.audio_provider),
         "image": get_image_service(s.anthropic_api_key),
     }

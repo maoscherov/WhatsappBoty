@@ -70,7 +70,7 @@ async def simulate(req: SimulateRequest):
         sku_svc = None
     session_svc = get_session_service(settings.redis_url)
     intent_svc = get_intent_service(settings.anthropic_api_key)
-    payment_svc = get_payment_service(settings.mp_access_token, settings.mp_notification_url)
+    payment_svc = get_payment_service(settings.mp_access_token, settings.mp_notification_url, settings.mp_sandbox)
 
     session = await session_svc.get(req.phone)
     texto = req.message.strip()

@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     groq_api_key: str = ""
     openai_api_key: str = ""
 
+    mp_sandbox: bool = False   # True → usa sandbox_init_point de MP
+
     class Config:
         env_file = ".env"
         extra = "ignore"
