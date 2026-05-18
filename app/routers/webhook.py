@@ -35,15 +35,21 @@ INTENCIONES_CON_SKU = {"consulta_precio", "consulta_stock", "pedido", "consulta_
 import re as _re
 
 _PALABRAS_SI = [r"\bsi\b", r"\bsí\b", r"\bdale\b", r"\bok\b", r"\blisto\b",
-                r"\bperfecto\b", r"\bconfirmo\b", r"\bvamos\b"]
-_PALABRAS_NO = [r"\bno\b", r"\bcancel\b", r"\bcancela\b", r"\bnope\b",
-                r"\bmejor no\b", r"\bno quiero\b"]
+                r"\bperfecto\b", r"\bconfirmo\b", r"\bvamos\b", r"\bva\b",
+                r"\bconfirma\b", r"\bmanda\b", r"\bmandame\b", r"\bprocede\b"]
+
+_NO_EXACTO = [r"^no$", r"^nope$", r"^cancel$", r"^cancela$"]
+_NO_FRASE  = [r"\bno quiero\b", r"\bno gracias\b", r"\bmejor no\b",
+              r"\bcancela(r|me)?\b", r"\bnope\b"]
 
 def _match_si(t: str) -> bool:
     return any(_re.search(p, t, _re.IGNORECASE) for p in _PALABRAS_SI)
 
 def _match_no(t: str) -> bool:
-    return any(_re.search(p, t, _re.IGNORECASE) for p in _PALABRAS_NO)
+    t = t.strip()
+    if any(_re.fullmatch(p, t, _re.IGNORECASE) for p in _NO_EXACTO):
+        return True
+    return any(_re.search(p, t, _re.IGNORECASE) for p in _NO_FRASE)
 
 
 def _deps(settings=None):
@@ -159,6 +165,45 @@ async def receive_message(request: Request):
             elif _match_no(texto_lower):
                 await deps["session"].clear_pending(phone)
                 respuesta = "Dale, sin problema. ¿En qué más te puedo ayudar?"
+                await deps["wa"].send_text(phone, respuesta)
+                await deps["session"].add_message(phone, "user", texto)
+                await deps["session"].add_message(phone, "assistant", respuesta)
+                continue
+
+            else:
+                # Ni SI ni NO claro → Claude decide (maneja typos, autocorrect, etc.)
+                intent_result = await deps["intent"].procesar(
+                    mensaje=texto,
+                    history=session.get("history", []),
+                )
+                confirmacion = intent_result.get("confirmacion")
+                respuesta = intent_result.get("respuesta", "")
+
+                if confirmacion is True:
+                    cantidad = session.get("pending_cantidad", 1)
+                    precio_unitario = session["pending_precio"]
+                    total = precio_unitario * cantidad
+                    link, _ = await deps["payment"].crear_link(
+                        sku_id=session["pending_sku_id"],
+                        nombre=session["pending_sku_nombre"],
+                        precio=precio_unitario,
+                        phone=phone,
+                        cantidad=cantidad,
+                    )
+                    if link:
+                        nombre_con_cant = session["pending_sku_nombre"] + (f" x{cantidad}" if cantidad > 1 else "")
+                        respuesta = (
+                            f"Perfecto! Acá te mando el link de pago para "
+                            f"{nombre_con_cant} (${total:,.2f}):\n\n{link}\n\n"
+                            "Tiene vigencia de 24hs. ¡Cualquier cosa me avisás!"
+                        )
+                        await deps["session"].set_estado(phone, "esperando_pago")
+                    else:
+                        respuesta = "Tuve un problema generando el link de pago. Te paso con alguien del equipo."
+                        await deps["session"].clear_pending(phone)
+                elif confirmacion is False:
+                    await deps["session"].clear_pending(phone)
+
                 await deps["wa"].send_text(phone, respuesta)
                 await deps["session"].add_message(phone, "user", texto)
                 await deps["session"].add_message(phone, "assistant", respuesta)

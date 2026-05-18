@@ -21,17 +21,26 @@ router = APIRouter()
 
 INTENCIONES_CON_SKU = {"consulta_precio", "consulta_stock", "pedido", "consulta_abierta"}
 
-# Usar palabra completa (word boundary) para evitar que "ibuprofeno" matchee "no"
 _PALABRAS_SI = [r"\bsi\b", r"\bsí\b", r"\bdale\b", r"\bok\b", r"\blisto\b",
-                r"\bperfecto\b", r"\bconfirmo\b", r"\bvamos\b", r"\bbuenisimo\b"]
-_PALABRAS_NO = [r"\bno\b", r"\bcancel\b", r"\bcancela\b", r"\bnope\b",
-                r"\bmejor no\b", r"\bno quiero\b"]
+                r"\bperfecto\b", r"\bconfirmo\b", r"\bvamos\b", r"\bbuenisimo\b",
+                r"\bva\b", r"\bconfirma\b", r"\bmanda\b", r"\bmandame\b", r"\bprocede\b"]
+
+# NO solo matchea cuando el mensaje es una cancelación explícita y corta.
+# "No me llegó el link" NO debe cancelar — el "no" tiene otro contexto.
+_NO_EXACTO = [r"^no$", r"^nope$", r"^cancel$", r"^cancela$"]
+_NO_FRASE  = [r"\bno quiero\b", r"\bno gracias\b", r"\bmejor no\b",
+              r"\bcancela(r|me)?\b", r"\bnope\b"]
 
 def _match_si(texto: str) -> bool:
     return any(re.search(p, texto, re.IGNORECASE) for p in _PALABRAS_SI)
 
 def _match_no(texto: str) -> bool:
-    return any(re.search(p, texto, re.IGNORECASE) for p in _PALABRAS_NO)
+    t = texto.strip()
+    # Mensaje muy corto que ES solo "no" / "cancel"
+    if any(re.fullmatch(p, t, re.IGNORECASE) for p in _NO_EXACTO):
+        return True
+    # Frase explícita de cancelación en cualquier largo de mensaje
+    return any(re.search(p, t, re.IGNORECASE) for p in _NO_FRASE)
 
 
 class SimulateRequest(BaseModel):
@@ -114,6 +123,54 @@ async def simulate(req: SimulateRequest):
                 respuesta=respuesta, intencion="social",
                 entidad_producto=None, productos_encontrados=[],
                 estado_sesion="idle",
+            )
+
+        else:
+            # Ni SI ni NO claro → consultar a Claude con contexto del pedido pendiente
+            intent_result = await intent_svc.procesar(
+                mensaje=texto,
+                history=session.get("history", []),
+            )
+            confirmacion = intent_result.get("confirmacion")
+            respuesta = intent_result.get("respuesta", "")
+
+            if confirmacion is True:
+                # Claude interpretó que el usuario confirma (ej: typos, autocorrect)
+                cantidad = session.get("pending_cantidad", 1)
+                precio_unitario = session["pending_precio"]
+                total = precio_unitario * cantidad
+                link, mp_error = await payment_svc.crear_link(
+                    sku_id=session["pending_sku_id"],
+                    nombre=session["pending_sku_nombre"],
+                    precio=precio_unitario,
+                    phone=req.phone,
+                    cantidad=cantidad,
+                )
+                link_pago = link
+                if link:
+                    nombre_con_cant = session["pending_sku_nombre"] + (f" x{cantidad}" if cantidad > 1 else "")
+                    respuesta = (
+                        f"Perfecto! Acá te mando el link de pago para "
+                        f"{nombre_con_cant} (${total:,.2f}):\n\n{link}\n\n"
+                        "Tiene vigencia de 24hs. ¡Cualquier cosa me avisás!"
+                    )
+                    await session_svc.set_estado(req.phone, "esperando_pago")
+                else:
+                    respuesta = "Tuve un problema generando el link de pago. Te paso con alguien del equipo."
+                    await session_svc.clear_pending(req.phone)
+            elif confirmacion is False:
+                await session_svc.clear_pending(req.phone)
+
+            await session_svc.add_message(req.phone, "user", texto)
+            await session_svc.add_message(req.phone, "assistant", respuesta)
+            session = await session_svc.get(req.phone)
+            return SimulateResponse(
+                respuesta=respuesta,
+                intencion=intent_result.get("intencion", "desconocido"),
+                entidad_producto=intent_result.get("entidad_producto"),
+                productos_encontrados=[],
+                estado_sesion=session.get("estado", "idle"),
+                link_pago=link_pago, mp_error=mp_error, mp_token_ok=mp_token_ok,
             )
 
     # ── Flujo normal ─────────────────────────────────────────────────────────

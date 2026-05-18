@@ -66,11 +66,13 @@ Respondé SIEMPRE con un JSON con este esquema (sin texto extra):
   "entidad_producto": "nombre del producto mencionado o null",
   "cantidad": 1,
   "sku_seleccionado_index": null,
+  "confirmacion": null,
   "respuesta": "texto que se envía al cliente por WhatsApp"
 }
 
 El campo "cantidad" es la cantidad de unidades que el cliente quiere comprar (número entero, mínimo 1).
-El campo "sku_seleccionado_index" es el número de opción elegida por el usuario (1=primera opción, 2=segunda, 3=tercera), tanto cuando el mensaje tiene [OPCIONES MOSTRADAS] como cuando tiene [RESULTADOS DEL CATÁLOGO]. Si el usuario dice "1", "el primero", "el de arriba" → 1. Si dice "2" o "el segundo" → 2. Null si no eligió una opción específica."""
+El campo "sku_seleccionado_index" es el número de opción elegida por el usuario (1=primera opción, 2=segunda, 3=tercera), tanto cuando el mensaje tiene [OPCIONES MOSTRADAS] como cuando tiene [RESULTADOS DEL CATÁLOGO]. Si el usuario dice "1", "el primero", "el de arriba" → 1. Si dice "2" o "el segundo" → 2. Null si no eligió una opción específica.
+El campo "confirmacion": cuando el sistema está esperando confirmación de un pedido pendiente, indicá true si el usuario confirma (aunque use palabras raras, errores de tipeo o autocorrect), false si cancela explícitamente, null si no aplica o no está claro."""
 
 
 class IntentService:
