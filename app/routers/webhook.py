@@ -48,13 +48,14 @@ def _match_no(t: str) -> bool:
 
 def _deps(settings=None):
     s = settings or get_settings()
+    audio_key = s.groq_api_key if s.audio_provider == "groq" else s.openai_api_key
     return {
         "wa": get_whatsapp_service(s.whatsapp_token, s.whatsapp_phone_number_id),
         "sku": get_sku_service(s.sku_csv_path),
         "session": get_session_service(s.redis_url),
         "intent": get_intent_service(s.anthropic_api_key),
         "payment": get_payment_service(s.mp_access_token, s.mp_notification_url),
-        "audio": get_audio_service(s.anthropic_api_key),
+        "audio": get_audio_service(audio_key, s.audio_provider),
         "image": get_image_service(s.anthropic_api_key),
     }
 

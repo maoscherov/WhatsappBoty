@@ -19,7 +19,11 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     bo_key: str = ""
     pickup_minutes: int = 30
-    mp_webhook_secret: str = ""   # clave secreta del webhook de MP
+    mp_webhook_secret: str = ""
+
+    audio_provider: str = "groq"   # "groq" | "openai"
+    groq_api_key: str = ""
+    openai_api_key: str = ""
 
     class Config:
         env_file = ".env"
