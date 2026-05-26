@@ -99,6 +99,18 @@ class SessionService:
         session["estado"] = estado
         await self.save(phone, session)
 
+    async def is_processed(self, msg_id: str) -> bool:
+        """Retorna True si el mensaje ya fue procesado (deduplicación de webhooks)."""
+        key = f"processed:{msg_id}"
+        if await self._use_redis():
+            try:
+                result = await self._redis.set(key, "1", ex=300, nx=True)
+                return result is None  # None = ya existía → duplicado
+            except Exception:
+                pass
+        # Sin Redis: aceptar todo (peor caso: algún duplicado)
+        return False
+
     async def list_all(self) -> list[tuple[str, dict]]:
         """Devuelve todas las sesiones activas como lista de (phone, session)."""
         if await self._use_redis():

@@ -98,6 +98,11 @@ async def receive_message(request: Request):
         msg_id = msg["id"]
         msg_type = msg["type"]
 
+        # Deduplicación: ignorar si ya procesamos este mensaje
+        if await deps["session"].is_processed(msg_id):
+            logger.info(f"Mensaje duplicado ignorado: {msg_id}")
+            continue
+
         await deps["wa"].mark_read(msg_id)
 
         texto = msg["text"]
