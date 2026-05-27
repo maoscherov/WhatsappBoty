@@ -31,8 +31,9 @@ _EMPTY_SESSION = lambda: {
 class SessionService:
     def __init__(self, redis_url: str):
         self._redis = aioredis.from_url(redis_url, decode_responses=True)
-        self._memory: dict[str, dict] = {}   # fallback in-memory
-        self._redis_ok: Optional[bool] = None  # None = no testeado aún
+        self._memory: dict[str, dict] = {}       # fallback in-memory sesiones
+        self._redis_ok: Optional[bool] = None    # None = no testeado aún
+        self._processed_ids: set[str] = set()    # fallback in-memory dedup
 
     def _key(self, phone: str) -> str:
         return f"session:{phone}"
@@ -100,15 +101,30 @@ class SessionService:
         await self.save(phone, session)
 
     async def is_processed(self, msg_id: str) -> bool:
-        """Retorna True si el mensaje ya fue procesado (deduplicación de webhooks)."""
+        """
+        Retorna True si el mensaje ya fue procesado (deduplicación de webhooks).
+        Usa Redis como primera línea; si falla cae a un set in-memory para que
+        los retries de WhatsApp no se cuelen aunque Redis tenga un micro-corte.
+        """
         key = f"processed:{msg_id}"
         if await self._use_redis():
             try:
                 result = await self._redis.set(key, "1", ex=300, nx=True)
-                return result is None  # None = ya existía → duplicado
+                if result is None:
+                    return True   # ya existía en Redis → duplicado
+                # Guardado en Redis OK → también marcamos en memoria por si acaso
+                self._processed_ids.add(msg_id)
+                return False
             except Exception:
-                pass
-        # Sin Redis: aceptar todo (peor caso: algún duplicado)
+                pass  # Redis falló → fallback a memoria
+
+        # Fallback in-memory (instancia única: Railway, Render, etc.)
+        if msg_id in self._processed_ids:
+            return True
+        self._processed_ids.add(msg_id)
+        # Evitar leak: si crece demasiado, descartar la mitad más antigua
+        if len(self._processed_ids) > 2000:
+            self._processed_ids = set(list(self._processed_ids)[1000:])
         return False
 
     async def list_all(self) -> list[tuple[str, dict]]:

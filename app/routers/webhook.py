@@ -240,6 +240,48 @@ async def receive_message(request: Request):
                         _intencion = "pedido_cancelado"
                         await deps["session"].clear_pending(phone)
 
+                        # Si además mencionó un producto nuevo → buscarlo ahora mismo
+                        # (ej: "mejor ibu" cancela Bayaspirina y busca ibuprofeno)
+                        nueva_entidad = intent_result.get("entidad_producto")
+                        nueva_intencion = intent_result.get("intencion", "desconocido")
+                        if nueva_entidad and nueva_intencion in INTENCIONES_CON_SKU:
+                            _tsku = _time.perf_counter()
+                            resultados_nuevos = deps["sku"].buscar(nueva_entidad)
+                            _steps["sku_ms"] = int((_time.perf_counter() - _tsku) * 1000)
+                            if resultados_nuevos:
+                                _tc2 = _time.perf_counter()
+                                ir2 = await deps["intent"].procesar(
+                                    mensaje=texto,
+                                    history=session.get("history", []),
+                                    resultados_sku=resultados_nuevos,
+                                )
+                                _steps["claude2_ms"] = int((_time.perf_counter() - _tc2) * 1000)
+                                _intencion = ir2.get("intencion", nueva_intencion)
+                                respuesta = ir2.get("respuesta", respuesta)
+                                cantidad = max(1, int(ir2.get("cantidad") or 1))
+                                sku_index = ir2.get("sku_seleccionado_index")
+                                producto_elegido = None
+                                if sku_index is not None:
+                                    try:
+                                        idx = int(sku_index) - 1
+                                        if 0 <= idx < len(resultados_nuevos):
+                                            producto_elegido = resultados_nuevos[idx]
+                                    except (ValueError, TypeError):
+                                        pass
+                                if not producto_elegido:
+                                    producto_elegido = (
+                                        next((r for r in resultados_nuevos if r["estado"] == "disponible"), None)
+                                        or resultados_nuevos[0]
+                                    )
+                                await deps["session"].set_pending(
+                                    phone=phone,
+                                    sku_id=producto_elegido["sku_id"],
+                                    sku_nombre=producto_elegido["nombre"],
+                                    precio=producto_elegido["precio"],
+                                    cantidad=cantidad,
+                                    opciones=resultados_nuevos,
+                                )
+
                     _ts = _time.perf_counter()
                     await deps["wa"].send_text(phone, respuesta)
                     _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)

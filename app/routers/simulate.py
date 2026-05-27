@@ -188,6 +188,47 @@ async def simulate(req: SimulateRequest):
             elif confirmacion is False:
                 await session_svc.clear_pending(req.phone)
 
+                # Si además mencionó un producto nuevo → buscarlo ahora mismo
+                nueva_entidad = intent_result.get("entidad_producto")
+                nueva_intencion = intent_result.get("intencion", "desconocido")
+                if nueva_entidad and nueva_intencion in INTENCIONES_CON_SKU and sku_svc:
+                    _tsku = _time.perf_counter()
+                    resultados_nuevos = sku_svc.buscar(nueva_entidad)
+                    _steps["sku_ms"] = int((_time.perf_counter() - _tsku) * 1000)
+                    if resultados_nuevos:
+                        productos_encontrados = resultados_nuevos
+                        _tc2 = _time.perf_counter()
+                        ir2 = await intent_svc.procesar(
+                            mensaje=texto,
+                            history=session.get("history", []),
+                            resultados_sku=resultados_nuevos,
+                        )
+                        _steps["claude2_ms"] = int((_time.perf_counter() - _tc2) * 1000)
+                        respuesta = ir2.get("respuesta", respuesta)
+                        cantidad = max(1, int(ir2.get("cantidad") or 1))
+                        sku_index = ir2.get("sku_seleccionado_index")
+                        producto_elegido = None
+                        if sku_index is not None:
+                            try:
+                                idx = int(sku_index) - 1
+                                if 0 <= idx < len(resultados_nuevos):
+                                    producto_elegido = resultados_nuevos[idx]
+                            except (ValueError, TypeError):
+                                pass
+                        if not producto_elegido:
+                            producto_elegido = (
+                                next((r for r in resultados_nuevos if r["estado"] == "disponible"), None)
+                                or resultados_nuevos[0]
+                            )
+                        await session_svc.set_pending(
+                            phone=req.phone,
+                            sku_id=producto_elegido["sku_id"],
+                            sku_nombre=producto_elegido["nombre"],
+                            precio=producto_elegido["precio"],
+                            cantidad=cantidad,
+                            opciones=resultados_nuevos,
+                        )
+
             await session_svc.add_message(req.phone, "user", texto)
             await session_svc.add_message(req.phone, "assistant", respuesta)
             session = await session_svc.get(req.phone)
@@ -197,7 +238,7 @@ async def simulate(req: SimulateRequest):
                 respuesta=respuesta,
                 intencion=_intent_out,
                 entidad_producto=intent_result.get("entidad_producto"),
-                productos_encontrados=[],
+                productos_encontrados=productos_encontrados,
                 estado_sesion=session.get("estado", "idle"),
                 link_pago=link_pago, mp_error=mp_error, mp_token_ok=mp_token_ok,
             )
