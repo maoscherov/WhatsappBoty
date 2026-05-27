@@ -5,6 +5,8 @@ POST /simulate  →  procesa un mensaje y devuelve la respuesta del bot.
 
 import logging
 import re
+import time as _time
+from datetime import datetime, timezone as _tz
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel
 
@@ -16,6 +18,7 @@ from app.services.session_service import get_session_service
 from app.services.intent_service import get_intent_service
 from app.services.payment_service import get_payment_service
 from app.services.image_service import get_image_service
+from app.services.perf_service import get_perf_service
 
 router = APIRouter()
 
@@ -71,6 +74,7 @@ async def simulate(req: SimulateRequest):
     session_svc = get_session_service(settings.redis_url)
     intent_svc = get_intent_service(settings.anthropic_api_key)
     payment_svc = get_payment_service(settings.mp_access_token, settings.mp_notification_url, settings.mp_sandbox)
+    perf_svc = get_perf_service(settings.redis_url)
 
     session = await session_svc.get(req.phone)
     texto = req.message.strip()
@@ -78,6 +82,24 @@ async def simulate(req: SimulateRequest):
     link_pago = None
     mp_error = None
     mp_token_ok = not settings.mp_access_token.startswith("placeholder")
+
+    _t0 = _time.perf_counter()
+    _steps: dict = {}
+    _intencion = "desconocido"
+
+    # ── Helper de performance ─────────────────────────────────────────────────
+    async def _record(intent: str):
+        total = int((_time.perf_counter() - _t0) * 1000)
+        step_str = " | ".join(f"{k}={v}ms" for k, v in _steps.items()) if _steps else "—"
+        logger.info(f"⏱ SIM …{req.phone[-4:]} intent={intent} total={total}ms | {step_str}")
+        await perf_svc.record({
+            "ts": datetime.now(_tz.utc).isoformat(),
+            "phone_suffix": req.phone[-4:],
+            "tipo": "simulate",
+            "intencion": intent,
+            "total_ms": total,
+            "steps": dict(_steps),
+        })
 
     # ── Confirmación de pedido pendiente ─────────────────────────────────────
     if session.get("estado") == "esperando_confirmacion" and session.get("pending_sku_id"):
@@ -107,6 +129,7 @@ async def simulate(req: SimulateRequest):
                 await session_svc.clear_pending(req.phone)
             await session_svc.add_message(req.phone, "user", texto)
             await session_svc.add_message(req.phone, "assistant", respuesta)
+            await _record("pedido_confirmado")
             return SimulateResponse(
                 respuesta=respuesta, intencion="pedido",
                 entidad_producto=session.get("pending_sku_nombre"),
@@ -119,6 +142,7 @@ async def simulate(req: SimulateRequest):
             respuesta = "Dale, sin problema. ¿En qué más te puedo ayudar?"
             await session_svc.add_message(req.phone, "user", texto)
             await session_svc.add_message(req.phone, "assistant", respuesta)
+            await _record("pedido_cancelado")
             return SimulateResponse(
                 respuesta=respuesta, intencion="social",
                 entidad_producto=None, productos_encontrados=[],
@@ -127,10 +151,13 @@ async def simulate(req: SimulateRequest):
 
         else:
             # Ni SI ni NO claro → consultar a Claude con contexto del pedido pendiente
+            _tc = _time.perf_counter()
             intent_result = await intent_svc.procesar(
                 mensaje=texto,
                 history=session.get("history", []),
             )
+            _steps["claude1_ms"] = int((_time.perf_counter() - _tc) * 1000)
+
             confirmacion = intent_result.get("confirmacion")
             respuesta = intent_result.get("respuesta", "")
 
@@ -164,9 +191,11 @@ async def simulate(req: SimulateRequest):
             await session_svc.add_message(req.phone, "user", texto)
             await session_svc.add_message(req.phone, "assistant", respuesta)
             session = await session_svc.get(req.phone)
+            _intent_out = intent_result.get("intencion", "confirmacion_ambigua")
+            await _record(_intent_out)
             return SimulateResponse(
                 respuesta=respuesta,
-                intencion=intent_result.get("intencion", "desconocido"),
+                intencion=_intent_out,
                 entidad_producto=intent_result.get("entidad_producto"),
                 productos_encontrados=[],
                 estado_sesion=session.get("estado", "idle"),
@@ -174,10 +203,13 @@ async def simulate(req: SimulateRequest):
             )
 
     # ── Flujo normal ─────────────────────────────────────────────────────────
+    _tc = _time.perf_counter()
     intent_result = await intent_svc.procesar(
         mensaje=texto,
         history=session.get("history", []),
     )
+    _steps["claude1_ms"] = int((_time.perf_counter() - _tc) * 1000)
+
     intencion = intent_result.get("intencion", "desconocido")
     entidad = intent_result.get("entidad_producto")
     respuesta = intent_result.get("respuesta", "")
@@ -189,6 +221,7 @@ async def simulate(req: SimulateRequest):
         )
         await session_svc.add_message(req.phone, "user", texto)
         await session_svc.add_message(req.phone, "assistant", respuesta)
+        await _record(intencion)
         return SimulateResponse(
             respuesta=respuesta, intencion=intencion,
             entidad_producto=entidad, productos_encontrados=[],
@@ -199,27 +232,29 @@ async def simulate(req: SimulateRequest):
 
     if intencion in INTENCIONES_CON_SKU and entidad and sku_svc and not ya_tiene_pending:
         # Solo buscar productos si NO hay una confirmación pendiente.
-        # Si hay pending, el usuario está refinando la selección (ej: "el de x20"),
-        # Claude lo maneja con el historial sin pisar el producto guardado.
+        _tsku = _time.perf_counter()
         productos_encontrados = sku_svc.buscar(entidad)
+        _steps["sku_ms"] = int((_time.perf_counter() - _tsku) * 1000)
+
+        _tc2 = _time.perf_counter()
         intent_result = await intent_svc.procesar(
             mensaje=texto,
             history=session.get("history", []),
             resultados_sku=productos_encontrados,
         )
+        _steps["claude2_ms"] = int((_time.perf_counter() - _tc2) * 1000)
+
         intencion = intent_result.get("intencion", "desconocido")
         entidad = intent_result.get("entidad_producto")
         cantidad = max(1, int(intent_result.get("cantidad") or 1))
         respuesta = intent_result.get("respuesta", "")
 
         if productos_encontrados:
-            # Usar sku_seleccionado_index si Claude identificó cuál eligió el usuario
-            # (1-based: "1"=primera opción, "2"=segunda, etc.)
             sku_index = intent_result.get("sku_seleccionado_index")
             producto_elegido = None
             if sku_index is not None:
                 try:
-                    idx = int(sku_index) - 1  # convertir 1-based → 0-based
+                    idx = int(sku_index) - 1  # 1-based → 0-based
                     if 0 <= idx < len(productos_encontrados):
                         producto_elegido = productos_encontrados[idx]
                 except (ValueError, TypeError):
@@ -239,23 +274,23 @@ async def simulate(req: SimulateRequest):
             )
     elif ya_tiene_pending:
         # Hay pending activo: el usuario puede refinar la selección o la cantidad.
-        # Pasamos las opciones guardadas para que Claude identifique cuál eligió.
         pending_opciones = session.get("pending_opciones", [])
+        _tc2 = _time.perf_counter()
         intent_result = await intent_svc.procesar(
             mensaje=texto,
             history=session.get("history", []),
             resultados_sku=pending_opciones if pending_opciones else None,
             label_sku="OPCIONES MOSTRADAS",
         )
+        _steps["claude2_ms"] = int((_time.perf_counter() - _tc2) * 1000)
+
         cantidad_nueva = intent_result.get("cantidad")
         sku_index = intent_result.get("sku_seleccionado_index")
         respuesta = intent_result.get("respuesta", "")
 
-        # Si Claude identificó un producto específico de las opciones, actualizar pending
-        # sku_seleccionado_index es 1-based (1=primera opción mostrada)
         if sku_index is not None and pending_opciones:
             try:
-                idx = int(sku_index) - 1  # convertir 1-based → 0-based
+                idx = int(sku_index) - 1  # 1-based → 0-based
                 if 0 <= idx < len(pending_opciones):
                     elegido = pending_opciones[idx]
                     nueva_cantidad = max(1, int(cantidad_nueva or session.get("pending_cantidad", 1)))
@@ -281,6 +316,7 @@ async def simulate(req: SimulateRequest):
     await session_svc.add_message(req.phone, "user", texto)
     await session_svc.add_message(req.phone, "assistant", respuesta)
     session = await session_svc.get(req.phone)
+    await _record(intencion)
 
     return SimulateResponse(
         respuesta=respuesta,

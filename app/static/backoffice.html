@@ -166,6 +166,60 @@ td .product-price { color: var(--accent); font-size: 12px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 #last-updated { font-size: 12px; color: var(--text-muted); margin-bottom: 14px; }
+
+/* ── Perf section ── */
+#perf-section { margin-top: 36px; }
+#perf-section h2 {
+  font-size: 15px; font-weight: 600; margin-bottom: 14px; color: var(--text-muted);
+}
+#perf-section h3 {
+  font-size: 13px; font-weight: 600; color: var(--text-muted);
+  margin: 20px 0 10px; text-transform: uppercase; letter-spacing: .06em;
+}
+.perf-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 12px; margin-bottom: 20px;
+}
+.perf-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; padding: 14px 16px; text-align: center;
+}
+.perf-card .p-label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px; }
+.perf-card .p-value { font-size: 24px; font-weight: 700; }
+.perf-card .p-unit  { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.ms-fast   { color: var(--accent); }
+.ms-ok     { color: #60a5fa; }
+.ms-warn   { color: var(--warn); }
+.ms-slow   { color: var(--danger); }
+
+.step-bars { display: flex; flex-direction: column; gap: 8px; margin-bottom: 20px; }
+.step-bar-row { display: flex; align-items: center; gap: 10px; font-size: 12px; }
+.step-bar-label { min-width: 120px; color: var(--text-muted); }
+.step-bar-track { flex: 1; background: var(--border); border-radius: 4px; height: 12px; overflow: hidden; }
+.step-bar-fill  { height: 100%; border-radius: 4px; transition: width .4s; }
+.step-bar-val   { min-width: 60px; text-align: right; color: var(--text); }
+
+.perf-log-table { font-size: 12px; }
+.perf-log-table thead th { font-size: 10px; }
+.perf-log-table td { padding: 8px 12px; font-size: 12px; }
+.ts-cell { color: var(--text-muted); font-family: monospace; }
+.slow-row td { background: rgba(239,68,68,.08); }
+
+.tag {
+  display: inline-block; padding: 2px 8px; border-radius: 6px;
+  font-size: 10px; font-weight: 600; background: #1e293b; color: var(--text-muted);
+}
+.tag.audio { background: #1a1060; color: #a78bfa; }
+.tag.image { background: #0f2d1a; color: var(--accent); }
+.tag.simulate { background: #12182b; color: #60a5fa; }
+
+#btn-clear-perf {
+  background: transparent; border: 1px solid var(--border);
+  color: var(--text-muted); border-radius: 6px; padding: 5px 12px;
+  cursor: pointer; font-size: 12px; margin-left: 12px;
+}
+#btn-clear-perf:hover { border-color: var(--danger); color: var(--danger); }
 </style>
 </head>
 <body>
@@ -242,6 +296,55 @@ td .product-price { color: var(--accent); font-size: 12px; }
     </div>
   </div>
 
+  <!-- ── Performance ─────────────────────────────────────────────────────── -->
+  <div id="perf-section">
+    <h2>
+      ⏱ Performance
+      <button id="btn-clear-perf" title="Borrar historial de tiempos">🗑 Limpiar</button>
+    </h2>
+
+    <!-- Percentile cards -->
+    <div class="perf-cards" id="perf-cards">
+      <div class="perf-card"><div class="p-label">p50</div><div class="p-value ms-ok" id="p-p50">—</div><div class="p-unit">ms</div></div>
+      <div class="perf-card"><div class="p-label">p75</div><div class="p-value ms-ok" id="p-p75">—</div><div class="p-unit">ms</div></div>
+      <div class="perf-card"><div class="p-label">p95</div><div class="p-value ms-warn" id="p-p95">—</div><div class="p-unit">ms</div></div>
+      <div class="perf-card"><div class="p-label">p99</div><div class="p-value ms-slow" id="p-p99">—</div><div class="p-unit">ms</div></div>
+      <div class="perf-card"><div class="p-label">Promedio</div><div class="p-value ms-ok" id="p-avg">—</div><div class="p-unit">ms</div></div>
+      <div class="perf-card"><div class="p-label">Mín / Máx</div><div class="p-value" id="p-minmax" style="font-size:14px;color:var(--text-muted)">—</div><div class="p-unit">ms</div></div>
+      <div class="perf-card"><div class="p-label">Lentos &gt;4s</div><div class="p-value ms-slow" id="p-lentos">—</div><div class="p-unit" id="p-lentos-pct"></div></div>
+      <div class="perf-card"><div class="p-label">Registros</div><div class="p-value" style="color:var(--text-muted)" id="p-total">—</div><div class="p-unit">últimos</div></div>
+    </div>
+
+    <!-- Step breakdown bars -->
+    <h3>Desglose por paso (promedio)</h3>
+    <div class="step-bars" id="step-bars">
+      <div class="empty" style="padding:12px">Sin datos aún</div>
+    </div>
+
+    <!-- Recent log table -->
+    <h3>Últimas 30 respuestas</h3>
+    <div class="table-wrap">
+      <table class="perf-log-table">
+        <thead>
+          <tr>
+            <th>Hora</th>
+            <th>Tel.</th>
+            <th>Tipo</th>
+            <th>Intención</th>
+            <th>Total</th>
+            <th>Claude 1</th>
+            <th>SKU</th>
+            <th>Claude 2</th>
+            <th>Envío</th>
+          </tr>
+        </thead>
+        <tbody id="perf-body">
+          <tr><td colspan="9" class="empty"><span class="spinner"></span> Cargando...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
 </div>
 
 <script>
@@ -262,7 +365,11 @@ function apiUrl(path) {
 async function loadHealth() {
   try {
     const r = await fetch(apiUrl('/bo/health'));
-    if (!r.ok) return;
+    if (!r.ok) {
+      // Marcar todo en rojo si el servidor no responde bien
+      ['dot-redis','dot-claude','dot-mp','dot-wa','dot-sku'].forEach(id => setDot(id, false));
+      return;
+    }
     const d = await r.json();
     setDot('dot-redis',  d.redis);
     setDot('dot-claude', d.anthropic_key_ok);
@@ -270,7 +377,9 @@ async function loadHealth() {
     setDot('dot-wa',     d.whatsapp_ok);
     setDot('dot-sku',    d.sku_total > 0);
     document.getElementById('lbl-sku').textContent = `Catálogo (${d.sku_total.toLocaleString('es-AR')} SKUs)`;
-  } catch(_) {}
+  } catch(_) {
+    ['dot-redis','dot-claude','dot-mp','dot-wa','dot-sku'].forEach(id => setDot(id, false));
+  }
 }
 
 function setDot(id, ok) {
@@ -402,10 +511,136 @@ function esc(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+// ── Performance ──────────────────────────────────────────────────────────────
+
+const STEP_LABELS = {
+  claude1_ms:        'Claude 1 (intent)',
+  sku_ms:            'SKU search',
+  claude2_ms:        'Claude 2 (respuesta)',
+  send_ms:           'Envío + delay',
+  transcripcion_ms:  'Transcripción audio',
+  vision_ms:         'Visión imagen',
+};
+
+// Max reference for bar width (4000ms = 100%)
+const BAR_MAX = 4000;
+
+function msColor(ms) {
+  if (ms < 800)  return 'ms-fast';
+  if (ms < 2000) return 'ms-ok';
+  if (ms < 3500) return 'ms-warn';
+  return 'ms-slow';
+}
+
+function barColor(key, ms) {
+  if (key.startsWith('claude')) return ms < 1500 ? '#3b82f6' : '#f59e0b';
+  if (key === 'send_ms')         return ms < 2000 ? '#25d366' : '#f59e0b';
+  if (key === 'sku_ms')          return '#8b5cf6';
+  return '#64748b';
+}
+
+async function loadPerf() {
+  try {
+    // Armar URL correctamente para no pisar ?key= cuando ya hay ?n=
+    const base = apiUrl('/bo/perf');
+    const sep = base.includes('?') ? '&' : '?';
+    const r = await fetch(base + sep + 'n=100');
+    if (!r.ok) return;
+    const d = await r.json();
+
+    if (!d.agregados) {
+      document.getElementById('perf-body').innerHTML =
+        '<tr><td colspan="9" class="empty">Sin datos de performance aún — enviá algunos mensajes</td></tr>';
+      return;
+    }
+
+    const a = d.agregados;
+
+    // Cards
+    document.getElementById('p-p50').textContent   = a.p50_ms.toLocaleString();
+    document.getElementById('p-p75').textContent   = a.p75_ms.toLocaleString();
+    document.getElementById('p-p95').textContent   = a.p95_ms.toLocaleString();
+    document.getElementById('p-p99').textContent   = a.p99_ms.toLocaleString();
+    document.getElementById('p-avg').textContent   = a.avg_ms.toLocaleString();
+    document.getElementById('p-minmax').textContent = `${a.min_ms.toLocaleString()} / ${a.max_ms.toLocaleString()}`;
+    document.getElementById('p-lentos').textContent = a.lentos_gt4s;
+    document.getElementById('p-lentos-pct').textContent = `${a.pct_lentos}% del total`;
+    document.getElementById('p-total').textContent = d.total_registros;
+
+    // Color p50 card dynamically
+    document.getElementById('p-p50').className = 'p-value ' + msColor(a.p50_ms);
+    document.getElementById('p-avg').className = 'p-value ' + msColor(a.avg_ms);
+
+    // Step bars
+    const barsEl = document.getElementById('step-bars');
+    const stepAvgs = a.step_avgs || {};
+    if (!Object.keys(stepAvgs).length) {
+      barsEl.innerHTML = '<div class="empty" style="padding:12px">Sin datos de pasos aún</div>';
+    } else {
+      barsEl.innerHTML = Object.entries(stepAvgs).map(([k, ms]) => {
+        const pct = Math.min(ms / BAR_MAX * 100, 100).toFixed(1);
+        const color = barColor(k, ms);
+        const label = STEP_LABELS[k] || k;
+        const count = a.step_counts?.[k] ? ` (${a.step_counts[k]} muestras)` : '';
+        return `
+          <div class="step-bar-row">
+            <div class="step-bar-label">${label}</div>
+            <div class="step-bar-track">
+              <div class="step-bar-fill" style="width:${pct}%;background:${color}"></div>
+            </div>
+            <div class="step-bar-val ${msColor(ms)}">${ms.toLocaleString()}ms${count}</div>
+          </div>`;
+      }).join('');
+    }
+
+    // Log table
+    const perfBody = document.getElementById('perf-body');
+    if (!d.entries.length) {
+      perfBody.innerHTML = '<tr><td colspan="9" class="empty">Sin registros</td></tr>';
+      return;
+    }
+
+    perfBody.innerHTML = d.entries.map(e => {
+      const t = new Date(e.ts);
+      const hora = t.toLocaleTimeString('es-AR', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+      const isSlow = e.total_ms > 4000;
+      const s = e.steps || {};
+      const tipo = e.tipo || 'text';
+
+      return `<tr class="${isSlow ? 'slow-row' : ''}">
+        <td class="ts-cell">${hora}</td>
+        <td>…${esc(e.phone_suffix || '??')}</td>
+        <td><span class="tag ${tipo}">${tipo}</span></td>
+        <td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(e.intencion || '—')}</td>
+        <td class="${msColor(e.total_ms)}" style="font-weight:600">${e.total_ms.toLocaleString()}ms</td>
+        <td class="${msColor(s.claude1_ms||0)}">${s.claude1_ms != null ? s.claude1_ms+'ms' : '—'}</td>
+        <td style="color:var(--text-muted)">${s.sku_ms != null ? s.sku_ms+'ms' : '—'}</td>
+        <td class="${msColor(s.claude2_ms||0)}">${s.claude2_ms != null ? s.claude2_ms+'ms' : '—'}</td>
+        <td class="${msColor(s.send_ms||0)}">${s.send_ms != null ? s.send_ms+'ms' : '—'}</td>
+      </tr>`;
+    }).join('');
+
+  } catch(e) {
+    console.error('perf load error', e);
+  }
+}
+
+// Null-safe: evita crash si el HTML viejo (sin btn-clear-perf) está cacheado
+const _btnClearPerf = document.getElementById('btn-clear-perf');
+if (_btnClearPerf) {
+  _btnClearPerf.addEventListener('click', async () => {
+    if (!confirm('¿Borrar todo el historial de performance?')) return;
+    try {
+      await fetch(apiUrl('/bo/perf'), { method: 'DELETE' });
+      await loadPerf();
+    } catch(_) {}
+  });
+}
+
 // ── Reload all ───────────────────────────────────────────────────────────────
 
 async function reload() {
-  await Promise.all([loadHealth(), loadStats(), loadSessions()]);
+  await Promise.all([loadHealth(), loadStats(), loadSessions(), loadPerf()]);
 }
 
 document.getElementById('btn-refresh').addEventListener('click', reload);

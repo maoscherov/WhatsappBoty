@@ -16,6 +16,8 @@ Flujo por mensaje:
 """
 
 import logging
+import time as _time
+from datetime import datetime, timezone as _tz
 from fastapi import APIRouter, Request, Query, HTTPException
 
 from app.config import get_settings
@@ -27,6 +29,7 @@ from app.services.payment_service import get_payment_service
 from app.services.whatsapp_service import get_whatsapp_service
 from app.services.audio_service import get_audio_service
 from app.services.image_service import get_image_service
+from app.services.perf_service import get_perf_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -56,13 +59,14 @@ def _deps(settings=None):
     s = settings or get_settings()
     audio_key = s.groq_api_key if s.audio_provider == "groq" else s.openai_api_key
     return {
-        "wa": get_whatsapp_service(s.whatsapp_token, s.whatsapp_phone_number_id),
-        "sku": get_sku_service(s.sku_csv_path),
+        "wa":      get_whatsapp_service(s.whatsapp_token, s.whatsapp_phone_number_id),
+        "sku":     get_sku_service(s.sku_csv_path),
         "session": get_session_service(s.redis_url),
-        "intent": get_intent_service(s.anthropic_api_key),
+        "intent":  get_intent_service(s.anthropic_api_key),
         "payment": get_payment_service(s.mp_access_token, s.mp_notification_url, s.mp_sandbox),
-        "audio": get_audio_service(audio_key, s.audio_provider),
-        "image": get_image_service(s.anthropic_api_key),
+        "audio":   get_audio_service(audio_key, s.audio_provider),
+        "image":   get_image_service(s.anthropic_api_key),
+        "perf":    get_perf_service(s.redis_url),
     }
 
 
@@ -94,97 +98,68 @@ async def receive_message(request: Request):
     deps = _deps()
 
     for msg in messages:
-        phone = msg["from"]
-        msg_id = msg["id"]
+        phone   = msg["from"]
+        msg_id  = msg["id"]
         msg_type = msg["type"]
 
-        # Deduplicación: ignorar si ya procesamos este mensaje
-        if await deps["session"].is_processed(msg_id):
-            logger.info(f"Mensaje duplicado ignorado: {msg_id}")
-            continue
+        # ── Timing init ──────────────────────────────────────────────────────
+        _t0 = _time.perf_counter()
+        _steps: dict = {}
+        _tipo = msg_type
+        _intencion = "desconocido"
+        _skip_record = False  # True para mensajes descartados antes de procesar
 
-        await deps["wa"].mark_read(msg_id)
-
-        texto = msg["text"]
-
-        # Audio → transcripción
-        if msg_type == "audio" and msg["audio_id"]:
-            audio_bytes = await deps["wa"].download_audio(msg["audio_id"])
-            if audio_bytes:
-                texto = await deps["audio"].transcribir(audio_bytes) or ""
-                if not texto:
-                    await deps["wa"].send_text(phone, "No pude escuchar bien el audio. ¿Me lo mandás por texto?")
-                    continue
-            else:
-                await deps["wa"].send_text(phone, "No pude procesar el audio. ¿Me lo mandás por texto?")
+        try:
+            # Deduplicación: ignorar si ya procesamos este mensaje
+            if await deps["session"].is_processed(msg_id):
+                logger.info(f"Mensaje duplicado ignorado: {msg_id}")
+                _skip_record = True
                 continue
 
-        # Imagen → extracción de medicamentos
-        if msg_type == "image" and msg.get("image_id"):
-            image_bytes = await deps["wa"].download_image(msg["image_id"])
-            if image_bytes:
-                mime = msg.get("image_mime_type", "image/jpeg")
-                texto = await deps["image"].extraer_medicamentos(image_bytes, mime) or ""
-                if not texto:
-                    await deps["wa"].send_text(phone, "No pude identificar medicamentos en la imagen. ¿Me lo escribís?")
-                    continue
-            else:
-                await deps["wa"].send_text(phone, "No pude procesar la imagen. ¿Me lo escribís?")
-                continue
+            await deps["wa"].mark_read(msg_id)
 
-        if not texto.strip():
-            continue
+            texto = msg["text"]
 
-        session = await deps["session"].get(phone)
-
-        # ── Caso especial: hay producto pendiente de confirmar ───────────────
-        if session.get("estado") == "esperando_confirmacion" and session.get("pending_sku_id"):
-            texto_lower = texto.lower().strip()
-            if _match_si(texto_lower):
-                cantidad = session.get("pending_cantidad", 1)
-                precio_unitario = session["pending_precio"]
-                total = precio_unitario * cantidad
-                link, _ = await deps["payment"].crear_link(
-                    sku_id=session["pending_sku_id"],
-                    nombre=session["pending_sku_nombre"],
-                    precio=precio_unitario,
-                    phone=phone,
-                    cantidad=cantidad,
-                )
-                if link:
-                    nombre_con_cant = session["pending_sku_nombre"] + (f" x{cantidad}" if cantidad > 1 else "")
-                    respuesta = (
-                        f"Perfecto! Acá te mando el link de pago para "
-                        f"{nombre_con_cant} (${total:,.2f}):\n\n{link}\n\n"
-                        "Tiene vigencia de 24hs. ¡Cualquier cosa me avisás!"
-                    )
-                    await deps["session"].set_estado(phone, "esperando_pago")
+            # Audio → transcripción
+            if msg_type == "audio" and msg["audio_id"]:
+                _ta = _time.perf_counter()
+                audio_bytes = await deps["wa"].download_audio(msg["audio_id"])
+                if audio_bytes:
+                    texto = await deps["audio"].transcribir(audio_bytes) or ""
+                    _steps["transcripcion_ms"] = int((_time.perf_counter() - _ta) * 1000)
+                    if not texto:
+                        await deps["wa"].send_text(phone, "No pude escuchar bien el audio. ¿Me lo mandás por texto?")
+                        continue
                 else:
-                    respuesta = "Tuve un problema generando el link de pago. Te paso con alguien del equipo."
-                    await deps["session"].clear_pending(phone)
-                await deps["wa"].send_text(phone, respuesta)
-                await deps["session"].add_message(phone, "user", texto)
-                await deps["session"].add_message(phone, "assistant", respuesta)
+                    await deps["wa"].send_text(phone, "No pude procesar el audio. ¿Me lo mandás por texto?")
+                    continue
+
+            # Imagen → extracción de medicamentos
+            if msg_type == "image" and msg.get("image_id"):
+                _ti = _time.perf_counter()
+                image_bytes = await deps["wa"].download_image(msg["image_id"])
+                if image_bytes:
+                    mime = msg.get("image_mime_type", "image/jpeg")
+                    texto = await deps["image"].extraer_medicamentos(image_bytes, mime) or ""
+                    _steps["vision_ms"] = int((_time.perf_counter() - _ti) * 1000)
+                    if not texto:
+                        await deps["wa"].send_text(phone, "No pude identificar medicamentos en la imagen. ¿Me lo escribís?")
+                        continue
+                else:
+                    await deps["wa"].send_text(phone, "No pude procesar la imagen. ¿Me lo escribís?")
+                    continue
+
+            if not texto.strip():
+                _skip_record = True
                 continue
 
-            elif _match_no(texto_lower):
-                await deps["session"].clear_pending(phone)
-                respuesta = "Dale, sin problema. ¿En qué más te puedo ayudar?"
-                await deps["wa"].send_text(phone, respuesta)
-                await deps["session"].add_message(phone, "user", texto)
-                await deps["session"].add_message(phone, "assistant", respuesta)
-                continue
+            session = await deps["session"].get(phone)
 
-            else:
-                # Ni SI ni NO claro → Claude decide (maneja typos, autocorrect, etc.)
-                intent_result = await deps["intent"].procesar(
-                    mensaje=texto,
-                    history=session.get("history", []),
-                )
-                confirmacion = intent_result.get("confirmacion")
-                respuesta = intent_result.get("respuesta", "")
-
-                if confirmacion is True:
+            # ── Caso especial: hay producto pendiente de confirmar ───────────
+            if session.get("estado") == "esperando_confirmacion" and session.get("pending_sku_id"):
+                texto_lower = texto.lower().strip()
+                if _match_si(texto_lower):
+                    _intencion = "pedido_confirmado"
                     cantidad = session.get("pending_cantidad", 1)
                     precio_unitario = session["pending_precio"]
                     total = precio_unitario * cantidad
@@ -206,117 +181,207 @@ async def receive_message(request: Request):
                     else:
                         respuesta = "Tuve un problema generando el link de pago. Te paso con alguien del equipo."
                         await deps["session"].clear_pending(phone)
-                elif confirmacion is False:
-                    await deps["session"].clear_pending(phone)
 
+                    _ts = _time.perf_counter()
+                    await deps["wa"].send_text(phone, respuesta)
+                    _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
+                    await deps["session"].add_message(phone, "user", texto)
+                    await deps["session"].add_message(phone, "assistant", respuesta)
+                    continue
+
+                elif _match_no(texto_lower):
+                    _intencion = "pedido_cancelado"
+                    await deps["session"].clear_pending(phone)
+                    respuesta = "Dale, sin problema. ¿En qué más te puedo ayudar?"
+                    _ts = _time.perf_counter()
+                    await deps["wa"].send_text(phone, respuesta)
+                    _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
+                    await deps["session"].add_message(phone, "user", texto)
+                    await deps["session"].add_message(phone, "assistant", respuesta)
+                    continue
+
+                else:
+                    # Ni SI ni NO claro → Claude decide (maneja typos, autocorrect, etc.)
+                    _tc = _time.perf_counter()
+                    intent_result = await deps["intent"].procesar(
+                        mensaje=texto,
+                        history=session.get("history", []),
+                    )
+                    _steps["claude1_ms"] = int((_time.perf_counter() - _tc) * 1000)
+
+                    confirmacion = intent_result.get("confirmacion")
+                    _intencion = intent_result.get("intencion", "desconocido")
+                    respuesta = intent_result.get("respuesta", "")
+
+                    if confirmacion is True:
+                        _intencion = "pedido_confirmado"
+                        cantidad = session.get("pending_cantidad", 1)
+                        precio_unitario = session["pending_precio"]
+                        total = precio_unitario * cantidad
+                        link, _ = await deps["payment"].crear_link(
+                            sku_id=session["pending_sku_id"],
+                            nombre=session["pending_sku_nombre"],
+                            precio=precio_unitario,
+                            phone=phone,
+                            cantidad=cantidad,
+                        )
+                        if link:
+                            nombre_con_cant = session["pending_sku_nombre"] + (f" x{cantidad}" if cantidad > 1 else "")
+                            respuesta = (
+                                f"Perfecto! Acá te mando el link de pago para "
+                                f"{nombre_con_cant} (${total:,.2f}):\n\n{link}\n\n"
+                                "Tiene vigencia de 24hs. ¡Cualquier cosa me avisás!"
+                            )
+                            await deps["session"].set_estado(phone, "esperando_pago")
+                        else:
+                            respuesta = "Tuve un problema generando el link de pago. Te paso con alguien del equipo."
+                            await deps["session"].clear_pending(phone)
+                    elif confirmacion is False:
+                        _intencion = "pedido_cancelado"
+                        await deps["session"].clear_pending(phone)
+
+                    _ts = _time.perf_counter()
+                    await deps["wa"].send_text(phone, respuesta)
+                    _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
+                    await deps["session"].add_message(phone, "user", texto)
+                    await deps["session"].add_message(phone, "assistant", respuesta)
+                    continue
+
+            # ── Flujo normal ─────────────────────────────────────────────────
+            resultados_sku = None
+
+            _tc = _time.perf_counter()
+            intent_result = await deps["intent"].procesar(
+                mensaje=texto,
+                history=session.get("history", []),
+            )
+            _steps["claude1_ms"] = int((_time.perf_counter() - _tc) * 1000)
+
+            intencion = intent_result.get("intencion", "desconocido")
+            _intencion = intencion
+            entidad = intent_result.get("entidad_producto")
+            respuesta = intent_result.get("respuesta", "")
+
+            # Derivar postventa a humano
+            if intencion == "cambio_postventa":
+                respuesta = (
+                    "Para cambios y devoluciones te paso con alguien del equipo. "
+                    "En un momento te contactamos. Gracias por tu paciencia!"
+                )
+                _ts = _time.perf_counter()
                 await deps["wa"].send_text(phone, respuesta)
+                _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
                 await deps["session"].add_message(phone, "user", texto)
                 await deps["session"].add_message(phone, "assistant", respuesta)
                 continue
 
-        # ── Flujo normal ─────────────────────────────────────────────────────
-        resultados_sku = None
+            ya_tiene_pending = session.get("estado") == "esperando_confirmacion"
 
-        # Pre-búsqueda rápida para intenciones con producto
-        # (Claude recibe los resultados como contexto)
-        intent_result = await deps["intent"].procesar(
-            mensaje=texto,
-            history=session.get("history", []),
-        )
+            if intencion in INTENCIONES_CON_SKU and entidad and not ya_tiene_pending:
+                _tsku = _time.perf_counter()
+                resultados_sku = deps["sku"].buscar(entidad)
+                _steps["sku_ms"] = int((_time.perf_counter() - _tsku) * 1000)
 
-        intencion = intent_result.get("intencion", "desconocido")
-        entidad = intent_result.get("entidad_producto")
-        respuesta = intent_result.get("respuesta", "")
+                _tc2 = _time.perf_counter()
+                intent_result = await deps["intent"].procesar(
+                    mensaje=texto,
+                    history=session.get("history", []),
+                    resultados_sku=resultados_sku,
+                )
+                _steps["claude2_ms"] = int((_time.perf_counter() - _tc2) * 1000)
 
-        # Derivar postventa a humano
-        if intencion == "cambio_postventa":
-            respuesta = (
-                "Para cambios y devoluciones te paso con alguien del equipo. "
-                "En un momento te contactamos. Gracias por tu paciencia!"
-            )
-            await deps["wa"].send_text(phone, respuesta)
-            await deps["session"].add_message(phone, "user", texto)
-            await deps["session"].add_message(phone, "assistant", respuesta)
-            continue
+                intencion = intent_result.get("intencion", "desconocido")
+                _intencion = intencion
+                entidad = intent_result.get("entidad_producto")
+                cantidad = max(1, int(intent_result.get("cantidad") or 1))
+                respuesta = intent_result.get("respuesta", "")
 
-        ya_tiene_pending = session.get("estado") == "esperando_confirmacion"
+                if resultados_sku:
+                    sku_index = intent_result.get("sku_seleccionado_index")
+                    producto_elegido = None
+                    if sku_index is not None:
+                        try:
+                            idx = int(sku_index) - 1  # 1-based → 0-based
+                            if 0 <= idx < len(resultados_sku):
+                                producto_elegido = resultados_sku[idx]
+                        except (ValueError, TypeError):
+                            pass
+                    if not producto_elegido:
+                        producto_elegido = (
+                            next((r for r in resultados_sku if r["estado"] == "disponible"), None)
+                            or resultados_sku[0]
+                        )
+                    await deps["session"].set_pending(
+                        phone=phone,
+                        sku_id=producto_elegido["sku_id"],
+                        sku_nombre=producto_elegido["nombre"],
+                        precio=producto_elegido["precio"],
+                        cantidad=cantidad,
+                        opciones=resultados_sku,
+                    )
 
-        # Si menciona un producto y NO hay confirmación pendiente → buscar y guardar
-        if intencion in INTENCIONES_CON_SKU and entidad and not ya_tiene_pending:
-            resultados_sku = deps["sku"].buscar(entidad)
-            intent_result = await deps["intent"].procesar(
-                mensaje=texto,
-                history=session.get("history", []),
-                resultados_sku=resultados_sku,
-            )
-            intencion = intent_result.get("intencion", "desconocido")
-            entidad = intent_result.get("entidad_producto")
-            cantidad = max(1, int(intent_result.get("cantidad") or 1))
-            respuesta = intent_result.get("respuesta", "")
+            elif ya_tiene_pending:
+                pending_opciones = session.get("pending_opciones", [])
+                _tc2 = _time.perf_counter()
+                intent_result = await deps["intent"].procesar(
+                    mensaje=texto,
+                    history=session.get("history", []),
+                    resultados_sku=pending_opciones if pending_opciones else None,
+                    label_sku="OPCIONES MOSTRADAS",
+                )
+                _steps["claude2_ms"] = int((_time.perf_counter() - _tc2) * 1000)
 
-            if resultados_sku:
                 sku_index = intent_result.get("sku_seleccionado_index")
-                producto_elegido = None
-                if sku_index is not None:
+                cantidad_nueva = intent_result.get("cantidad")
+                respuesta = intent_result.get("respuesta", "")
+
+                if sku_index is not None and pending_opciones:
                     try:
                         idx = int(sku_index) - 1  # 1-based → 0-based
-                        if 0 <= idx < len(resultados_sku):
-                            producto_elegido = resultados_sku[idx]
+                        if 0 <= idx < len(pending_opciones):
+                            elegido = pending_opciones[idx]
+                            nueva_cantidad = max(1, int(cantidad_nueva or session.get("pending_cantidad", 1)))
+                            await deps["session"].set_pending(
+                                phone=phone,
+                                sku_id=elegido["sku_id"],
+                                sku_nombre=elegido["nombre"],
+                                precio=elegido["precio"],
+                                cantidad=nueva_cantidad,
+                                opciones=pending_opciones,
+                            )
                     except (ValueError, TypeError):
                         pass
-                if not producto_elegido:
-                    producto_elegido = (
-                        next((r for r in resultados_sku if r["estado"] == "disponible"), None)
-                        or resultados_sku[0]
+                elif cantidad_nueva and int(cantidad_nueva) > 0 and int(cantidad_nueva) != session.get("pending_cantidad", 1):
+                    await deps["session"].set_pending(
+                        phone=phone,
+                        sku_id=session["pending_sku_id"],
+                        sku_nombre=session["pending_sku_nombre"],
+                        precio=session["pending_precio"],
+                        cantidad=int(cantidad_nueva),
                     )
-                await deps["session"].set_pending(
-                    phone=phone,
-                    sku_id=producto_elegido["sku_id"],
-                    sku_nombre=producto_elegido["nombre"],
-                    precio=producto_elegido["precio"],
-                    cantidad=cantidad,
-                    opciones=resultados_sku,
+
+            _ts = _time.perf_counter()
+            await deps["wa"].send_text(phone, respuesta)
+            _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
+
+            await deps["session"].add_message(phone, "user", texto)
+            await deps["session"].add_message(phone, "assistant", respuesta)
+
+        finally:
+            if not _skip_record:
+                _total = int((_time.perf_counter() - _t0) * 1000)
+                step_str = " | ".join(f"{k}={v}ms" for k, v in _steps.items()) if _steps else "—"
+                logger.info(
+                    f"⏱ PERF …{phone[-4:]} tipo={_tipo} intent={_intencion} "
+                    f"total={_total}ms | {step_str}"
                 )
-
-        elif ya_tiene_pending:
-            pending_opciones = session.get("pending_opciones", [])
-            intent_result = await deps["intent"].procesar(
-                mensaje=texto,
-                history=session.get("history", []),
-                resultados_sku=pending_opciones if pending_opciones else None,
-                label_sku="OPCIONES MOSTRADAS",
-            )
-            sku_index = intent_result.get("sku_seleccionado_index")
-            cantidad_nueva = intent_result.get("cantidad")
-            respuesta = intent_result.get("respuesta", "")
-
-            if sku_index is not None and pending_opciones:
-                try:
-                    idx = int(sku_index) - 1  # 1-based → 0-based
-                    if 0 <= idx < len(pending_opciones):
-                        elegido = pending_opciones[idx]
-                        nueva_cantidad = max(1, int(cantidad_nueva or session.get("pending_cantidad", 1)))
-                        await deps["session"].set_pending(
-                            phone=phone,
-                            sku_id=elegido["sku_id"],
-                            sku_nombre=elegido["nombre"],
-                            precio=elegido["precio"],
-                            cantidad=nueva_cantidad,
-                            opciones=pending_opciones,
-                        )
-                except (ValueError, TypeError):
-                    pass
-            elif cantidad_nueva and int(cantidad_nueva) > 0 and int(cantidad_nueva) != session.get("pending_cantidad", 1):
-                await deps["session"].set_pending(
-                    phone=phone,
-                    sku_id=session["pending_sku_id"],
-                    sku_nombre=session["pending_sku_nombre"],
-                    precio=session["pending_precio"],
-                    cantidad=int(cantidad_nueva),
-                )
-
-        await deps["wa"].send_text(phone, respuesta)
-        await deps["session"].add_message(phone, "user", texto)
-        await deps["session"].add_message(phone, "assistant", respuesta)
+                await deps["perf"].record({
+                    "ts": datetime.now(_tz.utc).isoformat(),
+                    "phone_suffix": phone[-4:],
+                    "tipo": _tipo,
+                    "intencion": _intencion,
+                    "total_ms": _total,
+                    "steps": dict(_steps),
+                })
 
     return {"status": "ok"}

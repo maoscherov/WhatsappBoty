@@ -7,11 +7,13 @@ GET /bo/session/{phone} → detalle completo de una sesión
 """
 
 import logging
+import statistics
 from fastapi import APIRouter, HTTPException, Query, Depends
 
 from app.config import get_settings
 from app.services.session_service import get_session_service
 from app.services.sku_service import get_sku_service
+from app.services.perf_service import get_perf_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/bo")
@@ -103,3 +105,79 @@ async def bo_session_detail(phone: str, _=Depends(_auth)):
     session_svc = get_session_service(settings.redis_url)
     session = await session_svc.get(phone)
     return {"phone": phone, **session}
+
+
+@router.get("/perf")
+async def bo_perf(_=Depends(_auth), n: int = Query(100, le=300)):
+    """
+    Últimos N registros de performance con percentiles y promedios por paso.
+    """
+    settings = get_settings()
+    perf_svc = get_perf_service(settings.redis_url)
+    entries = await perf_svc.get_recent(n)
+
+    if not entries:
+        return {"entries": [], "agregados": None, "total_registros": 0}
+
+    totals = [e["total_ms"] for e in entries if "total_ms" in e]
+
+    def pct(data: list, p: int) -> int:
+        if not data:
+            return 0
+        s = sorted(data)
+        idx = max(0, min(int(len(s) * p / 100), len(s) - 1))
+        return s[idx]
+
+    # Promedio por paso (sólo entradas que tengan ese step)
+    step_keys = ["claude1_ms", "sku_ms", "claude2_ms", "send_ms",
+                 "transcripcion_ms", "vision_ms"]
+    step_avgs = {}
+    step_counts = {}
+    for k in step_keys:
+        vals = [e["steps"][k] for e in entries
+                if "steps" in e and k in e["steps"] and e["steps"][k] > 0]
+        if vals:
+            step_avgs[k] = round(statistics.mean(vals))
+            step_counts[k] = len(vals)
+
+    # Distribución de intenciones
+    intenciones: dict[str, int] = {}
+    tipos: dict[str, int] = {}
+    for e in entries:
+        i = e.get("intencion", "desconocido")
+        intenciones[i] = intenciones.get(i, 0) + 1
+        t = e.get("tipo", "text")
+        tipos[t] = tipos.get(t, 0) + 1
+
+    # Lentos = más de 4s total
+    lentos = [e for e in entries if e.get("total_ms", 0) > 4000]
+
+    return {
+        "total_registros": len(entries),
+        "agregados": {
+            "p50_ms":  pct(totals, 50),
+            "p75_ms":  pct(totals, 75),
+            "p95_ms":  pct(totals, 95),
+            "p99_ms":  pct(totals, 99),
+            "avg_ms":  round(statistics.mean(totals)) if totals else 0,
+            "min_ms":  min(totals) if totals else 0,
+            "max_ms":  max(totals) if totals else 0,
+            "lentos_gt4s": len(lentos),
+            "pct_lentos": round(len(lentos) / len(totals) * 100, 1) if totals else 0,
+            "step_avgs":   step_avgs,
+            "step_counts": step_counts,
+            "intenciones": dict(sorted(intenciones.items(), key=lambda x: -x[1])),
+            "tipos":       tipos,
+        },
+        "entries": entries[:30],  # últimas 30 para la tabla
+        "lentos":  lentos[:10],   # top 10 más lentos para debug
+    }
+
+
+@router.delete("/perf")
+async def bo_perf_clear(_=Depends(_auth)):
+    """Borra el historial de performance (útil para empezar medición limpia)."""
+    settings = get_settings()
+    perf_svc = get_perf_service(settings.redis_url)
+    await perf_svc.clear()
+    return {"status": "ok", "message": "Historial de performance borrado"}
