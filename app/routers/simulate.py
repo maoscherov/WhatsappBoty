@@ -160,6 +160,17 @@ async def simulate(req: SimulateRequest):
 
             confirmacion = intent_result.get("confirmacion")
             respuesta = intent_result.get("respuesta", "")
+            _entidad_nueva = intent_result.get("entidad_producto")
+            _intencion_nueva = intent_result.get("intencion", "desconocido")
+
+            # Tratar como cancelación también cuando confirmacion=None pero
+            # el usuario mencionó un producto DIFERENTE con intent de SKU
+            _es_cambio = (
+                confirmacion is False or
+                (confirmacion is None
+                 and _entidad_nueva
+                 and _intencion_nueva in INTENCIONES_CON_SKU)
+            )
 
             if confirmacion is True:
                 # Claude interpretó que el usuario confirma (ej: typos, autocorrect)
@@ -185,12 +196,12 @@ async def simulate(req: SimulateRequest):
                 else:
                     respuesta = "Tuve un problema generando el link de pago. Te paso con alguien del equipo."
                     await session_svc.clear_pending(req.phone)
-            elif confirmacion is False:
+            elif _es_cambio:
                 await session_svc.clear_pending(req.phone)
 
-                # Si además mencionó un producto nuevo → buscarlo ahora mismo
-                nueva_entidad = intent_result.get("entidad_producto")
-                nueva_intencion = intent_result.get("intencion", "desconocido")
+                # Si mencionó un producto nuevo → buscarlo ahora mismo
+                nueva_entidad = _entidad_nueva
+                nueva_intencion = _intencion_nueva
                 if nueva_entidad and nueva_intencion in INTENCIONES_CON_SKU and sku_svc:
                     _tsku = _time.perf_counter()
                     resultados_nuevos = sku_svc.buscar(nueva_entidad)

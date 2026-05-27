@@ -212,6 +212,17 @@ async def receive_message(request: Request):
                     confirmacion = intent_result.get("confirmacion")
                     _intencion = intent_result.get("intencion", "desconocido")
                     respuesta = intent_result.get("respuesta", "")
+                    _entidad_nueva = intent_result.get("entidad_producto")
+
+                    # Tratar como cancelación también cuando confirmacion=None pero
+                    # el usuario mencionó un producto DIFERENTE con intent de SKU
+                    # (ej: "mejor bayer" → Claude a veces no pone confirmacion=false)
+                    _es_cambio = (
+                        confirmacion is False or
+                        (confirmacion is None
+                         and _entidad_nueva
+                         and _intencion in INTENCIONES_CON_SKU)
+                    )
 
                     if confirmacion is True:
                         _intencion = "pedido_confirmado"
@@ -236,13 +247,13 @@ async def receive_message(request: Request):
                         else:
                             respuesta = "Tuve un problema generando el link de pago. Te paso con alguien del equipo."
                             await deps["session"].clear_pending(phone)
-                    elif confirmacion is False:
+                    elif _es_cambio:
                         _intencion = "pedido_cancelado"
                         await deps["session"].clear_pending(phone)
 
-                        # Si además mencionó un producto nuevo → buscarlo ahora mismo
-                        # (ej: "mejor ibu" cancela Bayaspirina y busca ibuprofeno)
-                        nueva_entidad = intent_result.get("entidad_producto")
+                        # Si mencionó un producto nuevo → buscarlo ahora mismo
+                        # (ej: "mejor bayer" / "mejor ibu" mientras hay otro producto pendiente)
+                        nueva_entidad = _entidad_nueva
                         nueva_intencion = intent_result.get("intencion", "desconocido")
                         if nueva_entidad and nueva_intencion in INTENCIONES_CON_SKU:
                             _tsku = _time.perf_counter()
