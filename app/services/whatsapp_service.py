@@ -9,7 +9,7 @@ from typing import Optional
 # Velocidad de escritura simulada: ~60 palabras/min ≈ 5 chars/seg
 # Mínimo 1.2s, máximo 4s para no hacer esperar demasiado
 def _typing_delay(texto: str) -> float:
-    return min(max(len(texto) / 25, 1.2), 4.0)
+    return min(max(len(texto) / 40, 0.8), 2.5)
 
 WA_BASE = "https://graph.facebook.com/v19.0"
 
