@@ -19,6 +19,7 @@ from app.config import get_settings
 from app.services.payment_service import get_payment_service
 from app.services.whatsapp_service import get_whatsapp_service
 from app.services.session_service import get_session_service
+from app.services.order_service import get_order_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -100,18 +101,38 @@ async def mp_notification(request: Request):
 
     # external_reference = "{phone}_{sku_id}"
     phone = external_ref.split("_")[0] if "_" in external_ref else external_ref
+    sku_id = external_ref.split("_", 1)[1] if "_" in external_ref else ""
     if not phone:
         logger.warning(f"No se pudo extraer phone de external_reference={external_ref}")
         return {"status": "error", "detail": "sin phone"}
 
-    # Obtener nombre del producto del pago
+    # Obtener nombre del producto y cantidad del pago
     items = payment.get("additional_info", {}).get("items") or []
-    nombre_producto = items[0].get("title") if items else ""
+    nombre_producto = items[0].get("title", "") if items else ""
+    cantidad = int(items[0].get("quantity", 1)) if items else 1
+    total = float(payment.get("transaction_amount", 0))
+
     if not nombre_producto:
         # Fallback: leer de la sesión
         session_svc = get_session_service(settings.redis_url)
         session = await session_svc.get(phone)
         nombre_producto = session.get("pending_sku_nombre") or "tu pedido"
+        if not total:
+            precio = session.get("pending_precio") or 0
+            cantidad = session.get("pending_cantidad") or 1
+            total = precio * cantidad
+
+    # ── Crear pedido en la consola de operaciones ────────────────────────────
+    order_svc = get_order_service(settings.redis_url)
+    order = await order_svc.create(
+        phone=phone,
+        sku_id=sku_id,
+        sku_nombre=nombre_producto,
+        cantidad=cantidad,
+        total=total,
+        mp_payment_id=payment_id,
+    )
+    logger.info(f"Pedido registrado: {order['order_id']}")
 
     # Enviar confirmación por WhatsApp
     wa_svc = get_whatsapp_service(settings.whatsapp_token, settings.whatsapp_phone_number_id)
@@ -119,8 +140,8 @@ async def mp_notification(request: Request):
     mensaje = (
         f"✅ *¡Pago confirmado!*\n\n"
         f"Recibimos tu pago de *{nombre_producto}*. "
-        f"Tu pedido está siendo preparado y va a estar listo para retirar "
-        f"en aproximadamente *{mins} minutos*. 🙌\n\n"
+        f"Tu pedido está siendo preparado y te vamos a avisar cuando esté "
+        f"listo para retirar (aprox. *{mins} minutos*). 🙌\n\n"
         f"📍 Farmacia Mutual Independencia\n"
         f"¡Muchas gracias! 💊"
     )
@@ -133,4 +154,4 @@ async def mp_notification(request: Request):
     await session_svc.set_estado(phone, "pedido_confirmado")
     await session_svc.add_message(phone, "assistant", mensaje)
 
-    return {"status": "ok", "phone": phone, "product": nombre_producto}
+    return {"status": "ok", "phone": phone, "product": nombre_producto, "order_id": order["order_id"]}

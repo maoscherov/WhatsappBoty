@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Farma — Consola de Pedidos</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg:       #0f1117;
+  --surface:  #1a1d27;
+  --surface2: #12151f;
+  --border:   #2a2d3e;
+  --text:     #e2e8f0;
+  --muted:    #64748b;
+  --green:    #25d366;
+  --green2:   #128c7e;
+  --blue:     #3b82f6;
+  --yellow:   #f59e0b;
+  --red:      #ef4444;
+  --purple:   #8b5cf6;
+}
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+       background: var(--bg); color: var(--text); min-height: 100vh; }
+
+/* ── Header ── */
+#header {
+  background: var(--surface); border-bottom: 1px solid var(--border);
+  padding: 14px 28px; display: flex; align-items: center; gap: 16px;
+}
+.logo { font-size: 20px; font-weight: 700; color: var(--green); }
+.sub  { font-size: 13px; color: var(--muted); }
+.spacer { flex: 1; }
+#key-wrap { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+#key-input {
+  background: var(--surface2); border: 1px solid var(--border);
+  color: var(--text); border-radius: 5px; padding: 4px 10px;
+  font-size: 12px; width: 180px; outline: none;
+}
+#btn-refresh {
+  background: var(--green2); color: #fff;
+  border: none; border-radius: 6px; padding: 7px 14px;
+  cursor: pointer; font-size: 13px; font-weight: 500;
+}
+#btn-refresh:hover { background: var(--green); }
+#refresh-info { font-size: 12px; color: var(--muted); }
+
+/* ── Content ── */
+#content { padding: 24px 28px; max-width: 1400px; }
+
+/* ── Summary pills ── */
+#summary { display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap; }
+.summary-pill {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 10px; padding: 14px 20px; display: flex; flex-direction: column;
+  gap: 4px; min-width: 140px;
+}
+.summary-pill .sp-label { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.summary-pill .sp-val   { font-size: 28px; font-weight: 700; }
+.sp-pendiente  { color: var(--yellow); }
+.sp-preparado  { color: var(--blue); }
+.sp-retirado   { color: var(--green); }
+.sp-total      { color: var(--muted); }
+
+/* ── Tabs ── */
+#tabs { display: flex; gap: 4px; margin-bottom: 18px; }
+.tab {
+  padding: 8px 18px; border-radius: 8px; font-size: 13px; font-weight: 500;
+  cursor: pointer; border: 1px solid var(--border); background: var(--surface2);
+  color: var(--muted); transition: all .15s; display: flex; align-items: center; gap: 6px;
+}
+.tab:hover { background: var(--surface); color: var(--text); }
+.tab.active { background: var(--surface); color: var(--text); border-color: var(--blue); }
+.tab .badge {
+  background: var(--border); color: var(--muted);
+  font-size: 10px; padding: 2px 6px; border-radius: 8px; font-weight: 700;
+}
+.tab.active .badge { background: var(--blue); color: #fff; }
+
+/* ── Table ── */
+.table-wrap {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 10px; overflow: hidden;
+}
+table { width: 100%; border-collapse: collapse; }
+thead th {
+  text-align: left; font-size: 11px; text-transform: uppercase;
+  letter-spacing: .07em; color: var(--muted);
+  padding: 12px 16px; border-bottom: 1px solid var(--border);
+  background: var(--surface2);
+}
+tbody tr { border-bottom: 1px solid var(--border); transition: background .1s; }
+tbody tr:last-child { border-bottom: none; }
+tbody tr:hover { background: #1f2235; }
+td { padding: 12px 16px; font-size: 13px; vertical-align: middle; }
+
+.order-id { font-family: monospace; font-size: 11px; color: var(--muted); }
+.phone-cell { font-family: monospace; font-weight: 600; }
+.product-cell .pname { font-weight: 500; }
+.product-cell .pqty  { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.total-cell { font-weight: 600; color: var(--green); }
+.time-cell  { font-size: 12px; color: var(--muted); }
+
+/* Estado badges */
+.badge-estado {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 4px 10px; border-radius: 10px; font-size: 11px; font-weight: 600;
+}
+.badge-pendiente { background: rgba(245,158,11,.15); color: var(--yellow); }
+.badge-preparado { background: rgba(59,130,246,.15);  color: var(--blue); }
+.badge-retirado  { background: rgba(37,211,102,.1);   color: var(--green); }
+
+/* Pickup code */
+.pickup-code {
+  font-family: monospace; font-size: 20px; font-weight: 900;
+  letter-spacing: 4px; color: var(--blue); background: rgba(59,130,246,.1);
+  padding: 4px 12px; border-radius: 6px; border: 1px solid rgba(59,130,246,.3);
+}
+
+/* Buttons */
+.btn {
+  padding: 6px 14px; border-radius: 6px; font-size: 12px; font-weight: 600;
+  cursor: pointer; border: none; transition: all .15s; white-space: nowrap;
+}
+.btn-preparar  { background: var(--blue);  color: #fff; }
+.btn-preparar:hover  { background: #2563eb; }
+.btn-retirar   { background: var(--green2); color: #fff; }
+.btn-retirar:hover   { background: var(--green); }
+.btn-disabled  { background: var(--border); color: var(--muted); cursor: default; }
+.btn:disabled  { opacity: .5; cursor: not-allowed; }
+
+/* Loading / empty */
+.empty { color: var(--muted); font-size: 14px; text-align: center; padding: 48px; }
+.spinner {
+  display: inline-block; width: 16px; height: 16px;
+  border: 2px solid var(--border); border-top-color: var(--green);
+  border-radius: 50%; animation: spin .7s linear infinite;
+  vertical-align: middle; margin-right: 6px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Modal ── */
+#modal-overlay {
+  display: none; position: fixed; inset: 0; background: rgba(0,0,0,.6);
+  z-index: 100; align-items: center; justify-content: center;
+}
+#modal-overlay.visible { display: flex; }
+#modal {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 12px; padding: 28px 32px; max-width: 400px; width: 90%;
+  box-shadow: 0 20px 60px rgba(0,0,0,.5);
+}
+#modal h3 { font-size: 16px; margin-bottom: 12px; }
+#modal p  { font-size: 14px; color: var(--muted); line-height: 1.5; margin-bottom: 20px; }
+#modal .product-info { background: var(--surface2); border-radius: 8px; padding: 12px 16px;
+                        margin-bottom: 20px; font-size: 13px; }
+#modal .product-info strong { color: var(--text); }
+#modal .product-info span { color: var(--muted); }
+.modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
+.btn-cancel { background: var(--border); color: var(--muted); padding: 8px 18px;
+               border-radius: 6px; cursor: pointer; border: none; font-size: 13px; }
+.btn-confirm { background: var(--blue); color: #fff; padding: 8px 18px;
+                border-radius: 6px; cursor: pointer; border: none; font-size: 13px; font-weight: 600; }
+
+#last-updated { font-size: 12px; color: var(--muted); margin-bottom: 12px; }
+</style>
+</head>
+<body>
+
+<div id="header">
+  <div class="logo">💊 Farma</div>
+  <div class="sub">Consola de Pedidos — Farmacia Mutual Independencia</div>
+  <div class="spacer"></div>
+  <div id="key-wrap">
+    🔑 <input id="key-input" type="password" placeholder="BO_KEY (si está configurada)" />
+  </div>
+  <span id="refresh-info">Auto-refresh 30s</span>
+  <button id="btn-refresh">↺ Actualizar</button>
+</div>
+
+<div id="content">
+
+  <div id="summary">
+    <div class="summary-pill">
+      <div class="sp-label">Pendientes</div>
+      <div class="sp-val sp-pendiente" id="cnt-pendiente">—</div>
+    </div>
+    <div class="summary-pill">
+      <div class="sp-label">Preparados</div>
+      <div class="sp-val sp-preparado" id="cnt-preparado">—</div>
+    </div>
+    <div class="summary-pill">
+      <div class="sp-label">Retirados hoy</div>
+      <div class="sp-val sp-retirado" id="cnt-retirado">—</div>
+    </div>
+    <div class="summary-pill">
+      <div class="sp-label">Total pedidos</div>
+      <div class="sp-val sp-total" id="cnt-total">—</div>
+    </div>
+  </div>
+
+  <div id="tabs">
+    <div class="tab active" data-status="">
+      Todos <span class="badge" id="badge-all">0</span>
+    </div>
+    <div class="tab" data-status="pendiente">
+      🟡 Pendiente <span class="badge" id="badge-pendiente">0</span>
+    </div>
+    <div class="tab" data-status="preparado">
+      🔵 Preparado <span class="badge" id="badge-preparado">0</span>
+    </div>
+    <div class="tab" data-status="retirado">
+      ✅ Retirado <span class="badge" id="badge-retirado">0</span>
+    </div>
+  </div>
+
+  <p id="last-updated"></p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Hora</th>
+          <th>ID Pedido</th>
+          <th>Teléfono</th>
+          <th>Producto</th>
+          <th>Total</th>
+          <th>Estado</th>
+          <th>Código retiro</th>
+          <th>Acción</th>
+        </tr>
+      </thead>
+      <tbody id="orders-body">
+        <tr><td colspan="8" class="empty"><span class="spinner"></span> Cargando pedidos...</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+</div>
+
+<!-- Modal de confirmación -->
+<div id="modal-overlay">
+  <div id="modal">
+    <h3 id="modal-title">Marcar como Preparado</h3>
+    <p id="modal-desc">Se va a enviar el código de retiro al cliente por WhatsApp.</p>
+    <div class="product-info" id="modal-product"></div>
+    <div class="modal-actions">
+      <button class="btn-cancel" id="modal-cancel">Cancelar</button>
+      <button class="btn-confirm" id="modal-confirm">Confirmar y enviar</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = '';
+let activeStatus = '';
+let allOrders = [];
+let pendingAction = null;  // { order_id, action }
+
+function key() { return document.getElementById('key-input').value.trim(); }
+
+function apiUrl(path) {
+  const k = key();
+  const sep = path.includes('?') ? '&' : '?';
+  return `${API}${path}${k ? sep + 'key=' + encodeURIComponent(k) : ''}`;
+}
+
+// ── Fetch orders ──────────────────────────────────────────────────────────────
+
+async function loadOrders() {
+  try {
+    const r = await fetch(apiUrl('/orders/api/list'));
+    if (r.status === 403) {
+      document.getElementById('orders-body').innerHTML =
+        '<tr><td colspan="8" class="empty">🔒 Clave incorrecta</td></tr>';
+      return;
+    }
+    if (!r.ok) {
+      document.getElementById('orders-body').innerHTML =
+        '<tr><td colspan="8" class="empty">Error conectando al servidor</td></tr>';
+      return;
+    }
+    allOrders = await r.json();
+    updateCounts();
+    renderOrders();
+    document.getElementById('last-updated').textContent =
+      'Actualizado: ' + new Date().toLocaleTimeString('es-AR');
+  } catch(e) {
+    document.getElementById('orders-body').innerHTML =
+      '<tr><td colspan="8" class="empty">Error: ' + esc(e.message) + '</td></tr>';
+  }
+}
+
+function updateCounts() {
+  const cnt = { pendiente: 0, preparado: 0, retirado: 0 };
+  for (const o of allOrders) cnt[o.estado] = (cnt[o.estado] || 0) + 1;
+
+  // Summary pills
+  document.getElementById('cnt-pendiente').textContent = cnt.pendiente;
+  document.getElementById('cnt-preparado').textContent = cnt.preparado;
+  document.getElementById('cnt-retirado').textContent  = cnt.retirado;
+  document.getElementById('cnt-total').textContent     = allOrders.length;
+
+  // Tab badges
+  document.getElementById('badge-all').textContent       = allOrders.length;
+  document.getElementById('badge-pendiente').textContent = cnt.pendiente;
+  document.getElementById('badge-preparado').textContent = cnt.preparado;
+  document.getElementById('badge-retirado').textContent  = cnt.retirado;
+}
+
+function renderOrders() {
+  const filtered = activeStatus
+    ? allOrders.filter(o => o.estado === activeStatus)
+    : allOrders;
+
+  const body = document.getElementById('orders-body');
+
+  if (!filtered.length) {
+    const msg = activeStatus
+      ? `Sin pedidos en estado <strong>${activeStatus}</strong>`
+      : 'Sin pedidos registrados';
+    body.innerHTML = `<tr><td colspan="8" class="empty">${msg}</td></tr>`;
+    return;
+  }
+
+  body.innerHTML = filtered.map(o => {
+    const hora = new Date(o.created_at).toLocaleTimeString('es-AR', {
+      hour: '2-digit', minute: '2-digit'
+    });
+    const fechaHora = new Date(o.created_at).toLocaleDateString('es-AR', {
+      day: '2-digit', month: '2-digit'
+    }) + ' ' + hora;
+
+    const estadoBadge = {
+      pendiente: `<span class="badge-estado badge-pendiente">🟡 Pendiente</span>`,
+      preparado: `<span class="badge-estado badge-preparado">🔵 Preparado</span>`,
+      retirado:  `<span class="badge-estado badge-retirado">✅ Retirado</span>`,
+    }[o.estado] || o.estado;
+
+    const codeCell = o.pickup_code
+      ? `<span class="pickup-code">${o.pickup_code}</span>`
+      : `<span style="color:var(--muted);font-size:12px">—</span>`;
+
+    let accion = '';
+    if (o.estado === 'pendiente') {
+      accion = `<button class="btn btn-preparar" onclick="confirmPreparado('${esc(o.order_id)}')">
+                  📦 Marcar preparado
+                </button>`;
+    } else if (o.estado === 'preparado') {
+      accion = `<button class="btn btn-retirar" onclick="confirmRetirado('${esc(o.order_id)}')">
+                  ✅ Confirmar retiro
+                </button>`;
+    } else {
+      accion = `<span style="color:var(--muted);font-size:12px">—</span>`;
+    }
+
+    const nombre = esc(o.sku_nombre || '—');
+    const qtyTxt = o.cantidad > 1 ? `x${o.cantidad}` : '';
+
+    return `<tr>
+      <td class="time-cell">${fechaHora}</td>
+      <td><div class="order-id">${esc(o.order_id)}</div></td>
+      <td class="phone-cell">${esc(o.phone)}</td>
+      <td class="product-cell">
+        <div class="pname">${nombre}</div>
+        ${qtyTxt ? `<div class="pqty">${qtyTxt}</div>` : ''}
+      </td>
+      <td class="total-cell">$${Number(o.total).toLocaleString('es-AR', {minimumFractionDigits: 2})}</td>
+      <td>${estadoBadge}</td>
+      <td>${codeCell}</td>
+      <td>${accion}</td>
+    </tr>`;
+  }).join('');
+}
+
+// ── Tab switching ─────────────────────────────────────────────────────────────
+
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    activeStatus = tab.dataset.status;
+    renderOrders();
+  });
+});
+
+// ── Modal helpers ─────────────────────────────────────────────────────────────
+
+function showModal(title, desc, productHtml, onConfirm) {
+  document.getElementById('modal-title').textContent = title;
+  document.getElementById('modal-desc').textContent  = desc;
+  document.getElementById('modal-product').innerHTML = productHtml;
+  document.getElementById('modal-confirm').onclick   = onConfirm;
+  document.getElementById('modal-overlay').classList.add('visible');
+}
+
+function hideModal() {
+  document.getElementById('modal-overlay').classList.remove('visible');
+}
+
+document.getElementById('modal-cancel').addEventListener('click', hideModal);
+document.getElementById('modal-overlay').addEventListener('click', e => {
+  if (e.target === document.getElementById('modal-overlay')) hideModal();
+});
+
+// ── Actions ───────────────────────────────────────────────────────────────────
+
+function confirmPreparado(orderId) {
+  const o = allOrders.find(x => x.order_id === orderId);
+  if (!o) return;
+  const qtyTxt = o.cantidad > 1 ? ` x${o.cantidad}` : '';
+  const productHtml = `
+    <strong>${esc(o.sku_nombre)}${esc(qtyTxt)}</strong><br>
+    <span>Total: $${Number(o.total).toLocaleString('es-AR', {minimumFractionDigits:2})}</span><br>
+    <span>Cliente: ${esc(o.phone)}</span>`;
+
+  showModal(
+    '📦 Marcar como Preparado',
+    'Se enviará el código de retiro al cliente por WhatsApp automáticamente.',
+    productHtml,
+    async () => {
+      hideModal();
+      await doAction(orderId, 'preparado');
+    }
+  );
+}
+
+function confirmRetirado(orderId) {
+  const o = allOrders.find(x => x.order_id === orderId);
+  if (!o) return;
+  const productHtml = `
+    <strong>${esc(o.sku_nombre)}</strong><br>
+    <span>Código: <strong style="color:var(--blue);letter-spacing:2px">${o.pickup_code}</strong></span>`;
+
+  showModal(
+    '✅ Confirmar Retiro',
+    'Verificaste el código y el cliente está retirando el pedido.',
+    productHtml,
+    async () => {
+      hideModal();
+      await doAction(orderId, 'retirado');
+    }
+  );
+}
+
+async function doAction(orderId, action) {
+  try {
+    const r = await fetch(apiUrl(`/orders/api/${encodeURIComponent(orderId)}/${action}`), {
+      method: 'PATCH',
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      alert(`Error: ${err.detail || r.status}`);
+      return;
+    }
+    // Actualizar en memoria y re-renderizar sin full reload
+    const updated = await r.json();
+    const idx = allOrders.findIndex(o => o.order_id === orderId);
+    if (idx >= 0) allOrders[idx] = updated;
+    updateCounts();
+    renderOrders();
+  } catch(e) {
+    alert('Error de red: ' + e.message);
+  }
+}
+
+// ── Reload ────────────────────────────────────────────────────────────────────
+
+document.getElementById('btn-refresh').addEventListener('click', loadOrders);
+document.getElementById('key-input').addEventListener('change', loadOrders);
+
+setInterval(loadOrders, 30_000);
+loadOrders();
+
+function esc(s) {
+  return String(s)
+    .replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;');
+}
+</script>
+</body>
+</html>
