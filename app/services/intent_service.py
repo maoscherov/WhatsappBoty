@@ -67,10 +67,12 @@ Respondé SIEMPRE con un JSON con este esquema (sin texto extra):
   "cantidad": 1,
   "sku_seleccionado_index": null,
   "confirmacion": null,
+  "solicita_imagen": false,
   "respuesta": "texto que se envía al cliente por WhatsApp"
 }
 
 El campo "cantidad" es la cantidad de unidades que el cliente quiere comprar (número entero, mínimo 1).
+El campo "solicita_imagen": true si el usuario pide ver la foto/imagen del producto ("¿tenés foto?", "¿cómo es?", "¿me mandás una imagen?"). false en todos los demás casos.
 El campo "sku_seleccionado_index" es el número de opción elegida por el usuario (1=primera opción, 2=segunda, 3=tercera), tanto cuando el mensaje tiene [OPCIONES MOSTRADAS] como cuando tiene [RESULTADOS DEL CATÁLOGO]. Si el usuario dice "1", "el primero", "el de arriba" → 1. Si dice "2" o "el segundo" → 2. Null si no eligió una opción específica.
 El campo "confirmacion": cuando el sistema está esperando confirmación de un pedido pendiente:
 - true  → el usuario confirma el pedido (aunque use palabras raras, errores de tipeo o autocorrect).

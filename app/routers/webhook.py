@@ -30,6 +30,7 @@ from app.services.whatsapp_service import get_whatsapp_service
 from app.services.audio_service import get_audio_service
 from app.services.image_service import get_image_service
 from app.services.perf_service import get_perf_service
+from app.services.config_service import get_config_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -67,7 +68,30 @@ def _deps(settings=None):
         "audio":   get_audio_service(audio_key, s.audio_provider),
         "image":   get_image_service(s.anthropic_api_key),
         "perf":    get_perf_service(s.redis_url),
+        "config":  get_config_service(s.redis_url),
     }
+
+
+async def _maybe_send_image(
+    wa,
+    phone: str,
+    resultados: list[dict],
+    producto_elegido: dict,
+    solicita_imagen: bool,
+    send_images_cfg: str,
+):
+    """Envía la imagen del producto si corresponde según configuración."""
+    imagen_url = producto_elegido.get("imagen_url") or (
+        next((r["imagen_url"] for r in resultados if r.get("imagen_url")), None)
+    )
+    if not imagen_url:
+        return
+    debe_enviar = (
+        send_images_cfg == "always" or
+        (send_images_cfg == "on_request" and solicita_imagen)
+    )
+    if debe_enviar:
+        await wa.send_image(phone, imagen_url)
 
 
 @router.get("/webhook")
@@ -251,8 +275,9 @@ async def receive_message(request: Request):
                         _intencion = "pedido_cancelado"
                         await deps["session"].clear_pending(phone)
 
-                        # Si mencionó un producto nuevo → buscarlo ahora mismo
-                        # (ej: "mejor bayer" / "mejor ibu" mientras hay otro producto pendiente)
+                        # Ignorar siempre la respuesta de Claude 1 en este branch:
+                        # Claude 1 no tiene los resultados SKU y genera textos como
+                        # "Buscame un segundito..." que no corresponden al bot.
                         nueva_entidad = _entidad_nueva
                         nueva_intencion = intent_result.get("intencion", "desconocido")
                         if nueva_entidad and nueva_intencion in INTENCIONES_CON_SKU:
@@ -268,7 +293,7 @@ async def receive_message(request: Request):
                                 )
                                 _steps["claude2_ms"] = int((_time.perf_counter() - _tc2) * 1000)
                                 _intencion = ir2.get("intencion", nueva_intencion)
-                                respuesta = ir2.get("respuesta", respuesta)
+                                respuesta = ir2.get("respuesta", "")  # siempre usar Claude 2
                                 cantidad = max(1, int(ir2.get("cantidad") or 1))
                                 sku_index = ir2.get("sku_seleccionado_index")
                                 producto_elegido = None
@@ -292,6 +317,12 @@ async def receive_message(request: Request):
                                     cantidad=cantidad,
                                     opciones=resultados_nuevos,
                                 )
+                            else:
+                                # Producto nuevo no encontrado en catálogo
+                                respuesta = f"No encontramos {nueva_entidad} en el catálogo en este momento. ¿Buscás algo más?"
+                        else:
+                            # Canceló sin mencionar producto nuevo
+                            respuesta = "Dale, sin problema. ¿En qué más te puedo ayudar?"
 
                     _ts = _time.perf_counter()
                     await deps["wa"].send_text(phone, respuesta)
@@ -351,6 +382,7 @@ async def receive_message(request: Request):
 
                 if resultados_sku:
                     sku_index = intent_result.get("sku_seleccionado_index")
+                    solicita_imagen = bool(intent_result.get("solicita_imagen"))
                     producto_elegido = None
                     if sku_index is not None:
                         try:
@@ -371,6 +403,11 @@ async def receive_message(request: Request):
                         precio=producto_elegido["precio"],
                         cantidad=cantidad,
                         opciones=resultados_sku,
+                    )
+                    send_images_cfg = await deps["config"].get("send_images")
+                    await _maybe_send_image(
+                        deps["wa"], phone, resultados_sku,
+                        producto_elegido, solicita_imagen, send_images_cfg,
                     )
 
             elif ya_tiene_pending:

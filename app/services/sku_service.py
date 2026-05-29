@@ -59,9 +59,10 @@ class SKUService:
             reader = csv.DictReader(f)
             cols = set(reader.fieldnames or [])
             is_processed = "cantidad_visible" in cols
+            has_imagen = "imagen_url" in cols
 
             for row in reader:
-                sku = self._parse_processed(row) if is_processed else self._parse_base(row)
+                sku = self._parse_processed(row, has_imagen) if is_processed else self._parse_base(row, has_imagen)
                 if sku:
                     self._skus.append(sku)
                     # Índice: nombre + marca + laboratorio (todo lower)
@@ -75,7 +76,7 @@ class SKUService:
         logger.info(f"SKUService: {len(self._skus)} productos cargados desde {csv_path}")
 
     @staticmethod
-    def _parse_base(row: dict) -> Optional[SKU]:
+    def _parse_base(row: dict, has_imagen: bool = False) -> Optional[SKU]:
         nombre = row.get("Nombre", "").strip()
         if not nombre or nombre == "nan":
             return None
@@ -96,13 +97,14 @@ class SKUService:
                 categoria=row.get("Categoria", "").strip(),
                 es_medicamento=_safe_bool(row.get("Es_Medicamento", "")),
                 precio_venta=_safe_float(row.get("Precio")) or 0.0,
-                cantidad_visible=0,  # sin stock aún
+                cantidad_visible=0,
+                imagen_url=row.get("imagen_url", "").strip() or None if has_imagen else None,
             )
         except Exception:
             return None
 
     @staticmethod
-    def _parse_processed(row: dict) -> Optional[SKU]:
+    def _parse_processed(row: dict, has_imagen: bool = False) -> Optional[SKU]:
         nombre = row.get("sku_nombre", "").strip()
         if not nombre:
             return None
@@ -123,6 +125,7 @@ class SKUService:
                 cantidad_visible=int(row.get("cantidad_visible") or 0),
                 tipo_producto=row.get("tipo_producto", "regular"),
                 pausado=_safe_bool(row.get("pausado", "False")),
+                imagen_url=row.get("imagen_url", "").strip() or None if has_imagen else None,
             )
         except Exception:
             return None
@@ -192,6 +195,7 @@ class SKUService:
             "estado": sku.estado,
             "categoria": sku.categoria,
             "es_medicamento": sku.es_medicamento,
+            "imagen_url": sku.imagen_url,
         }
 
     @property

@@ -18,6 +18,7 @@ class SKU(BaseModel):
     cantidad_visible: int = 0        # -1 = sin datos (mostrar "Consultar")
     tipo_producto: str = "regular"   # regular | estacional
     pausado: bool = False
+    imagen_url: Optional[str] = None  # URL pública de la imagen del producto
 
     @property
     def disponible(self) -> bool:

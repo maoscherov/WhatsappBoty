@@ -36,6 +36,28 @@ class WhatsAppService:
             except Exception:
                 return False
 
+    async def send_image(self, to: str, url: str, caption: str = "") -> bool:
+        """Envía una imagen por WhatsApp. url debe ser HTTPS pública."""
+        payload: dict = {
+            "messaging_product": "whatsapp",
+            "to": to,
+            "type": "image",
+            "image": {"link": url},
+        }
+        if caption:
+            payload["image"]["caption"] = caption
+        async with httpx.AsyncClient() as client:
+            try:
+                resp = await client.post(
+                    f"{WA_BASE}/{self._phone_id}/messages",
+                    headers={**self._headers, "Content-Type": "application/json"},
+                    json=payload,
+                    timeout=10,
+                )
+                return resp.status_code == 200
+            except Exception:
+                return False
+
     async def mark_read(self, message_id: str):
         payload = {
             "messaging_product": "whatsapp",

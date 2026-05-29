@@ -9,11 +9,13 @@ GET /bo/session/{phone} → detalle completo de una sesión
 import logging
 import statistics
 from fastapi import APIRouter, HTTPException, Query, Depends
+from pydantic import BaseModel
 
 from app.config import get_settings
 from app.services.session_service import get_session_service
 from app.services.sku_service import get_sku_service
 from app.services.perf_service import get_perf_service
+from app.services.config_service import get_config_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/bo")
@@ -181,3 +183,27 @@ async def bo_perf_clear(_=Depends(_auth)):
     perf_svc = get_perf_service(settings.redis_url)
     await perf_svc.clear()
     return {"status": "ok", "message": "Historial de performance borrado"}
+
+
+# ── Configuración del bot ──────────────────────────────────────────────────────
+
+class ConfigUpdate(BaseModel):
+    send_images: str | None = None  # "always" | "on_request"
+
+
+@router.get("/config")
+async def bo_config_get(_=Depends(_auth)):
+    settings = get_settings()
+    cfg_svc = get_config_service(settings.redis_url)
+    return await cfg_svc.get_all()
+
+
+@router.patch("/config")
+async def bo_config_update(body: ConfigUpdate, _=Depends(_auth)):
+    settings = get_settings()
+    cfg_svc = get_config_service(settings.redis_url)
+    updates = {k: v for k, v in body.model_dump().items() if v is not None}
+    if not updates:
+        raise HTTPException(status_code=400, detail="Sin campos para actualizar")
+    await cfg_svc.set_many(updates)
+    return await cfg_svc.get_all()

@@ -296,6 +296,30 @@ td .product-price { color: var(--accent); font-size: 12px; }
     </div>
   </div>
 
+  <!-- ── Configuración ───────────────────────────────────────────────────── -->
+  <div id="config-section" style="margin-top:36px;margin-bottom:36px">
+    <h2 style="font-size:15px;font-weight:600;margin-bottom:14px;color:var(--text-muted)">⚙️ Configuración del bot</h2>
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:20px 24px;display:flex;flex-wrap:wrap;gap:24px;align-items:center">
+
+      <!-- send_images toggle -->
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <div style="font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted)">Envío de imágenes de producto</div>
+        <div style="display:flex;gap:8px">
+          <button class="cfg-btn" id="cfg-img-always" data-key="send_images" data-val="always"
+            onclick="setConfig('send_images','always')" style="padding:7px 16px;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;border:1px solid var(--border);background:var(--surface2);color:var(--text-muted);transition:all .15s">
+            🖼 Siempre
+          </button>
+          <button class="cfg-btn" id="cfg-img-onrequest" data-key="send_images" data-val="on_request"
+            onclick="setConfig('send_images','on_request')" style="padding:7px 16px;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;border:1px solid var(--border);background:var(--surface2);color:var(--text-muted);transition:all .15s">
+            💬 Solo si la piden
+          </button>
+        </div>
+        <div style="font-size:11px;color:var(--text-muted)" id="cfg-img-desc">Cargando...</div>
+      </div>
+
+    </div>
+  </div>
+
   <!-- ── Performance ─────────────────────────────────────────────────────── -->
   <div id="perf-section">
     <h2>
@@ -637,10 +661,52 @@ if (_btnClearPerf) {
   });
 }
 
+// ── Configuración ────────────────────────────────────────────────────────────
+
+const CFG_IMG_LABELS = {
+  always:     { desc: 'El bot envía la imagen del producto automáticamente cuando muestra opciones.', active: 'cfg-img-always' },
+  on_request: { desc: 'El bot solo envía la imagen si el cliente la pide explícitamente ("¿tenés foto?").', active: 'cfg-img-onrequest' },
+};
+
+async function loadConfig() {
+  try {
+    const r = await fetch(apiUrl('/bo/config'));
+    if (!r.ok) return;
+    const d = await r.json();
+    applyConfigUI(d);
+  } catch(_) {}
+}
+
+function applyConfigUI(cfg) {
+  // send_images
+  const imgMode = cfg.send_images || 'always';
+  const info = CFG_IMG_LABELS[imgMode] || CFG_IMG_LABELS.always;
+  document.getElementById('cfg-img-desc').textContent = info.desc;
+  document.querySelectorAll('[data-key="send_images"]').forEach(btn => {
+    const isActive = btn.dataset.val === imgMode;
+    btn.style.background = isActive ? 'var(--info)' : 'var(--surface2)';
+    btn.style.color      = isActive ? '#fff' : 'var(--text-muted)';
+    btn.style.borderColor = isActive ? 'var(--info)' : 'var(--border)';
+  });
+}
+
+async function setConfig(key, value) {
+  try {
+    const r = await fetch(apiUrl('/bo/config'), {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ [key]: value }),
+    });
+    if (!r.ok) return;
+    const d = await r.json();
+    applyConfigUI(d);
+  } catch(_) {}
+}
+
 // ── Reload all ───────────────────────────────────────────────────────────────
 
 async function reload() {
-  await Promise.all([loadHealth(), loadStats(), loadSessions(), loadPerf()]);
+  await Promise.all([loadHealth(), loadStats(), loadSessions(), loadPerf(), loadConfig()]);
 }
 
 document.getElementById('btn-refresh').addEventListener('click', reload);
