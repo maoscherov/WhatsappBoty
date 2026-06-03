@@ -27,6 +27,10 @@ class Settings(BaseSettings):
 
     mp_sandbox: bool = False   # True → usa sandbox_init_point de MP
 
+    images_dir: str = "/data/images"          # volume mount en Railway
+    image_server_api_key: str = ""            # clave para subir imágenes
+    images_base_url: str = ""                 # ej: https://tuapp.railway.app/media
+
     class Config:
         env_file = ".env"
         extra = "ignore"
