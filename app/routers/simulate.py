@@ -199,7 +199,8 @@ async def simulate(req: SimulateRequest):
             elif _es_cambio:
                 await session_svc.clear_pending(req.phone)
 
-                # Si mencionó un producto nuevo → buscarlo ahora mismo
+                # Ignorar respuesta de Claude 1: no tiene resultados SKU y genera
+                # textos como "Buscame un segundito..." que no corresponden al bot.
                 nueva_entidad = _entidad_nueva
                 nueva_intencion = _intencion_nueva
                 if nueva_entidad and nueva_intencion in INTENCIONES_CON_SKU and sku_svc:
@@ -215,7 +216,7 @@ async def simulate(req: SimulateRequest):
                             resultados_sku=resultados_nuevos,
                         )
                         _steps["claude2_ms"] = int((_time.perf_counter() - _tc2) * 1000)
-                        respuesta = ir2.get("respuesta", respuesta)
+                        respuesta = ir2.get("respuesta", "")  # siempre usar Claude 2
                         cantidad = max(1, int(ir2.get("cantidad") or 1))
                         sku_index = ir2.get("sku_seleccionado_index")
                         producto_elegido = None
@@ -239,6 +240,12 @@ async def simulate(req: SimulateRequest):
                             cantidad=cantidad,
                             opciones=resultados_nuevos,
                         )
+                    else:
+                        # Producto nuevo no encontrado en catálogo
+                        respuesta = f"No encontramos {nueva_entidad} en el catálogo en este momento. ¿Buscás algo más?"
+                else:
+                    # Canceló sin mencionar producto nuevo
+                    respuesta = "Dale, sin problema. ¿En qué más te puedo ayudar?"
 
             await session_svc.add_message(req.phone, "user", texto)
             await session_svc.add_message(req.phone, "assistant", respuesta)
