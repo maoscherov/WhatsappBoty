@@ -106,7 +106,7 @@ class IntentService:
 
         try:
             response = await self._client.messages.create(
-                model="claude-sonnet-4-6",
+                model="claude-sonnet-4-5",
                 max_tokens=512,
                 system=SYSTEM_PROMPT,
                 messages=messages,
@@ -120,8 +120,22 @@ class IntentService:
                 "entidad_producto": None,
                 "respuesta": "Estamos teniendo un problema técnico. Por favor intentá más tarde.",
             }
+        except anthropic.BadRequestError as e:
+            logger.error(f"Claude BadRequest (model/prompt inválido): {e}")
+            return {
+                "intencion": "desconocido",
+                "entidad_producto": None,
+                "respuesta": "Disculpá, tuve un problema procesando tu mensaje. ¿Me lo repetís?",
+            }
+        except anthropic.RateLimitError as e:
+            logger.error(f"Claude rate limit alcanzado: {e}")
+            return {
+                "intencion": "desconocido",
+                "entidad_producto": None,
+                "respuesta": "Estamos con mucho tráfico en este momento. ¿Me lo repetís en un segundo?",
+            }
         except Exception as e:
-            logger.error(f"Error llamando Claude API: {e}")
+            logger.error(f"Error llamando Claude API [{type(e).__name__}]: {e}")
             return {
                 "intencion": "desconocido",
                 "entidad_producto": None,
