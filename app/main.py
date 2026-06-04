@@ -41,7 +41,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Farma Bot — Farmacia Mutual Independencia",
+    title="Remedia Bot",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -78,4 +78,4 @@ async def orders_ui():
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "bot": "Farma"}
+    return {"status": "ok", "bot": "Remedia"}

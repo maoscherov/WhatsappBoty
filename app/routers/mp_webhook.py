@@ -142,7 +142,6 @@ async def mp_notification(request: Request):
         f"Recibimos tu pago de *{nombre_producto}*. "
         f"Tu pedido está siendo preparado y te vamos a avisar cuando esté "
         f"listo para retirar (aprox. *{mins} minutos*). 🙌\n\n"
-        f"📍 Farmacia Mutual Independencia\n"
         f"¡Muchas gracias! 💊"
     )
 

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Farma BO — Backoffice</title>
+<title>Remedia — Backoffice</title>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 :root {
@@ -225,8 +225,8 @@ td .product-price { color: var(--accent); font-size: 12px; }
 <body>
 
 <div id="header">
-  <div class="logo">💊 Farma BO</div>
-  <div class="sub">Farmacia Mutual Independencia — Backoffice</div>
+  <div class="logo">💊 Remedia BO</div>
+  <div class="sub">Remedia — Backoffice</div>
   <div class="spacer"></div>
   <span class="refresh-info">Auto-refresh 30s</span>
   <button id="btn-refresh">↺ Actualizar</button>
@@ -524,7 +524,7 @@ async function fetchConversation(phone) {
     }
     inner.innerHTML = history.map(m => `
       <div class="conv-msg">
-        <div class="role ${m.role}">${m.role === 'user' ? '👤 Usuario' : '🤖 Farma'}</div>
+        <div class="role ${m.role}">${m.role === 'user' ? '👤 Usuario' : '🤖 Remedia'}</div>
         <div class="text">${esc(m.content)}</div>
       </div>`).join('');
     inner.scrollTop = inner.scrollHeight;
