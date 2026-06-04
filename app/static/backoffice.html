@@ -127,6 +127,8 @@ td .product-price { color: var(--accent); font-size: 12px; }
 .badge.esperando_confirmacion { background: #2d1f00; color: var(--warn); }
 .badge.esperando_pago { background: #0f2d1a; color: var(--accent); }
 .badge.pedido_confirmado { background: #1a1060; color: #a78bfa; }
+.badge.operador { background: #2d0a0a; color: var(--danger); animation: pulse-red 2s infinite; }
+@keyframes pulse-red { 0%,100%{opacity:1} 50%{opacity:.6} }
 
 /* ── Conversation expand ── */
 .conv-row { display: none; }
@@ -149,9 +151,42 @@ td .product-price { color: var(--accent); font-size: 12px; }
   font-size: 11px; font-weight: 700; min-width: 70px;
   padding-top: 2px; flex-shrink: 0;
 }
-.conv-msg .role.user { color: var(--info); }
+.conv-msg .role.user      { color: var(--info); }
 .conv-msg .role.assistant { color: var(--accent); }
+.conv-msg .role.operator  { color: var(--danger); }
 .conv-msg .text { color: var(--text); white-space: pre-wrap; }
+
+/* ── Operator panel ── */
+.operator-panel {
+  border-top: 1px solid var(--border); padding: 12px 14px;
+  background: #1a0f0f; display: flex; flex-direction: column; gap: 10px;
+}
+.operator-panel .op-label {
+  font-size: 11px; font-weight: 700; color: var(--danger);
+  text-transform: uppercase; letter-spacing: .06em;
+}
+.operator-input-row {
+  display: flex; gap: 8px;
+}
+.operator-input {
+  flex: 1; background: var(--surface); border: 1px solid var(--border);
+  color: var(--text); border-radius: 6px; padding: 8px 12px;
+  font-size: 13px; outline: none; resize: none; font-family: inherit;
+}
+.operator-input:focus { border-color: var(--danger); }
+.btn-op-send {
+  background: var(--danger); color: #fff; border: none;
+  border-radius: 6px; padding: 8px 16px; cursor: pointer;
+  font-size: 13px; font-weight: 600; white-space: nowrap;
+}
+.btn-op-send:hover { background: #dc2626; }
+.btn-op-send:disabled { opacity: .5; cursor: not-allowed; }
+.btn-op-release {
+  background: transparent; border: 1px solid var(--border);
+  color: var(--text-muted); border-radius: 6px; padding: 6px 12px;
+  cursor: pointer; font-size: 12px;
+}
+.btn-op-release:hover { border-color: var(--accent); color: var(--accent); }
 
 /* ── Empty state ── */
 .empty { color: var(--text-muted); font-size: 14px; text-align: center; padding: 48px; }
@@ -287,6 +322,7 @@ td .product-price { color: var(--accent); font-size: 12px; }
             <th>Producto pendiente</th>
             <th>Mensajes</th>
             <th>Último mensaje del usuario</th>
+            <th></th>
           </tr>
         </thead>
         <tbody id="sessions-body">
@@ -439,20 +475,23 @@ async function loadSessions() {
     if (!r.ok) return;
     const sessions = await r.json();
     renderSessions(sessions);
+    scheduleRefresh(sessions);
     document.getElementById('last-updated').textContent =
       'Última actualización: ' + new Date().toLocaleTimeString('es-AR');
   } catch(e) {
     document.getElementById('sessions-body').innerHTML =
-      '<tr><td colspan="5" class="empty">Error conectando al servidor</td></tr>';
+      '<tr><td colspan="6" class="empty">Error conectando al servidor</td></tr>';
+    scheduleRefresh([]);
   }
 }
 
 function estadoBadge(estado) {
   const labels = {
-    idle: 'Idle',
+    idle:                   'Idle',
     esperando_confirmacion: 'Confirmación',
-    esperando_pago: 'Esperando pago',
-    pedido_confirmado: '✅ Pago confirmado',
+    esperando_pago:         'Esperando pago',
+    pedido_confirmado:      '✅ Pago confirmado',
+    operador:               '🔴 En atención',
   };
   return `<span class="badge ${estado}">${labels[estado] || estado}</span>`;
 }
@@ -460,7 +499,7 @@ function estadoBadge(estado) {
 function renderSessions(sessions) {
   const body = document.getElementById('sessions-body');
   if (!sessions.length) {
-    body.innerHTML = '<tr><td colspan="5" class="empty">Sin sesiones activas en este momento</td></tr>';
+    body.innerHTML = '<tr><td colspan="6" class="empty">Sin sesiones activas en este momento</td></tr>';
     return;
   }
 
@@ -472,6 +511,11 @@ function renderSessions(sessions) {
          <div class="product-price">$${Number(s.pending_precio).toLocaleString('es-AR',{minimumFractionDigits:2})} × ${s.pending_cantidad}</div>`
       : `<span style="color:var(--text-muted);font-size:12px">—</span>`;
 
+    const isOp = s.estado === 'operador';
+    const takeoverBtn = isOp
+      ? `<button class="btn-op-release" onclick="event.stopPropagation();releaseSession('${esc(s.phone)}')" title="Devolver al bot">🤖 Devolver al bot</button>`
+      : `<button class="btn-op-release" onclick="event.stopPropagation();takeoverSession('${esc(s.phone)}')" title="Tomar conversación">🙋 Tomar</button>`;
+
     html += `
       <tr class="${isExp ? 'expanded' : ''}" onclick="toggleSession('${esc(s.phone)}')">
         <td><div class="phone">${esc(s.phone)}</div></td>
@@ -479,12 +523,14 @@ function renderSessions(sessions) {
         <td>${productHtml}</td>
         <td><span class="msgs-count">${s.mensajes}</span></td>
         <td><div class="ultimo">${s.ultimo_mensaje ? esc(s.ultimo_mensaje) : '—'}</div></td>
+        <td>${takeoverBtn}</td>
       </tr>
       <tr class="conv-row ${isExp ? 'visible' : ''}" id="conv-${esc(s.phone)}">
-        <td colspan="5" class="conv-cell">
+        <td colspan="6" class="conv-cell">
           <div class="conv-inner" id="conv-inner-${esc(s.phone)}">
             <div class="empty" style="padding:16px"><span class="spinner"></span> Cargando historial...</div>
           </div>
+          ${isOp ? operatorPanel(s.phone) : ''}
         </td>
       </tr>`;
   }
@@ -522,13 +568,106 @@ async function fetchConversation(phone) {
       inner.innerHTML = '<div class="empty" style="padding:12px">Sin historial</div>';
       return;
     }
+    const roleLabel = {
+      user:      '👤 Usuario',
+      assistant: '🤖 Remedia',
+      operator:  '🧑‍💼 Operador',
+    };
     inner.innerHTML = history.map(m => `
       <div class="conv-msg">
-        <div class="role ${m.role}">${m.role === 'user' ? '👤 Usuario' : '🤖 Remedia'}</div>
+        <div class="role ${m.role}">${roleLabel[m.role] || m.role}</div>
         <div class="text">${esc(m.content)}</div>
       </div>`).join('');
     inner.scrollTop = inner.scrollHeight;
   } catch(_) {}
+}
+
+// ── Operador handoff ──────────────────────────────────────────────────────────
+
+function operatorPanel(phone) {
+  const pid = phone.replace(/\W/g, '_');
+  return `
+    <div class="operator-panel" id="op-panel-${pid}">
+      <div class="op-label">🔴 Modo operador activo — el bot está silenciado</div>
+      <div class="operator-input-row">
+        <textarea class="operator-input" id="op-input-${pid}" rows="2"
+          placeholder="Escribí tu mensaje al cliente..."
+          onkeydown="opKeydown(event,'${esc(phone)}')"></textarea>
+        <button class="btn-op-send" id="op-send-${pid}"
+          onclick="sendOperatorMessage('${esc(phone)}')">Enviar</button>
+      </div>
+    </div>`;
+}
+
+function opKeydown(e, phone) {
+  // Ctrl+Enter o Cmd+Enter para enviar
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+    e.preventDefault();
+    sendOperatorMessage(phone);
+  }
+}
+
+async function takeoverSession(phone) {
+  try {
+    const r = await fetch(apiUrl(`/bo/session/${encodeURIComponent(phone)}/takeover`), { method: 'POST' });
+    if (!r.ok) return;
+    await loadSessions();
+    // Expandir automáticamente la sesión tomada
+    if (!expandedPhones.has(phone)) {
+      expandedPhones.add(phone);
+      await fetchConversation(phone);
+    }
+  } catch(_) {}
+}
+
+async function releaseSession(phone) {
+  try {
+    const r = await fetch(apiUrl(`/bo/session/${encodeURIComponent(phone)}/release`), { method: 'POST' });
+    if (!r.ok) return;
+    await loadSessions();
+  } catch(_) {}
+}
+
+async function sendOperatorMessage(phone) {
+  const pid = phone.replace(/\W/g, '_');
+  const input = document.getElementById(`op-input-${pid}`);
+  const btn   = document.getElementById(`op-send-${pid}`);
+  if (!input || !input.value.trim()) return;
+
+  btn.disabled = true;
+  btn.textContent = '...';
+
+  try {
+    const r = await fetch(apiUrl(`/bo/session/${encodeURIComponent(phone)}/message`), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: input.value.trim() }),
+    });
+    if (r.ok) {
+      input.value = '';
+      await fetchConversation(phone);  // refrescar historial
+    } else {
+      const err = await r.json().catch(() => ({}));
+      alert('Error enviando: ' + (err.detail || r.status));
+    }
+  } catch(e) {
+    alert('Error de red: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Enviar';
+    input.focus();
+  }
+}
+
+// Refresh más frecuente si hay sesiones en modo operador
+function getRefreshInterval() {
+  return sessions => sessions?.some(s => s.estado === 'operador') ? 8000 : 30000;
+}
+let _refreshTimer = null;
+function scheduleRefresh(sessions) {
+  if (_refreshTimer) clearTimeout(_refreshTimer);
+  const delay = sessions?.some(s => s.estado === 'operador') ? 8000 : 30000;
+  _refreshTimer = setTimeout(reload, delay);
 }
 
 function esc(s) {
@@ -712,10 +851,7 @@ async function reload() {
 document.getElementById('btn-refresh').addEventListener('click', reload);
 document.getElementById('key-input').addEventListener('change', reload);
 
-// Auto-refresh cada 30 segundos
-setInterval(reload, 30_000);
-
-// Carga inicial
+// Carga inicial (el refresh dinámico lo maneja scheduleRefresh)
 reload();
 </script>
 </body>

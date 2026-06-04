@@ -179,6 +179,13 @@ async def receive_message(request: Request):
 
             session = await deps["session"].get(phone)
 
+            # ── Modo operador: bot silencioso, solo guarda el mensaje ────────
+            if session.get("estado") == "operador":
+                _intencion = "operador"
+                await deps["session"].add_message(phone, "user", texto)
+                logger.info(f"Modo operador activo para {phone} — bot silencioso")
+                continue
+
             # ── Caso especial: hay producto pendiente de confirmar ───────────
             if session.get("estado") == "esperando_confirmacion" and session.get("pending_sku_id"):
                 texto_lower = texto.lower().strip()
