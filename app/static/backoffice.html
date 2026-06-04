@@ -497,6 +497,12 @@ function estadoBadge(estado) {
 }
 
 function renderSessions(sessions) {
+  // Guardar contenido de textareas de operador antes de re-renderizar
+  const savedInputs = {};
+  document.querySelectorAll('.operator-input').forEach(el => {
+    if (el.value.trim()) savedInputs[el.id] = el.value;
+  });
+
   const body = document.getElementById('sessions-body');
   if (!sessions.length) {
     body.innerHTML = '<tr><td colspan="6" class="empty">Sin sesiones activas en este momento</td></tr>';
@@ -535,6 +541,12 @@ function renderSessions(sessions) {
       </tr>`;
   }
   body.innerHTML = html;
+
+  // Restaurar contenido de textareas que tenían texto
+  Object.entries(savedInputs).forEach(([id, val]) => {
+    const el = document.getElementById(id);
+    if (el) el.value = val;
+  });
 
   // Recargar los que estaban expandidos
   for (const phone of expandedPhones) {
