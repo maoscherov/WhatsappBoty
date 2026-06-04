@@ -95,7 +95,14 @@ class IntentService:
         Clasifica intención y genera respuesta.
         Si resultados_sku está presente, se los inyectamos al contexto.
         """
-        messages = list(history[-6:])  # últimos 6 turnos para contexto
+        # Claude solo acepta roles "user" y "assistant".
+        # Los mensajes de operador se convierten a "assistant" para mantener contexto.
+        messages = [
+            {"role": "assistant" if m["role"] == "operator" else m["role"],
+             "content": m["content"]}
+            for m in history[-6:]
+            if m["role"] in ("user", "assistant", "operator")
+        ]
 
         user_content = mensaje
         if resultados_sku is not None:
