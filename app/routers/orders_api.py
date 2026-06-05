@@ -46,8 +46,10 @@ async def mark_preparado(order_id: str, _=Depends(_auth)):
     # Enviar confirmación de pedido listo con código y horario de retiro
     wa = get_whatsapp_service(settings.whatsapp_token, settings.whatsapp_phone_number_id)
     cfg_svc = get_config_service(settings.redis_url)
+    cfg = await cfg_svc.get_all()
     hours = await cfg_svc.get_hours()
-    pickup_text = cfg_svc.get_pickup_text(hours)
+    pickup_minutes = int(cfg.get("pickup_minutes") or settings.pickup_minutes)
+    pickup_text = cfg_svc.get_pickup_text(hours, pickup_minutes)
 
     code = order["pickup_code"]
     nombre = order["sku_nombre"]

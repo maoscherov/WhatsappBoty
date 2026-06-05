@@ -13,6 +13,10 @@ interface DaySchedule {
   close: string;
   active: boolean;
 }
+interface BotConfig {
+  send_images: string;
+  pickup_minutes: string;
+}
 interface BusinessHours {
   enabled: boolean;
   closed_message: string;
@@ -111,24 +115,31 @@ function SKUSection() {
 
 // ── Business Hours section ────────────────────────────────────────────────────
 function HoursSection() {
-  const [hours, setHours]   = useState<BusinessHours | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved]   = useState(false);
+  const [hours, setHours]       = useState<BusinessHours | null>(null);
+  const [config, setConfig]     = useState<BotConfig | null>(null);
+  const [saving, setSaving]     = useState(false);
+  const [saved, setSaved]       = useState(false);
 
   useEffect(() => {
-    fetch(apiUrl("/bo/config/hours"))
-      .then(r => r.json())
-      .then(setHours);
+    fetch(apiUrl("/bo/config/hours")).then(r => r.json()).then(setHours);
+    fetch(apiUrl("/bo/config")).then(r => r.json()).then(setConfig);
   }, []);
 
   async function save() {
     if (!hours) return;
     setSaving(true);
-    await fetch(apiUrl("/bo/config/hours"), {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(hours),
-    });
+    await Promise.all([
+      fetch(apiUrl("/bo/config/hours"), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(hours),
+      }),
+      config && fetch(apiUrl("/bo/config"), {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pickup_minutes: config.pickup_minutes }),
+      }),
+    ]);
     setSaving(false);
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
@@ -145,13 +156,36 @@ function HoursSection() {
     });
   }
 
-  if (!hours) return <div className="text-gray-600 text-sm">Cargando horarios...</div>;
+  if (!hours || !config) return <div className="text-gray-600 text-sm">Cargando...</div>;
 
   return (
     <div className="space-y-4">
       <h2 className="text-base font-semibold text-white">🕐 Horarios de atención</h2>
 
       <div className="bg-gray-800 rounded-xl p-4 space-y-4">
+        {/* Tiempo estimado */}
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm font-medium text-white">Tiempo estimado de retiro</p>
+            <p className="text-xs text-gray-500">Aparece en los mensajes de confirmación</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              type="number"
+              min={5}
+              max={480}
+              step={5}
+              value={config.pickup_minutes}
+              onChange={e => setConfig({ ...config, pickup_minutes: e.target.value })}
+              className="w-20 bg-gray-900 border border-gray-700 rounded-lg px-3 py-1.5
+                         text-sm text-gray-200 text-center outline-none focus:border-blue-500"
+            />
+            <span className="text-sm text-gray-400">min</span>
+          </div>
+        </div>
+
+        <div className="border-t border-gray-700" />
+
         {/* Toggle global */}
         <div className="flex items-center justify-between">
           <div>

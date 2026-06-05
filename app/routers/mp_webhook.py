@@ -138,8 +138,10 @@ async def mp_notification(request: Request):
     # Enviar confirmación por WhatsApp con el código de retiro
     wa_svc = get_whatsapp_service(settings.whatsapp_token, settings.whatsapp_phone_number_id)
     cfg_svc = get_config_service(settings.redis_url)
+    cfg = await cfg_svc.get_all()
     hours = await cfg_svc.get_hours()
-    pickup_text = cfg_svc.get_pickup_text(hours)
+    pickup_minutes = int(cfg.get("pickup_minutes") or settings.pickup_minutes)
+    pickup_text = cfg_svc.get_pickup_text(hours, pickup_minutes)
 
     pickup_code = order.get("pickup_code", "")
     pickup_line = f"\n{pickup_text}" if pickup_text else ""

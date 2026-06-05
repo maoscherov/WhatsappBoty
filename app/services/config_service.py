@@ -24,7 +24,8 @@ TZ_ARG       = ZoneInfo("America/Argentina/Buenos_Aires")
 DAY_MAP      = {0: "mon", 1: "tue", 2: "wed", 3: "thu", 4: "fri", 5: "sat", 6: "sun"}
 
 DEFAULTS: dict[str, str] = {
-    "send_images": "always",
+    "send_images":    "always",
+    "pickup_minutes": "30",    # tiempo estimado de preparación/retiro
 }
 
 DEFAULT_HOURS = {
@@ -120,7 +121,7 @@ class ConfigService:
         current = now.strftime("%H:%M")
         return open_t <= current <= close_t
 
-    def get_pickup_text(self, hours: dict) -> str:
+    def get_pickup_text(self, hours: dict, pickup_minutes: int = 30) -> str:
         """
         Devuelve un texto de horario de retiro para incluir en mensajes al cliente.
         Funciona siempre, independientemente de si enabled=True/False.
@@ -130,8 +131,7 @@ class ConfigService:
           "Consultá nuestro horario de atención 🕐"
         """
         schedule = hours.get("schedule", {})
-        if not schedule:
-            return ""
+        mins_txt = f"⏱ Tiempo estimado: *{pickup_minutes} min*" if pickup_minutes else ""
 
         DAY_ES = {
             "mon": "lunes", "tue": "martes", "wed": "miércoles",
@@ -157,17 +157,19 @@ class ConfigService:
             def fmt(t: str) -> str:
                 return t[:5].lstrip("0") or "0:00"
 
+            prefix = f"{mins_txt} · " if mins_txt else ""
+
             if offset == 0:
-                # Si ya pasó el cierre de hoy, buscar el siguiente
                 if now.strftime("%H:%M") >= close_t:
                     continue
-                return f"Podés retirarlo hoy de {fmt(open_t)} a {fmt(close_t)} hs 🕐"
+                return f"{prefix}Podés retirarlo hoy de {fmt(open_t)} a {fmt(close_t)} hs 🕐"
             elif offset == 1:
-                return f"Retiros mañana de {fmt(open_t)} a {fmt(close_t)} hs 🕐"
+                return f"{prefix}Retiros mañana de {fmt(open_t)} a {fmt(close_t)} hs 🕐"
             else:
-                return f"Próximos retiros el {DAY_ES[day]} de {fmt(open_t)} a {fmt(close_t)} hs 🕐"
+                return f"{prefix}Próximos retiros el {DAY_ES[day]} de {fmt(open_t)} a {fmt(close_t)} hs 🕐"
 
-        return ""
+        # Sin schedule: mostrar solo el tiempo estimado si existe
+        return mins_txt
 
 
 _instance: Optional[ConfigService] = None
