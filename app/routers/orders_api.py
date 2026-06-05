@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException, Query, Depends
 from app.config import get_settings
 from app.services.order_service import get_order_service
 from app.services.whatsapp_service import get_whatsapp_service
+from app.services.config_service import get_config_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/orders/api")
@@ -42,18 +43,23 @@ async def mark_preparado(order_id: str, _=Depends(_auth)):
     if not order:
         raise HTTPException(status_code=404, detail="Pedido no encontrado")
 
-    # Enviar confirmación de pedido listo con código de retiro
+    # Enviar confirmación de pedido listo con código y horario de retiro
     wa = get_whatsapp_service(settings.whatsapp_token, settings.whatsapp_phone_number_id)
+    cfg_svc = get_config_service(settings.redis_url)
+    hours = await cfg_svc.get_hours()
+    pickup_text = cfg_svc.get_pickup_text(hours)
+
     code = order["pickup_code"]
     nombre = order["sku_nombre"]
     cantidad = order["cantidad"]
     total = order["total"]
     nombre_con_cant = nombre + (f" x{cantidad}" if cantidad > 1 else "")
+    pickup_line = f"\n{pickup_text}" if pickup_text else ""
 
     msg = (
         f"🎉 *¡Tu pedido está listo para retirar!*\n\n"
-        f"*{nombre_con_cant}* — ${total:,.2f}\n\n"
-        f"🔑 *Código de retiro: {code}*\n\n"
+        f"*{nombre_con_cant}* — ${total:,.2f}\n"
+        f"🔑 *Código de retiro: {code}*{pickup_line}\n\n"
         f"Presentá este código y te lo entregamos. ¡Te esperamos! 💊"
     )
     sent = await wa.send_text(order["phone"], msg, simulate_typing=False)

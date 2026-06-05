@@ -120,6 +120,55 @@ class ConfigService:
         current = now.strftime("%H:%M")
         return open_t <= current <= close_t
 
+    def get_pickup_text(self, hours: dict) -> str:
+        """
+        Devuelve un texto de horario de retiro para incluir en mensajes al cliente.
+        Funciona siempre, independientemente de si enabled=True/False.
+        Ejemplos:
+          "Podés retirarlo hoy de 9:00 a 18:00 hs 🕐"
+          "Retiros mañana de 9:00 a 13:00 hs (hoy estamos cerrados) 🕐"
+          "Consultá nuestro horario de atención 🕐"
+        """
+        schedule = hours.get("schedule", {})
+        if not schedule:
+            return ""
+
+        DAY_ES = {
+            "mon": "lunes", "tue": "martes", "wed": "miércoles",
+            "thu": "jueves", "fri": "viernes", "sat": "sábado", "sun": "domingo",
+        }
+
+        now = datetime.now(TZ_ARG)
+
+        # Buscar el próximo día activo (hoy y los 6 siguientes)
+        for offset in range(7):
+            idx = (now.weekday() + offset) % 7
+            day = DAY_MAP[idx]
+            cfg = schedule.get(day, {})
+            if not cfg.get("active"):
+                continue
+
+            open_t  = cfg.get("open", "")
+            close_t = cfg.get("close", "")
+            if not open_t or not close_t:
+                continue
+
+            # Formatear horas sin segundos
+            def fmt(t: str) -> str:
+                return t[:5].lstrip("0") or "0:00"
+
+            if offset == 0:
+                # Si ya pasó el cierre de hoy, buscar el siguiente
+                if now.strftime("%H:%M") >= close_t:
+                    continue
+                return f"Podés retirarlo hoy de {fmt(open_t)} a {fmt(close_t)} hs 🕐"
+            elif offset == 1:
+                return f"Retiros mañana de {fmt(open_t)} a {fmt(close_t)} hs 🕐"
+            else:
+                return f"Próximos retiros el {DAY_ES[day]} de {fmt(open_t)} a {fmt(close_t)} hs 🕐"
+
+        return ""
+
 
 _instance: Optional[ConfigService] = None
 

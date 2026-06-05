@@ -20,6 +20,7 @@ from app.services.payment_service import get_payment_service
 from app.services.whatsapp_service import get_whatsapp_service
 from app.services.session_service import get_session_service
 from app.services.order_service import get_order_service
+from app.services.config_service import get_config_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -136,13 +137,16 @@ async def mp_notification(request: Request):
 
     # Enviar confirmación por WhatsApp con el código de retiro
     wa_svc = get_whatsapp_service(settings.whatsapp_token, settings.whatsapp_phone_number_id)
-    mins = settings.pickup_minutes
+    cfg_svc = get_config_service(settings.redis_url)
+    hours = await cfg_svc.get_hours()
+    pickup_text = cfg_svc.get_pickup_text(hours)
+
     pickup_code = order.get("pickup_code", "")
+    pickup_line = f"\n{pickup_text}" if pickup_text else ""
     mensaje = (
         f"✅ *¡Pago confirmado!*\n\n"
-        f"Recibimos tu pago de *{nombre_producto}*. "
-        f"Tu pedido estará listo para retirar en aprox. *{mins} minutos*. 🙌\n\n"
-        f"🔑 *Tu código de retiro es: {pickup_code}*\n\n"
+        f"Recibimos tu pago de *{nombre_producto}*. 🙌\n"
+        f"🔑 *Tu código de retiro es: {pickup_code}*{pickup_line}\n\n"
         f"Guardalo para presentarlo al retirar. ¡Muchas gracias! 💊"
     )
 
