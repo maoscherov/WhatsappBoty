@@ -179,6 +179,19 @@ async def receive_message(request: Request):
 
             session = await deps["session"].get(phone)
 
+            # ── Control de horario de atención ──────────────────────────────
+            hours = await deps["config"].get_hours()
+            if not deps["config"].is_open_now(hours):
+                # Solo avisar una vez cada 10 mins para no spamear
+                last_closed = session.get("_last_closed_msg", "")
+                now_str = _time.strftime("%Y-%m-%dT%H:%M", _time.gmtime())[:15]  # cada 15min
+                if last_closed != now_str:
+                    await deps["wa"].send_text(phone, hours.get("closed_message", "Estamos fuera de horario 🙏"))
+                    session["_last_closed_msg"] = now_str
+                    await deps["session"].save(phone, session)
+                _skip_record = True
+                continue
+
             # ── Modo operador: bot silencioso, solo guarda el mensaje ────────
             if session.get("estado") == "operador":
                 _intencion = "operador"

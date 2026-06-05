@@ -211,3 +211,11 @@ def get_sku_service(csv_path: str = "data/catalogo_base.csv") -> SKUService:
     if _instance is None:
         _instance = SKUService(csv_path)
     return _instance
+
+
+def reload_sku_service(csv_path: str) -> SKUService:
+    """Recarga el catálogo desde disco sin reiniciar el servidor."""
+    global _instance
+    _instance = SKUService(csv_path)
+    logger.info(f"Catálogo recargado: {_instance.total} SKUs")
+    return _instance

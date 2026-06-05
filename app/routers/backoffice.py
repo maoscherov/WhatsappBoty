@@ -8,12 +8,13 @@ GET /bo/session/{phone} → detalle completo de una sesión
 
 import logging
 import statistics
-from fastapi import APIRouter, HTTPException, Query, Depends
+from fastapi import APIRouter, HTTPException, Query, Depends, UploadFile, File
+from pathlib import Path
 from pydantic import BaseModel
 
 from app.config import get_settings
 from app.services.session_service import get_session_service
-from app.services.sku_service import get_sku_service
+from app.services.sku_service import get_sku_service, reload_sku_service
 from app.services.perf_service import get_perf_service
 from app.services.config_service import get_config_service
 from app.services.whatsapp_service import get_whatsapp_service
@@ -175,6 +176,54 @@ async def bo_perf(_=Depends(_auth), n: int = Query(100, le=300)):
         "entries": entries[:30],  # últimas 30 para la tabla
         "lentos":  lentos[:10],   # top 10 más lentos para debug
     }
+
+
+# ── SKU import ────────────────────────────────────────────────────────────────
+
+@router.get("/sku/info")
+async def bo_sku_info(_=Depends(_auth)):
+    settings = get_settings()
+    try:
+        svc = get_sku_service(settings.sku_csv_path)
+        return {"total": svc.total, "csv_path": settings.sku_csv_path}
+    except Exception as e:
+        return {"total": 0, "error": str(e)}
+
+
+@router.post("/sku/import")
+async def bo_sku_import(file: UploadFile = File(...), _=Depends(_auth)):
+    """Reemplaza el catálogo con el CSV subido y recarga el servicio en memoria."""
+    settings = get_settings()
+    csv_path = Path(settings.sku_csv_path)
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Archivo vacío")
+
+    csv_path.write_bytes(content)
+    try:
+        svc = reload_sku_service(str(csv_path))
+        return {"status": "ok", "total": svc.total, "csv_path": str(csv_path)}
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Error procesando CSV: {e}")
+
+
+# ── Horarios de atención ───────────────────────────────────────────────────────
+
+@router.get("/config/hours")
+async def bo_hours_get(_=Depends(_auth)):
+    settings = get_settings()
+    cfg_svc = get_config_service(settings.redis_url)
+    return await cfg_svc.get_hours()
+
+
+@router.put("/config/hours")
+async def bo_hours_set(body: dict, _=Depends(_auth)):
+    settings = get_settings()
+    cfg_svc = get_config_service(settings.redis_url)
+    await cfg_svc.set_hours(body)
+    return await cfg_svc.get_hours()
 
 
 @router.delete("/perf")
