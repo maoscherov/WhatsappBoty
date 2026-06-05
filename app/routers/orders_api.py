@@ -42,7 +42,7 @@ async def mark_preparado(order_id: str, _=Depends(_auth)):
     if not order:
         raise HTTPException(status_code=404, detail="Pedido no encontrado")
 
-    # Enviar código de retiro por WhatsApp
+    # Enviar confirmación de pedido listo con código de retiro
     wa = get_whatsapp_service(settings.whatsapp_token, settings.whatsapp_phone_number_id)
     code = order["pickup_code"]
     nombre = order["sku_nombre"]
@@ -54,8 +54,7 @@ async def mark_preparado(order_id: str, _=Depends(_auth)):
         f"🎉 *¡Tu pedido está listo para retirar!*\n\n"
         f"*{nombre_con_cant}* — ${total:,.2f}\n\n"
         f"🔑 *Código de retiro: {code}*\n\n"
-        f"Presentá este código en la farmacia y te entregamos tu pedido. "
-        f"¡Te esperamos! 💊"
+        f"Presentá este código y te lo entregamos. ¡Te esperamos! 💊"
     )
     sent = await wa.send_text(order["phone"], msg, simulate_typing=False)
     logger.info(f"Código {code} enviado a {order['phone']}: {sent}")

@@ -134,15 +134,16 @@ async def mp_notification(request: Request):
     )
     logger.info(f"Pedido registrado: {order['order_id']}")
 
-    # Enviar confirmación por WhatsApp
+    # Enviar confirmación por WhatsApp con el código de retiro
     wa_svc = get_whatsapp_service(settings.whatsapp_token, settings.whatsapp_phone_number_id)
     mins = settings.pickup_minutes
+    pickup_code = order.get("pickup_code", "")
     mensaje = (
         f"✅ *¡Pago confirmado!*\n\n"
         f"Recibimos tu pago de *{nombre_producto}*. "
-        f"Tu pedido está siendo preparado y te vamos a avisar cuando esté "
-        f"listo para retirar (aprox. *{mins} minutos*). 🙌\n\n"
-        f"¡Muchas gracias! 💊"
+        f"Tu pedido estará listo para retirar en aprox. *{mins} minutos*. 🙌\n\n"
+        f"🔑 *Tu código de retiro es: {pickup_code}*\n\n"
+        f"Guardalo para presentarlo al retirar. ¡Muchas gracias! 💊"
     )
 
     sent = await wa_svc.send_text(phone, mensaje)

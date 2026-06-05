@@ -158,7 +158,7 @@ function OrderCard({ order, onUpdate }: { order: Order; onUpdate: () => void }) 
               className="flex-1 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white
                          text-sm font-semibold py-2 rounded-lg transition-colors"
             >
-              📦 Marcar preparado
+              📦 Listo — avisar al cliente
             </button>
           )}
           {order.estado === "preparado" && (
@@ -177,8 +177,8 @@ function OrderCard({ order, onUpdate }: { order: Order; onUpdate: () => void }) 
       {/* Modals */}
       <ConfirmModal
         open={modal === "preparado"}
-        title="📦 Marcar como Preparado"
-        description="Se enviará el código de retiro al cliente por WhatsApp automáticamente."
+        title="📦 Pedido listo"
+        description="Se enviará un recordatorio con el código de retiro al cliente por WhatsApp."
         productInfo={productInfo}
         onConfirm={() => doAction("preparado")}
         onCancel={() => setModal(null)}

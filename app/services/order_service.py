@@ -59,7 +59,7 @@ class OrderService:
             "total":         round(float(total), 2),
             "mp_payment_id": mp_payment_id,
             "estado":        "pendiente",
-            "pickup_code":   None,
+            "pickup_code":   self._gen_pickup_code(),  # generado al confirmar el pago
             "created_at":    now,
             "updated_at":    now,
         }
@@ -100,9 +100,9 @@ class OrderService:
         order = await self.get(order_id)
         if not order:
             return None
-        order["estado"]      = "preparado"
-        order["pickup_code"] = self._gen_pickup_code()
-        order["updated_at"]  = datetime.now(timezone.utc).isoformat()
+        order["estado"]     = "preparado"
+        # El pickup_code ya fue generado al crear el pedido — no se regenera
+        order["updated_at"] = datetime.now(timezone.utc).isoformat()
         try:
             await self._redis.setex(self._key(order_id), ORDER_TTL, json.dumps(order))
         except Exception as e:
