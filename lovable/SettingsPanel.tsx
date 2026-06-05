@@ -204,65 +204,63 @@ function HoursSection() {
           </button>
         </div>
 
-        {/* Horario por día */}
-        {hours.enabled && (
-          <>
-            <div className="border-t border-gray-700 pt-3 space-y-2">
-              {DAYS.map(day => {
-                const cfg = hours.schedule[day] ?? { open: "09:00", close: "18:00", active: false };
-                return (
-                  <div key={day} className="flex items-center gap-3">
-                    <button
-                      onClick={() => updateDay(day, "active", !cfg.active)}
-                      className={`w-9 h-5 rounded-full transition-colors relative shrink-0 ${
-                        cfg.active ? "bg-emerald-600" : "bg-gray-600"
-                      }`}
-                    >
-                      <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
-                        cfg.active ? "translate-x-4" : "translate-x-0.5"
-                      }`} />
-                    </button>
+        {/* Horario por día — siempre visible */}
+        <div className="border-t border-gray-700 pt-3 space-y-2">
+          {DAYS.map(day => {
+            const cfg = hours.schedule[day] ?? { open: "09:00", close: "18:00", active: false };
+            return (
+              <div key={day} className="flex items-center gap-3">
+                <button
+                  onClick={() => updateDay(day, "active", !cfg.active)}
+                  className={`w-9 h-5 rounded-full transition-colors relative shrink-0 ${
+                    cfg.active ? "bg-emerald-600" : "bg-gray-600"
+                  }`}
+                >
+                  <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
+                    cfg.active ? "translate-x-4" : "translate-x-0.5"
+                  }`} />
+                </button>
 
-                    <span className={`text-sm w-24 shrink-0 ${cfg.active ? "text-white" : "text-gray-600"}`}>
-                      {DAY_LABELS[day]}
-                    </span>
+                <span className={`text-sm w-24 shrink-0 ${cfg.active ? "text-white" : "text-gray-600"}`}>
+                  {DAY_LABELS[day]}
+                </span>
 
-                    {cfg.active ? (
-                      <div className="flex items-center gap-2 text-sm">
-                        <input
-                          type="time"
-                          value={cfg.open}
-                          onChange={e => updateDay(day, "open", e.target.value)}
-                          className="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-gray-200 text-xs"
-                        />
-                        <span className="text-gray-500">—</span>
-                        <input
-                          type="time"
-                          value={cfg.close}
-                          onChange={e => updateDay(day, "close", e.target.value)}
-                          className="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-gray-200 text-xs"
-                        />
-                      </div>
-                    ) : (
-                      <span className="text-xs text-gray-600">Cerrado</span>
-                    )}
+                {cfg.active ? (
+                  <div className="flex items-center gap-2 text-sm">
+                    <input
+                      type="time"
+                      value={cfg.open}
+                      onChange={e => updateDay(day, "open", e.target.value)}
+                      className="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-gray-200 text-xs"
+                    />
+                    <span className="text-gray-500">—</span>
+                    <input
+                      type="time"
+                      value={cfg.close}
+                      onChange={e => updateDay(day, "close", e.target.value)}
+                      className="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-gray-200 text-xs"
+                    />
                   </div>
-                );
-              })}
-            </div>
+                ) : (
+                  <span className="text-xs text-gray-600">Cerrado</span>
+                )}
+              </div>
+            );
+          })}
+        </div>
 
-            {/* Mensaje de cierre */}
-            <div className="border-t border-gray-700 pt-3 space-y-2">
-              <label className="text-xs text-gray-500 uppercase tracking-wide">Mensaje fuera de horario</label>
-              <textarea
-                rows={2}
-                value={hours.closed_message}
-                onChange={e => setHours({ ...hours, closed_message: e.target.value })}
-                className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2
-                           text-sm text-gray-200 resize-none outline-none focus:border-blue-500"
-              />
-            </div>
-          </>
+        {/* Mensaje de cierre — solo si el control de horario está activo */}
+        {hours.enabled && (
+          <div className="border-t border-gray-700 pt-3 space-y-2">
+            <label className="text-xs text-gray-500 uppercase tracking-wide">Mensaje fuera de horario</label>
+            <textarea
+              rows={2}
+              value={hours.closed_message}
+              onChange={e => setHours({ ...hours, closed_message: e.target.value })}
+              className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2
+                         text-sm text-gray-200 resize-none outline-none focus:border-blue-500"
+            />
+          </div>
         )}
 
         <button
