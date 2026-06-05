@@ -245,27 +245,56 @@ async def receive_message(request: Request):
                     continue
 
                 else:
-                    # Ni SI ni NO claro → Claude decide (maneja typos, autocorrect, etc.)
+                    # Ambiguo: Claude decide con contexto completo de las opciones
+                    # SIEMPRE pasamos pending_opciones para que Claude pueda interpretar
+                    # "el 1 puede ser?" como selección de la opción 1, no como búsqueda nueva.
+                    pending_opciones = session.get("pending_opciones", [])
                     _tc = _time.perf_counter()
                     intent_result = await deps["intent"].procesar(
                         mensaje=texto,
                         history=session.get("history", []),
+                        resultados_sku=pending_opciones if pending_opciones else None,
+                        label_sku="OPCIONES MOSTRADAS",
                     )
                     _steps["claude1_ms"] = int((_time.perf_counter() - _tc) * 1000)
 
-                    confirmacion = intent_result.get("confirmacion")
-                    _intencion = intent_result.get("intencion", "desconocido")
-                    respuesta = intent_result.get("respuesta", "")
+                    confirmacion  = intent_result.get("confirmacion")
+                    _intencion    = intent_result.get("intencion", "desconocido")
+                    respuesta     = intent_result.get("respuesta", "")
                     _entidad_nueva = intent_result.get("entidad_producto")
+                    sku_index     = intent_result.get("sku_seleccionado_index")
 
-                    # Tratar como cancelación también cuando confirmacion=None pero
-                    # el usuario mencionó un producto DIFERENTE con intent de SKU
-                    # (ej: "mejor bayer" → Claude a veces no pone confirmacion=false)
+                    # ── Paso 1: Si el usuario seleccionó una opción de la lista existente,
+                    #    actualizar pending ANTES de evaluar confirmacion/cambio.
+                    #    Esto resuelve "el 1 puede ser?" → seleccionar opción 1 sin buscar de nuevo.
+                    if sku_index is not None and pending_opciones:
+                        try:
+                            idx = int(sku_index) - 1
+                            if 0 <= idx < len(pending_opciones):
+                                elegido = pending_opciones[idx]
+                                nueva_cantidad = max(1, int(intent_result.get("cantidad") or session.get("pending_cantidad", 1)))
+                                await deps["session"].set_pending(
+                                    phone=phone,
+                                    sku_id=elegido["sku_id"],
+                                    sku_nombre=elegido["nombre"],
+                                    precio=elegido["precio"],
+                                    cantidad=nueva_cantidad,
+                                    opciones=pending_opciones,
+                                )
+                                session = await deps["session"].get(phone)
+                                logger.info(f"Opción {sku_index} seleccionada: {elegido['nombre']}")
+                        except (ValueError, TypeError):
+                            pass
+
+                    # ── Paso 2: _es_cambio solo aplica cuando NO hay selección de opción existente
+                    #    y el usuario menciona un producto genuinamente diferente.
                     _es_cambio = (
-                        confirmacion is False or
-                        (confirmacion is None
-                         and _entidad_nueva
-                         and _intencion in INTENCIONES_CON_SKU)
+                        sku_index is None and (
+                            confirmacion is False or
+                            (confirmacion is None
+                             and _entidad_nueva
+                             and _intencion in INTENCIONES_CON_SKU)
+                        )
                     )
 
                     if confirmacion is True:
@@ -292,14 +321,11 @@ async def receive_message(request: Request):
                             respuesta = "Tuve un problema generando el link de pago. Te paso con alguien del equipo."
                             await deps["session"].clear_pending(phone)
                     elif _es_cambio:
+                        # Cambio genuino de producto (ej: "mejor bayer")
                         _intencion = "pedido_cancelado"
                         await deps["session"].clear_pending(phone)
-
-                        # Ignorar siempre la respuesta de Claude 1 en este branch:
-                        # Claude 1 no tiene los resultados SKU y genera textos como
-                        # "Buscame un segundito..." que no corresponden al bot.
                         nueva_entidad = _entidad_nueva
-                        nueva_intencion = intent_result.get("intencion", "desconocido")
+                        nueva_intencion = _intencion
                         if nueva_entidad and nueva_intencion in INTENCIONES_CON_SKU:
                             _tsku = _time.perf_counter()
                             resultados_nuevos = deps["sku"].buscar(nueva_entidad)
@@ -313,35 +339,33 @@ async def receive_message(request: Request):
                                 )
                                 _steps["claude2_ms"] = int((_time.perf_counter() - _tc2) * 1000)
                                 _intencion = ir2.get("intencion", nueva_intencion)
-                                respuesta = ir2.get("respuesta", "")  # siempre usar Claude 2
+                                respuesta = ir2.get("respuesta", "")
                                 cantidad = max(1, int(ir2.get("cantidad") or 1))
-                                sku_index = ir2.get("sku_seleccionado_index")
-                                producto_elegido = None
-                                if sku_index is not None:
+                                idx2 = ir2.get("sku_seleccionado_index")
+                                prod2 = None
+                                if idx2 is not None:
                                     try:
-                                        idx = int(sku_index) - 1
-                                        if 0 <= idx < len(resultados_nuevos):
-                                            producto_elegido = resultados_nuevos[idx]
+                                        i2 = int(idx2) - 1
+                                        if 0 <= i2 < len(resultados_nuevos):
+                                            prod2 = resultados_nuevos[i2]
                                     except (ValueError, TypeError):
                                         pass
-                                if not producto_elegido:
-                                    producto_elegido = (
+                                if not prod2:
+                                    prod2 = (
                                         next((r for r in resultados_nuevos if r["estado"] == "disponible"), None)
                                         or resultados_nuevos[0]
                                     )
                                 await deps["session"].set_pending(
                                     phone=phone,
-                                    sku_id=producto_elegido["sku_id"],
-                                    sku_nombre=producto_elegido["nombre"],
-                                    precio=producto_elegido["precio"],
+                                    sku_id=prod2["sku_id"],
+                                    sku_nombre=prod2["nombre"],
+                                    precio=prod2["precio"],
                                     cantidad=cantidad,
                                     opciones=resultados_nuevos,
                                 )
                             else:
-                                # Producto nuevo no encontrado en catálogo
-                                respuesta = f"No encontramos {nueva_entidad} en el catálogo en este momento. ¿Buscás algo más?"
+                                respuesta = f"No encontramos {nueva_entidad} en el catálogo. ¿Buscás algo más?"
                         else:
-                            # Canceló sin mencionar producto nuevo
                             respuesta = "Dale, sin problema. ¿En qué más te puedo ayudar?"
 
                     _ts = _time.perf_counter()
