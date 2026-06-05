@@ -73,7 +73,7 @@ Respondé SIEMPRE con un JSON con este esquema (sin texto extra):
 
 El campo "cantidad" es la cantidad de unidades que el cliente quiere comprar (número entero, mínimo 1).
 El campo "solicita_imagen": true si el usuario pide ver la foto/imagen del producto ("¿tenés foto?", "¿cómo es?", "¿me mandás una imagen?"). false en todos los demás casos.
-El campo "sku_seleccionado_index" es el número de opción elegida por el usuario (1=primera opción, 2=segunda, 3=tercera), tanto cuando el mensaje tiene [OPCIONES MOSTRADAS] como cuando tiene [RESULTADOS DEL CATÁLOGO]. Si el usuario dice "1", "el primero", "el de arriba" → 1. Si dice "2" o "el segundo" → 2. Null si no eligió una opción específica.
+El campo "sku_seleccionado_index": cuando hay [RESULTADOS DEL CATÁLOGO] u [OPCIONES MOSTRADAS], SIEMPRE debés setearlo con el número del producto que mencionás en tu respuesta. El número corresponde exactamente al prefijo numérico de la lista (1=primer producto, 2=segundo, 3=tercero). NUNCA uses null cuando hay productos en el contexto y estás respondiendo sobre uno específico — si lo dejás null, el sistema elige el primer producto automáticamente aunque no sea el que describiste, causando errores de pedido.
 El campo "confirmacion": cuando el sistema está esperando confirmación de un pedido pendiente:
 - true  → el usuario confirma el pedido (aunque use palabras raras, errores de tipeo o autocorrect).
 - false → el usuario cancela O pide un producto DIFERENTE al pendiente (ej: "mejor bayer", "no, quiero ibuprofeno", "prefiero el genérico"). En estos casos siempre false, nunca null.
@@ -153,12 +153,13 @@ class IntentService:
         if not productos:
             return "Sin resultados en el catálogo."
         lines = []
-        for p in productos:
+        for i, p in enumerate(productos, start=1):
             if p["estado"] == "disponible":
                 estado_txt = f"Disponible (cantidad aprox: {p['cantidad_visible']})"
             else:
                 estado_txt = "Consultar disponibilidad"
-            lines.append(f"- {p['nombre']} | ${p['precio']:.2f} | {estado_txt} | ID: {p['sku_id']}")
+            # Número explícito para que sku_seleccionado_index coincida sin ambigüedad
+            lines.append(f"{i}. {p['nombre']} | ${p['precio']:.2f} | {estado_txt} | ID: {p['sku_id']}")
         return "\n".join(lines)
 
     @staticmethod

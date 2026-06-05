@@ -318,6 +318,17 @@ async def simulate(req: SimulateRequest):
                         producto_elegido = productos_encontrados[idx]
                 except (ValueError, TypeError):
                     pass
+            # Validación por precio si el índice no coincide con el texto
+            if producto_elegido and respuesta:
+                import re as _re2
+                for r_sku in productos_encontrados:
+                    p_str = f"${r_sku['precio']:,.2f}".replace(".", ",")
+                    p_str2 = f"${r_sku['precio']:.2f}".replace(".", ",")
+                    if any(p in respuesta for p in [p_str, p_str2]):
+                        precio_elegido = f"${producto_elegido['precio']:,.2f}".replace(".", ",")
+                        if precio_elegido not in respuesta:
+                            producto_elegido = r_sku
+                        break
             if not producto_elegido:
                 producto_elegido = (
                     next((r for r in productos_encontrados if r["estado"] == "disponible"), None)

@@ -404,6 +404,8 @@ async def receive_message(request: Request):
                     sku_index = intent_result.get("sku_seleccionado_index")
                     solicita_imagen = bool(intent_result.get("solicita_imagen"))
                     producto_elegido = None
+
+                    # 1. Intentar con el índice que devolvió Claude
                     if sku_index is not None:
                         try:
                             idx = int(sku_index) - 1  # 1-based → 0-based
@@ -411,6 +413,26 @@ async def receive_message(request: Request):
                                 producto_elegido = resultados_sku[idx]
                         except (ValueError, TypeError):
                             pass
+
+                    # 2. Validación por precio: si la respuesta menciona un precio que no
+                    #    coincide con el producto elegido, buscar el que sí coincide.
+                    #    Evita que index=null caiga al primer resultado incorrecto.
+                    if producto_elegido and respuesta:
+                        precio_str = f"{producto_elegido['precio']:.2f}".replace(".", ",")
+                        precio_str2 = f"{producto_elegido['precio']:,.2f}".replace(".", ",")
+                        if precio_str not in respuesta and precio_str2 not in respuesta:
+                            # El precio del elegido no aparece en la respuesta → buscar el correcto
+                            import re as _re2
+                            precios_mencionados = _re2.findall(r'\$[\d.,]+', respuesta)
+                            for r_sku in resultados_sku:
+                                p_str = f"${r_sku['precio']:,.2f}".replace(".", ",")
+                                p_str2 = f"${r_sku['precio']:.2f}".replace(".", ",")
+                                if any(p in respuesta for p in [p_str, p_str2]):
+                                    producto_elegido = r_sku
+                                    logger.info(f"SKU corregido por precio: {r_sku['nombre']}")
+                                    break
+
+                    # 3. Fallback: primer disponible
                     if not producto_elegido:
                         producto_elegido = (
                             next((r for r in resultados_sku if r["estado"] == "disponible"), None)
