@@ -22,8 +22,8 @@ import anthropic
 
 logger = logging.getLogger(__name__)
 
-MODEL_FAST = "claude-haiku-3-5"   # clasificación + respuestas simples
-MODEL_FULL = "claude-sonnet-4-5"  # respuestas con catálogo SKU / confirmaciones
+MODEL_FAST = "claude-3-5-haiku-20241022"  # clasificación + respuestas simples
+MODEL_FULL = "claude-sonnet-4-5"         # respuestas con catálogo SKU / confirmaciones
 
 SYSTEM_PROMPT = """Sos el asistente virtual de Remedia.
 
@@ -84,7 +84,7 @@ El campo "confirmacion": cuando el sistema está esperando confirmación de un p
 - false → el usuario cancela O pide un producto DIFERENTE al pendiente (ej: "mejor bayer", "no, quiero ibuprofeno", "prefiero el genérico"). En estos casos siempre false, nunca null.
 - null  → el mensaje no tiene relación con ningún pedido pendiente (saludo, pregunta de stock de otro producto sin contexto de compra, etc.)."""
 
-# System prompt en formato lista para prompt caching.
+# System prompt en formato lista para prompt caching (SDK >= 0.28, beta header requerido).
 # Claude cachea el prefijo del system prompt 5 minutos → ahorra ~200-400ms por hit.
 _SYSTEM_CACHED = [
     {
@@ -93,6 +93,7 @@ _SYSTEM_CACHED = [
         "cache_control": {"type": "ephemeral"},
     }
 ]
+_CACHE_HEADERS = {"anthropic-beta": "prompt-caching-2024-07-31"}
 
 
 class IntentService:
@@ -120,6 +121,7 @@ class IntentService:
                 max_tokens=512,
                 system=_SYSTEM_CACHED,
                 messages=messages,
+                extra_headers=_CACHE_HEADERS,
             )
             raw = response.content[0].text.strip()
             return self._parse_response(raw)
