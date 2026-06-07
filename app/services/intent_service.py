@@ -84,16 +84,8 @@ El campo "confirmacion": cuando el sistema está esperando confirmación de un p
 - false → el usuario cancela O pide un producto DIFERENTE al pendiente (ej: "mejor bayer", "no, quiero ibuprofeno", "prefiero el genérico"). En estos casos siempre false, nunca null.
 - null  → el mensaje no tiene relación con ningún pedido pendiente (saludo, pregunta de stock de otro producto sin contexto de compra, etc.)."""
 
-# System prompt en formato lista para prompt caching (SDK >= 0.28, beta header requerido).
-# Claude cachea el prefijo del system prompt 5 minutos → ahorra ~200-400ms por hit.
-_SYSTEM_CACHED = [
-    {
-        "type": "text",
-        "text": SYSTEM_PROMPT,
-        "cache_control": {"type": "ephemeral"},
-    }
-]
-_CACHE_HEADERS = {"anthropic-beta": "prompt-caching-2024-07-31"}
+# Prompt caching requiere SDK >= 0.50 — por ahora usamos string directo.
+_SYSTEM_CACHED = SYSTEM_PROMPT
 
 
 class IntentService:
@@ -121,7 +113,6 @@ class IntentService:
                 max_tokens=512,
                 system=_SYSTEM_CACHED,
                 messages=messages,
-                extra_headers=_CACHE_HEADERS,
             )
             raw = response.content[0].text.strip()
             return self._parse_response(raw)
