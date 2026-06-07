@@ -22,8 +22,8 @@ import anthropic
 
 logger = logging.getLogger(__name__)
 
-MODEL_FAST = "claude-3-5-haiku-20241022"  # clasificación + respuestas simples
-MODEL_FULL = "claude-sonnet-4-5"         # respuestas con catálogo SKU / confirmaciones
+MODEL_FAST = "claude-3-haiku-20240307"  # clasificación + respuestas simples (~400ms, tier 1)
+MODEL_FULL = "claude-sonnet-4-5"        # respuestas con catálogo SKU / confirmaciones
 
 SYSTEM_PROMPT = """Sos el asistente virtual de Remedia.
 
