@@ -1,14 +1,16 @@
 """
 Clasificador de intenciones y generador de respuestas usando Claude API.
 
-Intenciones reconocidas (según documento):
-  saludo | social | consulta_precio | consulta_stock | pedido |
-  consulta_abierta | agradecimiento | cambio_postventa | desconocido
+Dos modelos para optimizar latencia:
+  - procesar_rapido() → claude-haiku-3-5  (~400-600ms)
+      Clasifica intención, extrae entidad, genera respuesta para casos simples.
+      Se usa siempre como Claude 1 (antes de buscar SKU).
+  - procesar()        → claude-sonnet-4-5 (~1500-2500ms)
+      Genera respuesta final cuando hay resultados del catálogo (Claude 2).
+      También se usa en el flujo de confirmación donde la precisión es crítica.
 
-Claude hace dos cosas en un único llamado:
-  1. Clasifica la intención.
-  2. Extrae la entidad (nombre del producto si aplica).
-  3. Genera la respuesta del bot.
+Prompt caching activado en ambos: el system prompt se cachea 5 minutos en
+los servidores de Anthropic → ahorra ~200-400ms por llamado repetido.
 """
 
 import json
@@ -19,6 +21,9 @@ from typing import Optional
 import anthropic
 
 logger = logging.getLogger(__name__)
+
+MODEL_FAST = "claude-haiku-3-5"   # clasificación + respuestas simples
+MODEL_FULL = "claude-sonnet-4-5"  # respuestas con catálogo SKU / confirmaciones
 
 SYSTEM_PROMPT = """Sos el asistente virtual de Remedia.
 
@@ -79,10 +84,83 @@ El campo "confirmacion": cuando el sistema está esperando confirmación de un p
 - false → el usuario cancela O pide un producto DIFERENTE al pendiente (ej: "mejor bayer", "no, quiero ibuprofeno", "prefiero el genérico"). En estos casos siempre false, nunca null.
 - null  → el mensaje no tiene relación con ningún pedido pendiente (saludo, pregunta de stock de otro producto sin contexto de compra, etc.)."""
 
+# System prompt en formato lista para prompt caching.
+# Claude cachea el prefijo del system prompt 5 minutos → ahorra ~200-400ms por hit.
+_SYSTEM_CACHED = [
+    {
+        "type": "text",
+        "text": SYSTEM_PROMPT,
+        "cache_control": {"type": "ephemeral"},
+    }
+]
+
 
 class IntentService:
     def __init__(self, api_key: str):
         self._client = anthropic.AsyncAnthropic(api_key=api_key)
+
+    # ── Helpers internos ──────────────────────────────────────────────────────
+
+    def _build_messages(self, history: list[dict]) -> list[dict]:
+        """Construye la lista de mensajes para Claude filtrando roles inválidos."""
+        return [
+            {
+                "role": "assistant" if m["role"] == "operator" else m["role"],
+                "content": m["content"],
+            }
+            for m in history[-6:]
+            if m["role"] in ("user", "assistant", "operator")
+        ]
+
+    async def _llamar(self, model: str, messages: list[dict]) -> dict:
+        """Llama a la API con el modelo indicado y devuelve el JSON parseado."""
+        try:
+            response = await self._client.messages.create(
+                model=model,
+                max_tokens=512,
+                system=_SYSTEM_CACHED,
+                messages=messages,
+            )
+            raw = response.content[0].text.strip()
+            return self._parse_response(raw)
+        except anthropic.AuthenticationError:
+            logger.error("ANTHROPIC_API_KEY inválida o no configurada")
+            return self._error("Estamos teniendo un problema técnico. Por favor intentá más tarde.")
+        except anthropic.BadRequestError as e:
+            logger.error(f"Claude BadRequest [{model}]: {e}")
+            return self._error("Disculpá, tuve un problema procesando tu mensaje. ¿Me lo repetís?")
+        except anthropic.RateLimitError as e:
+            logger.error(f"Claude rate limit [{model}]: {e}")
+            return self._error("Estamos con mucho tráfico en este momento. ¿Me lo repetís en un segundo?")
+        except Exception as e:
+            logger.error(f"Error Claude API [{model}] [{type(e).__name__}]: {e}")
+            return self._error("Disculpá, tuve un problema procesando tu mensaje. ¿Me lo repetís?")
+
+    @staticmethod
+    def _error(msg: str) -> dict:
+        return {"intencion": "desconocido", "entidad_producto": None, "respuesta": msg}
+
+    # ── API pública ───────────────────────────────────────────────────────────
+
+    async def procesar_rapido(
+        self,
+        mensaje: str,
+        history: list[dict],
+    ) -> dict:
+        """
+        Primera pasada rápida — usa claude-haiku-3-5 (~400-600ms).
+
+        Clasifica intención + extrae entidad + genera respuesta.
+        Para intenciones simples (saludo, social, agradecimiento, desconocido)
+        esta respuesta se usa directamente sin un segundo llamado.
+        Para intenciones con SKU el webhook descarta la respuesta y llama
+        a procesar() con los resultados del catálogo.
+        """
+        messages = self._build_messages(history)
+        messages.append({"role": "user", "content": mensaje})
+        result = await self._llamar(MODEL_FAST, messages)
+        logger.debug(f"Haiku → intención={result.get('intencion')} entidad={result.get('entidad_producto')}")
+        return result
 
     async def procesar(
         self,
@@ -92,62 +170,20 @@ class IntentService:
         label_sku: str = "RESULTADOS DEL CATÁLOGO",
     ) -> dict:
         """
-        Clasifica intención y genera respuesta.
-        Si resultados_sku está presente, se los inyectamos al contexto.
-        """
-        # Claude solo acepta roles "user" y "assistant".
-        # Los mensajes de operador se convierten a "assistant" para mantener contexto.
-        messages = [
-            {"role": "assistant" if m["role"] == "operator" else m["role"],
-             "content": m["content"]}
-            for m in history[-6:]
-            if m["role"] in ("user", "assistant", "operator")
-        ]
+        Pasada completa — usa claude-sonnet-4-5 (~1500-2500ms).
 
+        Se llama cuando hay resultados de SKU para incluir en el contexto,
+        o en el flujo de confirmación donde la precisión es crítica.
+        """
+        messages = self._build_messages(history)
         user_content = mensaje
         if resultados_sku is not None:
             productos_txt = self._formatear_productos(resultados_sku)
             user_content = f"{mensaje}\n\n[{label_sku}]\n{productos_txt}"
-
         messages.append({"role": "user", "content": user_content})
-
-        try:
-            response = await self._client.messages.create(
-                model="claude-sonnet-4-5",
-                max_tokens=512,
-                system=SYSTEM_PROMPT,
-                messages=messages,
-            )
-            raw = response.content[0].text.strip()
-            return self._parse_response(raw)
-        except anthropic.AuthenticationError:
-            logger.error("ANTHROPIC_API_KEY inválida o no configurada")
-            return {
-                "intencion": "desconocido",
-                "entidad_producto": None,
-                "respuesta": "Estamos teniendo un problema técnico. Por favor intentá más tarde.",
-            }
-        except anthropic.BadRequestError as e:
-            logger.error(f"Claude BadRequest (model/prompt inválido): {e}")
-            return {
-                "intencion": "desconocido",
-                "entidad_producto": None,
-                "respuesta": "Disculpá, tuve un problema procesando tu mensaje. ¿Me lo repetís?",
-            }
-        except anthropic.RateLimitError as e:
-            logger.error(f"Claude rate limit alcanzado: {e}")
-            return {
-                "intencion": "desconocido",
-                "entidad_producto": None,
-                "respuesta": "Estamos con mucho tráfico en este momento. ¿Me lo repetís en un segundo?",
-            }
-        except Exception as e:
-            logger.error(f"Error llamando Claude API [{type(e).__name__}]: {e}")
-            return {
-                "intencion": "desconocido",
-                "entidad_producto": None,
-                "respuesta": "Disculpá, tuve un problema procesando tu mensaje. ¿Me lo repetís?",
-            }
+        result = await self._llamar(MODEL_FULL, messages)
+        logger.debug(f"Sonnet → intención={result.get('intencion')} sku_index={result.get('sku_seleccionado_index')}")
+        return result
 
     def _formatear_productos(self, productos: list[dict]) -> str:
         if not productos:
@@ -165,7 +201,6 @@ class IntentService:
     @staticmethod
     def _parse_response(raw: str) -> dict:
         try:
-            # Claude a veces envuelve el JSON en ```json ... ```
             match = re.search(r"\{.*\}", raw, re.DOTALL)
             if match:
                 return json.loads(match.group())

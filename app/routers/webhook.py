@@ -381,8 +381,11 @@ async def receive_message(request: Request):
             # ── Flujo normal ─────────────────────────────────────────────────
             resultados_sku = None
 
+            # Claude 1 — Haiku (rápido): clasifica intención + extrae entidad.
+            # Para intenciones simples (saludo, social, agradecimiento) su
+            # respuesta se usa directamente sin un segundo llamado a Claude.
             _tc = _time.perf_counter()
-            intent_result = await deps["intent"].procesar(
+            intent_result = await deps["intent"].procesar_rapido(
                 mensaje=texto,
                 history=session.get("history", []),
             )

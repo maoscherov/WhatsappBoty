@@ -150,11 +150,16 @@ async def simulate(req: SimulateRequest):
             )
 
         else:
-            # Ni SI ni NO claro → consultar a Claude con contexto del pedido pendiente
+            # Ambiguo: Sonnet decide con contexto completo de las opciones mostradas.
+            # Pasamos pending_opciones para que "el 1 puede ser?" sea interpretado
+            # como selección de la opción 1, no como una búsqueda nueva.
+            pending_opciones = session.get("pending_opciones", [])
             _tc = _time.perf_counter()
             intent_result = await intent_svc.procesar(
                 mensaje=texto,
                 history=session.get("history", []),
+                resultados_sku=pending_opciones if pending_opciones else None,
+                label_sku="OPCIONES MOSTRADAS",
             )
             _steps["claude1_ms"] = int((_time.perf_counter() - _tc) * 1000)
 
@@ -162,14 +167,36 @@ async def simulate(req: SimulateRequest):
             respuesta = intent_result.get("respuesta", "")
             _entidad_nueva = intent_result.get("entidad_producto")
             _intencion_nueva = intent_result.get("intencion", "desconocido")
+            sku_index = intent_result.get("sku_seleccionado_index")
 
-            # Tratar como cancelación también cuando confirmacion=None pero
-            # el usuario mencionó un producto DIFERENTE con intent de SKU
+            # Paso 1: si el usuario seleccionó una opción de la lista existente,
+            # actualizar pending ANTES de evaluar confirmacion/cambio.
+            if sku_index is not None and pending_opciones:
+                try:
+                    idx = int(sku_index) - 1
+                    if 0 <= idx < len(pending_opciones):
+                        elegido = pending_opciones[idx]
+                        nueva_cantidad = max(1, int(intent_result.get("cantidad") or session.get("pending_cantidad", 1)))
+                        await session_svc.set_pending(
+                            phone=req.phone,
+                            sku_id=elegido["sku_id"],
+                            sku_nombre=elegido["nombre"],
+                            precio=elegido["precio"],
+                            cantidad=nueva_cantidad,
+                            opciones=pending_opciones,
+                        )
+                        session = await session_svc.get(req.phone)
+                except (ValueError, TypeError):
+                    pass
+
+            # Paso 2: _es_cambio solo aplica cuando NO hay selección de opción existente
             _es_cambio = (
-                confirmacion is False or
-                (confirmacion is None
-                 and _entidad_nueva
-                 and _intencion_nueva in INTENCIONES_CON_SKU)
+                sku_index is None and (
+                    confirmacion is False or
+                    (confirmacion is None
+                     and _entidad_nueva
+                     and _intencion_nueva in INTENCIONES_CON_SKU)
+                )
             )
 
             if confirmacion is True:
@@ -262,8 +289,11 @@ async def simulate(req: SimulateRequest):
             )
 
     # ── Flujo normal ─────────────────────────────────────────────────────────
+    # Claude 1 — Haiku (rápido): clasifica intención + extrae entidad.
+    # Para intenciones simples (saludo, social, agradecimiento) su
+    # respuesta se usa directamente sin un segundo llamado a Claude.
     _tc = _time.perf_counter()
-    intent_result = await intent_svc.procesar(
+    intent_result = await intent_svc.procesar_rapido(
         mensaje=texto,
         history=session.get("history", []),
     )
