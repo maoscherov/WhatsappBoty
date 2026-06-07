@@ -119,7 +119,8 @@ async def receive_message(request: Request):
     if not messages:
         return {"status": "no_messages"}
 
-    deps = _deps()
+    _s = get_settings()
+    deps = _deps(_s)
 
     for msg in messages:
         phone   = msg["from"]
@@ -132,6 +133,7 @@ async def receive_message(request: Request):
         _tipo = msg_type
         _intencion = "desconocido"
         _skip_record = False  # True para mensajes descartados antes de procesar
+        _audio_prov_used: str | None = None   # "groq" | "openai" si se transcribió
 
         try:
             # Deduplicación: ignorar si ya procesamos este mensaje
@@ -151,6 +153,7 @@ async def receive_message(request: Request):
                 if audio_bytes:
                     texto = await deps["audio"].transcribir(audio_bytes) or ""
                     _steps["transcripcion_ms"] = int((_time.perf_counter() - _ta) * 1000)
+                    _audio_prov_used = _s.audio_provider or "groq"
                     if not texto:
                         await deps["wa"].send_text(phone, "No pude escuchar bien el audio. ¿Me lo mandás por texto?")
                         continue
@@ -531,6 +534,14 @@ async def receive_message(request: Request):
                     f"⏱ PERF …{phone[-4:]} tipo={_tipo} intent={_intencion} "
                     f"total={_total}ms | {step_str}"
                 )
+                # Construir lista de APIs externas usadas en esta llamada
+                _apis: list[str] = []
+                if "claude1_ms" in _steps or "claude2_ms" in _steps:
+                    _apis.append("claude")
+                if _audio_prov_used:
+                    _apis.append(_audio_prov_used)   # "groq" o "openai"
+                if "vision_ms" in _steps:
+                    _apis.append("vision")
                 await deps["perf"].record({
                     "ts": datetime.now(_tz.utc).isoformat(),
                     "phone_suffix": phone[-4:],
@@ -538,6 +549,7 @@ async def receive_message(request: Request):
                     "intencion": _intencion,
                     "total_ms": _total,
                     "steps": dict(_steps),
+                    "apis": _apis,
                 })
 
     return {"status": "ok"}

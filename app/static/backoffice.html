@@ -245,9 +245,17 @@ td .product-price { color: var(--accent); font-size: 12px; }
   display: inline-block; padding: 2px 8px; border-radius: 6px;
   font-size: 10px; font-weight: 600; background: #1e293b; color: var(--text-muted);
 }
-.tag.audio { background: #1a1060; color: #a78bfa; }
-.tag.image { background: #0f2d1a; color: var(--accent); }
+.tag.audio    { background: #1a1060; color: #a78bfa; }
+.tag.image    { background: #0f2d1a; color: var(--accent); }
 .tag.simulate { background: #12182b; color: #60a5fa; }
+
+/* API tags en la columna de APIs */
+.api-tags { display: flex; flex-wrap: wrap; gap: 3px; }
+.api-tag { display: inline-block; padding: 2px 6px; border-radius: 5px; font-size: 10px; font-weight: 700; }
+.api-tag.claude  { background: #1e3a5f; color: #60a5fa; }
+.api-tag.groq    { background: #2d1060; color: #c084fc; }
+.api-tag.openai  { background: #0f2d1a; color: #34d399; }
+.api-tag.vision  { background: #2d1f00; color: #fbbf24; }
 
 #btn-clear-perf {
   background: transparent; border: 1px solid var(--border);
@@ -390,6 +398,7 @@ td .product-price { color: var(--accent); font-size: 12px; }
             <th>Hora</th>
             <th>Tel.</th>
             <th>Tipo</th>
+            <th>APIs</th>
             <th>Intención</th>
             <th>Total</th>
             <th>Claude 1</th>
@@ -399,7 +408,7 @@ td .product-price { color: var(--accent); font-size: 12px; }
           </tr>
         </thead>
         <tbody id="perf-body">
-          <tr><td colspan="9" class="empty"><span class="spinner"></span> Cargando...</td></tr>
+          <tr><td colspan="10" class="empty"><span class="spinner"></span> Cargando...</td></tr>
         </tbody>
       </table>
     </div>
@@ -725,7 +734,7 @@ async function loadPerf() {
 
     if (!d.agregados) {
       document.getElementById('perf-body').innerHTML =
-        '<tr><td colspan="9" class="empty">Sin datos de performance aún — enviá algunos mensajes</td></tr>';
+        '<tr><td colspan="10" class="empty">Sin datos de performance aún — enviá algunos mensajes</td></tr>';
       return;
     }
 
@@ -771,9 +780,11 @@ async function loadPerf() {
     // Log table
     const perfBody = document.getElementById('perf-body');
     if (!d.entries.length) {
-      perfBody.innerHTML = '<tr><td colspan="9" class="empty">Sin registros</td></tr>';
+      perfBody.innerHTML = '<tr><td colspan="10" class="empty">Sin registros</td></tr>';
       return;
     }
+
+    const API_LABELS = { claude: 'Claude', groq: 'Groq', openai: 'OpenAI', vision: 'Visión' };
 
     perfBody.innerHTML = d.entries.map(e => {
       const t = new Date(e.ts);
@@ -782,11 +793,26 @@ async function loadPerf() {
       const s = e.steps || {};
       const tipo = e.tipo || 'text';
 
+      // API tags: usar campo guardado si existe, sino inferir de los steps
+      const apis = e.apis && e.apis.length
+        ? e.apis
+        : [
+            ...(s.claude1_ms != null || s.claude2_ms != null ? ['claude'] : []),
+            ...(s.transcripcion_ms != null ? ['groq'] : []),   // fallback: groq
+            ...(s.vision_ms != null ? ['vision'] : []),
+          ];
+      const apiTagsHtml = apis.length
+        ? `<div class="api-tags">${apis.map(a =>
+            `<span class="api-tag ${a}">${API_LABELS[a] || a}</span>`
+          ).join('')}</div>`
+        : '<span style="color:var(--text-muted);font-size:11px">—</span>';
+
       return `<tr class="${isSlow ? 'slow-row' : ''}">
         <td class="ts-cell">${hora}</td>
         <td>…${esc(e.phone_suffix || '??')}</td>
         <td><span class="tag ${tipo}">${tipo}</span></td>
-        <td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(e.intencion || '—')}</td>
+        <td>${apiTagsHtml}</td>
+        <td style="max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(e.intencion || '—')}</td>
         <td class="${msColor(e.total_ms)}" style="font-weight:600">${e.total_ms.toLocaleString()}ms</td>
         <td class="${msColor(s.claude1_ms||0)}">${s.claude1_ms != null ? s.claude1_ms+'ms' : '—'}</td>
         <td style="color:var(--text-muted)">${s.sku_ms != null ? s.sku_ms+'ms' : '—'}</td>
