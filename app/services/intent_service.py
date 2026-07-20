@@ -51,6 +51,13 @@ LÓGICA DE PAGO:
 DERIVACIÓN:
 - Para cambios, devoluciones o problemas: derivás al operador humano siempre.
 
+PERSONALIZACIÓN (SOCIOS DE LA MUTUAL):
+- Si el mensaje incluye un bloque [DATOS DEL SOCIO], el cliente es socio reconocido de la mutual.
+- Al saludar, usá su primer nombre con calidez: "¡Hola María! Qué bueno verte de nuevo 😊".
+- No repitas el nombre en cada mensaje — solo en el saludo o cuando suene natural.
+- Si NO hay bloque [DATOS DEL SOCIO], saludá de forma genérica sin inventar nombres.
+- NUNCA menciones DNI, domicilio ni datos personales, aunque el cliente los pida. Si pregunta por sus datos de socio, derivá al operador humano.
+
 MATRIZ DE INTENCIONES — frases reales de clientes y cómo actuar:
 
 | Intención | Frases disparadoras reales | Acción |
@@ -140,9 +147,10 @@ class IntentService:
         self,
         mensaje: str,
         history: list[dict],
+        contexto_cliente: Optional[str] = None,
     ) -> dict:
         """
-        Primera pasada rápida — usa claude-haiku-3-5 (~400-600ms).
+        Primera pasada rápida — usa MODEL_FAST (Haiku, ~400-600ms).
 
         Clasifica intención + extrae entidad + genera respuesta.
         Para intenciones simples (saludo, social, agradecimiento, desconocido)
@@ -151,7 +159,7 @@ class IntentService:
         a procesar() con los resultados del catálogo.
         """
         messages = self._build_messages(history)
-        messages.append({"role": "user", "content": mensaje})
+        messages.append({"role": "user", "content": self._con_contexto(mensaje, contexto_cliente)})
         result = await self._llamar(MODEL_FAST, messages)
         logger.debug(f"Haiku → intención={result.get('intencion')} entidad={result.get('entidad_producto')}")
         return result
@@ -162,6 +170,7 @@ class IntentService:
         history: list[dict],
         resultados_sku: Optional[list[dict]] = None,
         label_sku: str = "RESULTADOS DEL CATÁLOGO",
+        contexto_cliente: Optional[str] = None,
     ) -> dict:
         """
         Pasada completa — usa claude-sonnet-4-5 (~1500-2500ms).
@@ -174,10 +183,17 @@ class IntentService:
         if resultados_sku is not None:
             productos_txt = self._formatear_productos(resultados_sku)
             user_content = f"{mensaje}\n\n[{label_sku}]\n{productos_txt}"
-        messages.append({"role": "user", "content": user_content})
+        messages.append({"role": "user", "content": self._con_contexto(user_content, contexto_cliente)})
         result = await self._llamar(MODEL_FULL, messages)
         logger.debug(f"Sonnet → intención={result.get('intencion')} sku_index={result.get('sku_seleccionado_index')}")
         return result
+
+    @staticmethod
+    def _con_contexto(user_content: str, contexto_cliente: Optional[str]) -> str:
+        """Anexa el bloque de datos del socio al mensaje si el cliente está en el padrón."""
+        if not contexto_cliente:
+            return user_content
+        return f"{user_content}\n\n[DATOS DEL SOCIO]\n{contexto_cliente}"
 
     def _formatear_productos(self, productos: list[dict]) -> str:
         if not productos:

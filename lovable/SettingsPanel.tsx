@@ -113,6 +113,86 @@ function SKUSection() {
   );
 }
 
+// ── Socios (padrón mutual) section ────────────────────────────────────────────
+function SociosSection() {
+  const [info, setInfo]           = useState<{ total: number; path?: string } | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [result, setResult]       = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const fetchInfo = useCallback(async () => {
+    const r = await fetch(apiUrl("/bo/socios/info"));
+    if (r.ok) setInfo(await r.json());
+  }, []);
+
+  useEffect(() => { fetchInfo(); }, [fetchInfo]);
+
+  async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    setResult(null);
+    const form = new FormData();
+    form.append("file", file);
+    try {
+      const r = await fetch(apiUrl("/bo/socios/import"), { method: "POST", body: form });
+      const d = await r.json();
+      if (r.ok) {
+        setResult(`✅ Padrón actualizado: ${d.total} socios`);
+        fetchInfo();
+      } else {
+        setResult(`❌ Error: ${d.detail}`);
+      }
+    } catch {
+      setResult("❌ Error de red");
+    } finally {
+      setUploading(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h2 className="text-base font-semibold text-white">🪪 Padrón de socios</h2>
+        {info && (
+          <span className="text-sm text-gray-400">
+            <span className="text-emerald-400 font-bold">{info.total.toLocaleString()}</span> socios cargados
+          </span>
+        )}
+      </div>
+
+      <div className="bg-gray-800 rounded-xl p-4 space-y-3">
+        <p className="text-sm text-gray-400">
+          Subí el padrón en CSV o Excel (columnas: APELLIDO, NOMBRE, DNI, SOCIO, CELULAR, DOMICILIO).
+          El bot reconoce a los socios por su número de WhatsApp y los saluda por nombre.
+        </p>
+        <label className={`flex items-center justify-center gap-2 px-4 py-3 rounded-lg border-2
+          border-dashed cursor-pointer transition-colors text-sm font-medium
+          ${uploading
+            ? "border-gray-600 text-gray-600 cursor-not-allowed"
+            : "border-gray-600 hover:border-blue-500 text-gray-400 hover:text-blue-400"
+          }`}>
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".csv,.xlsx,.xls"
+            className="hidden"
+            onChange={handleUpload}
+            disabled={uploading}
+          />
+          {uploading ? "⏳ Importando..." : "📄 Seleccionar CSV / Excel"}
+        </label>
+        {result && (
+          <p className={`text-sm font-medium ${result.startsWith("✅") ? "text-emerald-400" : "text-red-400"}`}>
+            {result}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Business Hours section ────────────────────────────────────────────────────
 function HoursSection() {
   const [hours, setHours]       = useState<BusinessHours | null>(null);
@@ -285,6 +365,8 @@ export default function SettingsPanel() {
     <div className="bg-gray-950 min-h-screen p-6 text-gray-200 space-y-8 max-w-2xl mx-auto">
       <h1 className="text-xl font-bold text-white">⚙️ Configuración</h1>
       <SKUSection />
+      <div className="border-t border-gray-800" />
+      <SociosSection />
       <div className="border-t border-gray-800" />
       <HoursSection />
     </div>

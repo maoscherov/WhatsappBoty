@@ -31,6 +31,7 @@ from app.services.audio_service import get_audio_service
 from app.services.image_service import get_image_service
 from app.services.perf_service import get_perf_service
 from app.services.config_service import get_config_service
+from app.services.socio_service import get_socio_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -69,6 +70,7 @@ def _deps(settings=None):
         "image":   get_image_service(s.anthropic_api_key),
         "perf":    get_perf_service(s.redis_url),
         "config":  get_config_service(s.redis_url),
+        "socios":  get_socio_service(s.socios_path),
     }
 
 
@@ -182,6 +184,10 @@ async def receive_message(request: Request):
 
             session = await deps["session"].get(phone)
 
+            # Personalización: si el número está en el padrón de socios,
+            # Claude recibe nombre y N° de socio para saludar por nombre.
+            _ctx_socio = deps["socios"].contexto_para_prompt(phone)
+
             # ── Control de horario de atención ──────────────────────────────
             hours = await deps["config"].get_hours()
             if not deps["config"].is_open_now(hours):
@@ -258,6 +264,7 @@ async def receive_message(request: Request):
                         history=session.get("history", []),
                         resultados_sku=pending_opciones if pending_opciones else None,
                         label_sku="OPCIONES MOSTRADAS",
+                        contexto_cliente=_ctx_socio,
                     )
                     _steps["claude1_ms"] = int((_time.perf_counter() - _tc) * 1000)
 
@@ -339,6 +346,7 @@ async def receive_message(request: Request):
                                     mensaje=texto,
                                     history=session.get("history", []),
                                     resultados_sku=resultados_nuevos,
+                                    contexto_cliente=_ctx_socio,
                                 )
                                 _steps["claude2_ms"] = int((_time.perf_counter() - _tc2) * 1000)
                                 _intencion = ir2.get("intencion", nueva_intencion)
@@ -388,6 +396,7 @@ async def receive_message(request: Request):
             intent_result = await deps["intent"].procesar_rapido(
                 mensaje=texto,
                 history=session.get("history", []),
+                contexto_cliente=_ctx_socio,
             )
             _steps["claude1_ms"] = int((_time.perf_counter() - _tc) * 1000)
 
@@ -421,6 +430,7 @@ async def receive_message(request: Request):
                     mensaje=texto,
                     history=session.get("history", []),
                     resultados_sku=resultados_sku,
+                    contexto_cliente=_ctx_socio,
                 )
                 _steps["claude2_ms"] = int((_time.perf_counter() - _tc2) * 1000)
 
@@ -490,6 +500,7 @@ async def receive_message(request: Request):
                     history=session.get("history", []),
                     resultados_sku=pending_opciones if pending_opciones else None,
                     label_sku="OPCIONES MOSTRADAS",
+                    contexto_cliente=_ctx_socio,
                 )
                 _steps["claude2_ms"] = int((_time.perf_counter() - _tc2) * 1000)
 

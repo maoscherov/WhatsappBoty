@@ -16,6 +16,7 @@ class Settings(BaseSettings):
 
     env: str = "development"
     sku_csv_path: str = "data/catalogo_base.csv"
+    socios_path: str = "data/socios.csv"      # padrón de socios (CSV o XLSX)
     log_level: str = "INFO"
     bo_key: str = ""
     pickup_minutes: int = 30

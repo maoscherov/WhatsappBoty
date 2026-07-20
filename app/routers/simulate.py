@@ -19,6 +19,7 @@ from app.services.intent_service import get_intent_service
 from app.services.payment_service import get_payment_service
 from app.services.image_service import get_image_service
 from app.services.perf_service import get_perf_service
+from app.services.socio_service import get_socio_service
 
 router = APIRouter()
 
@@ -75,8 +76,10 @@ async def simulate(req: SimulateRequest):
     intent_svc = get_intent_service(settings.anthropic_api_key)
     payment_svc = get_payment_service(settings.mp_access_token, settings.mp_notification_url, settings.mp_sandbox)
     perf_svc = get_perf_service(settings.redis_url)
+    socio_svc = get_socio_service(settings.socios_path)
 
     session = await session_svc.get(req.phone)
+    _ctx_socio = socio_svc.contexto_para_prompt(req.phone)
     texto = req.message.strip()
     productos_encontrados: list[dict] = []
     link_pago = None
@@ -160,6 +163,7 @@ async def simulate(req: SimulateRequest):
                 history=session.get("history", []),
                 resultados_sku=pending_opciones if pending_opciones else None,
                 label_sku="OPCIONES MOSTRADAS",
+                contexto_cliente=_ctx_socio,
             )
             _steps["claude1_ms"] = int((_time.perf_counter() - _tc) * 1000)
 
@@ -241,6 +245,7 @@ async def simulate(req: SimulateRequest):
                             mensaje=texto,
                             history=session.get("history", []),
                             resultados_sku=resultados_nuevos,
+                            contexto_cliente=_ctx_socio,
                         )
                         _steps["claude2_ms"] = int((_time.perf_counter() - _tc2) * 1000)
                         respuesta = ir2.get("respuesta", "")  # siempre usar Claude 2
@@ -296,6 +301,7 @@ async def simulate(req: SimulateRequest):
     intent_result = await intent_svc.procesar_rapido(
         mensaje=texto,
         history=session.get("history", []),
+        contexto_cliente=_ctx_socio,
     )
     _steps["claude1_ms"] = int((_time.perf_counter() - _tc) * 1000)
 
@@ -330,6 +336,7 @@ async def simulate(req: SimulateRequest):
             mensaje=texto,
             history=session.get("history", []),
             resultados_sku=productos_encontrados,
+            contexto_cliente=_ctx_socio,
         )
         _steps["claude2_ms"] = int((_time.perf_counter() - _tc2) * 1000)
 
@@ -381,6 +388,7 @@ async def simulate(req: SimulateRequest):
             history=session.get("history", []),
             resultados_sku=pending_opciones if pending_opciones else None,
             label_sku="OPCIONES MOSTRADAS",
+            contexto_cliente=_ctx_socio,
         )
         _steps["claude2_ms"] = int((_time.perf_counter() - _tc2) * 1000)
 

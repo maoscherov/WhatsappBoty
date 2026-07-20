@@ -18,6 +18,7 @@ from app.services.sku_service import get_sku_service, reload_sku_service
 from app.services.perf_service import get_perf_service
 from app.services.config_service import get_config_service
 from app.services.whatsapp_service import get_whatsapp_service
+from app.services.socio_service import get_socio_service, reload_socio_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/bo")
@@ -207,6 +208,55 @@ async def bo_sku_import(file: UploadFile = File(...), _=Depends(_auth)):
         return {"status": "ok", "total": svc.total, "csv_path": str(csv_path)}
     except Exception as e:
         raise HTTPException(status_code=422, detail=f"Error procesando CSV: {e}")
+
+
+# ── Padrón de socios (personalización) ────────────────────────────────────────
+
+@router.get("/socios/info")
+async def bo_socios_info(_=Depends(_auth)):
+    settings = get_settings()
+    try:
+        svc = get_socio_service(settings.socios_path)
+        return {"total": svc.total, "path": settings.socios_path}
+    except Exception as e:
+        return {"total": 0, "error": str(e)}
+
+
+@router.post("/socios/import")
+async def bo_socios_import(file: UploadFile = File(...), _=Depends(_auth)):
+    """
+    Reemplaza el padrón de socios con el archivo subido (CSV o XLSX) y
+    recarga el servicio. Columnas esperadas: APELLIDO, NOMBRE, DNI, SOCIO,
+    CELULAR, DOMICILIO (los nombres admiten variantes).
+    """
+    settings = get_settings()
+    filename = (file.filename or "").lower()
+    suffix = ".xlsx" if filename.endswith((".xlsx", ".xls")) else ".csv"
+
+    # El padrón se guarda con la extensión del archivo subido; socios_path
+    # define la base, la extensión se ajusta al formato real.
+    dest = Path(settings.socios_path).with_suffix(suffix)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Archivo vacío")
+    dest.write_bytes(content)
+
+    # Si quedó un padrón viejo con la otra extensión, eliminarlo para no confundir
+    otro = Path(settings.socios_path).with_suffix(".csv" if suffix == ".xlsx" else ".xlsx")
+    if otro != dest and otro.exists():
+        otro.unlink()
+
+    try:
+        svc = reload_socio_service(str(dest))
+        if svc.total == 0:
+            raise ValueError("no se reconocieron socios (¿faltan las columnas NOMBRE y CELULAR?)")
+        # Actualizar el path efectivo para los próximos get_socio_service
+        settings.socios_path = str(dest)
+        return {"status": "ok", "total": svc.total, "path": str(dest)}
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Error procesando padrón: {e}")
 
 
 # ── Horarios de atención ───────────────────────────────────────────────────────
