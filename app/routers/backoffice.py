@@ -222,6 +222,29 @@ async def bo_socios_info(_=Depends(_auth)):
         return {"total": 0, "error": str(e)}
 
 
+@router.get("/socios/check/{phone}")
+async def bo_socios_check(phone: str, _=Depends(_auth)):
+    """
+    Diagnóstico: ¿este número matchea contra el padrón?
+    Usar el número tal como aparece en la lista de sesiones del backoffice.
+    """
+    settings = get_settings()
+    svc = get_socio_service(settings.socios_path)
+    socio = svc.find_by_phone(phone)
+    return {
+        "phone_consultado": phone,
+        "padron_total": svc.total,
+        "match": bool(socio),
+        "socio": {
+            "nombre": socio["nombre"],
+            "apellido": socio["apellido"],
+            "nro_socio": socio["nro_socio"],
+            "celular_padron": socio["celular"],
+        } if socio else None,
+        "contexto_prompt": svc.contexto_para_prompt(phone),
+    }
+
+
 @router.post("/socios/import")
 async def bo_socios_import(file: UploadFile = File(...), _=Depends(_auth)):
     """
