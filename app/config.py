@@ -31,6 +31,11 @@ class Settings(BaseSettings):
     image_server_api_key: str = ""            # clave para subir imágenes
     images_base_url: str = ""                 # ej: https://tuapp.railway.app/media
 
+    # Mercurio ERP (SOAP) — vacíos hasta tener WSDL y credenciales
+    mercurio_wsdl_url: str = ""
+    mercurio_user: str = ""
+    mercurio_password: str = ""
+
     class Config:
         env_file = ".env"
         extra = "ignore"
