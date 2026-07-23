@@ -16,6 +16,8 @@ interface DaySchedule {
 interface BotConfig {
   send_images: string;
   pickup_minutes: string;
+  receta_mode?: string;
+  envio_enabled?: string;
 }
 interface BusinessHours {
   enabled: boolean;
@@ -188,6 +190,121 @@ function SociosSection() {
             {result}
           </p>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ── Segmented toggle reutilizable ─────────────────────────────────────────────
+function Segmented({
+  value, options, onChange,
+}: {
+  value: string;
+  options: { val: string; label: string }[];
+  onChange: (v: string) => void;
+}) {
+  return (
+    <div className="flex gap-2">
+      {options.map(o => {
+        const active = o.val === value;
+        return (
+          <button
+            key={o.val}
+            onClick={() => onChange(o.val)}
+            className={`px-4 py-2 rounded-lg text-sm font-semibold transition-colors border ${
+              active
+                ? "bg-blue-600 border-blue-600 text-white"
+                : "bg-gray-900 border-gray-700 text-gray-400 hover:border-gray-500"
+            }`}
+          >
+            {o.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Bot config section (imágenes, receta, envío) ──────────────────────────────
+function BotConfigSection() {
+  const [config, setConfig] = useState<BotConfig | null>(null);
+  const [saved, setSaved]   = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch(apiUrl("/bo/config")).then(r => r.json()).then(setConfig);
+  }, []);
+
+  async function patch(key: keyof BotConfig, value: string) {
+    if (!config) return;
+    setConfig({ ...config, [key]: value });   // optimista
+    const r = await fetch(apiUrl("/bo/config"), {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ [key]: value }),
+    });
+    if (r.ok) {
+      setConfig(await r.json());
+      setSaved(key);
+      setTimeout(() => setSaved(null), 1500);
+    }
+  }
+
+  if (!config) return <div className="text-gray-600 text-sm">Cargando...</div>;
+
+  const rows: {
+    key: keyof BotConfig; title: string; desc: string;
+    value: string; options: { val: string; label: string }[];
+  }[] = [
+    {
+      key: "send_images",
+      title: "🖼 Envío de imágenes de producto",
+      desc: "Cuándo el bot manda la foto del producto por WhatsApp.",
+      value: config.send_images || "always",
+      options: [
+        { val: "always", label: "Siempre" },
+        { val: "on_request", label: "Solo si la piden" },
+      ],
+    },
+    {
+      key: "receta_mode",
+      title: "🩺 Derivación por receta",
+      desc: "Conservador deriva a una persona los medicamentos con receta 'Si' y los ambiguos (sin cruce). Estricto deriva solo los 'Si' explícitos.",
+      value: config.receta_mode || "conservador",
+      options: [
+        { val: "conservador", label: "Conservador" },
+        { val: "estricto", label: "Estricto" },
+      ],
+    },
+    {
+      key: "envio_enabled",
+      title: "🚚 Envío a domicilio",
+      desc: "Si está activo, tras confirmar el pedido el bot ofrece retiro en sucursal o envío a domicilio (usa la dirección del socio si está en el padrón).",
+      value: String(config.envio_enabled ?? "true"),
+      options: [
+        { val: "true", label: "Ofrecer" },
+        { val: "false", label: "Solo retiro" },
+      ],
+    },
+  ];
+
+  return (
+    <div className="space-y-4">
+      <h2 className="text-base font-semibold text-white">⚙️ Comportamiento del bot</h2>
+      <div className="bg-gray-800 rounded-xl p-4 space-y-5">
+        {rows.map(row => (
+          <div key={row.key} className="space-y-2">
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-medium text-white">{row.title}</p>
+              {saved === row.key && <span className="text-xs text-emerald-400">✓ Guardado</span>}
+            </div>
+            <p className="text-xs text-gray-500">{row.desc}</p>
+            <Segmented
+              value={row.value}
+              options={row.options}
+              onChange={v => patch(row.key, v)}
+            />
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -367,6 +484,8 @@ export default function SettingsPanel() {
       <SKUSection />
       <div className="border-t border-gray-800" />
       <SociosSection />
+      <div className="border-t border-gray-800" />
+      <BotConfigSection />
       <div className="border-t border-gray-800" />
       <HoursSection />
     </div>
