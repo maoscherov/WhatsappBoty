@@ -301,12 +301,10 @@ async def receive_message(request: Request):
             # ── Caso especial: hay producto pendiente de confirmar ───────────
             if session.get("estado") == "esperando_confirmacion" and session.get("pending_sku_id"):
                 texto_lower = texto.lower().strip()
-                if _match_si(texto_lower):
-                    cfg_all = await deps["config"].get_all()
-                    respuesta, _intencion = await confirmar_pedido(
-                        deps["sku"], deps["payment"], deps["session"], deps["socios"],
-                        cfg_all, phone, session,
-                    )
+                if _match_no(texto_lower):
+                    _intencion = "pedido_cancelado"
+                    await deps["session"].clear_pending(phone)
+                    respuesta = "Dale, sin problema. ¿En qué más te puedo ayudar?"
                     _ts = _time.perf_counter()
                     await deps["wa"].send_text(phone, respuesta)
                     _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
@@ -314,10 +312,15 @@ async def receive_message(request: Request):
                     await deps["session"].add_message(phone, "assistant", respuesta)
                     continue
 
-                elif _match_no(texto_lower):
-                    _intencion = "pedido_cancelado"
-                    await deps["session"].clear_pending(phone)
-                    respuesta = "Dale, sin problema. ¿En qué más te puedo ayudar?"
+                elif _match_si(texto_lower) or match_envio(texto_lower) or match_retiro(texto_lower):
+                    # Confirma. Si además ya indicó cómo recibirlo, se resuelve sin re-preguntar.
+                    _entrega = ("envio" if match_envio(texto_lower)
+                                else "retiro" if match_retiro(texto_lower) else None)
+                    cfg_all = await deps["config"].get_all()
+                    respuesta, _intencion = await confirmar_pedido(
+                        deps["sku"], deps["payment"], deps["session"], deps["socios"],
+                        cfg_all, phone, session, entrega=_entrega,
+                    )
                     _ts = _time.perf_counter()
                     await deps["wa"].send_text(phone, respuesta)
                     _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)

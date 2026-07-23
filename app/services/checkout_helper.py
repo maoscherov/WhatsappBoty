@@ -132,10 +132,14 @@ async def crear_link_y_responder(
 
 async def confirmar_pedido(
     sku_svc, payment_svc, session_svc, socio_svc, cfg: dict, phone: str, session: dict,
+    entrega: Optional[str] = None,
 ) -> tuple[str, str]:
     """
     Maneja la confirmación positiva de un pedido pendiente.
-    Decide entre: derivar por receta / preguntar modo de entrega / link directo.
+    Decide entre: derivar por receta / resolver entrega / preguntar entrega / link.
+
+    `entrega` opcional: si el cliente ya indicó "retiro" o "envio" al confirmar
+    (ej. "sí, con envío"), se resuelve directo sin volver a preguntar.
     Devuelve (respuesta, intencion).
     """
     modo = cfg.get("receta_mode", "conservador")
@@ -151,8 +155,15 @@ async def confirmar_pedido(
             "derivado_receta",
         )
 
-    # 2. Envío habilitado → preguntar retiro o envío
+    # 2. Envío habilitado
     if envio_enabled:
+        # 2a. Ya indicó la preferencia al confirmar → resolver directo (sin re-preguntar)
+        if entrega in ("retiro", "envio"):
+            return await resolver_entrega(
+                payment_svc, session_svc, socio_svc, phone, session,
+                es_retiro=(entrega == "retiro"), es_envio=(entrega == "envio"),
+            )
+        # 2b. No indicó → preguntar retiro o envío
         await session_svc.set_estado(phone, "esperando_entrega")
         socio = socio_svc.find_by_phone(phone) if socio_svc else None
         if socio and socio.get("domicilio"):

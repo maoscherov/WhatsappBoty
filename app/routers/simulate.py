@@ -171,10 +171,25 @@ async def simulate(req: SimulateRequest):
 
     # ── Confirmación de pedido pendiente ─────────────────────────────────────
     if session.get("estado") == "esperando_confirmacion" and session.get("pending_sku_id"):
-        if _match_si(texto):
+        if _match_no(texto):
+            await session_svc.clear_pending(req.phone)
+            respuesta = "Dale, sin problema. ¿En qué más te puedo ayudar?"
+            await session_svc.add_message(req.phone, "user", texto)
+            await session_svc.add_message(req.phone, "assistant", respuesta)
+            await _record("pedido_cancelado")
+            return SimulateResponse(
+                respuesta=respuesta, intencion="social",
+                entidad_producto=None, productos_encontrados=[],
+                estado_sesion="idle",
+            )
+
+        elif _match_si(texto) or match_envio(texto) or match_retiro(texto):
+            _entrega = ("envio" if match_envio(texto)
+                        else "retiro" if match_retiro(texto) else None)
             cfg_all = await config_svc.get_all()
             respuesta, _intent_out = await confirmar_pedido(
                 sku_svc, payment_svc, session_svc, socio_svc, cfg_all, req.phone, session,
+                entrega=_entrega,
             )
             await session_svc.add_message(req.phone, "user", texto)
             await session_svc.add_message(req.phone, "assistant", respuesta)
@@ -185,18 +200,6 @@ async def simulate(req: SimulateRequest):
                 entidad_producto=session.get("pending_sku_nombre"),
                 productos_encontrados=[], estado_sesion=session.get("estado", "idle"),
                 link_pago=_extract_link(respuesta), mp_error=mp_error, mp_token_ok=mp_token_ok,
-            )
-
-        elif _match_no(texto):
-            await session_svc.clear_pending(req.phone)
-            respuesta = "Dale, sin problema. ¿En qué más te puedo ayudar?"
-            await session_svc.add_message(req.phone, "user", texto)
-            await session_svc.add_message(req.phone, "assistant", respuesta)
-            await _record("pedido_cancelado")
-            return SimulateResponse(
-                respuesta=respuesta, intencion="social",
-                entidad_producto=None, productos_encontrados=[],
-                estado_sesion="idle",
             )
 
         else:
