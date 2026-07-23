@@ -23,7 +23,7 @@ from app.services.socio_service import get_socio_service
 from app.services.config_service import get_config_service
 from app.services.checkout_helper import (
     confirmar_pedido, resolver_entrega, capturar_direccion,
-    match_retiro, match_envio, pide_humano, derivar_si_receta,
+    match_retiro, match_envio, pide_humano, derivar_si_receta, afirma_envio,
 )
 
 
@@ -136,7 +136,8 @@ async def simulate(req: SimulateRequest):
         else:
             respuesta, _intent_out = await resolver_entrega(
                 payment_svc, session_svc, socio_svc, req.phone, session,
-                es_retiro=match_retiro(texto), es_envio=match_envio(texto),
+                es_retiro=match_retiro(texto),
+                es_envio=match_envio(texto) or afirma_envio(texto),
             )
         await session_svc.add_message(req.phone, "user", texto)
         await session_svc.add_message(req.phone, "assistant", respuesta)

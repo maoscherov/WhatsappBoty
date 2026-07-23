@@ -30,6 +30,20 @@ def match_envio(t: str) -> bool:
     return any(re.search(p, t, re.IGNORECASE) for p in _ENVIO)
 
 
+# Afirmación de la dirección propuesta ("sí, ahí", "dale a esa", "a mi domicilio").
+# Se usa cuando el bot ya ofreció la dirección del socio y el cliente la acepta.
+_AFIRMA  = [r"\bs[ií]\b", r"\bdale\b", r"\bok\b", r"\bbueno\b", r"\bperfecto\b",
+            r"\blisto\b", r"\bok\b", r"\bahi\b", r"\bahí\b"]
+_DIR_CUE = [r"\bah[ií]\b", r"\besa\b", r"\bese\b", r"\bdomicilio\b", r"\bcasa\b",
+            r"\besa direcci[oó]n\b", r"\bmi domicilio\b"]
+
+def afirma_envio(t: str) -> bool:
+    """True si el cliente acepta la dirección de envío propuesta (ej: 'sí, ahí')."""
+    tiene_afirma = any(re.search(p, t, re.IGNORECASE) for p in _AFIRMA)
+    tiene_cue    = any(re.search(p, t, re.IGNORECASE) for p in _DIR_CUE)
+    return tiene_afirma and tiene_cue
+
+
 # Pedido explícito de hablar con una persona → derivar al operador.
 # Patrones que exigen un verbo de contacto + destinatario humano, para no
 # dispararse con "algo para una persona mayor".

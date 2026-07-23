@@ -34,7 +34,7 @@ from app.services.config_service import get_config_service
 from app.services.socio_service import get_socio_service
 from app.services.checkout_helper import (
     confirmar_pedido, resolver_entrega, capturar_direccion,
-    match_retiro, match_envio, pide_humano, derivar_si_receta,
+    match_retiro, match_envio, pide_humano, derivar_si_receta, afirma_envio,
 )
 
 logger = logging.getLogger(__name__)
@@ -272,7 +272,7 @@ async def receive_message(request: Request):
                         deps["payment"], deps["session"], deps["socios"],
                         phone, session,
                         es_retiro=match_retiro(texto_lower),
-                        es_envio=match_envio(texto_lower),
+                        es_envio=match_envio(texto_lower) or afirma_envio(texto_lower),
                     )
                 _ts = _time.perf_counter()
                 await deps["wa"].send_text(phone, respuesta)
