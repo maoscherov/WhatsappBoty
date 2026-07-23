@@ -34,7 +34,7 @@ from app.services.config_service import get_config_service
 from app.services.socio_service import get_socio_service
 from app.services.checkout_helper import (
     confirmar_pedido, resolver_entrega, capturar_direccion,
-    match_retiro, match_envio,
+    match_retiro, match_envio, pide_humano,
 )
 
 logger = logging.getLogger(__name__)
@@ -210,6 +210,18 @@ async def receive_message(request: Request):
                 _intencion = "operador"
                 await deps["session"].add_message(phone, "user", texto)
                 logger.info(f"Modo operador activo para {phone} — bot silencioso")
+                continue
+
+            # ── Pide hablar con una persona → derivar (sin generar link) ─────
+            if pide_humano(texto):
+                _intencion = "derivado_humano"
+                await deps["session"].set_estado(phone, "operador")
+                respuesta = "Dale, te paso con alguien del equipo. En un momento te contactamos 🙌"
+                _ts = _time.perf_counter()
+                await deps["wa"].send_text(phone, respuesta)
+                _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
+                await deps["session"].add_message(phone, "user", texto)
+                await deps["session"].add_message(phone, "assistant", respuesta)
                 continue
 
             # ── Estado: eligiendo modo de entrega (retiro / envío) ───────────

@@ -25,8 +25,10 @@ from app.models.sku import SKU
 
 logger = logging.getLogger(__name__)
 
-# Umbrales de búsqueda
-SCORE_CUTOFF = 55
+# Umbrales de búsqueda.
+# 66 filtra los falsos positivos por fragmento (ej. "ibuprofeno"→"FREESTYLE LIBRE",
+# "vecetam"→"esponja VEGetal") sin perder los aciertos reales.
+SCORE_CUTOFF = 66
 TOP_N_DEFAULT = 3
 
 
@@ -150,42 +152,50 @@ class SKUService:
     def buscar(self, query: str, top_n: int = TOP_N_DEFAULT, score_cutoff: int = SCORE_CUTOFF) -> list[dict]:
         """
         Busca productos por nombre coloquial, nombre técnico, marca o laboratorio.
-        Devuelve hasta top_n resultados no pausados, ordenados por ventas_mes desc.
+
+        Devuelve hasta top_n resultados no pausados, ordenados por RELEVANCIA
+        (score del match) primero, y sólo como desempate por disponibilidad y
+        ventas. Si ningún producto supera el umbral, devuelve [] — así el bot
+        responde "no lo encontramos" en vez de ofrecer un producto de otro rubro.
         """
         if not self._skus or not query.strip():
             return []
 
-        # Limpiar la query: quitar cantidades ("dame 2", "necesito 3") y
-        # palabras de intención que confunden el fuzzy match
+        # Limpiar la query: quitar cantidades ("dame 2"), palabras de intención
+        # y de presentación (gotas/crema/jarabe) que arrastran el match a otros
+        # productos del mismo formato pero distinto principio.
         import re as _re
-        clean_query = _re.sub(r'\b(dame|quiero|necesito|tenés|hay|tienen|precio|cuánto|sale|\d+)\b', '', query.lower()).strip()
+        _STOP = (
+            r'\b(dame|quiero|necesito|ten[eé]s|tienen|hay|precio|cu[aá]nto|cuanto|sale|'
+            r'en|de|para|gotas|gota|comprimidos|comprimido|comp|jarabe|crema|pomada|\d+)\b'
+        )
+        clean_query = _re.sub(_STOP, '', query.lower())
+        clean_query = _re.sub(r'\s+', ' ', clean_query).strip()
         if not clean_query:
             clean_query = query.lower()
 
-        seen_ids: set[str] = set()
-        candidatos: list[SKU] = []
-
-        # Búsqueda con query limpia (scorer partial_ratio para substrings)
-        for scorer in [fuzz.WRatio, fuzz.partial_ratio]:
-            matches = process.extract(
+        # Guardamos el MEJOR score por producto entre los dos scorers.
+        # token_set_ratio maneja mejor multi-palabra y orden que partial_ratio.
+        scored: dict[int, float] = {}
+        for scorer in (fuzz.WRatio, fuzz.token_set_ratio):
+            for _text, score, idx in process.extract(
                 clean_query,
                 self._search_index,
                 scorer=scorer,
-                limit=top_n * 6,
+                limit=top_n * 8,
                 score_cutoff=score_cutoff,
-            )
-            for _text, _score, idx in matches:
-                sku = self._skus[idx]
-                if sku.sku_id not in seen_ids and not sku.pausado:
-                    candidatos.append(sku)
-                    seen_ids.add(sku.sku_id)
-            if len(candidatos) >= top_n:
-                break
+            ):
+                if score > scored.get(idx, 0):
+                    scored[idx] = score
 
-        # Ordenar: disponibles primero, luego por más vendido
-        candidatos.sort(key=lambda s: (0 if s.disponible else 1, -(s.ventas_mes or 0)))
+        candidatos = [
+            (self._skus[idx], sc) for idx, sc in scored.items()
+            if not self._skus[idx].pausado
+        ]
+        # Relevancia primero; disponibilidad y ventas sólo desempatan matches parejos.
+        candidatos.sort(key=lambda x: (-x[1], 0 if x[0].disponible else 1, -(x[0].ventas_mes or 0)))
 
-        return [self._to_response(s) for s in candidatos[:top_n]]
+        return [self._to_response(s) for s, _sc in candidatos[:top_n]]
 
     def get_by_id(self, sku_id: str) -> Optional[SKU]:
         for sku in self._skus:

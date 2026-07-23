@@ -23,7 +23,7 @@ from app.services.socio_service import get_socio_service
 from app.services.config_service import get_config_service
 from app.services.checkout_helper import (
     confirmar_pedido, resolver_entrega, capturar_direccion,
-    match_retiro, match_envio,
+    match_retiro, match_envio, pide_humano,
 )
 
 
@@ -114,6 +114,19 @@ async def simulate(req: SimulateRequest):
             "total_ms": total,
             "steps": dict(_steps),
         })
+
+    # ── Pide hablar con una persona → derivar (sin generar link) ─────────────
+    if session.get("estado") != "operador" and pide_humano(texto):
+        await session_svc.set_estado(req.phone, "operador")
+        respuesta = "Dale, te paso con alguien del equipo. En un momento te contactamos 🙌"
+        await session_svc.add_message(req.phone, "user", texto)
+        await session_svc.add_message(req.phone, "assistant", respuesta)
+        await _record("derivado_humano")
+        return SimulateResponse(
+            respuesta=respuesta, intencion="derivado_humano",
+            entidad_producto=None, productos_encontrados=[],
+            estado_sesion="operador", mp_token_ok=mp_token_ok,
+        )
 
     # ── Estado: eligiendo modo de entrega (retiro / envío) ───────────────────
     if session.get("estado") == "esperando_entrega" and session.get("pending_sku_id"):

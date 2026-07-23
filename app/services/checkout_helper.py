@@ -30,6 +30,26 @@ def match_envio(t: str) -> bool:
     return any(re.search(p, t, re.IGNORECASE) for p in _ENVIO)
 
 
+# Pedido explícito de hablar con una persona → derivar al operador.
+# Patrones que exigen un verbo de contacto + destinatario humano, para no
+# dispararse con "algo para una persona mayor".
+_HUMANO = [
+    r"\basesor(a|es)?\b",
+    r"\b(hablar|pasame|pas[aá]s|pasar|paso|comunicar\w*|comunicame|deriv\w+|atienda|atiende|atenderme)\b"
+    r".{0,20}\b(persona|alguien|humano|humana|operador|asesor|encargad|vendedor|farmac\w+)\b",
+    r"\bpersona real\b",
+    r"\bun humano\b",
+    r"\bcon alguien\b",
+    r"\batenci[oó]n humana\b",
+    r"\bquiero hablar con\b",
+]
+
+
+def pide_humano(t: str) -> bool:
+    """True si el cliente pide explícitamente ser atendido por una persona."""
+    return any(re.search(p, t, re.IGNORECASE) for p in _HUMANO)
+
+
 def necesita_receta(sku_svc, sku_id: str, modo: str) -> bool:
     """True si el producto pendiente requiere derivación por receta."""
     if not sku_id:
