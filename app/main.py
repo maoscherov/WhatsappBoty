@@ -12,6 +12,7 @@ from app.config import get_settings
 from app.routers import webhook, simulate, backoffice, mp_webhook, orders_api, media
 from app.services.sku_service import get_sku_service
 from app.services.session_service import get_session_service
+from app.services.blob_store import get_blob_store
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -21,6 +22,27 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     logging.basicConfig(level=settings.log_level)
     logger = logging.getLogger(__name__)
+
+    # Restaurar archivos subidos (catálogo/padrón) desde Redis — el filesystem
+    # de Railway es efímero y se borra en cada deploy.
+    try:
+        blob = get_blob_store(settings.redis_url)
+        cat = await blob.load("catalogo")
+        if cat:
+            p = Path(settings.sku_csv_path)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(cat[0])
+            logger.info(f"Catálogo restaurado desde Redis ({len(cat[0])} bytes)")
+        soc = await blob.load("socios")
+        if soc:
+            data, ext = soc
+            dest = Path(settings.socios_path).with_suffix(ext or ".csv")
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(data)
+            settings.socios_path = str(dest)
+            logger.info(f"Padrón restaurado desde Redis ({len(data)} bytes → {dest.name})")
+    except Exception as e:
+        logger.warning(f"No se pudieron restaurar archivos desde Redis: {e}")
 
     # Carga del catálogo (síncrona, pero rápida desde disco)
     try:

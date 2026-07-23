@@ -19,6 +19,7 @@ from app.services.perf_service import get_perf_service
 from app.services.config_service import get_config_service
 from app.services.whatsapp_service import get_whatsapp_service
 from app.services.socio_service import get_socio_service, reload_socio_service
+from app.services.blob_store import get_blob_store
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/bo")
@@ -205,6 +206,8 @@ async def bo_sku_import(file: UploadFile = File(...), _=Depends(_auth)):
     csv_path.write_bytes(content)
     try:
         svc = reload_sku_service(str(csv_path))
+        # Copia en Redis para sobrevivir deploys (fs efímero de Railway)
+        await get_blob_store(settings.redis_url).save("catalogo", content, ".csv")
         return {"status": "ok", "total": svc.total, "csv_path": str(csv_path)}
     except Exception as e:
         raise HTTPException(status_code=422, detail=f"Error procesando CSV: {e}")
@@ -277,7 +280,11 @@ async def bo_socios_import(file: UploadFile = File(...), _=Depends(_auth)):
             raise ValueError("no se reconocieron socios (¿faltan las columnas NOMBRE y CELULAR?)")
         # Actualizar el path efectivo para los próximos get_socio_service
         settings.socios_path = str(dest)
+        # Copia en Redis para sobrevivir deploys (fs efímero de Railway)
+        await get_blob_store(settings.redis_url).save("socios", content, suffix)
         return {"status": "ok", "total": svc.total, "path": str(dest)}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=422, detail=f"Error procesando padrón: {e}")
 
