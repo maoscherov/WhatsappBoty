@@ -120,6 +120,13 @@ class SKUService:
             or row.get("Codigo_Barras_3", "")
             or ""
         ).strip()
+        categoria = row.get("Categoria", "").strip()
+        # La receta se deriva de la categoría del propio catálogo: la farmacia
+        # ya clasifica los productos como "Medicamentos Bajo Receta". Si el CSV
+        # trae una columna requiere_receta explícita, esa tiene prioridad.
+        requiere = (row.get("requiere_receta") or "").strip().lower()
+        if requiere not in ("si", "ambiguo", "no"):
+            requiere = "si" if categoria.lower() == "medicamentos bajo receta" else "no"
         try:
             return SKU(
                 sku_id=str(row.get("SKU", "")).strip(),
@@ -128,11 +135,12 @@ class SKUService:
                 sku_nombre_original=nombre,
                 marca=row.get("Marca", "").strip(),
                 laboratorio=row.get("Laboratorio", "").strip(),
-                categoria=row.get("Categoria", "").strip(),
+                categoria=categoria,
                 es_medicamento=_safe_bool(row.get("Es_Medicamento", "")),
                 precio_venta=_safe_float(row.get("Precio")) or 0.0,
                 cantidad_visible=0,
                 imagen_url=row.get("imagen_url", "").strip() or None if has_imagen else None,
+                requiere_receta=requiere,
             )
         except Exception:
             return None
