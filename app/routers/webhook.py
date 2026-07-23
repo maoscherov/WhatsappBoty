@@ -40,6 +40,20 @@ from app.services.checkout_helper import (
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+import asyncio as _asyncio
+
+# Lock por teléfono: serializa los mensajes de un mismo usuario para que
+# lleguen en orden (ej.: una foto que tarda en procesarse no se "adelanta"
+# por un texto posterior más rápido). Instancia única (Railway).
+_phone_locks: dict[str, "_asyncio.Lock"] = {}
+
+def _lock_for(phone: str) -> "_asyncio.Lock":
+    lk = _phone_locks.get(phone)
+    if lk is None:
+        lk = _asyncio.Lock()
+        _phone_locks[phone] = lk
+    return lk
+
 INTENCIONES_CON_SKU = {"consulta_precio", "consulta_stock", "pedido", "consulta_abierta"}
 import re as _re
 
@@ -140,6 +154,11 @@ async def receive_message(request: Request):
         _intencion = "desconocido"
         _skip_record = False  # True para mensajes descartados antes de procesar
         _audio_prov_used: str | None = None   # "groq" | "openai" si se transcribió
+
+        # Serializar por teléfono: los mensajes del mismo usuario se procesan
+        # en orden de llegada (evita respuestas a destiempo con foto + texto).
+        _lock = _lock_for(phone)
+        await _lock.acquire()
 
         try:
             # Deduplicación: ignorar si ya procesamos este mensaje
@@ -577,6 +596,7 @@ async def receive_message(request: Request):
             await deps["session"].add_message(phone, "assistant", respuesta)
 
         finally:
+            _lock.release()
             if not _skip_record:
                 _total = int((_time.perf_counter() - _t0) * 1000)
                 step_str = " | ".join(f"{k}={v}ms" for k, v in _steps.items()) if _steps else "—"
