@@ -169,6 +169,14 @@ function SessionRow({ session, onUpdate }: { session: Session; onUpdate: () => v
     onUpdate();
   }
 
+  async function closeSession() {
+    if (!confirm("¿Cerrar esta conversación? Se quita de la lista de conversaciones activas.")) return;
+    setLoading(true);
+    await fetch(apiUrl(`/bo/session/${encodeURIComponent(session.phone)}/close`), { method: "POST" });
+    setLoading(false);
+    onUpdate();
+  }
+
   return (
     <div className={`border rounded-lg overflow-hidden transition-colors ${isOperator ? "border-red-800" : "border-gray-700"}`}>
       {/* Header row */}
@@ -188,8 +196,8 @@ function SessionRow({ session, onUpdate }: { session: Session; onUpdate: () => v
 
         <span className="text-xs text-gray-600 ml-auto shrink-0">{session.mensajes} msgs</span>
 
-        {/* Acción */}
-        <div onClick={e => e.stopPropagation()}>
+        {/* Acciones */}
+        <div className="flex gap-2" onClick={e => e.stopPropagation()}>
           {isOperator ? (
             <button
               onClick={release}
@@ -209,6 +217,15 @@ function SessionRow({ session, onUpdate }: { session: Session; onUpdate: () => v
               🙋 Tomar
             </button>
           )}
+          <button
+            onClick={closeSession}
+            disabled={loading}
+            title="Cerrar conversación"
+            className="text-xs px-3 py-1 rounded border border-gray-600 text-gray-400
+                       hover:border-red-500 hover:text-red-400 transition-colors"
+          >
+            ✖ Cerrar
+          </button>
         </div>
 
         <span className="text-gray-600 text-xs">{expanded ? "▲" : "▼"}</span>
@@ -231,12 +248,39 @@ function SessionRow({ session, onUpdate }: { session: Session; onUpdate: () => v
   );
 }
 
+// Beep de notificación (Web Audio — sin archivos externos, compatible con CSP)
+function playBeep() {
+  try {
+    const Ctx = window.AudioContext || (window as any).webkitAudioContext;
+    const ctx = new Ctx();
+    const beep = (freq: number, start: number, dur: number) => {
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.connect(g); g.connect(ctx.destination);
+      o.type = "sine";
+      o.frequency.value = freq;
+      g.gain.setValueAtTime(0.0001, ctx.currentTime + start);
+      g.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime + start + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + start + dur);
+      o.start(ctx.currentTime + start);
+      o.stop(ctx.currentTime + start + dur);
+    };
+    // Dos tonos ascendentes (tipo "ding-dong")
+    beep(660, 0, 0.25);
+    beep(880, 0.22, 0.35);
+  } catch { /* autoplay bloqueado hasta la primera interacción */ }
+}
+
 // ── Main panel ────────────────────────────────────────────────────────────────
 export default function ConversationsPanel() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<string>("all");
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
+  const [muted, setMuted] = useState(false);
+
+  const prevOperators = useRef<Set<string>>(new Set());
+  const initialized = useRef(false);
 
   const fetchSessions = useCallback(async () => {
     try {
@@ -251,6 +295,19 @@ export default function ConversationsPanel() {
   }, []);
 
   useEffect(() => { fetchSessions(); }, [fetchSessions]);
+
+  // Sonido cuando una conversación NUEVA pasa a modo operador (derivación)
+  useEffect(() => {
+    const current = new Set(
+      sessions.filter(s => s.estado === "operador").map(s => s.phone)
+    );
+    if (initialized.current) {
+      const nuevos = [...current].filter(p => !prevOperators.current.has(p));
+      if (nuevos.length > 0 && !muted) playBeep();
+    }
+    prevOperators.current = current;
+    initialized.current = true;
+  }, [sessions, muted]);
 
   // Refresh dinámico: más rápido si hay operador activo
   useEffect(() => {
@@ -280,12 +337,25 @@ export default function ConversationsPanel() {
             </p>
           )}
         </div>
-        <button
-          onClick={fetchSessions}
-          className="text-sm px-4 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 transition-colors"
-        >
-          ↺ Actualizar
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => { setMuted(m => !m); if (muted) playBeep(); }}
+            title={muted ? "Sonido desactivado" : "Sonido activado (probar)"}
+            className={`text-sm px-3 py-2 rounded-lg border transition-colors ${
+              muted
+                ? "border-gray-700 bg-gray-800 text-gray-500"
+                : "border-emerald-700 bg-emerald-950 text-emerald-400"
+            }`}
+          >
+            {muted ? "🔕" : "🔔"}
+          </button>
+          <button
+            onClick={fetchSessions}
+            className="text-sm px-4 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 transition-colors"
+          >
+            ↺ Actualizar
+          </button>
+        </div>
       </div>
 
       {/* Stats pills */}

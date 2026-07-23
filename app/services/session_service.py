@@ -111,6 +111,16 @@ class SessionService:
         session["estado"] = estado
         await self.save(phone, session)
 
+    async def delete(self, phone: str):
+        """Cierra la conversación: elimina la sesión (sale de la lista de activas)."""
+        if await self._use_redis():
+            try:
+                await self._redis.delete(self._key(phone))
+                return
+            except Exception:
+                self._redis_ok = False
+        self._memory.pop(phone, None)
+
     async def is_processed(self, msg_id: str) -> bool:
         """
         Retorna True si el mensaje ya fue procesado (deduplicación de webhooks).

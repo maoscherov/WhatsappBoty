@@ -272,6 +272,7 @@ td .product-price { color: var(--accent); font-size: 12px; }
   <div class="sub">Remedia — Backoffice</div>
   <div class="spacer"></div>
   <span class="refresh-info">Auto-refresh 30s</span>
+  <button id="btn-mute" onclick="toggleMute()" title="Sonido activado" style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:7px 12px;cursor:pointer;font-size:14px;color:var(--text)">🔔</button>
   <button id="btn-refresh">↺ Actualizar</button>
 </div>
 
@@ -452,6 +453,45 @@ td .product-price { color: var(--accent); font-size: 12px; }
 const API = '';
 let expandedPhones = new Set();
 
+// ── Sonido de derivación a operador ────────────────────────────────────────────
+let _prevOperators = new Set();
+let _soundInit = false;
+let _muted = false;
+
+function playBeep() {
+  if (_muted) return;
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    const ctx = new Ctx();
+    const beep = (freq, start, dur) => {
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.connect(g); g.connect(ctx.destination);
+      o.type = 'sine'; o.frequency.value = freq;
+      g.gain.setValueAtTime(0.0001, ctx.currentTime + start);
+      g.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime + start + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + start + dur);
+      o.start(ctx.currentTime + start); o.stop(ctx.currentTime + start + dur);
+    };
+    beep(660, 0, 0.25); beep(880, 0.22, 0.35);
+  } catch(_) {}
+}
+
+function detectNewOperators(sessions) {
+  const current = new Set(sessions.filter(s => s.estado === 'operador').map(s => s.phone));
+  if (_soundInit) {
+    for (const p of current) if (!_prevOperators.has(p)) { playBeep(); break; }
+  }
+  _prevOperators = current;
+  _soundInit = true;
+}
+
+function toggleMute() {
+  _muted = !_muted;
+  const btn = document.getElementById('btn-mute');
+  if (btn) { btn.textContent = _muted ? '🔕' : '🔔'; btn.title = _muted ? 'Sonido desactivado' : 'Sonido activado'; }
+  if (!_muted) playBeep();  // probar al reactivar
+}
+
 function key() {
   return document.getElementById('key-input').value.trim();
 }
@@ -515,6 +555,7 @@ async function loadSessions() {
     }
     if (!r.ok) return;
     const sessions = await r.json();
+    detectNewOperators(sessions);
     renderSessions(sessions);
     scheduleRefresh(sessions);
     document.getElementById('last-updated').textContent =
@@ -562,6 +603,7 @@ function renderSessions(sessions) {
     const takeoverBtn = isOp
       ? `<button class="btn-op-release" onclick="event.stopPropagation();releaseSession('${esc(s.phone)}')" title="Devolver al bot">🤖 Devolver al bot</button>`
       : `<button class="btn-op-release" onclick="event.stopPropagation();takeoverSession('${esc(s.phone)}')" title="Tomar conversación">🙋 Tomar</button>`;
+    const closeBtn = `<button class="btn-op-release" onclick="event.stopPropagation();closeSession('${esc(s.phone)}')" title="Cerrar conversación" style="margin-left:6px">✖ Cerrar</button>`;
 
     html += `
       <tr class="${isExp ? 'expanded' : ''}" onclick="toggleSession('${esc(s.phone)}')">
@@ -570,7 +612,7 @@ function renderSessions(sessions) {
         <td>${productHtml}</td>
         <td><span class="msgs-count">${s.mensajes}</span></td>
         <td><div class="ultimo">${s.ultimo_mensaje ? esc(s.ultimo_mensaje) : '—'}</div></td>
-        <td>${takeoverBtn}</td>
+        <td>${takeoverBtn}${closeBtn}</td>
       </tr>
       <tr class="conv-row ${isExp ? 'visible' : ''}" id="conv-${esc(s.phone)}">
         <td colspan="6" class="conv-cell">
@@ -677,6 +719,16 @@ async function releaseSession(phone) {
   try {
     const r = await fetch(apiUrl(`/bo/session/${encodeURIComponent(phone)}/release`), { method: 'POST' });
     if (!r.ok) return;
+    await loadSessions();
+  } catch(_) {}
+}
+
+async function closeSession(phone) {
+  if (!confirm('¿Cerrar esta conversación? Se quita de la lista de activas.')) return;
+  try {
+    const r = await fetch(apiUrl(`/bo/session/${encodeURIComponent(phone)}/close`), { method: 'POST' });
+    if (!r.ok) return;
+    expandedPhones.delete(phone);
     await loadSessions();
   } catch(_) {}
 }

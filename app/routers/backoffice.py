@@ -366,6 +366,15 @@ async def bo_release(phone: str, _=Depends(_auth)):
     return {"status": "ok", "estado": "idle", "phone": phone}
 
 
+@router.post("/session/{phone}/close")
+async def bo_close(phone: str, _=Depends(_auth)):
+    """Cierra la conversación: elimina la sesión (sale de la lista de activas)."""
+    settings = get_settings()
+    session_svc = get_session_service(settings.redis_url)
+    await session_svc.delete(phone)
+    return {"status": "ok", "closed": phone}
+
+
 @router.post("/session/{phone}/message")
 async def bo_send_message(phone: str, body: OperatorMessage, _=Depends(_auth)):
     """Operador envía un mensaje al cliente por WhatsApp."""
