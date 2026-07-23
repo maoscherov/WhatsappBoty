@@ -34,7 +34,7 @@ from app.services.config_service import get_config_service
 from app.services.socio_service import get_socio_service
 from app.services.checkout_helper import (
     confirmar_pedido, resolver_entrega, capturar_direccion,
-    match_retiro, match_envio, pide_humano,
+    match_retiro, match_envio, pide_humano, derivar_si_receta,
 )
 
 logger = logging.getLogger(__name__)
@@ -368,6 +368,19 @@ async def receive_message(request: Request):
                         except (ValueError, TypeError):
                             pass
 
+                    # ── Paso 1b: si la opción elegida requiere receta, derivar YA
+                    #    (no ofrecer link). Anula el resto del flujo de confirmación.
+                    if sku_index is not None and session.get("pending_sku_id"):
+                        cfg_all = await deps["config"].get_all()
+                        _deriv = await derivar_si_receta(
+                            deps["sku"], deps["session"], cfg_all, phone, session["pending_sku_id"],
+                        )
+                        if _deriv:
+                            respuesta = _deriv
+                            _intencion = "derivado_receta"
+                            confirmacion = None       # saltar confirmación/cambio
+                            _entidad_nueva = None
+
                     # ── Paso 2: _es_cambio solo aplica cuando NO hay selección de opción existente
                     #    y el usuario menciona un producto genuinamente diferente.
                     _es_cambio = (
@@ -443,6 +456,7 @@ async def receive_message(request: Request):
 
             # ── Flujo normal ─────────────────────────────────────────────────
             resultados_sku = None
+            _sku_pendiente_nuevo = None   # sku elegido este turno (para chequeo de receta)
 
             # Claude 1 — Haiku (rápido): clasifica intención + extrae entidad.
             # Para intenciones simples (saludo, social, agradecimiento) su
@@ -541,6 +555,7 @@ async def receive_message(request: Request):
                         cantidad=cantidad,
                         opciones=resultados_sku,
                     )
+                    _sku_pendiente_nuevo = producto_elegido["sku_id"]
                     send_images_cfg = await deps["config"].get("send_images")
                     await _maybe_send_image(
                         deps["wa"], phone, resultados_sku,
@@ -577,6 +592,7 @@ async def receive_message(request: Request):
                                 cantidad=nueva_cantidad,
                                 opciones=pending_opciones,
                             )
+                            _sku_pendiente_nuevo = elegido["sku_id"]
                     except (ValueError, TypeError):
                         pass
                 elif cantidad_nueva and int(cantidad_nueva) > 0 and int(cantidad_nueva) != session.get("pending_cantidad", 1):
@@ -587,6 +603,17 @@ async def receive_message(request: Request):
                         precio=session["pending_precio"],
                         cantidad=int(cantidad_nueva),
                     )
+
+            # Si el producto recién elegido requiere receta, derivar ahora
+            # (no ofrecer link). Reemplaza el mensaje de confirmación de Claude.
+            if _sku_pendiente_nuevo:
+                cfg_all = await deps["config"].get_all()
+                _deriv = await derivar_si_receta(
+                    deps["sku"], deps["session"], cfg_all, phone, _sku_pendiente_nuevo,
+                )
+                if _deriv:
+                    respuesta = _deriv
+                    _intencion = "derivado_receta"
 
             _ts = _time.perf_counter()
             await deps["wa"].send_text(phone, respuesta)

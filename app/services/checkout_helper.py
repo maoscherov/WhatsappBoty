@@ -60,6 +60,22 @@ def necesita_receta(sku_svc, sku_id: str, modo: str) -> bool:
     return requiere_derivacion(sku.requiere_receta, modo)
 
 
+async def derivar_si_receta(sku_svc, session_svc, cfg: dict, phone: str, sku_id: str):
+    """
+    Si el producto recién elegido requiere receta, deriva a una persona en el
+    acto (sin ofrecer link de pago) y devuelve el mensaje para el cliente.
+    Si no, devuelve None y el flujo sigue normal.
+    """
+    modo = cfg.get("receta_mode", "conservador")
+    if necesita_receta(sku_svc, sku_id, modo):
+        await session_svc.set_estado(phone, "operador")
+        return (
+            "Ese producto requiere receta 🩺. Te paso con alguien del equipo "
+            "para gestionarlo con vos. ¡En un momento te contactamos!"
+        )
+    return None
+
+
 def texto_entrega(tipo: str, direccion: Optional[str]) -> str:
     """Línea que describe la entrega elegida, para el mensaje del link de pago."""
     if tipo == "envio":

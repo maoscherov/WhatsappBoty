@@ -23,7 +23,7 @@ from app.services.socio_service import get_socio_service
 from app.services.config_service import get_config_service
 from app.services.checkout_helper import (
     confirmar_pedido, resolver_entrega, capturar_direccion,
-    match_retiro, match_envio, pide_humano,
+    match_retiro, match_envio, pide_humano, derivar_si_receta,
 )
 
 
@@ -240,6 +240,23 @@ async def simulate(req: SimulateRequest):
                 except (ValueError, TypeError):
                     pass
 
+            # Paso 1b: si la opción elegida requiere receta, derivar YA (no ofrecer link)
+            if sku_index is not None and session.get("pending_sku_id"):
+                cfg_all = await config_svc.get_all()
+                _deriv = await derivar_si_receta(
+                    sku_svc, session_svc, cfg_all, req.phone, session["pending_sku_id"],
+                )
+                if _deriv:
+                    await session_svc.add_message(req.phone, "user", texto)
+                    await session_svc.add_message(req.phone, "assistant", _deriv)
+                    await _record("derivado_receta")
+                    return SimulateResponse(
+                        respuesta=_deriv, intencion="derivado_receta",
+                        entidad_producto=session.get("pending_sku_nombre"),
+                        productos_encontrados=[], estado_sesion="operador",
+                        mp_token_ok=mp_token_ok,
+                    )
+
             # Paso 2: _es_cambio solo aplica cuando NO hay selección de opción existente
             _es_cambio = (
                 sku_index is None and (
@@ -355,6 +372,7 @@ async def simulate(req: SimulateRequest):
         )
 
     ya_tiene_pending = session.get("estado") == "esperando_confirmacion"
+    _sku_pendiente_nuevo = None   # sku elegido este turno (para chequeo de receta)
 
     if intencion in INTENCIONES_CON_SKU and entidad and sku_svc and not ya_tiene_pending:
         # Solo buscar productos si NO hay una confirmación pendiente.
@@ -410,6 +428,7 @@ async def simulate(req: SimulateRequest):
                 cantidad=cantidad,
                 opciones=productos_encontrados,
             )
+            _sku_pendiente_nuevo = producto_elegido["sku_id"]
     elif ya_tiene_pending:
         # Hay pending activo: el usuario puede refinar la selección o la cantidad.
         pending_opciones = session.get("pending_opciones", [])
@@ -441,6 +460,7 @@ async def simulate(req: SimulateRequest):
                         cantidad=nueva_cantidad,
                         opciones=pending_opciones,
                     )
+                    _sku_pendiente_nuevo = elegido["sku_id"]
             except (ValueError, TypeError):
                 pass
         elif cantidad_nueva and int(cantidad_nueva) > 0 and int(cantidad_nueva) != session.get("pending_cantidad", 1):
@@ -451,6 +471,16 @@ async def simulate(req: SimulateRequest):
                 precio=session["pending_precio"],
                 cantidad=int(cantidad_nueva),
             )
+
+    # Si el producto recién elegido requiere receta, derivar ahora (no ofrecer link)
+    if _sku_pendiente_nuevo:
+        cfg_all = await config_svc.get_all()
+        _deriv = await derivar_si_receta(
+            sku_svc, session_svc, cfg_all, req.phone, _sku_pendiente_nuevo,
+        )
+        if _deriv:
+            respuesta = _deriv
+            intencion = "derivado_receta"
 
     await session_svc.add_message(req.phone, "user", texto)
     await session_svc.add_message(req.phone, "assistant", respuesta)
