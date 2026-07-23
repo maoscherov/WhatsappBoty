@@ -31,6 +31,23 @@ logger = logging.getLogger(__name__)
 SCORE_CUTOFF = 66
 TOP_N_DEFAULT = 3
 
+# Sinónimos droga↔marca: el catálogo usa nombres de marca, así que el nombre
+# genérico que tipea el cliente no siempre matchea. La clave es lo que puede
+# escribir el cliente; los valores son términos adicionales a buscar (marcas
+# equivalentes presentes en el catálogo). Si algún valor no existe, la búsqueda
+# extra simplemente no devuelve nada (inofensivo). Ampliable a medida que surjan.
+SINONIMOS: dict[str, list[str]] = {
+    "ibuprofeno":   ["ibupirac", "actron"],
+    "escopolamina": ["buscapina", "sertal"],
+    "butilhioscina":["buscapina", "sertal"],
+    "hioscina":     ["buscapina", "sertal"],
+    "diclofenac":   ["voltaren"],
+    "aspirina":     ["bayaspirina", "aspirineta"],
+    "acido acetilsalicilico": ["aspirina", "bayaspirina"],
+    "amoxicilina":  ["amoxidal"],
+    "paracetamol":  ["tafirol"],
+}
+
 
 def requiere_derivacion(requiere_receta: str, modo: str = "conservador") -> bool:
     """
@@ -174,19 +191,27 @@ class SKUService:
         if not clean_query:
             clean_query = query.lower()
 
-        # Guardamos el MEJOR score por producto entre los dos scorers.
-        # token_set_ratio maneja mejor multi-palabra y orden que partial_ratio.
+        # Expandir con sinónimos: si el cliente escribió un genérico cuyo nombre
+        # no está en el catálogo (ej. "ibuprofeno"), agregamos las marcas equivalentes.
+        variantes = [clean_query]
+        for generico, marcas in SINONIMOS.items():
+            if generico in clean_query:
+                variantes.extend(marcas)
+
+        # Guardamos el MEJOR score por producto, entre los dos scorers y todas
+        # las variantes de la query. token_set_ratio maneja multi-palabra/orden.
         scored: dict[int, float] = {}
-        for scorer in (fuzz.WRatio, fuzz.token_set_ratio):
-            for _text, score, idx in process.extract(
-                clean_query,
-                self._search_index,
-                scorer=scorer,
-                limit=top_n * 8,
-                score_cutoff=score_cutoff,
-            ):
-                if score > scored.get(idx, 0):
-                    scored[idx] = score
+        for variante in variantes:
+            for scorer in (fuzz.WRatio, fuzz.token_set_ratio):
+                for _text, score, idx in process.extract(
+                    variante,
+                    self._search_index,
+                    scorer=scorer,
+                    limit=top_n * 8,
+                    score_cutoff=score_cutoff,
+                ):
+                    if score > scored.get(idx, 0):
+                        scored[idx] = score
 
         candidatos = [
             (self._skus[idx], sc) for idx, sc in scored.items()
