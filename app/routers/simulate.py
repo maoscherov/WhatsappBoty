@@ -481,10 +481,26 @@ async def simulate_image(
     image_bytes = await image.read()
     media_type = image.content_type or "image/jpeg"
 
-    texto_extraido = await image_svc.extraer_medicamentos(image_bytes, media_type)
+    img = await image_svc.analizar(image_bytes, media_type)
+
+    # Receta o credencial → derivar a una persona (no vender automático)
+    if img["tipo"] in ("receta", "credencial"):
+        settings2 = get_settings()
+        session_svc = get_session_service(settings2.redis_url)
+        await session_svc.set_estado(phone, "operador")
+        que = "la receta" if img["tipo"] == "receta" else "la credencial"
+        return SimulateResponse(
+            respuesta=(f"Recibí {que} 🙌. Para gestionarla te paso con alguien del equipo, "
+                       "que la revisa y te ayuda. ¡En un momento te contactamos!"),
+            intencion=f"imagen_{img['tipo']}",
+            entidad_producto=None, productos_encontrados=[],
+            estado_sesion="operador", texto_extraido=f"[{img['tipo']}]",
+        )
+
+    texto_extraido = img["items"]
     if not texto_extraido:
         return SimulateResponse(
-            respuesta="No pude identificar medicamentos en la imagen. ¿Me lo escribís?",
+            respuesta="No pude identificar el producto en la imagen. ¿Me lo escribís?",
             intencion="desconocido",
             entidad_producto=None,
             productos_encontrados=[],

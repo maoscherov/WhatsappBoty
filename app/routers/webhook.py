@@ -167,19 +167,36 @@ async def receive_message(request: Request):
                     await deps["wa"].send_text(phone, "No pude procesar el audio. ¿Me lo mandás por texto?")
                     continue
 
-            # Imagen → extracción de medicamentos
+            # Imagen → clasificar (receta/credencial derivan; producto sigue el flujo)
             if msg_type == "image" and msg.get("image_id"):
                 _ti = _time.perf_counter()
                 image_bytes = await deps["wa"].download_image(msg["image_id"])
-                if image_bytes:
-                    mime = msg.get("image_mime_type", "image/jpeg")
-                    texto = await deps["image"].extraer_medicamentos(image_bytes, mime) or ""
-                    _steps["vision_ms"] = int((_time.perf_counter() - _ti) * 1000)
-                    if not texto:
-                        await deps["wa"].send_text(phone, "No pude identificar medicamentos en la imagen. ¿Me lo escribís?")
-                        continue
-                else:
+                if not image_bytes:
                     await deps["wa"].send_text(phone, "No pude procesar la imagen. ¿Me lo escribís?")
+                    continue
+                mime = msg.get("image_mime_type", "image/jpeg")
+                img = await deps["image"].analizar(image_bytes, mime)
+                _steps["vision_ms"] = int((_time.perf_counter() - _ti) * 1000)
+
+                # Receta o credencial → derivar a una persona (nunca vender automático)
+                if img["tipo"] in ("receta", "credencial"):
+                    _intencion = f"imagen_{img['tipo']}"
+                    await deps["session"].set_estado(phone, "operador")
+                    que = "la receta" if img["tipo"] == "receta" else "la credencial"
+                    respuesta = (
+                        f"Recibí {que} 🙌. Para gestionarla te paso con alguien del equipo, "
+                        "que la revisa y te ayuda. ¡En un momento te contactamos!"
+                    )
+                    _ts = _time.perf_counter()
+                    await deps["wa"].send_text(phone, respuesta)
+                    _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
+                    await deps["session"].add_message(phone, "user", "[imagen recibida]")
+                    await deps["session"].add_message(phone, "assistant", respuesta)
+                    continue
+
+                texto = img["items"]
+                if not texto.strip():
+                    await deps["wa"].send_text(phone, "No pude identificar el producto en la imagen. ¿Me lo escribís?")
                     continue
 
             if not texto.strip():
