@@ -19,6 +19,8 @@ class SKU(BaseModel):
     tipo_producto: str = "regular"   # regular | estacional
     pausado: bool = False
     imagen_url: Optional[str] = None  # URL pública de la imagen del producto
+    requiere_receta: str = "no"       # "si" | "ambiguo" | "no"
+    clasificacion: str = ""           # critico | riesgo_alto | riesgo_medio | saludable | sin_rotacion
 
     @property
     def disponible(self) -> bool:
@@ -31,3 +33,8 @@ class SKU(BaseModel):
         if self.cantidad_visible > 0:
             return "disponible"
         return "consultar"
+
+    @property
+    def urgente(self) -> bool:
+        """Stock crítico o de riesgo alto — conviene ofrecerlo con urgencia."""
+        return self.clasificacion in ("critico", "riesgo_alto")

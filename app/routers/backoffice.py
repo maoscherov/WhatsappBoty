@@ -311,7 +311,10 @@ async def bo_perf_clear(_=Depends(_auth)):
 # ── Configuración del bot ──────────────────────────────────────────────────────
 
 class ConfigUpdate(BaseModel):
-    send_images: str | None = None  # "always" | "on_request"
+    send_images: str | None = None    # "always" | "on_request"
+    pickup_minutes: str | None = None
+    receta_mode: str | None = None    # "conservador" | "estricto"
+    envio_enabled: str | None = None  # "true" | "false"
 
 
 @router.get("/config")

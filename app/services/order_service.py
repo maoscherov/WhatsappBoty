@@ -47,21 +47,25 @@ class OrderService:
         cantidad: int,
         total: float,
         mp_payment_id: str,
+        tipo_entrega: str = "retiro",
+        direccion_envio: Optional[str] = None,
     ) -> dict:
         order_id = self._gen_order_id()
         now = datetime.now(timezone.utc).isoformat()
         order = {
-            "order_id":      order_id,
-            "phone":         phone,
-            "sku_id":        sku_id,
-            "sku_nombre":    sku_nombre,
-            "cantidad":      int(cantidad),
-            "total":         round(float(total), 2),
-            "mp_payment_id": mp_payment_id,
-            "estado":        "pendiente",
-            "pickup_code":   self._gen_pickup_code(),  # generado al confirmar el pago
-            "created_at":    now,
-            "updated_at":    now,
+            "order_id":       order_id,
+            "phone":          phone,
+            "sku_id":         sku_id,
+            "sku_nombre":     sku_nombre,
+            "cantidad":       int(cantidad),
+            "total":          round(float(total), 2),
+            "mp_payment_id":  mp_payment_id,
+            "estado":         "pendiente",
+            "tipo_entrega":   tipo_entrega,       # "retiro" | "envio"
+            "direccion_envio": direccion_envio,
+            "pickup_code":    self._gen_pickup_code(),  # generado al confirmar el pago
+            "created_at":     now,
+            "updated_at":     now,
         }
         ts = datetime.now(timezone.utc).timestamp()
         try:

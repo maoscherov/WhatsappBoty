@@ -356,6 +356,9 @@ function renderOrders() {
 
     const nombre = esc(o.sku_nombre || '—');
     const qtyTxt = o.cantidad > 1 ? `x${o.cantidad}` : '';
+    const entregaTxt = o.tipo_entrega === 'envio'
+      ? `<div class="pentrega" style="font-size:11px;color:var(--blue);margin-top:2px">🚚 Envío${o.direccion_envio ? ' — ' + esc(o.direccion_envio) : ''}</div>`
+      : `<div class="pentrega" style="font-size:11px;color:var(--text-muted);margin-top:2px">🏪 Retiro en sucursal</div>`;
 
     return `<tr>
       <td class="time-cell">${fechaHora}</td>
@@ -364,6 +367,7 @@ function renderOrders() {
       <td class="product-cell">
         <div class="pname">${nombre}</div>
         ${qtyTxt ? `<div class="pqty">${qtyTxt}</div>` : ''}
+        ${entregaTxt}
       </td>
       <td class="total-cell">$${Number(o.total).toLocaleString('es-AR', {minimumFractionDigits: 2})}</td>
       <td>${estadoBadge}</td>

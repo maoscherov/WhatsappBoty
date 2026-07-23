@@ -26,6 +26,8 @@ DAY_MAP      = {0: "mon", 1: "tue", 2: "wed", 3: "thu", 4: "fri", 5: "sat", 6: "
 DEFAULTS: dict[str, str] = {
     "send_images":    "always",
     "pickup_minutes": "30",    # tiempo estimado de preparación/retiro
+    "receta_mode":    "conservador",  # "conservador" (ambiguo deriva) | "estricto" (solo "si")
+    "envio_enabled":  "true",  # ofrecer envío a domicilio además de retiro
 }
 
 DEFAULT_HOURS = {

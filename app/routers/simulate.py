@@ -20,6 +20,16 @@ from app.services.payment_service import get_payment_service
 from app.services.image_service import get_image_service
 from app.services.perf_service import get_perf_service
 from app.services.socio_service import get_socio_service
+from app.services.config_service import get_config_service
+from app.services.checkout_helper import (
+    confirmar_pedido, resolver_entrega, capturar_direccion,
+    match_retiro, match_envio,
+)
+
+
+def _extract_link(texto: str) -> str | None:
+    m = re.search(r"https?://\S+", texto or "")
+    return m.group(0) if m else None
 
 router = APIRouter()
 
@@ -77,6 +87,7 @@ async def simulate(req: SimulateRequest):
     payment_svc = get_payment_service(settings.mp_access_token, settings.mp_notification_url, settings.mp_sandbox)
     perf_svc = get_perf_service(settings.redis_url)
     socio_svc = get_socio_service(settings.socios_path)
+    config_svc = get_config_service(settings.redis_url)
 
     session = await session_svc.get(req.phone)
     _ctx_socio = socio_svc.contexto_para_prompt(req.phone)
@@ -104,40 +115,63 @@ async def simulate(req: SimulateRequest):
             "steps": dict(_steps),
         })
 
+    # ── Estado: eligiendo modo de entrega (retiro / envío) ───────────────────
+    if session.get("estado") == "esperando_entrega" and session.get("pending_sku_id"):
+        if _match_no(texto):
+            await session_svc.clear_pending(req.phone)
+            respuesta, _intent_out = "Dale, sin problema. ¿En qué más te puedo ayudar?", "pedido_cancelado"
+        else:
+            respuesta, _intent_out = await resolver_entrega(
+                payment_svc, session_svc, socio_svc, req.phone, session,
+                es_retiro=match_retiro(texto), es_envio=match_envio(texto),
+            )
+        await session_svc.add_message(req.phone, "user", texto)
+        await session_svc.add_message(req.phone, "assistant", respuesta)
+        session = await session_svc.get(req.phone)
+        await _record(_intent_out)
+        return SimulateResponse(
+            respuesta=respuesta, intencion=_intent_out,
+            entidad_producto=session.get("pending_sku_nombre"),
+            productos_encontrados=[], estado_sesion=session.get("estado", "idle"),
+            link_pago=_extract_link(respuesta), mp_token_ok=mp_token_ok,
+        )
+
+    # ── Estado: esperando dirección de envío ─────────────────────────────────
+    if session.get("estado") == "esperando_direccion" and session.get("pending_sku_id"):
+        if _match_no(texto):
+            await session_svc.clear_pending(req.phone)
+            respuesta, _intent_out = "Dale, sin problema. ¿En qué más te puedo ayudar?", "pedido_cancelado"
+        else:
+            respuesta, _intent_out = await capturar_direccion(
+                payment_svc, session_svc, req.phone, session, texto,
+            )
+        await session_svc.add_message(req.phone, "user", texto)
+        await session_svc.add_message(req.phone, "assistant", respuesta)
+        session = await session_svc.get(req.phone)
+        await _record(_intent_out)
+        return SimulateResponse(
+            respuesta=respuesta, intencion=_intent_out,
+            entidad_producto=session.get("pending_sku_nombre"),
+            productos_encontrados=[], estado_sesion=session.get("estado", "idle"),
+            link_pago=_extract_link(respuesta), mp_token_ok=mp_token_ok,
+        )
+
     # ── Confirmación de pedido pendiente ─────────────────────────────────────
     if session.get("estado") == "esperando_confirmacion" and session.get("pending_sku_id"):
         if _match_si(texto):
-            cantidad = session.get("pending_cantidad", 1)
-            precio_unitario = session["pending_precio"]
-            total = precio_unitario * cantidad
-            link, mp_error = await payment_svc.crear_link(
-                sku_id=session["pending_sku_id"],
-                nombre=session["pending_sku_nombre"],
-                precio=precio_unitario,
-                phone=req.phone,
-                cantidad=cantidad,
+            cfg_all = await config_svc.get_all()
+            respuesta, _intent_out = await confirmar_pedido(
+                sku_svc, payment_svc, session_svc, socio_svc, cfg_all, req.phone, session,
             )
-            link_pago = link
-            if link:
-                nombre_con_cant = f"{session['pending_sku_nombre']}" + (f" x{cantidad}" if cantidad > 1 else "")
-                respuesta = (
-                    f"Perfecto! Acá te mando el link de pago para "
-                    f"{nombre_con_cant} (${total:,.2f}):\n\n{link}\n\n"
-                    "Tiene vigencia de 24hs. ¡Cualquier cosa me avisás!"
-                )
-                await session_svc.set_estado(req.phone, "esperando_pago")
-            else:
-                logger.error(f"MP error para {req.phone}: {mp_error}")
-                respuesta = "Tuve un problema generando el link de pago. Te paso con alguien del equipo."
-                await session_svc.clear_pending(req.phone)
             await session_svc.add_message(req.phone, "user", texto)
             await session_svc.add_message(req.phone, "assistant", respuesta)
-            await _record("pedido_confirmado")
+            session = await session_svc.get(req.phone)
+            await _record(_intent_out)
             return SimulateResponse(
-                respuesta=respuesta, intencion="pedido",
+                respuesta=respuesta, intencion=_intent_out,
                 entidad_producto=session.get("pending_sku_nombre"),
                 productos_encontrados=[], estado_sesion=session.get("estado", "idle"),
-                link_pago=link_pago, mp_error=mp_error, mp_token_ok=mp_token_ok,
+                link_pago=_extract_link(respuesta), mp_error=mp_error, mp_token_ok=mp_token_ok,
             )
 
         elif _match_no(texto):
@@ -204,29 +238,13 @@ async def simulate(req: SimulateRequest):
             )
 
             if confirmacion is True:
-                # Claude interpretó que el usuario confirma (ej: typos, autocorrect)
-                cantidad = session.get("pending_cantidad", 1)
-                precio_unitario = session["pending_precio"]
-                total = precio_unitario * cantidad
-                link, mp_error = await payment_svc.crear_link(
-                    sku_id=session["pending_sku_id"],
-                    nombre=session["pending_sku_nombre"],
-                    precio=precio_unitario,
-                    phone=req.phone,
-                    cantidad=cantidad,
+                # Claude interpretó que el usuario confirma (ej: typos, autocorrect).
+                # Rutea por el flujo de receta/entrega igual que la confirmación explícita.
+                cfg_all = await config_svc.get_all()
+                respuesta, _intencion_conf = await confirmar_pedido(
+                    sku_svc, payment_svc, session_svc, socio_svc, cfg_all, req.phone, session,
                 )
-                link_pago = link
-                if link:
-                    nombre_con_cant = session["pending_sku_nombre"] + (f" x{cantidad}" if cantidad > 1 else "")
-                    respuesta = (
-                        f"Perfecto! Acá te mando el link de pago para "
-                        f"{nombre_con_cant} (${total:,.2f}):\n\n{link}\n\n"
-                        "Tiene vigencia de 24hs. ¡Cualquier cosa me avisás!"
-                    )
-                    await session_svc.set_estado(req.phone, "esperando_pago")
-                else:
-                    respuesta = "Tuve un problema generando el link de pago. Te paso con alguien del equipo."
-                    await session_svc.clear_pending(req.phone)
+                link_pago = _extract_link(respuesta)
             elif _es_cambio:
                 await session_svc.clear_pending(req.phone)
 

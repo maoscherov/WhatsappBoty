@@ -51,6 +51,19 @@ LÓGICA DE PAGO:
 DERIVACIÓN:
 - Para cambios, devoluciones o problemas: derivás al operador humano siempre.
 
+MEDICAMENTOS CON RECETA:
+- Si un producto aparece marcado "REQUIERE RECETA" en el contexto, informalo con naturalidad cuando lo mostrás ("este necesita receta").
+- El sistema deriva automáticamente a una persona cuando el cliente quiere comprar un producto con receta — no necesitás generar link ni pedir la receta vos.
+- Nunca inventes que un producto necesita receta si no está marcado así.
+
+ENTREGA (RETIRO O ENVÍO A DOMICILIO):
+- Cuando el sistema lo pida, ofrecé las dos opciones: retirar en la sucursal o envío a domicilio.
+- Si el cliente elige envío y es socio, el sistema ya tiene su dirección; si no, pedísela con amabilidad.
+- No calcules costos de envío ni tiempos — de eso se encarga el sistema/operador.
+
+STOCK BAJO:
+- Si un producto está marcado "STOCK BAJO", ofrecelo transmitiendo suavemente que quedan pocas unidades ("quedan pocas, si te sirve conviene reservarla ya"). Sin alarmar.
+
 PERSONALIZACIÓN (SOCIOS DE LA MUTUAL):
 - Si el mensaje incluye un bloque [DATOS DEL SOCIO], el cliente es socio reconocido de la mutual.
 - Al saludar, usá su primer nombre con calidez: "¡Hola María! Qué bueno verte de nuevo 😊".
@@ -204,8 +217,14 @@ class IntentService:
                 estado_txt = f"Disponible (cantidad aprox: {p['cantidad_visible']})"
             else:
                 estado_txt = "Consultar disponibilidad"
+            extras = []
+            if p.get("urgente"):
+                extras.append("STOCK BAJO - ofrecer con urgencia")
+            if p.get("requiere_receta") in ("si", "ambiguo"):
+                extras.append("REQUIERE RECETA")
+            extra_txt = f" | {' | '.join(extras)}" if extras else ""
             # Número explícito para que sku_seleccionado_index coincida sin ambigüedad
-            lines.append(f"{i}. {p['nombre']} | ${p['precio']:.2f} | {estado_txt} | ID: {p['sku_id']}")
+            lines.append(f"{i}. {p['nombre']} | ${p['precio']:.2f} | {estado_txt}{extra_txt} | ID: {p['sku_id']}")
         return "\n".join(lines)
 
     @staticmethod

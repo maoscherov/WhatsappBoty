@@ -30,6 +30,21 @@ SCORE_CUTOFF = 55
 TOP_N_DEFAULT = 3
 
 
+def requiere_derivacion(requiere_receta: str, modo: str = "conservador") -> bool:
+    """
+    Decide si un producto debe derivarse a un humano por requerir receta.
+    - "si"      → siempre deriva.
+    - "ambiguo" → deriva en modo conservador (default), no en modo estricto.
+    - "no"      → nunca deriva.
+    """
+    r = (requiere_receta or "no").lower()
+    if r == "si":
+        return True
+    if r == "ambiguo":
+        return modo != "estricto"
+    return False
+
+
 def _safe_float(val) -> Optional[float]:
     try:
         return float(val) if val not in (None, "", "nan") else None
@@ -126,6 +141,8 @@ class SKUService:
                 tipo_producto=row.get("tipo_producto", "regular"),
                 pausado=_safe_bool(row.get("pausado", "False")),
                 imagen_url=row.get("imagen_url", "").strip() or None if has_imagen else None,
+                requiere_receta=(row.get("requiere_receta") or "no").strip().lower(),
+                clasificacion=(row.get("clasificacion") or "").strip().lower(),
             )
         except Exception:
             return None
@@ -196,6 +213,9 @@ class SKUService:
             "categoria": sku.categoria,
             "es_medicamento": sku.es_medicamento,
             "imagen_url": sku.imagen_url,
+            "requiere_receta": sku.requiere_receta,
+            "clasificacion": sku.clasificacion,
+            "urgente": sku.urgente,
         }
 
     @property

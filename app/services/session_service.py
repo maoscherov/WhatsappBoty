@@ -25,6 +25,8 @@ _EMPTY_SESSION = lambda: {
     "pending_cantidad": 1,
     "pending_opciones": [],
     "estado": "idle",
+    "tipo_entrega": None,      # "retiro" | "envio"
+    "direccion_envio": None,   # dirección de envío elegida
 }
 
 
@@ -92,7 +94,16 @@ class SessionService:
             "pending_cantidad": 1,
             "pending_opciones": [],
             "estado": "idle",
+            "tipo_entrega": None,
+            "direccion_envio": None,
         })
+        await self.save(phone, session)
+
+    async def set_entrega(self, phone: str, tipo: str, direccion: str | None = None):
+        """Guarda el modo de entrega elegido (retiro/envío) y la dirección si aplica."""
+        session = await self.get(phone)
+        session["tipo_entrega"] = tipo
+        session["direccion_envio"] = direccion
         await self.save(phone, session)
 
     async def set_estado(self, phone: str, estado: str):

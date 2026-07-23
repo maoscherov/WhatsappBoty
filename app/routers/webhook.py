@@ -32,6 +32,10 @@ from app.services.image_service import get_image_service
 from app.services.perf_service import get_perf_service
 from app.services.config_service import get_config_service
 from app.services.socio_service import get_socio_service
+from app.services.checkout_helper import (
+    confirmar_pedido, resolver_entrega, capturar_direccion,
+    match_retiro, match_envio,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -208,33 +212,53 @@ async def receive_message(request: Request):
                 logger.info(f"Modo operador activo para {phone} — bot silencioso")
                 continue
 
+            # ── Estado: eligiendo modo de entrega (retiro / envío) ───────────
+            if session.get("estado") == "esperando_entrega" and session.get("pending_sku_id"):
+                texto_lower = texto.lower().strip()
+                if _match_no(texto_lower):
+                    _intencion = "pedido_cancelado"
+                    await deps["session"].clear_pending(phone)
+                    respuesta = "Dale, sin problema. ¿En qué más te puedo ayudar?"
+                else:
+                    respuesta, _intencion = await resolver_entrega(
+                        deps["payment"], deps["session"], deps["socios"],
+                        phone, session,
+                        es_retiro=match_retiro(texto_lower),
+                        es_envio=match_envio(texto_lower),
+                    )
+                _ts = _time.perf_counter()
+                await deps["wa"].send_text(phone, respuesta)
+                _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
+                await deps["session"].add_message(phone, "user", texto)
+                await deps["session"].add_message(phone, "assistant", respuesta)
+                continue
+
+            # ── Estado: esperando dirección de envío ─────────────────────────
+            if session.get("estado") == "esperando_direccion" and session.get("pending_sku_id"):
+                if _match_no(texto.lower().strip()):
+                    _intencion = "pedido_cancelado"
+                    await deps["session"].clear_pending(phone)
+                    respuesta = "Dale, sin problema. ¿En qué más te puedo ayudar?"
+                else:
+                    respuesta, _intencion = await capturar_direccion(
+                        deps["payment"], deps["session"], phone, session, texto,
+                    )
+                _ts = _time.perf_counter()
+                await deps["wa"].send_text(phone, respuesta)
+                _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
+                await deps["session"].add_message(phone, "user", texto)
+                await deps["session"].add_message(phone, "assistant", respuesta)
+                continue
+
             # ── Caso especial: hay producto pendiente de confirmar ───────────
             if session.get("estado") == "esperando_confirmacion" and session.get("pending_sku_id"):
                 texto_lower = texto.lower().strip()
                 if _match_si(texto_lower):
-                    _intencion = "pedido_confirmado"
-                    cantidad = session.get("pending_cantidad", 1)
-                    precio_unitario = session["pending_precio"]
-                    total = precio_unitario * cantidad
-                    link, _ = await deps["payment"].crear_link(
-                        sku_id=session["pending_sku_id"],
-                        nombre=session["pending_sku_nombre"],
-                        precio=precio_unitario,
-                        phone=phone,
-                        cantidad=cantidad,
+                    cfg_all = await deps["config"].get_all()
+                    respuesta, _intencion = await confirmar_pedido(
+                        deps["sku"], deps["payment"], deps["session"], deps["socios"],
+                        cfg_all, phone, session,
                     )
-                    if link:
-                        nombre_con_cant = session["pending_sku_nombre"] + (f" x{cantidad}" if cantidad > 1 else "")
-                        respuesta = (
-                            f"Perfecto! Acá te mando el link de pago para "
-                            f"{nombre_con_cant} (${total:,.2f}):\n\n{link}\n\n"
-                            "Tiene vigencia de 24hs. ¡Cualquier cosa me avisás!"
-                        )
-                        await deps["session"].set_estado(phone, "esperando_pago")
-                    else:
-                        respuesta = "Tuve un problema generando el link de pago. Te paso con alguien del equipo."
-                        await deps["session"].clear_pending(phone)
-
                     _ts = _time.perf_counter()
                     await deps["wa"].send_text(phone, respuesta)
                     _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
@@ -308,28 +332,11 @@ async def receive_message(request: Request):
                     )
 
                     if confirmacion is True:
-                        _intencion = "pedido_confirmado"
-                        cantidad = session.get("pending_cantidad", 1)
-                        precio_unitario = session["pending_precio"]
-                        total = precio_unitario * cantidad
-                        link, _ = await deps["payment"].crear_link(
-                            sku_id=session["pending_sku_id"],
-                            nombre=session["pending_sku_nombre"],
-                            precio=precio_unitario,
-                            phone=phone,
-                            cantidad=cantidad,
+                        cfg_all = await deps["config"].get_all()
+                        respuesta, _intencion = await confirmar_pedido(
+                            deps["sku"], deps["payment"], deps["session"], deps["socios"],
+                            cfg_all, phone, session,
                         )
-                        if link:
-                            nombre_con_cant = session["pending_sku_nombre"] + (f" x{cantidad}" if cantidad > 1 else "")
-                            respuesta = (
-                                f"Perfecto! Acá te mando el link de pago para "
-                                f"{nombre_con_cant} (${total:,.2f}):\n\n{link}\n\n"
-                                "Tiene vigencia de 24hs. ¡Cualquier cosa me avisás!"
-                            )
-                            await deps["session"].set_estado(phone, "esperando_pago")
-                        else:
-                            respuesta = "Tuve un problema generando el link de pago. Te paso con alguien del equipo."
-                            await deps["session"].clear_pending(phone)
                     elif _es_cambio:
                         # Cambio genuino de producto (ej: "mejor bayer")
                         _intencion = "pedido_cancelado"

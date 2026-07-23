@@ -113,15 +113,18 @@ async def mp_notification(request: Request):
     cantidad = int(items[0].get("quantity", 1)) if items else 1
     total = float(payment.get("transaction_amount", 0))
 
+    # Leer sesión para el modo de entrega (y nombre/total si faltan)
+    session_svc = get_session_service(settings.redis_url)
+    session = await session_svc.get(phone)
     if not nombre_producto:
-        # Fallback: leer de la sesión
-        session_svc = get_session_service(settings.redis_url)
-        session = await session_svc.get(phone)
         nombre_producto = session.get("pending_sku_nombre") or "tu pedido"
         if not total:
             precio = session.get("pending_precio") or 0
             cantidad = session.get("pending_cantidad") or 1
             total = precio * cantidad
+
+    tipo_entrega = session.get("tipo_entrega") or "retiro"
+    direccion_envio = session.get("direccion_envio")
 
     # ── Crear pedido en la consola de operaciones ────────────────────────────
     order_svc = get_order_service(settings.redis_url)
@@ -132,8 +135,10 @@ async def mp_notification(request: Request):
         cantidad=cantidad,
         total=total,
         mp_payment_id=payment_id,
+        tipo_entrega=tipo_entrega,
+        direccion_envio=direccion_envio,
     )
-    logger.info(f"Pedido registrado: {order['order_id']}")
+    logger.info(f"Pedido registrado: {order['order_id']} entrega={tipo_entrega}")
 
     # Enviar confirmación por WhatsApp con el código de retiro
     wa_svc = get_whatsapp_service(settings.whatsapp_token, settings.whatsapp_phone_number_id)
@@ -145,12 +150,23 @@ async def mp_notification(request: Request):
 
     pickup_code = order.get("pickup_code", "")
     pickup_line = f"\n{pickup_text}" if pickup_text else ""
-    mensaje = (
-        f"✅ *¡Pago confirmado!*\n\n"
-        f"Recibimos tu pago de *{nombre_producto}*. 🙌\n"
-        f"🔑 *Tu código de retiro es: {pickup_code}*{pickup_line}\n\n"
-        f"Guardalo para presentarlo al retirar. ¡Muchas gracias! 💊"
-    )
+
+    if tipo_entrega == "envio":
+        dir_txt = f" a *{direccion_envio}*" if direccion_envio else ""
+        mensaje = (
+            f"✅ *¡Pago confirmado!*\n\n"
+            f"Recibimos tu pago de *{nombre_producto}*. 🙌\n"
+            f"🚚 Te lo enviamos a domicilio{dir_txt}. Nos comunicamos para coordinar la entrega.\n"
+            f"📋 Código de pedido: *{pickup_code}*\n\n"
+            f"¡Muchas gracias! 💊"
+        )
+    else:
+        mensaje = (
+            f"✅ *¡Pago confirmado!*\n\n"
+            f"Recibimos tu pago de *{nombre_producto}*. 🙌\n"
+            f"🔑 *Tu código de retiro es: {pickup_code}*{pickup_line}\n\n"
+            f"Guardalo para presentarlo al retirar. ¡Muchas gracias! 💊"
+        )
 
     sent = await wa_svc.send_text(phone, mensaje)
     logger.info(f"Confirmación enviada a {phone}: {sent}")
