@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     mp_notification_url: str = ""
 
     redis_url: str = "redis://localhost:6379"
+    database_url: str = ""   # Postgres (Railway) — vacío = features de Postgres/RAG inactivas
 
     env: str = "development"
     sku_csv_path: str = "data/catalogo_base.csv"

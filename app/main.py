@@ -13,6 +13,7 @@ from app.routers import webhook, simulate, backoffice, mp_webhook, orders_api, m
 from app.services.sku_service import get_sku_service
 from app.services.session_service import get_session_service
 from app.services.blob_store import get_blob_store
+from app.services.db import get_db
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -59,7 +60,19 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.warning("Redis no disponible — sesiones no persistirán")
 
+    # PostgreSQL (opcional): historial permanente + RAG con pgvector
+    try:
+        db = get_db(settings.database_url)
+        await asyncio.wait_for(db.connect(), timeout=10.0)
+    except Exception as e:
+        logger.warning(f"Postgres init falló: {e} — se usa solo Redis")
+
     yield
+
+    try:
+        await get_db(settings.database_url).close()
+    except Exception:
+        pass
 
 
 app = FastAPI(

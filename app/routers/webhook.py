@@ -32,6 +32,10 @@ from app.services.image_service import get_image_service
 from app.services.perf_service import get_perf_service
 from app.services.config_service import get_config_service
 from app.services.socio_service import get_socio_service
+from app.services.db import get_db
+from app.services.embeddings import get_embedding_service
+from app.services.rag_service import get_rag_service
+from app.services.message_store import get_message_store
 from app.services.checkout_helper import (
     confirmar_pedido, resolver_entrega, capturar_direccion,
     match_retiro, match_envio, pide_humano, derivar_si_receta, afirma_envio,
@@ -89,6 +93,8 @@ def _deps(settings=None):
         "perf":    get_perf_service(s.redis_url),
         "config":  get_config_service(s.redis_url),
         "socios":  get_socio_service(s.socios_path),
+        "msgs":    get_message_store(get_db(s.database_url)),
+        "rag":     get_rag_service(get_db(s.database_url), get_embedding_service(s.openai_api_key)),
     }
 
 
@@ -154,6 +160,8 @@ async def receive_message(request: Request):
         _intencion = "desconocido"
         _skip_record = False  # True para mensajes descartados antes de procesar
         _audio_prov_used: str | None = None   # "groq" | "openai" si se transcribió
+        texto = ""            # texto del usuario (para historial en finally)
+        respuesta = None      # respuesta del bot (para historial en finally)
 
         # Serializar por teléfono: los mensajes del mismo usuario se procesan
         # en orden de llegada (evita respuestas a destiempo con foto + texto).
@@ -477,6 +485,21 @@ async def receive_message(request: Request):
             entidad = intent_result.get("entidad_producto")
             respuesta = intent_result.get("respuesta", "")
 
+            # Base de conocimiento (RAG): preguntas generales sin producto →
+            # responder con la info de la farmacia si hay algo relevante.
+            _general = intencion == "desconocido" or (intencion == "consulta_abierta" and not entidad)
+            if _general and deps["rag"].enabled():
+                _kb = await deps["rag"].kb_search(texto, n=3)
+                if _kb:
+                    _kb_txt = "\n\n".join(f"{d['titulo']}: {d['contenido']}".strip(": ") for d in _kb)
+                    _ir_kb = await deps["intent"].procesar(
+                        mensaje=texto,
+                        history=session.get("history", []),
+                        contexto_cliente=_ctx_socio,
+                        contexto_kb=_kb_txt,
+                    )
+                    respuesta = _ir_kb.get("respuesta") or respuesta
+
             # Derivar postventa a humano
             if intencion == "cambio_postventa":
                 respuesta = (
@@ -495,6 +518,14 @@ async def receive_message(request: Request):
             if intencion in INTENCIONES_CON_SKU and entidad and not ya_tiene_pending:
                 _tsku = _time.perf_counter()
                 resultados_sku = deps["sku"].buscar(entidad)
+                # Fallback semántico (pgvector): si el fuzzy no encontró nada,
+                # buscar por significado ("algo para la tos", nombres coloquiales).
+                if not resultados_sku and deps["rag"].enabled():
+                    _sem = await deps["rag"].buscar_semantico(entidad, n=3)
+                    for m in _sem:
+                        _sku = deps["sku"].get_by_id(m["sku_id"])
+                        if _sku:
+                            resultados_sku.append(deps["sku"]._to_response(_sku))
                 _steps["sku_ms"] = int((_time.perf_counter() - _tsku) * 1000)
 
                 _tc2 = _time.perf_counter()
@@ -651,5 +682,13 @@ async def receive_message(request: Request):
                     "steps": dict(_steps),
                     "apis": _apis,
                 })
+                # Historial permanente en Postgres (best-effort, no-op sin DB)
+                try:
+                    if texto:
+                        await deps["msgs"].save(phone, "user", texto)
+                    if respuesta:
+                        await deps["msgs"].save(phone, "assistant", respuesta)
+                except Exception:
+                    pass
 
     return {"status": "ok"}

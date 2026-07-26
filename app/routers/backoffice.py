@@ -20,6 +20,17 @@ from app.services.config_service import get_config_service
 from app.services.whatsapp_service import get_whatsapp_service
 from app.services.socio_service import get_socio_service, reload_socio_service
 from app.services.blob_store import get_blob_store
+from app.services.db import get_db
+from app.services.embeddings import get_embedding_service
+from app.services.rag_service import get_rag_service
+from app.services.message_store import get_message_store
+
+
+def _rag():
+    settings = get_settings()
+    db = get_db(settings.database_url)
+    emb = get_embedding_service(settings.openai_api_key)
+    return get_rag_service(db, emb)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/bo")
@@ -373,6 +384,69 @@ async def bo_close(phone: str, _=Depends(_auth)):
     session_svc = get_session_service(settings.redis_url)
     await session_svc.delete(phone)
     return {"status": "ok", "closed": phone}
+
+
+# ── Historial permanente (Postgres) ────────────────────────────────────────────
+
+@router.get("/history/{phone}")
+async def bo_history(phone: str, _=Depends(_auth), limit: int = Query(200, le=1000)):
+    """Historial completo de la conversación desde Postgres (persistente)."""
+    settings = get_settings()
+    db = get_db(settings.database_url)
+    if not db.available():
+        return {"available": False, "messages": []}
+    store = get_message_store(db)
+    return {"available": True, "messages": await store.history(phone, limit)}
+
+
+# ── RAG: indexación y estado ────────────────────────────────────────────────────
+
+@router.get("/rag/status")
+async def bo_rag_status(_=Depends(_auth)):
+    rag = _rag()
+    return {"enabled": rag.enabled(), "productos_indexados": await rag.count_indexed()}
+
+
+@router.post("/rag/reindex")
+async def bo_rag_reindex(_=Depends(_auth)):
+    """Embebe el catálogo actual en pgvector (búsqueda semántica)."""
+    settings = get_settings()
+    rag = _rag()
+    if not rag.enabled():
+        raise HTTPException(status_code=400, detail="RAG no disponible (falta DATABASE_URL o OPENAI_API_KEY)")
+    sku_svc = get_sku_service(settings.sku_csv_path)
+    productos = [sku_svc._to_response(s) for s in sku_svc._skus]
+    total = await rag.reindex_catalogo(productos)
+    return {"status": "ok", "indexados": total}
+
+
+# ── Base de conocimiento ────────────────────────────────────────────────────────
+
+class KBDoc(BaseModel):
+    titulo: str = ""
+    contenido: str
+
+
+@router.get("/kb")
+async def bo_kb_list(_=Depends(_auth)):
+    return await _rag().kb_list()
+
+
+@router.post("/kb")
+async def bo_kb_add(body: KBDoc, _=Depends(_auth)):
+    rag = _rag()
+    if not rag.enabled():
+        raise HTTPException(status_code=400, detail="RAG no disponible (falta DATABASE_URL o OPENAI_API_KEY)")
+    ok = await rag.kb_add(body.titulo, body.contenido)
+    if not ok:
+        raise HTTPException(status_code=422, detail="No se pudo guardar el documento")
+    return {"status": "ok"}
+
+
+@router.delete("/kb/{doc_id}")
+async def bo_kb_delete(doc_id: int, _=Depends(_auth)):
+    await _rag().kb_delete(doc_id)
+    return {"status": "ok"}
 
 
 @router.post("/session/{phone}/message")

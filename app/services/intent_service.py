@@ -194,6 +194,7 @@ class IntentService:
         resultados_sku: Optional[list[dict]] = None,
         label_sku: str = "RESULTADOS DEL CATÁLOGO",
         contexto_cliente: Optional[str] = None,
+        contexto_kb: Optional[str] = None,
     ) -> dict:
         """
         Pasada completa — usa claude-sonnet-4-5 (~1500-2500ms).
@@ -206,17 +207,25 @@ class IntentService:
         if resultados_sku is not None:
             productos_txt = self._formatear_productos(resultados_sku)
             user_content = f"{mensaje}\n\n[{label_sku}]\n{productos_txt}"
-        messages.append({"role": "user", "content": self._con_contexto(user_content, contexto_cliente)})
+        user_content = self._con_contexto(user_content, contexto_cliente, contexto_kb)
+        messages.append({"role": "user", "content": user_content})
         result = await self._llamar(MODEL_FULL, messages)
         logger.debug(f"Sonnet → intención={result.get('intencion')} sku_index={result.get('sku_seleccionado_index')}")
         return result
 
     @staticmethod
-    def _con_contexto(user_content: str, contexto_cliente: Optional[str]) -> str:
-        """Anexa el bloque de datos del socio al mensaje si el cliente está en el padrón."""
-        if not contexto_cliente:
-            return user_content
-        return f"{user_content}\n\n[DATOS DEL SOCIO]\n{contexto_cliente}"
+    def _con_contexto(user_content: str, contexto_cliente: Optional[str],
+                      contexto_kb: Optional[str] = None) -> str:
+        """Anexa bloques de contexto (datos del socio, base de conocimiento)."""
+        if contexto_cliente:
+            user_content += f"\n\n[DATOS DEL SOCIO]\n{contexto_cliente}"
+        if contexto_kb:
+            user_content += (
+                f"\n\n[INFORMACIÓN DE LA FARMACIA]\n{contexto_kb}\n"
+                "Usá esta información para responder si aplica. Si no alcanza, "
+                "ofrecé pasar con una persona del equipo. No inventes datos."
+            )
+        return user_content
 
     def _formatear_productos(self, productos: list[dict]) -> str:
         if not productos:

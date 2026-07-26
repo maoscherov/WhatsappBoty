@@ -12,4 +12,5 @@ pydantic==2.10.2
 pydantic-settings==2.6.1
 openai==1.57.0
 python-multipart==0.0.19
+asyncpg==0.30.0
 # zeep==4.2.1  # descomentar al activar integración Mercurio ERP (SOAP)
