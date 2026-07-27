@@ -61,11 +61,23 @@ async def lifespan(app: FastAPI):
         logger.warning("Redis no disponible — sesiones no persistirán")
 
     # PostgreSQL (opcional): historial permanente + RAG con pgvector
-    try:
-        db = get_db(settings.database_url)
-        await asyncio.wait_for(db.connect(), timeout=10.0)
-    except Exception as e:
-        logger.warning(f"Postgres init falló: {e} — se usa solo Redis")
+    if settings.database_url:
+        # Migraciones Alembic — aplican el esquema al arrancar
+        try:
+            from alembic.config import Config
+            from alembic import command
+            root = Path(__file__).resolve().parent.parent
+            cfg = Config(str(root / "alembic.ini"))
+            cfg.set_main_option("script_location", str(root / "migrations"))
+            await asyncio.to_thread(command.upgrade, cfg, "head")
+            logger.info("Migraciones Alembic aplicadas (head)")
+        except Exception as e:
+            logger.warning(f"No se pudieron aplicar migraciones Alembic: {e}")
+        try:
+            db = get_db(settings.database_url)
+            await asyncio.wait_for(db.connect(), timeout=10.0)
+        except Exception as e:
+            logger.warning(f"Postgres init falló: {e} — se usa solo Redis")
 
     yield
 

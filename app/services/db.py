@@ -1,10 +1,12 @@
 """
-Conexión a PostgreSQL (asyncpg) + esquema con pgvector.
+Conexión a PostgreSQL (asyncpg).
+
+El esquema lo manejan las migraciones de Alembic (migrations/), no este módulo.
 
 Degradación elegante: si DATABASE_URL no está configurada o Postgres no
 responde, `available()` devuelve False y el resto del sistema sigue con Redis.
 
-Tablas:
+Tablas (ver migración 0001):
   messages        → historial permanente de conversaciones
   sku_embeddings  → embeddings del catálogo (pgvector) para búsqueda semántica
   kb_documents    → base de conocimiento (FAQ / info de la farmacia) con embeddings
@@ -17,40 +19,16 @@ import asyncpg
 
 logger = logging.getLogger(__name__)
 
-EMBED_DIM = 1536  # text-embedding-3-small
+EMBED_DIM = 1536  # text-embedding-3-small (debe coincidir con la migración)
 
-_SCHEMA = f"""
-CREATE EXTENSION IF NOT EXISTS vector;
 
-CREATE TABLE IF NOT EXISTS messages (
-    id          BIGSERIAL PRIMARY KEY,
-    phone       TEXT NOT NULL,
-    role        TEXT NOT NULL,
-    content     TEXT NOT NULL,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS idx_messages_phone ON messages (phone, created_at);
-
-CREATE TABLE IF NOT EXISTS sku_embeddings (
-    sku_id          TEXT PRIMARY KEY,
-    nombre          TEXT,
-    requiere_receta TEXT,
-    precio          DOUBLE PRECISION,
-    embedding       vector({EMBED_DIM})
-);
-CREATE INDEX IF NOT EXISTS idx_sku_emb ON sku_embeddings
-    USING hnsw (embedding vector_cosine_ops);
-
-CREATE TABLE IF NOT EXISTS kb_documents (
-    id          BIGSERIAL PRIMARY KEY,
-    titulo      TEXT,
-    contenido   TEXT NOT NULL,
-    embedding   vector({EMBED_DIM}),
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS idx_kb_emb ON kb_documents
-    USING hnsw (embedding vector_cosine_ops);
-"""
+def _normalize_dsn(dsn: str) -> str:
+    """asyncpg no acepta el prefijo +driver de SQLAlchemy."""
+    if dsn.startswith("postgresql+asyncpg://"):
+        return dsn.replace("postgresql+asyncpg://", "postgresql://", 1)
+    if dsn.startswith("postgres://"):
+        return dsn.replace("postgres://", "postgresql://", 1)
+    return dsn
 
 
 def to_vector(values: list[float]) -> str:
@@ -60,21 +38,21 @@ def to_vector(values: list[float]) -> str:
 
 class Database:
     def __init__(self, dsn: str):
-        self._dsn = dsn
+        self._dsn = _normalize_dsn(dsn)
         self._pool: Optional[asyncpg.Pool] = None
         self._ok: Optional[bool] = None
 
     async def connect(self) -> bool:
-        """Crea el pool y el esquema. Devuelve False si no hay DSN o falla."""
+        """Crea el pool. Devuelve False si no hay DSN o falla la conexión."""
         if not self._dsn:
             self._ok = False
             return False
         try:
             self._pool = await asyncpg.create_pool(self._dsn, min_size=1, max_size=5, timeout=10)
             async with self._pool.acquire() as con:
-                await con.execute(_SCHEMA)
+                await con.execute("SELECT 1")
             self._ok = True
-            logger.info("PostgreSQL conectado y esquema listo")
+            logger.info("PostgreSQL conectado")
             return True
         except Exception as e:
             logger.warning(f"PostgreSQL no disponible ({type(e).__name__}: {e}) — se usa solo Redis")

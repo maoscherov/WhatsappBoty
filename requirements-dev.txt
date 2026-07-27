@@ -1,0 +1,5 @@
+# Dependencias solo para desarrollo/testing (no van a producción).
+-r requirements.txt
+pytest==9.1.1
+pytest-asyncio==1.4.0
+pgserver==0.1.4        # Postgres + pgvector embebido para tests locales
