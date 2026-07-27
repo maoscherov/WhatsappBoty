@@ -82,6 +82,9 @@ async def derivar_si_receta(sku_svc, session_svc, cfg: dict, phone: str, sku_id:
     """
     modo = cfg.get("receta_mode", "conservador")
     if necesita_receta(sku_svc, sku_id, modo):
+        # Hand-off limpio: sin producto pendiente (no se puede vender) y en
+        # modo operador. Así no queda un pending que re-dispare la derivación.
+        await session_svc.clear_pending(phone)
         await session_svc.set_estado(phone, "operador")
         return (
             "Ese producto requiere receta 🩺. Te paso con alguien del equipo "
@@ -162,6 +165,7 @@ async def confirmar_pedido(
 
     # 1. Requiere receta → derivar a una persona (no se genera link)
     if necesita_receta(sku_svc, sku_id, modo):
+        await session_svc.clear_pending(phone)
         await session_svc.set_estado(phone, "operador")
         return (
             "Este medicamento requiere receta 🩺. Te paso con alguien del equipo "

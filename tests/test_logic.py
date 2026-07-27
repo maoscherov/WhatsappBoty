@@ -101,3 +101,24 @@ def test_pide_humano(txt):
 @pytest.mark.parametrize("txt", ["quiero buscapina", "algo para una persona mayor", "hola"])
 def test_no_pide_humano(txt):
     assert ch.pide_humano(txt) is False
+
+
+# ── Derivación por receta: hand-off limpio ──────────────────────────────────────
+async def test_derivar_receta_limpia_pending():
+    """Al derivar por receta, se limpia el pending y queda en operador —
+    así no queda un producto que re-dispare la derivación en cada mensaje."""
+    from app.services.session_service import SessionService
+
+    ss = SessionService("redis://127.0.0.1:1")  # sin Redis → in-memory
+    await ss.set_pending("549", sku_id="X1", sku_nombre="Lotrial", precio=100.0,
+                         cantidad=1, opciones=[])
+
+    class _FakeSku:
+        def get_by_id(self, sku_id):
+            return type("S", (), {"requiere_receta": "si"})()
+
+    msg = await ch.derivar_si_receta(_FakeSku(), ss, {"receta_mode": "conservador"}, "549", "X1")
+    assert msg is not None
+    sess = await ss.get("549")
+    assert sess["estado"] == "operador"
+    assert sess["pending_sku_id"] is None   # producto limpiado
