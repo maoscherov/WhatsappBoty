@@ -69,7 +69,8 @@ async def lifespan(app: FastAPI):
             root = Path(__file__).resolve().parent.parent
             cfg = Config(str(root / "alembic.ini"))
             cfg.set_main_option("script_location", str(root / "migrations"))
-            await asyncio.to_thread(command.upgrade, cfg, "head")
+            # Timeout: nunca colgar el arranque por una DB lenta/inaccesible.
+            await asyncio.wait_for(asyncio.to_thread(command.upgrade, cfg, "head"), timeout=20.0)
             logger.info("Migraciones Alembic aplicadas (head)")
         except Exception as e:
             logger.warning(f"No se pudieron aplicar migraciones Alembic: {e}")
