@@ -38,6 +38,7 @@ TOP_N_DEFAULT = 3
 # extra simplemente no devuelve nada (inofensivo). Ampliable a medida que surjan.
 SINONIMOS: dict[str, list[str]] = {
     "ibuprofeno":   ["ibupirac", "actron"],
+    "omeprazol":    ["aziatop"],
     "escopolamina": ["buscapina", "sertal"],
     "butilhioscina":["buscapina", "sertal"],
     "hioscina":     ["buscapina", "sertal"],
@@ -47,6 +48,27 @@ SINONIMOS: dict[str, list[str]] = {
     "amoxicilina":  ["amoxidal"],
     "paracetamol":  ["tafirol"],
 }
+
+# Lista blanca de VENTA LIBRE: drogas/marcas OTC conocidas cuyo flag de receta
+# del catálogo suele venir mal (ej. omeprazol/Aziatop marcado "si" o "ambiguo"
+# siendo venta libre). Si el nombre contiene alguna de estas, se fuerza
+# requiere_receta="no". Ampliable/editable — VALIDAR con criterio farmacéutico.
+VENTA_LIBRE: set[str] = {
+    # Analgésicos / antipiréticos / AINEs OTC
+    "paracetamol", "tafirol", "ibuprofeno", "ibupirac", "actron", "ibuevanol",
+    "aspirina", "aspirineta", "bayaspirina", "naproxeno",
+    # Antiácidos / IBP / digestivos OTC
+    "omeprazol", "aziatop", "esomeprazol", "pantoprazol", "ranitidina",
+    "mylanta", "gaviscon", "sertal", "buscapina",
+    # Antihistamínicos OTC
+    "loratadina",
+}
+
+
+def es_venta_libre(nombre: str) -> bool:
+    """True si el nombre del producto corresponde a un OTC de la lista blanca."""
+    n = (nombre or "").lower()
+    return any(kw in n for kw in VENTA_LIBRE)
 
 
 def requiere_derivacion(requiere_receta: str, modo: str = "conservador") -> bool:
@@ -127,6 +149,8 @@ class SKUService:
         requiere = (row.get("requiere_receta") or "").strip().lower()
         if requiere not in ("si", "ambiguo", "no"):
             requiere = "si" if categoria.lower() == "medicamentos bajo receta" else "no"
+        if es_venta_libre(nombre):   # override OTC: nunca requiere receta
+            requiere = "no"
         try:
             return SKU(
                 sku_id=str(row.get("SKU", "")).strip(),
@@ -150,6 +174,9 @@ class SKUService:
         nombre = row.get("sku_nombre", "").strip()
         if not nombre:
             return None
+        requiere = (row.get("requiere_receta") or "no").strip().lower()
+        if es_venta_libre(nombre):   # override OTC: nunca requiere receta
+            requiere = "no"
         try:
             return SKU(
                 sku_id=row.get("sku_id", "").strip(),
@@ -168,7 +195,7 @@ class SKUService:
                 tipo_producto=row.get("tipo_producto", "regular"),
                 pausado=_safe_bool(row.get("pausado", "False")),
                 imagen_url=row.get("imagen_url", "").strip() or None if has_imagen else None,
-                requiere_receta=(row.get("requiere_receta") or "no").strip().lower(),
+                requiere_receta=requiere,
                 clasificacion=(row.get("clasificacion") or "").strip().lower(),
             )
         except Exception:

@@ -41,13 +41,25 @@ def sku_svc():
 # ── Receta derivada de la categoría ────────────────────────────────────────────
 def test_receta_desde_categoria(sku_svc):
     platsul = sku_svc.get_by_barcode("111")
-    ibu = sku_svc.get_by_barcode("222")
     busca = sku_svc.get_by_barcode("333")
     shampoo = sku_svc.get_by_barcode("444")
-    assert platsul.requiere_receta == "si"
-    assert ibu.requiere_receta == "si"
-    assert busca.requiere_receta == "no"   # Venta Libre
+    assert platsul.requiere_receta == "si"   # Medicamentos Bajo Receta, no es OTC
+    assert busca.requiere_receta == "no"     # Venta Libre
     assert shampoo.requiere_receta == "no"
+
+
+def test_override_venta_libre(sku_svc):
+    # Ibuprofeno está categorizado "Medicamentos Bajo Receta" en el fixture,
+    # pero es OTC → la lista blanca lo fuerza a "no".
+    ibu = sku_svc.get_by_barcode("222")
+    assert ibu.requiere_receta == "no"
+
+
+def test_es_venta_libre():
+    from app.services.sku_service import es_venta_libre
+    assert es_venta_libre("Elea AZIATOP ADVANCE 20 mg CAP x 28") is True
+    assert es_venta_libre("Bayer Consumer ACTRON 600") is True
+    assert es_venta_libre("Soubeiran Chobet PLATSUL A CRE x 200") is False
 
 
 def test_requiere_derivacion():
