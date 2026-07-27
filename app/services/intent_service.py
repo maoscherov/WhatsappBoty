@@ -145,13 +145,16 @@ class IntentService:
     async def _llamar(self, model: str, messages: list[dict]) -> dict:
         """Llama a la API con el modelo indicado y devuelve el JSON parseado."""
         try:
+            # Prefill: forzamos que la respuesta arranque con "{" para que el
+            # modelo (sobre todo Haiku) devuelva SIEMPRE JSON válido y no prosa.
+            msgs = messages + [{"role": "assistant", "content": "{"}]
             response = await self._client.messages.create(
                 model=model,
                 max_tokens=512,
                 system=_SYSTEM_CACHED,
-                messages=messages,
+                messages=msgs,
             )
-            raw = response.content[0].text.strip()
+            raw = "{" + response.content[0].text
             return self._parse_response(raw)
         except anthropic.AuthenticationError:
             logger.error("ANTHROPIC_API_KEY inválida o no configurada")

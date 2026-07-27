@@ -43,3 +43,17 @@ def test_contexto_prompt_socio_y_kb():
     assert "[DATOS DEL SOCIO]" in base
     assert "[INFORMACIÓN DE LA FARMACIA]" in base
     assert IntentService._con_contexto("m", None, None) == "m"
+
+
+def test_parse_response_con_prefill():
+    # Con prefill, raw = "{" + continuación → debe parsear a JSON válido
+    cont = '"intencion": "pedido", "entidad_producto": "anti acné", "cantidad": 1, "respuesta": "ok"}'
+    d = IntentService._parse_response("{" + cont)
+    assert d["intencion"] == "pedido"
+    assert d["entidad_producto"] == "anti acné"
+
+
+def test_parse_response_fallback():
+    # Prosa sin JSON → fallback controlado (no rompe)
+    d = IntentService._parse_response("perdón, no sé")
+    assert d["intencion"] == "desconocido"
