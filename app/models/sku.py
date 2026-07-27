@@ -23,13 +23,31 @@ class SKU(BaseModel):
     clasificacion: str = ""           # critico | riesgo_alto | riesgo_medio | saludable | sin_rotacion
 
     @property
+    def sin_stock(self) -> bool:
+        """
+        Sin stock real. Solo aplica cuando el catálogo TRAE dato de stock
+        (stock_actual no es None) y es <= 0. En el catálogo base (formato A,
+        sin stock) queda False → se sigue tratando como "consultar", vendible.
+        """
+        return self.stock_actual is not None and self.cantidad_visible <= 0
+
+    @property
+    def vendible(self) -> bool:
+        """Se puede vender: no pausado, con precio, y no marcado sin stock."""
+        return not self.pausado and self.precio_venta > 0 and not self.sin_stock
+
+    @property
     def disponible(self) -> bool:
-        return not self.pausado and self.cantidad_visible > 0
+        return self.vendible
 
     @property
     def estado(self) -> str:
         if self.pausado:
             return "pausado"
+        if self.sin_stock:
+            return "sin_stock"
+        if self.precio_venta <= 0:
+            return "consultar"
         if self.cantidad_visible > 0:
             return "disponible"
         return "consultar"

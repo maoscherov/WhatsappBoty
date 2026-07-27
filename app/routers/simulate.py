@@ -452,18 +452,20 @@ async def simulate(req: SimulateRequest):
                         break
             if not producto_elegido:
                 producto_elegido = (
-                    next((r for r in productos_encontrados if r["estado"] == "disponible"), None)
+                    next((r for r in productos_encontrados if r.get("vendible")), None)
                     or productos_encontrados[0]
                 )
-            await session_svc.set_pending(
-                phone=req.phone,
-                sku_id=producto_elegido["sku_id"],
-                sku_nombre=producto_elegido["nombre"],
-                precio=producto_elegido["precio"],
-                cantidad=cantidad,
-                opciones=productos_encontrados,
-            )
-            _sku_pendiente_nuevo = producto_elegido["sku_id"]
+            # Solo comprable si es vendible (con stock y precio)
+            if producto_elegido.get("vendible", True):
+                await session_svc.set_pending(
+                    phone=req.phone,
+                    sku_id=producto_elegido["sku_id"],
+                    sku_nombre=producto_elegido["nombre"],
+                    precio=producto_elegido["precio"],
+                    cantidad=cantidad,
+                    opciones=productos_encontrados,
+                )
+                _sku_pendiente_nuevo = producto_elegido["sku_id"]
     elif ya_tiene_pending:
         # Hay pending activo: el usuario puede refinar la selección o la cantidad.
         pending_opciones = session.get("pending_opciones", [])

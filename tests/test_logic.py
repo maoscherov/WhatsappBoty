@@ -62,6 +62,26 @@ def test_es_venta_libre():
     assert es_venta_libre("Soubeiran Chobet PLATSUL A CRE x 200") is False
 
 
+def test_sin_stock_y_vendible():
+    from app.models.sku import SKU
+    def _sku(**kw):
+        base = dict(sku_id="1", barcode="1", sku_nombre="X", sku_nombre_original="X")
+        base.update(kw)
+        return SKU(**base)
+
+    # Con dato de stock 0/neg y sin precio → sin stock, no vendible
+    sin = _sku(stock_actual=-1, cantidad_visible=0, precio_venta=0)
+    assert sin.sin_stock is True and sin.vendible is False and sin.estado == "sin_stock"
+
+    # Con stock y precio → vendible
+    ok = _sku(stock_actual=5, cantidad_visible=5, precio_venta=100)
+    assert ok.sin_stock is False and ok.vendible is True and ok.estado == "disponible"
+
+    # Formato base (sin dato de stock) con precio → vendible, "consultar"
+    base = _sku(stock_actual=None, cantidad_visible=0, precio_venta=100)
+    assert base.sin_stock is False and base.vendible is True and base.estado == "consultar"
+
+
 def test_requiere_derivacion():
     assert requiere_derivacion("si", "conservador") is True
     assert requiere_derivacion("si", "estricto") is True

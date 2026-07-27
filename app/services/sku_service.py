@@ -286,6 +286,8 @@ class SKUService:
             "requiere_receta": sku.requiere_receta,
             "clasificacion": sku.clasificacion,
             "urgente": sku.urgente,
+            "vendible": sku.vendible,
+            "sin_stock": sku.sin_stock,
         }
 
     @property

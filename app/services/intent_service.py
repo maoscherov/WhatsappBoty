@@ -47,6 +47,7 @@ BÚSQUEDA EN CATÁLOGO SKU:
 - Buscás por nombre coloquial, nombre técnico o marca.
 - La disponibilidad mostrada es cantidad_visible (stock calculado con buffer de seguridad).
 - Mostrás máximo 3 opciones ordenadas por más vendido.
+- Si el producto que pidió el cliente aparece como "SIN STOCK": decíselo con claridad ("Justo no tengo stock de X en este momento") y OFRECÉ las alternativas DISPONIBLES de la lista ("pero te puedo ofrecer estos similares: ..."). Nunca lo confirmes para la compra ni pidas confirmación de un producto SIN STOCK.
 - El stock es una estimación y puede estar desactualizado. NO afirmes tajante "no hay" ni "está agotado". Si un producto figura sin stock, decilo con cautela: "no me figura disponible en este momento, puedo confirmarlo con el equipo o encargártelo". Así evitás rechazar una venta por un dato de stock que puede estar viejo.
 - REGLA ESTRICTA: solo podés ofrecer productos que aparezcan en [RESULTADOS DEL CATÁLOGO] u [OPCIONES MOSTRADAS]. NUNCA inventes marcas, presentaciones ni productos que no estén en esa lista.
 - Si la lista dice "Sin resultados en el catálogo" o no hay opciones que coincidan con lo que pidió el cliente, NO ofrezcas productos de otro tipo. Decí con honestidad que no lo tenés y ofrecé encargarlo o pasarlo con una persona del equipo. Nunca sugieras un producto de otro rubro (ej.: si pide un remedio y no está, no ofrezcas cosmética ni higiene).
@@ -241,7 +242,9 @@ class IntentService:
             return "Sin resultados en el catálogo."
         lines = []
         for i, p in enumerate(productos, start=1):
-            if p["estado"] == "disponible":
+            if p.get("sin_stock"):
+                estado_txt = "SIN STOCK - no ofrecer para comprar, sugerir alternativas disponibles"
+            elif p["estado"] == "disponible":
                 estado_txt = f"Disponible (cantidad aprox: {p['cantidad_visible']})"
             else:
                 estado_txt = "Consultar disponibilidad"

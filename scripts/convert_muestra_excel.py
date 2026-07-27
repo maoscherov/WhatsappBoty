@@ -71,25 +71,28 @@ def convertir(xlsx_path: str, out_path: str) -> int:
         es_medicamento = hoja == "Medicamentos"
         incluidas = 0
         for _, row in df.iterrows():
-            precio = row.get("Precio venta unit.")
-            stock = row.get("Stock actual")
             barcode = str(row.get("Codigo de barra", "")).strip()
+            nombre = str(row.get("Descripcion", "")).strip()
 
-            # Filtros de datos no vendibles
-            try:
-                precio = float(precio)
-                stock = float(stock)
-            except (ValueError, TypeError):
-                continue
-            if precio <= 0 or stock <= 0 or barcode in ("", "1", "nan"):
+            # Solo se descartan placeholders o filas sin nombre/código.
+            # Los que no tienen precio o stock SÍ se importan, marcados
+            # "sin stock", para poder decir "no hay stock, te ofrezco similares".
+            if not nombre or barcode in ("", "1", "nan"):
                 continue
 
+            def _num(v):
+                try:
+                    return float(v)
+                except (ValueError, TypeError):
+                    return 0.0
+            precio = _num(row.get("Precio venta unit."))
+            stock = _num(row.get("Stock actual"))
             clasif = _clasif(row.get("Clasificacion disponibilidad"))
-            if clasif == "revisar":     # stock negativo / error de carga
-                continue
+
+            # cantidad_visible=0 → el bot lo trata como "sin stock / consultar".
+            cantidad_visible = int(stock) if stock > 0 else 0
 
             idx += 1
-            nombre = str(row.get("Descripcion", "")).strip()
             filas.append({
                 "sku_id": barcode or f"MUESTRA-{idx}",
                 "barcode": barcode,
@@ -99,11 +102,11 @@ def convertir(xlsx_path: str, out_path: str) -> int:
                 "laboratorio": nombre.split(" ")[0] if nombre else "",
                 "categoria": hoja,
                 "es_medicamento": "si" if es_medicamento else "no",
-                "precio_venta": round(precio, 2),
+                "precio_venta": round(precio, 2) if precio > 0 else 0,
                 "stock_actual": int(stock),
-                "ventas_mes": round(float(row.get("Prom. venta semanal (4 sem)") or 0) * 4, 1),
-                "prom_semanal": round(float(row.get("Prom. venta semanal (4 sem)") or 0), 1),
-                "cantidad_visible": int(stock),
+                "ventas_mes": round(_num(row.get("Prom. venta semanal (4 sem)")) * 4, 1),
+                "prom_semanal": round(_num(row.get("Prom. venta semanal (4 sem)")), 1),
+                "cantidad_visible": cantidad_visible,
                 "tipo_producto": "regular",
                 "pausado": "False",
                 "requiere_receta": _receta(row.get("Requiere Receta (cruce SKU)"), es_medicamento),

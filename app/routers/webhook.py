@@ -606,26 +606,30 @@ async def receive_message(request: Request):
                                     logger.info(f"SKU corregido por precio: {r_sku['nombre']}")
                                     break
 
-                    # 3. Fallback: primer disponible
+                    # 3. Fallback: primer vendible (disponible + con precio)
                     if not producto_elegido:
                         producto_elegido = (
-                            next((r for r in resultados_sku if r["estado"] == "disponible"), None)
+                            next((r for r in resultados_sku if r.get("vendible")), None)
                             or resultados_sku[0]
                         )
-                    await deps["session"].set_pending(
-                        phone=phone,
-                        sku_id=producto_elegido["sku_id"],
-                        sku_nombre=producto_elegido["nombre"],
-                        precio=producto_elegido["precio"],
-                        cantidad=cantidad,
-                        opciones=resultados_sku,
-                    )
-                    _sku_pendiente_nuevo = producto_elegido["sku_id"]
-                    send_images_cfg = await deps["config"].get("send_images")
-                    await _maybe_send_image(
-                        deps["wa"], phone, resultados_sku,
-                        producto_elegido, solicita_imagen, send_images_cfg,
-                    )
+                    # Solo se marca como pendiente (comprable) si es VENDIBLE.
+                    # Si es sin stock / sin precio, no entra al flujo de compra —
+                    # Claude ya respondió ofreciendo las alternativas disponibles.
+                    if producto_elegido.get("vendible", True):
+                        await deps["session"].set_pending(
+                            phone=phone,
+                            sku_id=producto_elegido["sku_id"],
+                            sku_nombre=producto_elegido["nombre"],
+                            precio=producto_elegido["precio"],
+                            cantidad=cantidad,
+                            opciones=resultados_sku,
+                        )
+                        _sku_pendiente_nuevo = producto_elegido["sku_id"]
+                        send_images_cfg = await deps["config"].get("send_images")
+                        await _maybe_send_image(
+                            deps["wa"], phone, resultados_sku,
+                            producto_elegido, solicita_imagen, send_images_cfg,
+                        )
 
             elif ya_tiene_pending:
                 pending_opciones = session.get("pending_opciones", [])
