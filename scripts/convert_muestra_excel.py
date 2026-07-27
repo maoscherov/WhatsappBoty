@@ -48,12 +48,12 @@ def _clasif(valor: str) -> str:
 
 
 def _receta(valor: str, es_medicamento: bool) -> str:
-    if not es_medicamento:
-        return "no"
     v = str(valor).strip().lower()
     if v == "si":
-        return "si"
-    if v in _RECETA_AMBIGUO:
+        return "si"   # "Si" explícito del cruce → siempre requiere receta
+    # Los ambiguos (sin cruce / indeterminado) solo cuentan para medicamentos,
+    # para no marcar cosmética/higiene por un cruce que no los encontró.
+    if es_medicamento and v in _RECETA_AMBIGUO:
         return "ambiguo"
     return "no"
 
