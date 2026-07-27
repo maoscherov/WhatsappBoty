@@ -113,7 +113,13 @@ El campo "sku_seleccionado_index": cuando hay [RESULTADOS DEL CATÁLOGO] u [OPCI
 El campo "confirmacion": cuando el sistema está esperando confirmación de un pedido pendiente:
 - true  → el usuario confirma el pedido (aunque use palabras raras, errores de tipeo o autocorrect).
 - false → el usuario cancela O pide un producto DIFERENTE al pendiente (ej: "mejor bayer", "no, quiero ibuprofeno", "prefiero el genérico"). En estos casos siempre false, nunca null.
-- null  → el mensaje no tiene relación con ningún pedido pendiente (saludo, pregunta de stock de otro producto sin contexto de compra, etc.)."""
+- null  → el mensaje no tiene relación con ningún pedido pendiente (saludo, pregunta de stock de otro producto sin contexto de compra, etc.).
+
+CAMBIO DE PRODUCTO AL RECHAZAR (importante):
+Si el cliente rechaza el pendiente mencionando OTRO producto (ej: "no, un lotrial", "mejor dame bayer", "prefiero ibuprofeno"), NO es una simple cancelación. Además de confirmacion=false, DEBÉS:
+  - poner ese nuevo producto en "entidad_producto" (ej: "lotrial", "bayer", "ibuprofeno"),
+  - usar la intención que corresponda: "pedido" si lo quiere comprar, o "consulta_precio"/"consulta_stock" si pregunta.
+Así el sistema busca el nuevo producto en vez de cerrar la conversación. Solo dejá entidad_producto=null cuando es una cancelación PURA sin mencionar otro producto ("no gracias", "mejor no", "dejalo")."""
 
 # Prompt caching requiere SDK >= 0.50 — por ahora usamos string directo.
 _SYSTEM_CACHED = SYSTEM_PROMPT

@@ -410,11 +410,13 @@ async def receive_message(request: Request):
                             cfg_all, phone, session,
                         )
                     elif _es_cambio:
-                        # Cambio genuino de producto (ej: "mejor bayer")
-                        _intencion = "pedido_cancelado"
-                        await deps["session"].clear_pending(phone)
+                        # Cambio genuino de producto (ej: "mejor bayer", "no, un lotrial")
+                        # Capturar la intención de Claude ANTES de sobrescribirla,
+                        # si no nunca se busca el producto nuevo.
                         nueva_entidad = _entidad_nueva
                         nueva_intencion = _intencion
+                        _intencion = "pedido_cancelado"
+                        await deps["session"].clear_pending(phone)
                         if nueva_entidad and nueva_intencion in INTENCIONES_CON_SKU:
                             _tsku = _time.perf_counter()
                             resultados_nuevos = deps["sku"].buscar(nueva_entidad)
