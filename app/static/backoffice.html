@@ -273,6 +273,7 @@ td .product-price { color: var(--accent); font-size: 12px; }
   <div class="spacer"></div>
   <span class="refresh-info">Auto-refresh 30s</span>
   <button id="btn-mute" onclick="toggleMute()" title="Sonido activado" style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:7px 12px;cursor:pointer;font-size:14px;color:var(--text)">🔔</button>
+  <button id="btn-clear-sessions" onclick="clearAllSessions()" title="Cerrar todas las conversaciones (para demos)" style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:7px 12px;cursor:pointer;font-size:13px;color:var(--text-muted)">🧹 Limpiar todo</button>
   <button id="btn-refresh">↺ Actualizar</button>
 </div>
 
@@ -729,6 +730,16 @@ async function closeSession(phone) {
     const r = await fetch(apiUrl(`/bo/session/${encodeURIComponent(phone)}/close`), { method: 'POST' });
     if (!r.ok) return;
     expandedPhones.delete(phone);
+    await loadSessions();
+  } catch(_) {}
+}
+
+async function clearAllSessions() {
+  if (!confirm('¿Cerrar TODAS las conversaciones activas? (útil para resetear antes de una demo)')) return;
+  try {
+    const r = await fetch(apiUrl('/bo/sessions/clear'), { method: 'POST' });
+    if (!r.ok) return;
+    expandedPhones.clear();
     await loadSessions();
   } catch(_) {}
 }

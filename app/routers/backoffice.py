@@ -386,6 +386,15 @@ async def bo_close(phone: str, _=Depends(_auth)):
     return {"status": "ok", "closed": phone}
 
 
+@router.post("/sessions/clear")
+async def bo_sessions_clear(_=Depends(_auth)):
+    """Elimina TODAS las sesiones activas (resetear el tablero antes de una demo)."""
+    settings = get_settings()
+    session_svc = get_session_service(settings.redis_url)
+    n = await session_svc.delete_all()
+    return {"status": "ok", "eliminadas": n}
+
+
 # ── Historial permanente (Postgres) ────────────────────────────────────────────
 
 @router.get("/history/{phone}")

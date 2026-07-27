@@ -121,6 +121,22 @@ class SessionService:
                 self._redis_ok = False
         self._memory.pop(phone, None)
 
+    async def delete_all(self) -> int:
+        """Elimina todas las sesiones activas (útil para resetear antes de una demo)."""
+        n = 0
+        if await self._use_redis():
+            try:
+                keys = await self._redis.keys("session:*")
+                for key in keys:
+                    await self._redis.delete(key)
+                    n += 1
+                return n
+            except Exception:
+                self._redis_ok = False
+        n = len(self._memory)
+        self._memory.clear()
+        return n
+
     async def is_processed(self, msg_id: str) -> bool:
         """
         Retorna True si el mensaje ya fue procesado (deduplicación de webhooks).
