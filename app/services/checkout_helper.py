@@ -44,6 +44,37 @@ def afirma_envio(t: str) -> bool:
     return tiene_afirma and tiene_cue
 
 
+# Cambio de dirección: el cliente quiere enviar a otra parte.
+_CAMBIO_DIR = [r"otra direcci[oó]n", r"cambiar.{0,12}direcci[oó]n", r"distinta direcci[oó]n",
+               r"a otra parte", r"a otro lado", r"otro domicilio", r"cambiar.{0,8}env[ií]o",
+               r"nueva direcci[oó]n"]
+# Una dirección escrita: nombre de calle + número (ej: "donado 608", "16 de enero 9279").
+_DIR_RE = re.compile(r"[a-záéíóúñ]{2,}\.?\s+\d+", re.IGNORECASE)
+_CONECTORES = [r"\blo quiero\b", r"\bquiero\b", r"\benv[ií]a?r?\b", r"\bmandar?\b",
+               r"\ba\b", r"\ben\b", r"\bla\b", r"\bel\b", r"\bmi\b"]
+
+
+def quiere_cambiar_direccion(t: str) -> bool:
+    return any(re.search(p, t, re.IGNORECASE) for p in _CAMBIO_DIR)
+
+
+def parece_direccion(t: str) -> bool:
+    return bool(_DIR_RE.search(t))
+
+
+def extraer_direccion_de(t: str) -> Optional[str]:
+    """
+    Extrae una dirección escrita del mensaje (calle + número), quitando frases
+    de cambio y conectores. Devuelve None si el mensaje no contiene una dirección
+    reconocible (evita tomar cualquier texto como dirección).
+    """
+    s = t
+    for p in _CAMBIO_DIR + _CONECTORES:
+        s = re.sub(p, " ", s, flags=re.IGNORECASE)
+    s = re.sub(r"\s+", " ", s).strip(" ,.")
+    return s if s and parece_direccion(s) else None
+
+
 # Pedido explícito de hablar con una persona → derivar al operador.
 # Patrones que exigen un verbo de contacto + destinatario humano, para no
 # dispararse con "algo para una persona mayor".

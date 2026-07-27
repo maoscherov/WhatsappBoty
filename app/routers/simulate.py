@@ -24,6 +24,7 @@ from app.services.config_service import get_config_service
 from app.services.checkout_helper import (
     confirmar_pedido, resolver_entrega, capturar_direccion,
     match_retiro, match_envio, pide_humano, derivar_si_receta, afirma_envio,
+    quiere_cambiar_direccion, extraer_direccion_de,
 )
 
 
@@ -130,9 +131,14 @@ async def simulate(req: SimulateRequest):
 
     # ── Estado: eligiendo modo de entrega (retiro / envío) ───────────────────
     if session.get("estado") == "esperando_entrega" and session.get("pending_sku_id"):
+        _dir_expl = extraer_direccion_de(texto)
         if _match_no(texto):
             await session_svc.clear_pending(req.phone)
             respuesta, _intent_out = "Dale, sin problema. ¿En qué más te puedo ayudar?", "pedido_cancelado"
+        elif _dir_expl:
+            respuesta, _intent_out = await capturar_direccion(
+                payment_svc, session_svc, req.phone, session, _dir_expl,
+            )
         else:
             respuesta, _intent_out = await resolver_entrega(
                 payment_svc, session_svc, socio_svc, req.phone, session,
@@ -149,6 +155,31 @@ async def simulate(req: SimulateRequest):
             productos_encontrados=[], estado_sesion=session.get("estado", "idle"),
             link_pago=_extract_link(respuesta), mp_token_ok=mp_token_ok,
         )
+
+    # ── Estado: link enviado — permitir cambiar la dirección ─────────────────
+    if session.get("estado") == "esperando_pago" and session.get("pending_sku_id"):
+        _dir_expl = extraer_direccion_de(texto)
+        if _dir_expl or quiere_cambiar_direccion(texto):
+            if _dir_expl:
+                respuesta, _intent_out = await capturar_direccion(
+                    payment_svc, session_svc, req.phone, session, _dir_expl,
+                )
+            else:
+                await session_svc.set_estado(req.phone, "esperando_direccion")
+                respuesta, _intent_out = (
+                    "Dale! Pasame la dirección nueva y te regenero el link 🚚",
+                    "esperando_direccion",
+                )
+            await session_svc.add_message(req.phone, "user", texto)
+            await session_svc.add_message(req.phone, "assistant", respuesta)
+            session = await session_svc.get(req.phone)
+            await _record(_intent_out)
+            return SimulateResponse(
+                respuesta=respuesta, intencion=_intent_out,
+                entidad_producto=session.get("pending_sku_nombre"),
+                productos_encontrados=[], estado_sesion=session.get("estado", "idle"),
+                link_pago=_extract_link(respuesta), mp_token_ok=mp_token_ok,
+            )
 
     # ── Estado: esperando dirección de envío ─────────────────────────────────
     if session.get("estado") == "esperando_direccion" and session.get("pending_sku_id"):

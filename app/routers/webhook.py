@@ -39,6 +39,7 @@ from app.services.message_store import get_message_store
 from app.services.checkout_helper import (
     confirmar_pedido, resolver_entrega, capturar_direccion,
     match_retiro, match_envio, pide_humano, derivar_si_receta, afirma_envio,
+    quiere_cambiar_direccion, extraer_direccion_de,
 )
 
 logger = logging.getLogger(__name__)
@@ -271,10 +272,16 @@ async def receive_message(request: Request):
             # ── Estado: eligiendo modo de entrega (retiro / envío) ───────────
             if session.get("estado") == "esperando_entrega" and session.get("pending_sku_id"):
                 texto_lower = texto.lower().strip()
+                _dir_expl = extraer_direccion_de(texto)
                 if _match_no(texto_lower):
                     _intencion = "pedido_cancelado"
                     await deps["session"].clear_pending(phone)
                     respuesta = "Dale, sin problema. ¿En qué más te puedo ayudar?"
+                elif _dir_expl:
+                    # Escribió una dirección directamente → envío a esa dirección
+                    respuesta, _intencion = await capturar_direccion(
+                        deps["payment"], deps["session"], phone, session, _dir_expl,
+                    )
                 else:
                     respuesta, _intencion = await resolver_entrega(
                         deps["payment"], deps["session"], deps["socios"],
@@ -288,6 +295,28 @@ async def receive_message(request: Request):
                 await deps["session"].add_message(phone, "user", texto)
                 await deps["session"].add_message(phone, "assistant", respuesta)
                 continue
+
+            # ── Estado: link enviado — permitir cambiar la dirección ─────────
+            if session.get("estado") == "esperando_pago" and session.get("pending_sku_id"):
+                _dir_expl = extraer_direccion_de(texto)
+                if _dir_expl or quiere_cambiar_direccion(texto):
+                    if _dir_expl:
+                        respuesta, _intencion = await capturar_direccion(
+                            deps["payment"], deps["session"], phone, session, _dir_expl,
+                        )
+                    else:
+                        await deps["session"].set_estado(phone, "esperando_direccion")
+                        respuesta, _intencion = (
+                            "Dale! Pasame la dirección nueva y te regenero el link 🚚",
+                            "esperando_direccion",
+                        )
+                    _ts = _time.perf_counter()
+                    await deps["wa"].send_text(phone, respuesta)
+                    _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
+                    await deps["session"].add_message(phone, "user", texto)
+                    await deps["session"].add_message(phone, "assistant", respuesta)
+                    continue
+                # Otros mensajes en esperando_pago → siguen al flujo normal
 
             # ── Estado: esperando dirección de envío ─────────────────────────
             if session.get("estado") == "esperando_direccion" and session.get("pending_sku_id"):

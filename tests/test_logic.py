@@ -92,6 +92,23 @@ def test_afirma_envio(txt):
     assert ch.afirma_envio(txt) is True
 
 
+@pytest.mark.parametrize("txt", ["lo quiero en otra dirección", "cambiar la dirección", "a otro lado"])
+def test_quiere_cambiar_direccion(txt):
+    assert ch.quiere_cambiar_direccion(txt) is True
+
+
+@pytest.mark.parametrize("txt,esperado", [
+    ("otra dirección donado 608 bis", "donado 608 bis"),
+    ("donado 608 bis", "donado 608 bis"),
+    ("16 de enero 9279", "16 de enero 9279"),
+    ("lo quiero en otra dirección", None),   # sin dirección concreta → pedirla
+    ("cuánto sale", None),                   # no es una dirección
+    ("gracias", None),
+])
+def test_extraer_direccion(txt, esperado):
+    assert ch.extraer_direccion_de(txt) == esperado
+
+
 @pytest.mark.parametrize("txt", ["quiero hablar con una persona", "me pasás con un asesor?",
                                  "necesito atención humana"])
 def test_pide_humano(txt):
