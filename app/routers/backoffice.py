@@ -203,6 +203,26 @@ async def bo_sku_info(_=Depends(_auth)):
         return {"total": 0, "error": str(e)}
 
 
+@router.get("/sku/check")
+async def bo_sku_check(_=Depends(_auth), q: str = Query(...)):
+    """
+    Diagnóstico: muestra qué productos y qué flag de receta tiene el bot
+    CARGADO AHORA MISMO para una búsqueda (para confirmar el catálogo en vivo).
+    """
+    settings = get_settings()
+    svc = get_sku_service(settings.sku_csv_path)
+    res = svc.buscar(q, top_n=6)
+    return {
+        "query": q,
+        "csv_path": settings.sku_csv_path,
+        "total_catalogo": svc.total,
+        "resultados": [
+            {"nombre": r["nombre"], "precio": r["precio"], "requiere_receta": r["requiere_receta"]}
+            for r in res
+        ],
+    }
+
+
 @router.post("/sku/import")
 async def bo_sku_import(file: UploadFile = File(...), _=Depends(_auth)):
     """Reemplaza el catálogo con el CSV subido y recarga el servicio en memoria."""
