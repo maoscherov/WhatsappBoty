@@ -8,7 +8,7 @@ GET /bo/session/{phone} → detalle completo de una sesión
 
 import logging
 import statistics
-from fastapi import APIRouter, HTTPException, Query, Depends, UploadFile, File
+from fastapi import APIRouter, HTTPException, Query, Depends, UploadFile, File, Header
 from pathlib import Path
 from pydantic import BaseModel
 
@@ -36,9 +36,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/bo")
 
 
-def _auth(key: str = Query(None, alias="key")):
+def _auth(key: str = Query(None, alias="key"), x_bo_key: str = Header(None, alias="x-bo-key")):
+    # Acepta la clave por query (?key=) o por header (x-bo-key). El header evita
+    # problemas de encoding cuando el token tiene caracteres como + / = espacio.
     settings = get_settings()
-    if settings.bo_key and key != settings.bo_key:
+    provista = key if key is not None else x_bo_key
+    if settings.bo_key and provista != settings.bo_key:
         raise HTTPException(status_code=403, detail="Acceso denegado")
 
 
