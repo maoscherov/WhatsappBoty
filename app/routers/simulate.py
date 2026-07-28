@@ -413,8 +413,8 @@ async def simulate(req: SimulateRequest):
     ya_tiene_pending = session.get("estado") == "esperando_confirmacion"
     _sku_pendiente_nuevo = None   # sku elegido este turno (para chequeo de receta)
 
-    if intencion in INTENCIONES_CON_SKU and entidad and sku_svc and not ya_tiene_pending:
-        # Solo buscar productos si NO hay una confirmación pendiente.
+    # Buscar siempre que haya una entidad (producto detectado), aunque salude.
+    if entidad and sku_svc and not ya_tiene_pending and intencion != "cambio_postventa":
         _tsku = _time.perf_counter()
         productos_encontrados = sku_svc.buscar(entidad)
         _steps["sku_ms"] = int((_time.perf_counter() - _tsku) * 1000)

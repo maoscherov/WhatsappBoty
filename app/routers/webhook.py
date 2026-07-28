@@ -550,7 +550,11 @@ async def receive_message(request: Request):
 
             ya_tiene_pending = session.get("estado") == "esperando_confirmacion"
 
-            if intencion in INTENCIONES_CON_SKU and entidad and not ya_tiene_pending:
+            # Buscar SIEMPRE que Claude haya detectado un producto (entidad),
+            # aunque el mensaje también salude (ej: "hola, tenés Dexopral?").
+            # Antes solo se buscaba si la intención era de SKU, y un mensaje que
+            # arrancaba con saludo quedaba sin búsqueda ("un segundito" al vacío).
+            if entidad and not ya_tiene_pending and intencion != "cambio_postventa":
                 _tsku = _time.perf_counter()
                 resultados_sku = deps["sku"].buscar(entidad)
                 # Fallback semántico (pgvector): si el fuzzy no encontró nada,
