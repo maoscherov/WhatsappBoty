@@ -101,6 +101,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.middleware("http")
+async def _log_errores(request, call_next):
+    """Loguea cualquier 5xx con el método + endpoint para poder rastrearlo en Railway."""
+    import logging as _logging
+    _log = _logging.getLogger("app.errors")
+    try:
+        response = await call_next(request)
+    except Exception as e:
+        _log.exception(f"💥 500 en {request.method} {request.url.path} — {type(e).__name__}: {e}")
+        raise
+    if response.status_code >= 500:
+        _log.error(f"💥 {response.status_code} en {request.method} {request.url.path}")
+    return response
+
+
 app.include_router(webhook.router)
 app.include_router(simulate.router)
 app.include_router(backoffice.router)
