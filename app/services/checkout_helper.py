@@ -105,7 +105,8 @@ def necesita_receta(sku_svc, sku_id: str, modo: str) -> bool:
     return requiere_derivacion(sku.requiere_receta, modo)
 
 
-async def derivar_si_receta(sku_svc, session_svc, cfg: dict, phone: str, sku_id: str):
+async def derivar_si_receta(sku_svc, session_svc, cfg: dict, phone: str, sku_id: str,
+                            nombre: str = ""):
     """
     Si el producto recién elegido requiere receta, deriva a una persona en el
     acto (sin ofrecer link de pago) y devuelve el mensaje para el cliente.
@@ -117,8 +118,9 @@ async def derivar_si_receta(sku_svc, session_svc, cfg: dict, phone: str, sku_id:
         # modo operador. Así no queda un pending que re-dispare la derivación.
         await session_svc.clear_pending(phone)
         await session_svc.set_estado(phone, "operador")
+        inicio = f"{nombre}, ese" if nombre else "Ese"
         return (
-            "Ese producto requiere receta 🩺. Te paso con alguien del equipo "
+            f"{inicio} producto requiere receta 🩺. Te paso con alguien del equipo "
             "para gestionarlo con vos. ¡En un momento te contactamos!"
         )
     return None
@@ -180,7 +182,7 @@ async def crear_link_y_responder(
 
 async def confirmar_pedido(
     sku_svc, payment_svc, session_svc, socio_svc, cfg: dict, phone: str, session: dict,
-    entrega: Optional[str] = None,
+    entrega: Optional[str] = None, nombre: str = "",
 ) -> tuple[str, str]:
     """
     Maneja la confirmación positiva de un pedido pendiente.
@@ -198,8 +200,9 @@ async def confirmar_pedido(
     if necesita_receta(sku_svc, sku_id, modo):
         await session_svc.clear_pending(phone)
         await session_svc.set_estado(phone, "operador")
+        inicio = f"{nombre}, ese" if nombre else "Ese"
         return (
-            "Este medicamento requiere receta 🩺. Te paso con alguien del equipo "
+            f"{inicio} medicamento requiere receta 🩺. Te paso con alguien del equipo "
             "para gestionarlo con vos. ¡En un momento te contactamos!",
             "derivado_receta",
         )

@@ -236,6 +236,8 @@ async def receive_message(request: Request):
             # Personalización: si el número está en el padrón de socios,
             # Claude recibe nombre y N° de socio para saludar por nombre.
             _ctx_socio = deps["socios"].contexto_para_prompt(phone)
+            _socio_data = deps["socios"].find_by_phone(phone)
+            _nombre_socio = (_socio_data.get("nombre", "").split() or [""])[0] if _socio_data else ""
 
             # ── Control de horario de atención ──────────────────────────────
             hours = await deps["config"].get_hours()
@@ -261,7 +263,8 @@ async def receive_message(request: Request):
             if pide_humano(texto):
                 _intencion = "derivado_humano"
                 await deps["session"].set_estado(phone, "operador")
-                respuesta = "Dale, te paso con alguien del equipo. En un momento te contactamos 🙌"
+                _saludo = f"Dale {_nombre_socio}, " if _nombre_socio else "Dale, "
+                respuesta = f"{_saludo}te paso con alguien del equipo. En un momento te contactamos 🙌"
                 _ts = _time.perf_counter()
                 await deps["wa"].send_text(phone, respuesta)
                 _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
@@ -356,7 +359,7 @@ async def receive_message(request: Request):
                     cfg_all = await deps["config"].get_all()
                     respuesta, _intencion = await confirmar_pedido(
                         deps["sku"], deps["payment"], deps["session"], deps["socios"],
-                        cfg_all, phone, session, entrega=_entrega,
+                        cfg_all, phone, session, entrega=_entrega, nombre=_nombre_socio,
                     )
                     _ts = _time.perf_counter()
                     await deps["wa"].send_text(phone, respuesta)
@@ -414,6 +417,7 @@ async def receive_message(request: Request):
                         cfg_all = await deps["config"].get_all()
                         _deriv = await derivar_si_receta(
                             deps["sku"], deps["session"], cfg_all, phone, session["pending_sku_id"],
+                            nombre=_nombre_socio,
                         )
                         if _deriv:
                             respuesta = _deriv
@@ -436,7 +440,7 @@ async def receive_message(request: Request):
                         cfg_all = await deps["config"].get_all()
                         respuesta, _intencion = await confirmar_pedido(
                             deps["sku"], deps["payment"], deps["session"], deps["socios"],
-                            cfg_all, phone, session,
+                            cfg_all, phone, session, nombre=_nombre_socio,
                         )
                     elif _es_cambio:
                         # Cambio genuino de producto (ej: "mejor bayer", "no, un lotrial")
@@ -679,6 +683,7 @@ async def receive_message(request: Request):
                 cfg_all = await deps["config"].get_all()
                 _deriv = await derivar_si_receta(
                     deps["sku"], deps["session"], cfg_all, phone, _sku_pendiente_nuevo,
+                    nombre=_nombre_socio,
                 )
                 if _deriv:
                     respuesta = _deriv

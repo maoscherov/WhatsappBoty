@@ -92,6 +92,8 @@ async def simulate(req: SimulateRequest):
 
     session = await session_svc.get(req.phone)
     _ctx_socio = socio_svc.contexto_para_prompt(req.phone)
+    _sd = socio_svc.find_by_phone(req.phone)
+    _nombre_socio = (_sd.get("nombre", "").split() or [""])[0] if _sd else ""
     texto = req.message.strip()
     productos_encontrados: list[dict] = []
     link_pago = None
@@ -221,7 +223,7 @@ async def simulate(req: SimulateRequest):
             cfg_all = await config_svc.get_all()
             respuesta, _intent_out = await confirmar_pedido(
                 sku_svc, payment_svc, session_svc, socio_svc, cfg_all, req.phone, session,
-                entrega=_entrega,
+                entrega=_entrega, nombre=_nombre_socio,
             )
             await session_svc.add_message(req.phone, "user", texto)
             await session_svc.add_message(req.phone, "assistant", respuesta)
@@ -280,6 +282,7 @@ async def simulate(req: SimulateRequest):
                 cfg_all = await config_svc.get_all()
                 _deriv = await derivar_si_receta(
                     sku_svc, session_svc, cfg_all, req.phone, session["pending_sku_id"],
+                    nombre=_nombre_socio,
                 )
                 if _deriv:
                     await session_svc.add_message(req.phone, "user", texto)
@@ -308,6 +311,7 @@ async def simulate(req: SimulateRequest):
                 cfg_all = await config_svc.get_all()
                 respuesta, _intencion_conf = await confirmar_pedido(
                     sku_svc, payment_svc, session_svc, socio_svc, cfg_all, req.phone, session,
+                    nombre=_nombre_socio,
                 )
                 link_pago = _extract_link(respuesta)
             elif _es_cambio:
@@ -514,6 +518,7 @@ async def simulate(req: SimulateRequest):
         cfg_all = await config_svc.get_all()
         _deriv = await derivar_si_receta(
             sku_svc, session_svc, cfg_all, req.phone, _sku_pendiente_nuevo,
+            nombre=_nombre_socio,
         )
         if _deriv:
             respuesta = _deriv
