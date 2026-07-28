@@ -209,28 +209,34 @@ async def bo_sku_info(_=Depends(_auth)):
 @router.get("/diag/claude")
 async def bo_diag_claude(_=Depends(_auth)):
     """
-    Diagnóstico: llama a Claude con los modelos configurados y devuelve el
-    error EXACTO si falla. Requiere clave (query ?key= o header x-bo-key).
+    Diagnóstico de los LLMs: prueba Anthropic y OpenAI y devuelve el error
+    EXACTO si alguno falla. Requiere clave (query ?key= o header x-bo-key).
     """
     import anthropic
-    from app.services.intent_service import MODEL_FAST, MODEL_FULL
+    import openai
+    from app.services.intent_service import _MODELS
     settings = get_settings()
-    key = settings.anthropic_api_key or ""
     out = {
-        "key_set": bool(key),
-        "model_fast": MODEL_FAST,
-        "model_full": MODEL_FULL,
+        "llm_provider": settings.llm_provider,
+        "anthropic_key_set": bool(settings.anthropic_api_key),
+        "openai_key_set": bool(settings.openai_api_key),
     }
-    client = anthropic.AsyncAnthropic(api_key=key)
-    for label, model in (("fast", MODEL_FAST), ("full", MODEL_FULL)):
-        try:
-            resp = await client.messages.create(
-                model=model, max_tokens=20,
-                messages=[{"role": "user", "content": "respondé solo: ok"}],
-            )
-            out[label] = {"ok": True, "respuesta": (resp.content[0].text if resp.content else "")}
-        except Exception as e:
-            out[label] = {"ok": False, "error_type": type(e).__name__, "error": str(e)[:400]}
+    # Anthropic (modelo fast)
+    try:
+        ac = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key or "x")
+        r = await ac.messages.create(model=_MODELS["anthropic"]["fast"], max_tokens=20,
+                                     messages=[{"role": "user", "content": "respondé solo: ok"}])
+        out["anthropic"] = {"ok": True, "respuesta": (r.content[0].text if r.content else "")}
+    except Exception as e:
+        out["anthropic"] = {"ok": False, "error_type": type(e).__name__, "error": str(e)[:300]}
+    # OpenAI (modelo fast)
+    try:
+        oc = openai.AsyncOpenAI(api_key=settings.openai_api_key or "x")
+        r = await oc.chat.completions.create(model=_MODELS["openai"]["fast"], max_tokens=20,
+                                             messages=[{"role": "user", "content": "respondé solo: ok"}])
+        out["openai"] = {"ok": True, "respuesta": (r.choices[0].message.content or "")}
+    except Exception as e:
+        out["openai"] = {"ok": False, "error_type": type(e).__name__, "error": str(e)[:300]}
     return out
 
 

@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     mp_webhook_secret: str = ""
 
     audio_provider: str = "groq"   # "groq" | "openai"
+    llm_provider: str = "anthropic"  # "anthropic" | "openai" (con fallback automático al otro)
     groq_api_key: str = ""
     openai_api_key: str = ""
 

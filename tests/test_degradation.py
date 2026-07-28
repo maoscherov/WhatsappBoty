@@ -59,6 +59,20 @@ def test_parse_response_fallback():
     assert d["intencion"] == "desconocido"
 
 
+def test_provider_setup():
+    from app.services.intent_service import _MODELS
+    # OpenAI como primario, sin key de Anthropic → solo cliente OpenAI
+    s = IntentService("", "openai-key", "openai")
+    assert s._provider == "openai"
+    assert s._openai is not None and s._anthropic is None
+    # Provider inválido → cae a anthropic
+    s2 = IntentService("ak", "", "gemini")
+    assert s2._provider == "anthropic"
+    # Mapa de modelos por tier
+    assert set(_MODELS) == {"anthropic", "openai"}
+    assert _MODELS["openai"]["fast"] and _MODELS["openai"]["full"]
+
+
 def test_build_messages_alterna_roles():
     """Historial con roles consecutivos / refs de imagen no debe romper la
     alternancia que exige la API (era la causa de 'tuve un problema')."""

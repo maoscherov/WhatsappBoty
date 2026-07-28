@@ -19,11 +19,19 @@ import re
 from typing import Optional
 
 import anthropic
+import openai
 
 logger = logging.getLogger(__name__)
 
-MODEL_FAST = "claude-haiku-4-5-20251001"  # clasificación + respuestas simples
-MODEL_FULL = "claude-sonnet-4-5"        # respuestas con catálogo SKU / confirmaciones
+# Modelos por proveedor y "tier" (fast = clasificación/simple, full = catálogo/confirmación)
+_MODELS = {
+    "anthropic": {"fast": "claude-haiku-4-5-20251001", "full": "claude-sonnet-4-5"},
+    "openai":    {"fast": "gpt-4o-mini",               "full": "gpt-4o"},
+}
+
+# Compatibilidad con imports existentes (ej. /bo/diag/claude)
+MODEL_FAST = _MODELS["anthropic"]["fast"]
+MODEL_FULL = _MODELS["anthropic"]["full"]
 
 SYSTEM_PROMPT = """Sos el asistente virtual de Remedia.
 
@@ -131,8 +139,12 @@ _SYSTEM_CACHED = SYSTEM_PROMPT
 
 
 class IntentService:
-    def __init__(self, api_key: str):
-        self._client = anthropic.AsyncAnthropic(api_key=api_key)
+    def __init__(self, anthropic_key: str, openai_key: str = "", provider: str = "anthropic"):
+        self._provider = provider if provider in ("anthropic", "openai") else "anthropic"
+        self._anthropic = anthropic.AsyncAnthropic(api_key=anthropic_key) if anthropic_key else None
+        self._openai = openai.AsyncOpenAI(api_key=openai_key) if openai_key else None
+        logger.info(f"IntentService: proveedor primario '{self._provider}' "
+                    f"(anthropic={'ok' if self._anthropic else 'no'}, openai={'ok' if self._openai else 'no'})")
 
     # ── Helpers internos ──────────────────────────────────────────────────────
 
@@ -169,33 +181,51 @@ class IntentService:
             msgs.append({"role": "user", "content": user_content})
         return msgs
 
-    async def _llamar(self, model: str, messages: list[dict]) -> dict:
-        """Llama a la API con el modelo indicado y devuelve el JSON parseado."""
-        # Se intenta con prefill (fuerza JSON) y, si falla, SIN prefill como
-        # red de seguridad — así un problema con el prefill no rompe todo.
+    async def _llamar(self, tier: str, messages: list[dict]) -> dict:
+        """
+        Llama al LLM y devuelve el JSON parseado. Usa el proveedor primario y,
+        si falla (ej. Anthropic sin crédito), cae automáticamente al otro.
+        """
+        orden = [self._provider, "anthropic" if self._provider == "openai" else "openai"]
+        for prov in orden:
+            if prov == "anthropic" and not self._anthropic:
+                continue
+            if prov == "openai" and not self._openai:
+                continue
+            try:
+                if prov == "openai":
+                    return await self._call_openai(tier, messages)
+                return await self._call_anthropic(tier, messages)
+            except Exception as e:
+                logger.warning(f"💥 LLM {prov} [{tier}] falló [{type(e).__name__}]: {str(e)[:200]} — probando fallback")
+                continue
+        return self._error("Disculpá, tuve un problema procesando tu mensaje. ¿Me lo repetís?")
+
+    async def _call_anthropic(self, tier: str, messages: list[dict]) -> dict:
+        model = _MODELS["anthropic"][tier]
+        # Prefill (fuerza JSON) y, si falla, sin prefill como red de seguridad.
         for con_prefill in (True, False):
             try:
                 msgs = messages + ([{"role": "assistant", "content": "{"}] if con_prefill else [])
-                response = await self._client.messages.create(
-                    model=model,
-                    max_tokens=512,
-                    system=_SYSTEM_CACHED,
-                    messages=msgs,
+                response = await self._anthropic.messages.create(
+                    model=model, max_tokens=512, system=SYSTEM_PROMPT, messages=msgs,
                 )
                 text = response.content[0].text if getattr(response, "content", None) else ""
-                raw = ("{" + text) if con_prefill else text
-                return self._parse_response(raw)
-            except anthropic.AuthenticationError:
-                logger.error("💥 ANTHROPIC_API_KEY inválida o no configurada")
-                return self._error("Estamos teniendo un problema técnico. Por favor intentá más tarde.")
-            except anthropic.RateLimitError as e:
-                logger.error(f"💥 Claude rate limit [{model}]: {e}")
-                return self._error("Estamos con mucho tráfico en este momento. ¿Me lo repetís en un segundo?")
-            except Exception as e:
-                logger.exception(f"💥 Error Claude [{model}] prefill={con_prefill} [{type(e).__name__}]: {e}")
+                return self._parse_response(("{" + text) if con_prefill else text)
+            except Exception:
                 if con_prefill:
-                    continue   # reintentar sin prefill
-                return self._error("Disculpá, tuve un problema procesando tu mensaje. ¿Me lo repetís?")
+                    continue
+                raise   # que _llamar decida el fallback
+
+    async def _call_openai(self, tier: str, messages: list[dict]) -> dict:
+        model = _MODELS["openai"][tier]
+        # JSON mode: OpenAI garantiza JSON válido (el prompt ya menciona JSON).
+        resp = await self._openai.chat.completions.create(
+            model=model, max_tokens=512, temperature=0.3,
+            response_format={"type": "json_object"},
+            messages=[{"role": "system", "content": SYSTEM_PROMPT}] + messages,
+        )
+        return self._parse_response(resp.choices[0].message.content or "")
 
     @staticmethod
     def _error(msg: str) -> dict:
@@ -219,7 +249,7 @@ class IntentService:
         a procesar() con los resultados del catálogo.
         """
         messages = self._armar(history, self._con_contexto(mensaje, contexto_cliente))
-        result = await self._llamar(MODEL_FAST, messages)
+        result = await self._llamar("fast", messages)
         logger.debug(f"Haiku → intención={result.get('intencion')} entidad={result.get('entidad_producto')}")
         return result
 
@@ -244,7 +274,7 @@ class IntentService:
             user_content = f"{mensaje}\n\n[{label_sku}]\n{productos_txt}"
         user_content = self._con_contexto(user_content, contexto_cliente, contexto_kb)
         messages = self._armar(history, user_content)
-        result = await self._llamar(MODEL_FULL, messages)
+        result = await self._llamar("full", messages)
         logger.debug(f"Sonnet → intención={result.get('intencion')} sku_index={result.get('sku_seleccionado_index')}")
         return result
 
@@ -301,8 +331,8 @@ class IntentService:
 _instance: Optional[IntentService] = None
 
 
-def get_intent_service(api_key: str) -> IntentService:
+def get_intent_service(anthropic_key: str, openai_key: str = "", provider: str = "anthropic") -> IntentService:
     global _instance
     if _instance is None:
-        _instance = IntentService(api_key)
+        _instance = IntentService(anthropic_key, openai_key, provider)
     return _instance
