@@ -672,7 +672,7 @@ async function fetchConversation(phone) {
     inner.innerHTML = history.map(m => `
       <div class="conv-msg">
         <div class="role ${m.role}">${roleLabel[m.role] || m.role}</div>
-        <div class="text">${esc(m.content)}</div>
+        <div class="text">${renderMsgContent(m.content)}</div>
       </div>`).join('');
     inner.scrollTop = inner.scrollHeight;
   } catch(_) {}
@@ -788,6 +788,16 @@ function scheduleRefresh(sessions) {
 
 function esc(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// Si el mensaje referencia una imagen del cliente (/media/chat/...), la muestra
+function renderMsgContent(content) {
+  const m = String(content || '').match(/\/media\/chat\/[\w.\-]+/);
+  if (m) {
+    return `<a href="${m[0]}" target="_blank" title="Abrir imagen">
+      <img src="${m[0]}" style="max-width:200px;max-height:240px;border-radius:8px;display:block;margin-top:4px;border:1px solid var(--border)" /></a>`;
+  }
+  return esc(content);
 }
 
 // ── Performance ──────────────────────────────────────────────────────────────

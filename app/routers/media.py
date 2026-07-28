@@ -13,9 +13,13 @@ import logging
 from pathlib import Path
 
 from fastapi import APIRouter, UploadFile, File, Header, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 
 from app.config import get_settings
+from app.services.blob_store import get_blob_store
+
+_CT = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+       ".webp": "image/webp", ".gif": "image/gif"}
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/media")
@@ -102,6 +106,17 @@ def media_delete(filename: str, x_api_key: str = Header(default="")):
         raise HTTPException(status_code=404, detail="No encontrado")
     path.unlink()
     return {"status": "ok", "deleted": filename}
+
+
+@router.get("/chat/{key}")
+async def media_chat(key: str):
+    """Sirve una imagen que envió un cliente por WhatsApp (guardada en Redis)."""
+    settings = get_settings()
+    res = await get_blob_store(settings.redis_url).load(f"chat:{_safe(key)}")
+    if not res:
+        raise HTTPException(status_code=404, detail="Imagen no encontrada")
+    data, ext = res
+    return Response(content=data, media_type=_CT.get(ext.lower(), "image/jpeg"))
 
 
 @router.get("/{filename}")

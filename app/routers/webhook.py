@@ -203,6 +203,22 @@ async def receive_message(request: Request):
                     await deps["wa"].send_text(phone, "No pude procesar la imagen. ¿Me lo escribís?")
                     continue
                 mime = msg.get("image_mime_type", "image/jpeg")
+
+                # Guardar la imagen en Redis (7 días) para que el operador la vea
+                # en el backoffice. La referencia va al historial como /media/chat/{id}.
+                _img_id = _re.sub(r"[^\w]", "", msg_id)[-32:] or msg_id[-32:]
+                _img_ref = None
+                try:
+                    _ext = ".png" if "png" in mime else ".webp" if "webp" in mime else ".jpg"
+                    from app.services.blob_store import get_blob_store as _gbs
+                    ok = await _gbs(_s.redis_url).save(f"chat:{_img_id}", image_bytes, _ext, ttl=7 * 24 * 3600)
+                    if ok:
+                        _img_ref = f"📷 /media/chat/{_img_id}"
+                except Exception:
+                    pass
+                if _img_ref:
+                    await deps["session"].add_message(phone, "user", _img_ref)
+
                 img = await deps["image"].analizar(image_bytes, mime)
                 _steps["vision_ms"] = int((_time.perf_counter() - _ti) * 1000)
 
@@ -218,7 +234,8 @@ async def receive_message(request: Request):
                     _ts = _time.perf_counter()
                     await deps["wa"].send_text(phone, respuesta)
                     _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
-                    await deps["session"].add_message(phone, "user", "[imagen recibida]")
+                    if not _img_ref:
+                        await deps["session"].add_message(phone, "user", "[imagen recibida]")
                     await deps["session"].add_message(phone, "assistant", respuesta)
                     continue
 

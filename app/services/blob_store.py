@@ -24,10 +24,15 @@ class BlobStore:
     def __init__(self, redis_url: str):
         self._redis = aioredis.from_url(redis_url, decode_responses=True)
 
-    async def save(self, name: str, data: bytes, ext: str = "") -> bool:
+    async def save(self, name: str, data: bytes, ext: str = "", ttl: int | None = None) -> bool:
         try:
-            await self._redis.set(f"blob:{name}", base64.b64encode(data).decode())
-            await self._redis.set(f"blob:{name}:ext", ext or "")
+            b64 = base64.b64encode(data).decode()
+            if ttl:
+                await self._redis.set(f"blob:{name}", b64, ex=ttl)
+                await self._redis.set(f"blob:{name}:ext", ext or "", ex=ttl)
+            else:
+                await self._redis.set(f"blob:{name}", b64)
+                await self._redis.set(f"blob:{name}:ext", ext or "")
             return True
         except Exception as e:
             logger.warning(f"BlobStore.save({name}) falló: {e}")
