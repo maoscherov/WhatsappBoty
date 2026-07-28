@@ -203,6 +203,35 @@ async def bo_sku_info(_=Depends(_auth)):
         return {"total": 0, "error": str(e)}
 
 
+@router.get("/diag/claude")
+async def bo_diag_claude(_=Depends(_auth)):
+    """
+    Diagnóstico: llama a Claude directo con los modelos configurados y devuelve
+    el error EXACTO si falla (para no depender de los logs de Railway).
+    """
+    import anthropic
+    from app.services.intent_service import MODEL_FAST, MODEL_FULL
+    settings = get_settings()
+    key = settings.anthropic_api_key or ""
+    out = {
+        "key_set": bool(key),
+        "key_prefix": key[:10] + "…" if key else "",
+        "model_fast": MODEL_FAST,
+        "model_full": MODEL_FULL,
+    }
+    client = anthropic.AsyncAnthropic(api_key=key)
+    for label, model in (("fast", MODEL_FAST), ("full", MODEL_FULL)):
+        try:
+            resp = await client.messages.create(
+                model=model, max_tokens=20,
+                messages=[{"role": "user", "content": "respondé solo: ok"}],
+            )
+            out[label] = {"ok": True, "respuesta": (resp.content[0].text if resp.content else "")}
+        except Exception as e:
+            out[label] = {"ok": False, "error_type": type(e).__name__, "error": str(e)[:400]}
+    return out
+
+
 @router.get("/sku/check")
 async def bo_sku_check(_=Depends(_auth), q: str = Query(...)):
     """
