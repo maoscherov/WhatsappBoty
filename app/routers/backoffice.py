@@ -207,10 +207,10 @@ async def bo_sku_info(_=Depends(_auth)):
 
 
 @router.get("/diag/claude")
-async def bo_diag_claude():
+async def bo_diag_claude(_=Depends(_auth)):
     """
-    Diagnóstico SIN auth (no expone secretos): llama a Claude con los modelos
-    configurados y devuelve el error EXACTO si falla. Se puede quitar después.
+    Diagnóstico: llama a Claude con los modelos configurados y devuelve el
+    error EXACTO si falla. Requiere clave (query ?key= o header x-bo-key).
     """
     import anthropic
     from app.services.intent_service import MODEL_FAST, MODEL_FULL
