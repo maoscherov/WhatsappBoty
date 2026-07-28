@@ -207,10 +207,10 @@ async def bo_sku_info(_=Depends(_auth)):
 
 
 @router.get("/diag/claude")
-async def bo_diag_claude(_=Depends(_auth)):
+async def bo_diag_claude():
     """
-    Diagnóstico: llama a Claude directo con los modelos configurados y devuelve
-    el error EXACTO si falla (para no depender de los logs de Railway).
+    Diagnóstico SIN auth (no expone secretos): llama a Claude con los modelos
+    configurados y devuelve el error EXACTO si falla. Se puede quitar después.
     """
     import anthropic
     from app.services.intent_service import MODEL_FAST, MODEL_FULL
@@ -218,7 +218,6 @@ async def bo_diag_claude(_=Depends(_auth)):
     key = settings.anthropic_api_key or ""
     out = {
         "key_set": bool(key),
-        "key_prefix": key[:10] + "…" if key else "",
         "model_fast": MODEL_FAST,
         "model_full": MODEL_FULL,
     }
