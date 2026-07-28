@@ -137,15 +137,37 @@ class IntentService:
     # ── Helpers internos ──────────────────────────────────────────────────────
 
     def _build_messages(self, history: list[dict]) -> list[dict]:
-        """Construye la lista de mensajes para Claude filtrando roles inválidos."""
-        return [
-            {
-                "role": "assistant" if m["role"] == "operator" else m["role"],
-                "content": m["content"],
-            }
-            for m in history[-6:]
-            if m["role"] in ("user", "assistant", "operator")
-        ]
+        """
+        Construye la lista de mensajes para Claude respetando las reglas de la API:
+        - roles válidos (operator → assistant),
+        - se saltean las referencias de imagen "📷 ..." (solo para el backoffice),
+        - se MERGEAN mensajes consecutivos del mismo rol (la API exige alternancia),
+        - se descartan mensajes assistant iniciales (debe empezar con user).
+        """
+        msgs: list[dict] = []
+        for m in history[-8:]:
+            if m.get("role") not in ("user", "assistant", "operator"):
+                continue
+            content = (m.get("content") or "").strip()
+            if not content or content.startswith("📷"):
+                continue
+            role = "assistant" if m["role"] == "operator" else m["role"]
+            if msgs and msgs[-1]["role"] == role:
+                msgs[-1]["content"] += "\n" + content   # merge consecutivo
+            else:
+                msgs.append({"role": role, "content": content})
+        while msgs and msgs[0]["role"] == "assistant":
+            msgs.pop(0)   # la conversación con la API debe arrancar en user
+        return msgs
+
+    def _armar(self, history: list[dict], user_content: str) -> list[dict]:
+        """Historial + mensaje actual, garantizando alternancia y que termina en user."""
+        msgs = self._build_messages(history)
+        if msgs and msgs[-1]["role"] == "user":
+            msgs[-1]["content"] += "\n" + user_content   # merge para no repetir rol
+        else:
+            msgs.append({"role": "user", "content": user_content})
+        return msgs
 
     async def _llamar(self, model: str, messages: list[dict]) -> dict:
         """Llama a la API con el modelo indicado y devuelve el JSON parseado."""
@@ -195,8 +217,7 @@ class IntentService:
         Para intenciones con SKU el webhook descarta la respuesta y llama
         a procesar() con los resultados del catálogo.
         """
-        messages = self._build_messages(history)
-        messages.append({"role": "user", "content": self._con_contexto(mensaje, contexto_cliente)})
+        messages = self._armar(history, self._con_contexto(mensaje, contexto_cliente))
         result = await self._llamar(MODEL_FAST, messages)
         logger.debug(f"Haiku → intención={result.get('intencion')} entidad={result.get('entidad_producto')}")
         return result
@@ -216,13 +237,12 @@ class IntentService:
         Se llama cuando hay resultados de SKU para incluir en el contexto,
         o en el flujo de confirmación donde la precisión es crítica.
         """
-        messages = self._build_messages(history)
         user_content = mensaje
         if resultados_sku is not None:
             productos_txt = self._formatear_productos(resultados_sku)
             user_content = f"{mensaje}\n\n[{label_sku}]\n{productos_txt}"
         user_content = self._con_contexto(user_content, contexto_cliente, contexto_kb)
-        messages.append({"role": "user", "content": user_content})
+        messages = self._armar(history, user_content)
         result = await self._llamar(MODEL_FULL, messages)
         logger.debug(f"Sonnet → intención={result.get('intencion')} sku_index={result.get('sku_seleccionado_index')}")
         return result

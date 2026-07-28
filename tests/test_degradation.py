@@ -57,3 +57,21 @@ def test_parse_response_fallback():
     # Prosa sin JSON → fallback controlado (no rompe)
     d = IntentService._parse_response("perdón, no sé")
     assert d["intencion"] == "desconocido"
+
+
+def test_build_messages_alterna_roles():
+    """Historial con roles consecutivos / refs de imagen no debe romper la
+    alternancia que exige la API (era la causa de 'tuve un problema')."""
+    svc = IntentService("")
+    hist = [
+        {"role": "user", "content": "📷 /media/chat/abc"},   # ref de imagen → se saltea
+        {"role": "user", "content": "hola"},                 # user consecutivo
+        {"role": "assistant", "content": "buenas"},
+        {"role": "user", "content": "tenés algo"},
+    ]
+    msgs = svc._armar(hist, "fresh anticaries")
+    roles = [m["role"] for m in msgs]
+    # No hay dos roles iguales consecutivos y arranca en user, termina en user
+    assert all(roles[i] != roles[i + 1] for i in range(len(roles) - 1))
+    assert roles[0] == "user" and roles[-1] == "user"
+    assert "📷" not in " ".join(m["content"] for m in msgs)
