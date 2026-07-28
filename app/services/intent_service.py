@@ -171,30 +171,31 @@ class IntentService:
 
     async def _llamar(self, model: str, messages: list[dict]) -> dict:
         """Llama a la API con el modelo indicado y devuelve el JSON parseado."""
-        try:
-            # Prefill: forzamos que la respuesta arranque con "{" para que el
-            # modelo (sobre todo Haiku) devuelva SIEMPRE JSON válido y no prosa.
-            msgs = messages + [{"role": "assistant", "content": "{"}]
-            response = await self._client.messages.create(
-                model=model,
-                max_tokens=512,
-                system=_SYSTEM_CACHED,
-                messages=msgs,
-            )
-            raw = "{" + response.content[0].text
-            return self._parse_response(raw)
-        except anthropic.AuthenticationError:
-            logger.error("ANTHROPIC_API_KEY inválida o no configurada")
-            return self._error("Estamos teniendo un problema técnico. Por favor intentá más tarde.")
-        except anthropic.BadRequestError as e:
-            logger.error(f"Claude BadRequest [{model}]: {e}")
-            return self._error("Disculpá, tuve un problema procesando tu mensaje. ¿Me lo repetís?")
-        except anthropic.RateLimitError as e:
-            logger.error(f"Claude rate limit [{model}]: {e}")
-            return self._error("Estamos con mucho tráfico en este momento. ¿Me lo repetís en un segundo?")
-        except Exception as e:
-            logger.error(f"Error Claude API [{model}] [{type(e).__name__}]: {e}")
-            return self._error("Disculpá, tuve un problema procesando tu mensaje. ¿Me lo repetís?")
+        # Se intenta con prefill (fuerza JSON) y, si falla, SIN prefill como
+        # red de seguridad — así un problema con el prefill no rompe todo.
+        for con_prefill in (True, False):
+            try:
+                msgs = messages + ([{"role": "assistant", "content": "{"}] if con_prefill else [])
+                response = await self._client.messages.create(
+                    model=model,
+                    max_tokens=512,
+                    system=_SYSTEM_CACHED,
+                    messages=msgs,
+                )
+                text = response.content[0].text if getattr(response, "content", None) else ""
+                raw = ("{" + text) if con_prefill else text
+                return self._parse_response(raw)
+            except anthropic.AuthenticationError:
+                logger.error("💥 ANTHROPIC_API_KEY inválida o no configurada")
+                return self._error("Estamos teniendo un problema técnico. Por favor intentá más tarde.")
+            except anthropic.RateLimitError as e:
+                logger.error(f"💥 Claude rate limit [{model}]: {e}")
+                return self._error("Estamos con mucho tráfico en este momento. ¿Me lo repetís en un segundo?")
+            except Exception as e:
+                logger.exception(f"💥 Error Claude [{model}] prefill={con_prefill} [{type(e).__name__}]: {e}")
+                if con_prefill:
+                    continue   # reintentar sin prefill
+                return self._error("Disculpá, tuve un problema procesando tu mensaje. ¿Me lo repetís?")
 
     @staticmethod
     def _error(msg: str) -> dict:
