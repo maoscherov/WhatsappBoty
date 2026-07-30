@@ -186,6 +186,51 @@ async def payway_config_check(key: str = ""):
     }
 
 
+@router.get("/payway/key-test")
+async def payway_key_test(key: str = ""):
+    """
+    Prueba ambas claves contra /tokens con una tarjeta dummy para detectar
+    cuál autentica (y si están cruzadas). Requiere ?key=BO_KEY.
+    - 'auth_error'  → esa clave NO es válida para tokenizar.
+    - 'card_valida' → esa clave SÍ autentica (el error es de datos de tarjeta).
+    """
+    settings = get_settings()
+    if not settings.bo_key or key != settings.bo_key:
+        raise HTTPException(status_code=403, detail="key inválida")
+    pw = get_payway_service(settings.payway_public_key, settings.payway_private_key,
+                            settings.payway_sandbox, settings.payway_site_id,
+                            settings.payway_template_id, settings.payway_cybersource)
+    tokens_url = f"{pw.base_url}/tokens"
+    dummy = {
+        "card_number": "4507990000004905", "card_expiration_month": "08",
+        "card_expiration_year": "28", "security_code": "123", "card_holder_name": "TEST",
+        "card_holder_identification": {"type": "dni", "number": "12345678"},
+    }
+
+    async def _probe(apikey: str) -> dict:
+        async with httpx.AsyncClient() as client:
+            try:
+                r = await client.post(tokens_url, headers={"apikey": apikey, "Content-Type": "application/json"},
+                                      json=dummy, timeout=15)
+                body = r.text[:200]
+                low = body.lower()
+                if "invalid authentication" in low or r.status_code in (401, 403):
+                    verdict = "auth_error (clave NO válida para tokenizar)"
+                elif r.status_code in (200, 201) or "id" in low or "param" in low or "card" in low:
+                    verdict = "AUTENTICA ✓ (llega a validar la tarjeta)"
+                else:
+                    verdict = f"otro (status {r.status_code})"
+                return {"status": r.status_code, "verdict": verdict, "body": body}
+            except Exception as e:
+                return {"error": str(e)}
+
+    return {
+        "tokens_url": tokens_url,
+        "campo_public_key": await _probe(settings.payway_public_key),
+        "campo_private_key": await _probe(settings.payway_private_key),
+    }
+
+
 @router.get("/payway/refund/{payment_id}")
 async def payway_refund(payment_id: str, key: str = ""):
     """Anula/reembolsa un pago por su ID de Payway. Requiere ?key=BO_KEY."""
