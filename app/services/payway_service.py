@@ -259,6 +259,28 @@ class PaywayService:
             except Exception as e:
                 return None, str(e)
 
+    async def refund(self, payment_id: str, amount: float = 0) -> tuple[Optional[dict], Optional[str]]:
+        """
+        Anula/reembolsa un pago. POST {base}/payments/{id}/refunds con clave privada.
+        amount=0 → reembolso total. Retorna (respuesta, error).
+        """
+        headers = {"apikey": self._private, "Content-Type": "application/json", "Cache-Control": "no-cache"}
+        payload = {} if not amount else {"amount": int(round(amount * 100))}
+        url = f"{self._base}/payments/{payment_id}/refunds"
+        logger.info(f"Payway refund → POST {url} payload={payload}")
+        async with httpx.AsyncClient() as client:
+            try:
+                resp = await client.post(url, headers=headers, json=payload, timeout=20)
+                body = resp.text
+                logger.info(f"Payway refund ← status={resp.status_code} body={body[:400]}")
+                if resp.status_code not in (200, 201):
+                    return None, f"HTTP {resp.status_code}: {body[:400]}"
+                return resp.json(), None
+            except httpx.TimeoutException:
+                return None, "Timeout conectando a Payway"
+            except Exception as e:
+                return None, str(e)
+
     async def get_payment(self, payment_id: str) -> Optional[dict]:
         """Consulta el estado de un pago por su ID."""
         headers = {"apikey": self._private, "Cache-Control": "no-cache"}

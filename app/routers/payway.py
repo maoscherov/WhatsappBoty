@@ -158,6 +158,34 @@ async def payway_test(monto: float):
     return {"pay_url": url}
 
 
+@router.get("/payway/refund/{payment_id}")
+async def payway_refund(payment_id: str, key: str = ""):
+    """Anula/reembolsa un pago por su ID de Payway. Requiere ?key=BO_KEY."""
+    settings = get_settings()
+    if not settings.bo_key or key != settings.bo_key:
+        raise HTTPException(status_code=403, detail="key inválida")
+    pw = get_payway_service(settings.payway_public_key, settings.payway_private_key,
+                            settings.payway_sandbox, settings.payway_site_id,
+                            settings.payway_template_id, settings.payway_cybersource)
+    data, err = await pw.refund(payment_id)
+    if err:
+        return {"ok": False, "error": err}
+    return {"ok": True, "refund": data}
+
+
+@router.get("/payway/status/{payment_id}")
+async def payway_status(payment_id: str, key: str = ""):
+    """Consulta el estado de un pago. Requiere ?key=BO_KEY."""
+    settings = get_settings()
+    if not settings.bo_key or key != settings.bo_key:
+        raise HTTPException(status_code=403, detail="key inválida")
+    pw = get_payway_service(settings.payway_public_key, settings.payway_private_key,
+                            settings.payway_sandbox, settings.payway_site_id,
+                            settings.payway_template_id, settings.payway_cybersource)
+    data = await pw.get_payment(payment_id)
+    return {"ok": bool(data), "payment": data}
+
+
 @router.get("/payway/link-test/{monto}")
 async def payway_link_test(monto: float):
     """Prueba del GenerateLink (checkout HOSTEADO de Payway) — devuelve la URL o el error."""
