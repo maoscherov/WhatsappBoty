@@ -73,7 +73,8 @@ async def pay_page(pid: str):
     if pending.get("estado") == "aprobado":
         return HTMLResponse("<h3>✅ Este pago ya fue realizado. ¡Gracias!</h3>")
 
-    pw = get_payway_service(settings.payway_public_key, settings.payway_private_key, settings.payway_sandbox)
+    pw = get_payway_service(settings.payway_public_key, settings.payway_private_key,
+                            settings.payway_sandbox, settings.payway_site_id, settings.payway_template_id)
     total = float(pending["total"])
     nombre = pending["sku_nombre"]
     return HTMLResponse(_PAY_HTML
@@ -103,7 +104,8 @@ async def payway_charge(body: ChargeIn):
     if pending.get("estado") == "aprobado":
         return {"status": "approved", "ya_pagado": True}
 
-    pw = get_payway_service(settings.payway_public_key, settings.payway_private_key, settings.payway_sandbox)
+    pw = get_payway_service(settings.payway_public_key, settings.payway_private_key,
+                            settings.payway_sandbox, settings.payway_site_id, settings.payway_template_id)
     data, err = await pw.crear_pago(
         token=body.token,
         amount=float(pending["total"]),

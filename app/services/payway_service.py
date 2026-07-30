@@ -104,6 +104,31 @@ class PaywayService:
             except Exception as e:
                 return None, str(e)
 
+    def _fraud_detection(self, amount: float, email: str) -> dict:
+        """
+        Bloque de datos antifraude que exige Cybersource (comercios con
+        template retail / Cybersource activado). Con valores por defecto de
+        sandbox — en producción conviene poblar bill_to con datos reales.
+        """
+        cents = int(round(amount * 100))
+        return {
+            "device_unique_identifier": "remedia-web",
+            "bill_to": {
+                "city": "CABA",
+                "country": "AR",
+                "customer_id_ext": "1",
+                "email": email or "cliente@remedia.ar",
+                "first_name": "Cliente",
+                "last_name": "Remedia",
+                "phone_number": "1100000000",
+                "postal_code": "1000",
+                "state": "C",
+                "street1": "Sin especificar",
+            },
+            "purchase_totals": {"currency": "ARS", "amount": cents},
+            "channel": "Web",
+        }
+
     async def crear_pago(
         self,
         token: str,
@@ -130,6 +155,9 @@ class PaywayService:
             "payment_type": "single",
             "sub_payments": [],
         }
+        # Cybersource: template_id != 1 → el comercio exige datos antifraude.
+        if int(self._template_id) != 1:
+            payload["fraud_detection"] = self._fraud_detection(amount, email)
         if email:
             payload["customer"] = {"email": email}
 
