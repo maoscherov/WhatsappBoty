@@ -244,6 +244,31 @@ async def payway_key_test(key: str = ""):
     }
 
 
+@router.get("/payway/recent")
+async def payway_recent(key: str = ""):
+    """Lista los pagos Payway recientes (pendientes y aprobados) con su ID. Requiere ?key=BO_KEY."""
+    if not _bo_ok(key):
+        raise HTTPException(status_code=403, detail="key inválida")
+    out = []
+    try:
+        r = _redis()
+        async for k in r.scan_iter("payway:pending:*", count=200):
+            raw = await r.get(k)
+            if not raw:
+                continue
+            d = json.loads(raw)
+            out.append({
+                "pid": d.get("id"), "estado": d.get("estado"),
+                "payway_id": d.get("payway_id"), "total": d.get("total"),
+                "producto": d.get("sku_nombre"), "phone": d.get("phone"),
+                "created_at": d.get("created_at"),
+            })
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    out.sort(key=lambda x: x.get("created_at") or "", reverse=True)
+    return {"ok": True, "pagos": out[:30]}
+
+
 @router.get("/payway/refund/{payment_id}")
 async def payway_refund(payment_id: str, key: str = ""):
     """Anula/reembolsa un pago por su ID de Payway. Requiere ?key=BO_KEY."""
