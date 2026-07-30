@@ -240,7 +240,10 @@ function msg(t,c){const m=document.getElementById('msg');m.textContent=t;m.style
 async function pagar(){
   const btn=document.getElementById('btn'); btn.disabled=true; msg('Procesando…');
   const num=document.getElementById('num').value.replace(/\\s/g,'');
-  const [mm,aa]=(document.getElementById('exp').value||'').split('/').map(s=>s.trim());
+  let [mm,aa]=(document.getElementById('exp').value||'').split(/[\\/\\-\\s]+/).map(s=>s.trim());
+  mm=(mm||'').padStart(2,'0').slice(0,2);        // mes 2 dígitos
+  aa=(aa||'').replace(/\\D/g,'').slice(-2);        // año a 2 dígitos (28, no 2028)
+  if(!mm||mm==='00'||aa.length!==2){msg('Revisá el vencimiento (MM/AA).','#ef4444');btn.disabled=false;return;}
   try{
     const tk=await fetch(TOKENS_URL,{method:'POST',headers:{'Content-Type':'application/json','apikey':PUBLIC_KEY},
       body:JSON.stringify({card_number:num,card_expiration_month:mm,card_expiration_year:aa,
