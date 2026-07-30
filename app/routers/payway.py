@@ -74,7 +74,8 @@ async def pay_page(pid: str):
         return HTMLResponse("<h3>✅ Este pago ya fue realizado. ¡Gracias!</h3>")
 
     pw = get_payway_service(settings.payway_public_key, settings.payway_private_key,
-                            settings.payway_sandbox, settings.payway_site_id, settings.payway_template_id)
+                            settings.payway_sandbox, settings.payway_site_id,
+                            settings.payway_template_id, settings.payway_cybersource)
     total = float(pending["total"])
     nombre = pending["sku_nombre"]
     return HTMLResponse(_PAY_HTML
@@ -105,7 +106,8 @@ async def payway_charge(body: ChargeIn):
         return {"status": "approved", "ya_pagado": True}
 
     pw = get_payway_service(settings.payway_public_key, settings.payway_private_key,
-                            settings.payway_sandbox, settings.payway_site_id, settings.payway_template_id)
+                            settings.payway_sandbox, settings.payway_site_id,
+                            settings.payway_template_id, settings.payway_cybersource)
     data, err = await pw.crear_pago(
         token=body.token,
         amount=float(pending["total"]),
@@ -157,7 +159,8 @@ async def payway_link_test(monto: float):
     """Prueba del GenerateLink (checkout HOSTEADO de Payway) — devuelve la URL o el error."""
     settings = get_settings()
     pw = get_payway_service(settings.payway_public_key, settings.payway_private_key,
-                            settings.payway_sandbox, settings.payway_site_id, settings.payway_template_id)
+                            settings.payway_sandbox, settings.payway_site_id,
+                            settings.payway_template_id, settings.payway_cybersource)
     base = settings.public_base_url.rstrip("/")
     link, err = await pw.crear_link(
         total=monto,

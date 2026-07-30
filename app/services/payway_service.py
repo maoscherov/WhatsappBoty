@@ -34,12 +34,13 @@ _CHECKOUT_PROD = "https://live.decidir.com/web/checkout"
 
 class PaywayService:
     def __init__(self, public_key: str, private_key: str, sandbox: bool = True,
-                 site_id: str = "", template_id: int = 1):
+                 site_id: str = "", template_id: str = "", cybersource: bool = False):
         self._public = public_key
         self._private = private_key
         self._sandbox = sandbox
         self._site_id = site_id
         self._template_id = template_id
+        self._cybersource = cybersource
         self._base = _SANDBOX_BASE if sandbox else _PROD_BASE
         self._checkout_base = _CHECKOUT_SANDBOX if sandbox else _CHECKOUT_PROD
 
@@ -68,7 +69,7 @@ class PaywayService:
         payload = {
             "origin_platform": "api",
             "site": self._site_id,
-            "template_id": int(self._template_id),
+            "template_id": self._template_id,
             "currency": "ARS",
             "total_price": int(round(total * 100)),   # centavos (ajustar si Payway espera pesos)
             "installments": str(installments),
@@ -155,8 +156,8 @@ class PaywayService:
             "payment_type": "single",
             "sub_payments": [],
         }
-        # Cybersource: template_id != 1 → el comercio exige datos antifraude.
-        if int(self._template_id) != 1:
+        # Cybersource: el comercio exige datos antifraude en el cobro.
+        if self._cybersource:
             payload["fraud_detection"] = self._fraud_detection(amount, email)
         if email:
             payload["customer"] = {"email": email}
@@ -194,8 +195,9 @@ _instance: Optional[PaywayService] = None
 
 
 def get_payway_service(public_key: str, private_key: str, sandbox: bool = True,
-                       site_id: str = "", template_id: int = 1) -> PaywayService:
+                       site_id: str = "", template_id: str = "",
+                       cybersource: bool = False) -> PaywayService:
     global _instance
     if _instance is None:
-        _instance = PaywayService(public_key, private_key, sandbox, site_id, template_id)
+        _instance = PaywayService(public_key, private_key, sandbox, site_id, template_id, cybersource)
     return _instance
