@@ -57,14 +57,31 @@ async def _get_pending(pid: str) -> dict | None:
 
 # ── Página de pago ──────────────────────────────────────────────────────────────
 
+def _status_page(variante: str, titulo: str, sub: str) -> str:
+    """Página de estado con la identidad Remedia. variante: ok | warn | err."""
+    iconos = {
+        "ok": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>',
+        "warn": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>',
+        "err": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>',
+    }
+    return (_STATUS_HTML
+            .replace("{{VARIANTE}}", variante)
+            .replace("{{ICONO}}", iconos.get(variante, iconos["warn"]))
+            .replace("{{TITULO}}", titulo)
+            .replace("{{SUB}}", sub))
+
+
 @router.get("/pay/{pid}", response_class=HTMLResponse)
 async def pay_page(pid: str):
     settings = get_settings()
     pending = await _get_pending(pid)
     if not pending:
-        return HTMLResponse("<h3>Link de pago vencido o inexistente.</h3>", status_code=404)
+        return HTMLResponse(_status_page("warn", "Link de pago vencido",
+                                         "Este link ya no está disponible. Volvé al chat de WhatsApp y pedí uno nuevo."),
+                            status_code=404)
     if pending.get("estado") == "aprobado":
-        return HTMLResponse("<h3>✅ Este pago ya fue realizado. ¡Gracias!</h3>")
+        return HTMLResponse(_status_page("ok", "Este pago ya fue realizado",
+                                         "Recibimos tu pago correctamente. Revisá WhatsApp: te enviamos el código de retiro. ¡Gracias!"))
 
     pw = get_payway_service(settings.payway_public_key, settings.payway_private_key,
                             settings.payway_sandbox, settings.payway_site_id,
@@ -342,7 +359,11 @@ async def payway_link_test(monto: float):
 
 @router.get("/payway/return")
 async def payway_return(r: str = ""):
-    return HTMLResponse(f"<h3>{'✅ Pago realizado' if r=='ok' else 'Pago cancelado'}. Podés cerrar esta página.</h3>")
+    if r == "ok":
+        return HTMLResponse(_status_page("ok", "¡Pago realizado!",
+                                         "Ya podés cerrar esta página. Te enviamos la confirmación por WhatsApp."))
+    return HTMLResponse(_status_page("err", "Pago cancelado",
+                                     "No se realizó ningún cobro. Podés volver a intentar desde el link del chat."))
 
 
 @router.post("/payway/notification")
@@ -352,47 +373,131 @@ async def payway_notification(payload: dict):
     return {"status": "ok"}
 
 
+# ── Identidad visual Remedia (compartida por la página de pago y las de estado) ──
+_BRAND_HEAD = """<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@600;700;800&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --verde:#0E8F5F; --verde-osc:#0B6E49; --verde-prof:#0A3D2A;
+    --crema:#F4F9F5; --tinta:#152B20; --gris:#5E7268;
+    --borde:#D9E7DD; --blanco:#FFFFFF; --error:#C93A3A; --warn:#B07C1F;
+  }
+  *{box-sizing:border-box}
+  body{
+    font-family:'Instrument Sans',-apple-system,Segoe UI,sans-serif;
+    background:var(--crema);
+    background-image:radial-gradient(circle at 15% 0%, rgba(14,143,95,.09), transparent 45%),
+                     radial-gradient(circle at 100% 90%, rgba(14,143,95,.07), transparent 40%);
+    color:var(--tinta); margin:0; min-height:100vh; min-height:100dvh;
+    display:flex; flex-direction:column; align-items:center; padding:28px 16px 40px;
+  }
+  .marca{display:flex;align-items:center;gap:10px;margin-bottom:22px;animation:bajar .5s ease both}
+  .logo{width:38px;height:38px;border-radius:11px;background:var(--verde);color:#fff;
+    display:flex;align-items:center;justify-content:center;
+    font-family:'Bricolage Grotesque',sans-serif;font-weight:800;font-size:21px;
+    box-shadow:0 6px 16px rgba(14,143,95,.35)}
+  .wordmark{font-family:'Bricolage Grotesque',sans-serif;font-size:22px;font-weight:600;letter-spacing:-.02em}
+  .wordmark b{font-weight:800;color:var(--verde)}
+  .card{
+    background:var(--blanco); border:1px solid var(--borde); border-radius:22px;
+    padding:26px 24px 24px; max-width:420px; width:100%;
+    box-shadow:0 18px 45px -18px rgba(10,61,42,.25), 0 2px 8px rgba(10,61,42,.06);
+    animation:subir .55s ease .08s both;
+  }
+  .pie{margin-top:18px;display:flex;align-items:center;gap:7px;color:var(--gris);font-size:12.5px;animation:subir .55s ease .16s both}
+  .pie svg{width:14px;height:14px;flex:none}
+  @keyframes subir{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+  @keyframes bajar{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:none}}
+  @media (prefers-reduced-motion: reduce){*{animation:none!important;transition:none!important}}
+</style>"""
+
+_MARCA_HTML = """<div class="marca"><div class="logo">R</div><div class="wordmark">Remedi<b>IA</b></div></div>"""
+
+_PIE_HTML = """<div class="pie">
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="10" width="16" height="11" rx="2.5"/><path d="M8 10V7a4 4 0 118 0v3"/></svg>
+Pago seguro procesado por Payway · Farmacia Mutual Independencia</div>"""
+
+
 # ── HTML de la página de pago (tokeniza en el navegador, cobra en el backend) ──────
 _PAY_HTML = """<!doctype html><html lang="es"><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Pago Remedia</title>
+<title>Pagar · Remedia</title>
+""" + _BRAND_HEAD + """
 <style>
-  body{font-family:-apple-system,Segoe UI,sans-serif;background:#0f1117;color:#e2e8f0;margin:0;padding:24px;display:flex;justify-content:center}
-  .card{background:#1a1d27;border:1px solid #2a2d3e;border-radius:14px;padding:24px;max-width:420px;width:100%}
-  h1{font-size:18px;margin:0 0 4px}.sub{color:#64748b;font-size:14px;margin-bottom:18px}
-  .total{font-size:26px;font-weight:700;color:#25d366;margin-bottom:18px}
-  label{display:block;font-size:12px;color:#94a3b8;margin:10px 0 4px}
-  input{width:100%;box-sizing:border-box;background:#0f1117;border:1px solid #2a2d3e;border-radius:8px;padding:11px;color:#e2e8f0;font-size:15px}
-  .row{display:flex;gap:10px}.row>div{flex:1}
+  .prod{color:var(--gris);font-size:14px;margin-bottom:2px}
+  .total{font-family:'Bricolage Grotesque',sans-serif;font-size:38px;font-weight:800;
+    letter-spacing:-.03em;color:var(--verde-prof);margin-bottom:4px}
+  .total small{font-size:20px;font-weight:700;color:var(--verde);vertical-align:6px;margin-right:2px}
+  .divisor{height:1px;background:var(--borde);margin:16px -24px 6px}
+  label{display:block;font-size:12.5px;font-weight:600;color:var(--gris);margin:13px 0 5px;letter-spacing:.01em}
+  input{width:100%;background:var(--crema);border:1.5px solid var(--borde);border-radius:12px;
+    padding:12px 13px;color:var(--tinta);font-size:16px;font-family:inherit;transition:border-color .15s, box-shadow .15s}
+  input::placeholder{color:#A9BCB0}
+  input:focus{outline:none;border-color:var(--verde);box-shadow:0 0 0 3px rgba(14,143,95,.18);background:#fff}
+  input:focus-visible{border-color:var(--verde)}
+  .row{display:flex;gap:12px}.row>div{flex:1}
   .cvvwrap{position:relative}
-  .cvvwrap input{padding-right:40px}
-  .cvvwrap button{position:absolute;right:4px;top:50%;transform:translateY(-50%);background:none;border:none;color:#94a3b8;font-size:17px;cursor:pointer;width:32px;margin:0;padding:4px}
-  button{width:100%;margin-top:18px;background:#25d366;color:#062;border:none;border-radius:8px;padding:13px;font-size:16px;font-weight:700;cursor:pointer}
-  button:disabled{opacity:.5}
-  #msg{margin-top:14px;font-size:14px;text-align:center}
+  .cvvwrap input{padding-right:42px}
+  .cvvwrap button{position:absolute;right:5px;top:50%;transform:translateY(-50%);
+    background:none;border:none;color:var(--gris);cursor:pointer;width:32px;height:32px;
+    margin:0;padding:5px;border-radius:8px;display:flex;align-items:center;justify-content:center}
+  .cvvwrap button:hover{background:rgba(14,143,95,.1);color:var(--verde-osc)}
+  .cvvwrap button svg{width:19px;height:19px}
+  .btn{width:100%;margin-top:20px;background:var(--verde);color:#fff;border:none;border-radius:13px;
+    padding:15px;font-size:16.5px;font-weight:700;font-family:inherit;cursor:pointer;
+    box-shadow:0 8px 20px -8px rgba(14,143,95,.55);transition:background .15s, transform .1s}
+  .btn:hover{background:var(--verde-osc)}
+  .btn:active{transform:scale(.985)}
+  .btn:disabled{opacity:.55;cursor:default;transform:none}
+  .btn:focus-visible{outline:3px solid rgba(14,143,95,.4);outline-offset:2px}
+  #msg{margin-top:14px;font-size:14px;text-align:center;line-height:1.45;border-radius:10px;padding:0}
+  #msg.err{background:#FBEDED;color:var(--error);padding:10px 12px}
+  #msg.info{color:var(--gris)}
+  #done{display:none;text-align:center;padding:14px 0 6px}
+  #done .tilde{width:64px;height:64px;border-radius:50%;background:var(--verde);color:#fff;
+    display:flex;align-items:center;justify-content:center;margin:0 auto 16px;
+    box-shadow:0 10px 26px -8px rgba(14,143,95,.6)}
+  #done .tilde svg{width:32px;height:32px}
+  #done h2{font-family:'Bricolage Grotesque',sans-serif;font-size:23px;font-weight:700;margin:0 0 8px;color:var(--verde-prof)}
+  #done p{color:var(--gris);font-size:14.5px;line-height:1.55;margin:0}
 </style></head><body>
+""" + _MARCA_HTML + """
 <div class="card">
-  <h1>💊 Pago Remedia</h1>
-  <div class="sub">{{NOMBRE}}</div>
-  <div class="total">$ {{TOTAL}}</div>
-  <label>Número de tarjeta</label><input id="num" inputmode="numeric" placeholder="4507 9900 0000 4905" autocomplete="cc-number">
-  <div class="row">
-    <div><label>Vencimiento (MM/AA)</label><input id="exp" inputmode="numeric" placeholder="08/28" maxlength="5" autocomplete="cc-exp"></div>
-    <div><label>CVV</label>
-      <div class="cvvwrap">
-        <input id="cvv" type="password" inputmode="numeric" placeholder="123" maxlength="4" autocomplete="cc-csc">
-        <button type="button" id="cvveye" onclick="toggleCvv()" aria-label="Mostrar código">👁</button>
+  <div id="formwrap">
+    <div class="prod">{{NOMBRE}}</div>
+    <div class="total"><small>$</small>{{TOTAL}}</div>
+    <div class="divisor"></div>
+    <label for="num">Número de tarjeta</label>
+    <input id="num" inputmode="numeric" placeholder="0000 0000 0000 0000" maxlength="23" autocomplete="cc-number">
+    <div class="row">
+      <div><label for="exp">Vencimiento (MM/AA)</label>
+        <input id="exp" inputmode="numeric" placeholder="08/28" maxlength="5" autocomplete="cc-exp"></div>
+      <div><label for="cvv">Código de seguridad</label>
+        <div class="cvvwrap">
+          <input id="cvv" type="password" inputmode="numeric" placeholder="•••" maxlength="4" autocomplete="cc-csc">
+          <button type="button" id="cvveye" onclick="toggleCvv()" aria-label="Mostrar código">
+            <svg id="eyeon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+            <svg id="eyeoff" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none"><path d="M17.9 17.9A9.9 9.9 0 0112 19c-6.5 0-10-7-10-7a17.4 17.4 0 014.1-4.9M9.9 4.24A9.1 9.1 0 0112 4c6.5 0 10 7 10 7a17.5 17.5 0 01-2.2 3.2M14.12 14.12a3 3 0 11-4.24-4.24"/><path d="M2 2l20 20"/></svg>
+          </button>
+        </div>
       </div>
     </div>
+    <label for="name">Nombre en la tarjeta</label>
+    <input id="name" placeholder="Como figura en el plástico" autocomplete="cc-name">
+    <div class="row">
+      <div><label for="dtype">Tipo de documento</label><input id="dtype" value="dni"></div>
+      <div><label for="dnum">Número de documento</label><input id="dnum" inputmode="numeric" placeholder="12345678"></div>
+    </div>
+    <button class="btn" id="btn" onclick="pagar()">Pagar $ {{TOTAL}}</button>
+    <div id="msg" role="status"></div>
   </div>
-  <label>Nombre en la tarjeta</label><input id="name" placeholder="Juan Perez" autocomplete="cc-name">
-  <div class="row">
-    <div><label>Tipo doc</label><input id="dtype" value="dni"></div>
-    <div><label>Nro documento</label><input id="dnum" inputmode="numeric" placeholder="12345678"></div>
+  <div id="done">
+    <div class="tilde"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg></div>
+    <h2>¡Pago aprobado!</h2>
+    <p>Recibimos tu pago de <b>{{NOMBRE}}</b>.<br>Te enviamos la confirmación y el código por WhatsApp.<br>Ya podés cerrar esta página.</p>
   </div>
-  <button id="btn" onclick="pagar()">Pagar $ {{TOTAL}}</button>
-  <div id="msg"></div>
 </div>
+""" + _PIE_HTML + """
 <script>
 const TOKENS_URL="{{TOKENS_URL}}", PUBLIC_KEY="{{PUBLIC_KEY}}", PID="{{PID}}",
       CS_ORG_ID="{{CS_ORG_ID}}", CS_MERCHANT_ID="{{CS_MERCHANT_ID}}";
@@ -410,7 +515,12 @@ if(CS_ORG_ID){
     'src="https://h.online-metrix.net/fp/tags?org_id='+CS_ORG_ID+'&session_id='+SESSION+'"></iframe>';
   document.body.appendChild(n);
 }
-function msg(t,c){const m=document.getElementById('msg');m.textContent=t;m.style.color=c||'#94a3b8';}
+function msg(t,tipo){const m=document.getElementById('msg');m.textContent=t;m.className=tipo||'info';}
+// Número de tarjeta: espacio cada 4 dígitos.
+document.getElementById('num').addEventListener('input',function(){
+  const d=this.value.replace(/\\D/g,'').slice(0,19);
+  this.value=d.replace(/(.{4})/g,'$1 ').trim();
+});
 // Autoformato del vencimiento: inserta la barra sola (08 → 08/) y solo admite dígitos.
 document.getElementById('exp').addEventListener('input',function(e){
   let d=this.value.replace(/\\D/g,'').slice(0,4);
@@ -423,16 +533,17 @@ function toggleCvv(){
   const c=document.getElementById('cvv'), b=document.getElementById('cvveye');
   const ver=c.type==='password';
   c.type=ver?'text':'password';
-  b.textContent=ver?'🙈':'👁';
+  document.getElementById('eyeon').style.display=ver?'none':'block';
+  document.getElementById('eyeoff').style.display=ver?'block':'none';
   b.setAttribute('aria-label',ver?'Ocultar código':'Mostrar código');
 }
 async function pagar(){
-  const btn=document.getElementById('btn'); btn.disabled=true; msg('Procesando…');
+  const btn=document.getElementById('btn'); btn.disabled=true; msg('Procesando el pago…','info');
   const num=document.getElementById('num').value.replace(/\\s/g,'');
   let [mm,aa]=(document.getElementById('exp').value||'').split(/[\\/\\-\\s]+/).map(s=>s.trim());
   mm=(mm||'').padStart(2,'0').slice(0,2);        // mes 2 dígitos
   aa=(aa||'').replace(/\\D/g,'').slice(-2);        // año a 2 dígitos (28, no 2028)
-  if(!mm||mm==='00'||aa.length!==2){msg('Revisá el vencimiento (MM/AA).','#ef4444');btn.disabled=false;return;}
+  if(!mm||mm==='00'||aa.length!==2){msg('Revisá el vencimiento (MM/AA).','err');btn.disabled=false;return;}
   try{
     const tk=await fetch(TOKENS_URL,{method:'POST',headers:{'Content-Type':'application/json','apikey':PUBLIC_KEY},
       body:JSON.stringify({card_number:num,card_expiration_month:mm,card_expiration_year:aa,
@@ -441,12 +552,40 @@ async function pagar(){
         fraud_detection:{device_unique_identifier:DEVICE_ID},
         card_holder_identification:{type:document.getElementById('dtype').value,number:document.getElementById('dnum').value}})});
     const tkd=await tk.json();
-    if(!tkd.id){msg('No se pudo validar la tarjeta: '+JSON.stringify(tkd),'#ef4444');btn.disabled=false;return;}
+    if(!tkd.id){msg('No pudimos validar la tarjeta. Revisá los datos e intentá de nuevo.','err');btn.disabled=false;return;}
     const ch=await fetch('/payway/charge',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({pid:PID,token:tkd.id,bin:tkd.bin||num.slice(0,6),device_id:DEVICE_ID})});
     const chd=await ch.json();
-    if(chd.status==='approved'){msg('✅ ¡Pago aprobado! Ya podés cerrar esta página.','#25d366');}
-    else{msg('❌ Pago '+(chd.status||'rechazado')+'. '+(JSON.stringify(chd.detail||'')),'#ef4444');btn.disabled=false;}
-  }catch(e){msg('Error: '+e.message,'#ef4444');btn.disabled=false;}
+    if(chd.status==='approved'){
+      document.getElementById('formwrap').style.display='none';
+      document.getElementById('done').style.display='block';
+    }
+    else{msg('El pago fue rechazado por la tarjeta. Probá con otra tarjeta o contactanos por WhatsApp.','err');btn.disabled=false;}
+  }catch(e){msg('Hubo un problema de conexión. Esperá unos segundos y volvé a intentar.','err');btn.disabled=false;}
 }
 </script></body></html>"""
+
+
+# ── HTML de las páginas de estado (vencido / ya pagado / retorno) ─────────────────
+_STATUS_HTML = """<!doctype html><html lang="es"><head>
+<title>Remedia</title>
+""" + _BRAND_HEAD + """
+<style>
+  .card{text-align:center;padding:34px 26px 30px}
+  .icono{width:64px;height:64px;border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 18px}
+  .icono svg{width:30px;height:30px}
+  .ok .icono{background:var(--verde);color:#fff;box-shadow:0 10px 26px -8px rgba(14,143,95,.6)}
+  .warn .icono{background:#FBF3E2;color:var(--warn)}
+  .err .icono{background:#FBEDED;color:var(--error)}
+  h1{font-family:'Bricolage Grotesque',sans-serif;font-size:23px;font-weight:700;margin:0 0 10px;color:var(--verde-prof)}
+  p{color:var(--gris);font-size:15px;line-height:1.6;margin:0}
+</style></head><body>
+""" + _MARCA_HTML + """
+<div class="card {{VARIANTE}}">
+  <div class="icono">{{ICONO}}</div>
+  <h1>{{TITULO}}</h1>
+  <p>{{SUB}}</p>
+</div>
+""" + _PIE_HTML + """
+</body></html>"""
+
