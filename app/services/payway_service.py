@@ -194,6 +194,7 @@ class PaywayService:
                 "items": [{
                     "code": "1",
                     "description": producto[:80],
+                    "name": producto[:80],
                     "sku": "1",
                     "total_amount": cents,
                     "quantity": 1,
