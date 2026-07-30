@@ -362,6 +362,7 @@ async function pagar(){
       body:JSON.stringify({card_number:num,card_expiration_month:mm,card_expiration_year:aa,
         security_code:document.getElementById('cvv').value,card_holder_name:document.getElementById('name').value,
         device_unique_identifier:DEVICE_ID,
+        fraud_detection:{device_unique_identifier:DEVICE_ID},
         card_holder_identification:{type:document.getElementById('dtype').value,number:document.getElementById('dnum').value}})});
     const tkd=await tk.json();
     if(!tkd.id){msg('No se pudo validar la tarjeta: '+JSON.stringify(tkd),'#ef4444');btn.disabled=false;return;}
