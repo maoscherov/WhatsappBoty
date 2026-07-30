@@ -36,6 +36,18 @@ def _redis():
     return aioredis.from_url(get_settings().redis_url, decode_responses=True)
 
 
+def _bo_ok(key: str) -> bool:
+    """
+    Valida la BO_KEY tolerando el problema clásico de URL: el navegador
+    convierte '+' en espacio dentro del query string. Aceptamos la key tal
+    cual y también con los espacios revertidos a '+'.
+    """
+    bo = get_settings().bo_key
+    if not bo or not key:
+        return False
+    return key == bo or key.replace(" ", "+") == bo
+
+
 async def crear_pago_pendiente(phone: str, sku_id: str, sku_nombre: str,
                                cantidad: int, total: float) -> str:
     """Guarda un pago pendiente y devuelve la URL de la página de pago."""
@@ -162,7 +174,7 @@ async def payway_test(monto: float):
 async def payway_config_check(key: str = ""):
     """Muestra la config Payway cargada (claves enmascaradas). Requiere ?key=BO_KEY."""
     settings = get_settings()
-    if not settings.bo_key or key != settings.bo_key:
+    if not _bo_ok(key):
         raise HTTPException(status_code=403, detail="key inválida")
 
     def _mask(s: str) -> dict:
@@ -195,7 +207,7 @@ async def payway_key_test(key: str = ""):
     - 'card_valida' → esa clave SÍ autentica (el error es de datos de tarjeta).
     """
     settings = get_settings()
-    if not settings.bo_key or key != settings.bo_key:
+    if not _bo_ok(key):
         raise HTTPException(status_code=403, detail="key inválida")
     pw = get_payway_service(settings.payway_public_key, settings.payway_private_key,
                             settings.payway_sandbox, settings.payway_site_id,
@@ -235,7 +247,7 @@ async def payway_key_test(key: str = ""):
 async def payway_refund(payment_id: str, key: str = ""):
     """Anula/reembolsa un pago por su ID de Payway. Requiere ?key=BO_KEY."""
     settings = get_settings()
-    if not settings.bo_key or key != settings.bo_key:
+    if not _bo_ok(key):
         raise HTTPException(status_code=403, detail="key inválida")
     pw = get_payway_service(settings.payway_public_key, settings.payway_private_key,
                             settings.payway_sandbox, settings.payway_site_id,
@@ -250,7 +262,7 @@ async def payway_refund(payment_id: str, key: str = ""):
 async def payway_status(payment_id: str, key: str = ""):
     """Consulta el estado de un pago. Requiere ?key=BO_KEY."""
     settings = get_settings()
-    if not settings.bo_key or key != settings.bo_key:
+    if not _bo_ok(key):
         raise HTTPException(status_code=403, detail="key inválida")
     pw = get_payway_service(settings.payway_public_key, settings.payway_private_key,
                             settings.payway_sandbox, settings.payway_site_id,
