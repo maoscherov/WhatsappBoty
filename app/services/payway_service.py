@@ -195,6 +195,7 @@ class PaywayService:
                     "code": "1",
                     "description": producto[:80],
                     "name": producto[:80],
+                    "product_name": producto[:80],
                     "sku": "1",
                     "total_amount": cents,
                     "quantity": 1,
