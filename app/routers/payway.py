@@ -158,6 +158,34 @@ async def payway_test(monto: float):
     return {"pay_url": url}
 
 
+@router.get("/payway/config-check")
+async def payway_config_check(key: str = ""):
+    """Muestra la config Payway cargada (claves enmascaradas). Requiere ?key=BO_KEY."""
+    settings = get_settings()
+    if not settings.bo_key or key != settings.bo_key:
+        raise HTTPException(status_code=403, detail="key inválida")
+
+    def _mask(s: str) -> dict:
+        s = s or ""
+        return {"len": len(s), "preview": (s[:4] + "…" + s[-4:]) if len(s) >= 8 else ("(vacío)" if not s else "***"),
+                "espacios": s != s.strip()}
+
+    pw = get_payway_service(settings.payway_public_key, settings.payway_private_key,
+                            settings.payway_sandbox, settings.payway_site_id,
+                            settings.payway_template_id, settings.payway_cybersource)
+    return {
+        "sandbox": settings.payway_sandbox,
+        "base_pagos": pw.base_url,
+        "tokens_url": f"{pw.base_url}/tokens",
+        "cybersource": settings.payway_cybersource,
+        "cs_org_id": settings.payway_cs_org_id or "(vacío)",
+        "site_id": settings.payway_site_id or "(vacío)",
+        "public_key": _mask(settings.payway_public_key),
+        "private_key": _mask(settings.payway_private_key),
+        "public_base_url": settings.public_base_url or "(vacío)",
+    }
+
+
 @router.get("/payway/refund/{payment_id}")
 async def payway_refund(payment_id: str, key: str = ""):
     """Anula/reembolsa un pago por su ID de Payway. Requiere ?key=BO_KEY."""
