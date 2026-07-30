@@ -165,6 +165,8 @@ class PaywayService:
         # Cybersource: el comercio exige datos antifraude en el cobro.
         if self._cybersource:
             payload["fraud_detection"] = self._fraud_detection(amount, email)
+            # Algunos comercios esperan el fingerprint también en la raíz del pago.
+            payload["device_unique_identifier"] = "remedia-web"
         if email:
             payload["customer"] = {"email": email}
 
