@@ -364,6 +364,9 @@ _PAY_HTML = """<!doctype html><html lang="es"><head>
   label{display:block;font-size:12px;color:#94a3b8;margin:10px 0 4px}
   input{width:100%;box-sizing:border-box;background:#0f1117;border:1px solid #2a2d3e;border-radius:8px;padding:11px;color:#e2e8f0;font-size:15px}
   .row{display:flex;gap:10px}.row>div{flex:1}
+  .cvvwrap{position:relative}
+  .cvvwrap input{padding-right:40px}
+  .cvvwrap button{position:absolute;right:4px;top:50%;transform:translateY(-50%);background:none;border:none;color:#94a3b8;font-size:17px;cursor:pointer;width:32px;margin:0;padding:4px}
   button{width:100%;margin-top:18px;background:#25d366;color:#062;border:none;border-radius:8px;padding:13px;font-size:16px;font-weight:700;cursor:pointer}
   button:disabled{opacity:.5}
   #msg{margin-top:14px;font-size:14px;text-align:center}
@@ -372,12 +375,17 @@ _PAY_HTML = """<!doctype html><html lang="es"><head>
   <h1>💊 Pago Remedia</h1>
   <div class="sub">{{NOMBRE}}</div>
   <div class="total">$ {{TOTAL}}</div>
-  <label>Número de tarjeta</label><input id="num" inputmode="numeric" placeholder="4507 9900 0000 4905">
+  <label>Número de tarjeta</label><input id="num" inputmode="numeric" placeholder="4507 9900 0000 4905" autocomplete="cc-number">
   <div class="row">
-    <div><label>Vencimiento (MM/AA)</label><input id="exp" placeholder="08/28"></div>
-    <div><label>CVV</label><input id="cvv" inputmode="numeric" placeholder="123"></div>
+    <div><label>Vencimiento (MM/AA)</label><input id="exp" inputmode="numeric" placeholder="08/28" maxlength="5" autocomplete="cc-exp"></div>
+    <div><label>CVV</label>
+      <div class="cvvwrap">
+        <input id="cvv" type="password" inputmode="numeric" placeholder="123" maxlength="4" autocomplete="cc-csc">
+        <button type="button" id="cvveye" onclick="toggleCvv()" aria-label="Mostrar código">👁</button>
+      </div>
+    </div>
   </div>
-  <label>Nombre en la tarjeta</label><input id="name" placeholder="Juan Perez">
+  <label>Nombre en la tarjeta</label><input id="name" placeholder="Juan Perez" autocomplete="cc-name">
   <div class="row">
     <div><label>Tipo doc</label><input id="dtype" value="dni"></div>
     <div><label>Nro documento</label><input id="dnum" inputmode="numeric" placeholder="12345678"></div>
@@ -403,6 +411,21 @@ if(CS_ORG_ID){
   document.body.appendChild(n);
 }
 function msg(t,c){const m=document.getElementById('msg');m.textContent=t;m.style.color=c||'#94a3b8';}
+// Autoformato del vencimiento: inserta la barra sola (08 → 08/) y solo admite dígitos.
+document.getElementById('exp').addEventListener('input',function(e){
+  let d=this.value.replace(/\\D/g,'').slice(0,4);
+  if(d.length===1 && Number(d)>1) d='0'+d;                 // "9" → "09"
+  if(d.length>=3 || (d.length===2 && e.inputType!=='deleteContentBackward'))
+    this.value=d.slice(0,2)+'/'+d.slice(2);
+  else this.value=d;
+});
+function toggleCvv(){
+  const c=document.getElementById('cvv'), b=document.getElementById('cvveye');
+  const ver=c.type==='password';
+  c.type=ver?'text':'password';
+  b.textContent=ver?'🙈':'👁';
+  b.setAttribute('aria-label',ver?'Ocultar código':'Mostrar código');
+}
 async function pagar(){
   const btn=document.getElementById('btn'); btn.disabled=true; msg('Procesando…');
   const num=document.getElementById('num').value.replace(/\\s/g,'');
