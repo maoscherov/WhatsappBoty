@@ -30,6 +30,13 @@ class Settings(BaseSettings):
 
     mp_sandbox: bool = False   # True → usa sandbox_init_point de MP
 
+    # Proveedor de pago: "mercadopago" | "payway"
+    payment_provider: str = "mercadopago"
+    payway_public_key: str = ""
+    payway_private_key: str = ""
+    payway_sandbox: bool = True
+    public_base_url: str = ""   # ej: https://cerca.remedia.ar (para armar el link de /pay)
+
     images_dir: str = "/data/images"          # volume mount en Railway
     image_server_api_key: str = ""            # clave para subir imágenes
     images_base_url: str = ""                 # ej: https://tuapp.railway.app/media
