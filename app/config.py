@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     payway_template_id: str = ""   # ID del template del panel (solo para checkout hosteado/GenerateLink)
     payway_cybersource: bool = False   # True → el comercio exige datos antifraude en el cobro
     payway_cs_org_id: str = ""         # org_id del device fingerprint de Cybersource (lo da Payway)
+    payway_cs_merchant_id: str = ""    # prefijo merchant del session_id del fingerprint (ej: decidir_agregador)
     payway_sandbox: bool = True
     public_base_url: str = ""   # ej: https://cerca.remedia.ar (para success/notif urls)
 

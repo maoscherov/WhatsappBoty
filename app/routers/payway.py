@@ -96,7 +96,8 @@ async def pay_page(pid: str):
                         .replace("{{TOTAL}}", f"{total:,.2f}")
                         .replace("{{TOKENS_URL}}", f"{pw.base_url}/tokens")
                         .replace("{{PUBLIC_KEY}}", pw.public_key)
-                        .replace("{{CS_ORG_ID}}", settings.payway_cs_org_id))
+                        .replace("{{CS_ORG_ID}}", settings.payway_cs_org_id)
+                        .replace("{{CS_MERCHANT_ID}}", settings.payway_cs_merchant_id))
 
 
 # ── Cobro ────────────────────────────────────────────────────────────────────────
@@ -337,16 +338,20 @@ _PAY_HTML = """<!doctype html><html lang="es"><head>
   <div id="msg"></div>
 </div>
 <script>
-const TOKENS_URL="{{TOKENS_URL}}", PUBLIC_KEY="{{PUBLIC_KEY}}", PID="{{PID}}", CS_ORG_ID="{{CS_ORG_ID}}";
+const TOKENS_URL="{{TOKENS_URL}}", PUBLIC_KEY="{{PUBLIC_KEY}}", PID="{{PID}}",
+      CS_ORG_ID="{{CS_ORG_ID}}", CS_MERCHANT_ID="{{CS_MERCHANT_ID}}";
 // Fingerprint de dispositivo (Cybersource). Id único por pago.
+// El script de online-metrix lleva session_id = <merchant_id><identificador>;
+// a la API de Decidir se manda solo el identificador (DEVICE_ID).
 const DEVICE_ID = (PID + Math.random().toString(36).slice(2,10)).slice(0,32);
 if(CS_ORG_ID){
+  const SESSION = CS_MERCHANT_ID + DEVICE_ID;
   const s=document.createElement('script');
-  s.src="https://h.online-metrix.net/fp/tags.js?org_id="+CS_ORG_ID+"&session_id="+DEVICE_ID;
+  s.src="https://h.online-metrix.net/fp/tags.js?org_id="+CS_ORG_ID+"&session_id="+SESSION;
   s.async=true; document.head.appendChild(s);
   const n=document.createElement('noscript');
   n.innerHTML='<iframe style="width:100px;height:100px;border:0;position:absolute;top:-5000px;" '+
-    'src="https://h.online-metrix.net/fp/tags?org_id='+CS_ORG_ID+'&session_id='+DEVICE_ID+'"></iframe>';
+    'src="https://h.online-metrix.net/fp/tags?org_id='+CS_ORG_ID+'&session_id='+SESSION+'"></iframe>';
   document.body.appendChild(n);
 }
 function msg(t,c){const m=document.getElementById('msg');m.textContent=t;m.style.color=c||'#94a3b8';}
