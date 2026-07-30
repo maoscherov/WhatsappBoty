@@ -138,35 +138,69 @@ class PaywayService:
             except Exception as e:
                 return None, str(e)
 
-    def _fraud_detection(self, amount: float, email: str) -> dict:
+    @staticmethod
+    def _csmdds() -> list:
         """
-        Bloque de datos antifraude que exige Cybersource (comercios con
-        template retail / Cybersource activado). Con valores por defecto de
-        sandbox — en producción conviene poblar bill_to con datos reales.
+        Merchant Defined Data para retail — el SDK oficial genera los códigos
+        17-34 y 43-99 con descripción 'Campo MDD{code}'.
+        """
+        codes = list(range(17, 35)) + list(range(43, 100))
+        return [{"code": c, "description": f"Campo MDD{c}"} for c in codes]
+
+    def _fraud_detection(self, amount: float, email: str, device_id: str,
+                         producto: str = "Producto") -> dict:
+        """
+        Bloque antifraude Cybersource — vertical RETAIL (según cs_retail.js del
+        SDK oficial). Valores por defecto de sandbox; en producción conviene
+        poblar bill_to/ship_to con datos reales del cliente.
         """
         cents = int(round(amount * 100))
+        persona = {
+            "city": "CABA",
+            "country": "AR",
+            "customer_id": "1",
+            "email": email or "cliente@remedia.ar",
+            "first_name": "Cliente",
+            "last_name": "Remedia",
+            "phone_number": "1100000000",
+            "postal_code": "1000",
+            "state": "C",
+            "street1": "Sin especificar",
+            "street2": "",
+        }
         return {
             "send_to_cs": True,
             "channel": "Web",
             "dispatch_method": "Store Pick Up",
-            "csmdds": [
-                {"code": 17, "description": "Cliente Remedia"},
-            ],
-            "device_unique_identifier": "remedia-web",
-            "bill_to": {
-                "city": "CABA",
-                "country": "AR",
-                "customer_id_ext": "1",
-                "email": email or "cliente@remedia.ar",
-                "first_name": "Cliente",
-                "last_name": "Remedia",
-                "phone_number": "1100000000",
-                "postal_code": "1000",
-                "state": "C",
-                "street1": "Sin especificar",
-                "street2": "",
-            },
+            "device_unique_identifier": device_id,
+            "bill_to": persona,
             "purchase_totals": {"currency": "ARS", "amount": cents},
+            "customer_in_site": {
+                "days_in_site": 0,
+                "is_guest": True,
+                "password": "",
+                "num_of_transactions": 1,
+                "cellphone_number": "1100000000",
+                "date_of_birth": "",
+                "street": "Sin especificar",
+            },
+            "retail_transaction_data": {
+                "ship_to": {**persona},
+                "dispatch_method": "Store Pick Up",
+                "days_to_delivery": "0",
+                "tax_voucher_required": False,
+                "customer_loyality_number": "",
+                "coupon_code": "",
+                "items": [{
+                    "code": "1",
+                    "description": producto[:80],
+                    "sku": "1",
+                    "total_amount": cents,
+                    "quantity": 1,
+                    "unit_price": cents,
+                }],
+            },
+            "csmdds": self._csmdds(),
         }
 
     async def crear_pago(
@@ -178,10 +212,13 @@ class PaywayService:
         bin: str,
         installments: int = 1,
         email: str = "",
+        device_id: str = "",
+        producto: str = "Producto",
     ) -> tuple[Optional[dict], Optional[str]]:
         """
         Ejecuta el cobro con el token (generado en el frontend con la public key).
         Retorna (respuesta_dict, error). amount en pesos → se convierte a centavos.
+        device_id: mismo fingerprint usado al tokenizar (requerido por Cybersource).
         """
         payload = {
             "site_transaction_id": site_transaction_id,
@@ -197,9 +234,10 @@ class PaywayService:
         }
         # Cybersource: el comercio exige datos antifraude en el cobro.
         if self._cybersource:
-            payload["fraud_detection"] = self._fraud_detection(amount, email)
-            # Algunos comercios esperan el fingerprint también en la raíz del pago.
-            payload["device_unique_identifier"] = "remedia-web"
+            dev = device_id or "remedia-web"
+            payload["fraud_detection"] = self._fraud_detection(amount, email, dev, producto)
+            # El fingerprint también en la raíz del pago.
+            payload["device_unique_identifier"] = dev
         if email:
             payload["customer"] = {"email": email}
 

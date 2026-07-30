@@ -83,7 +83,8 @@ async def pay_page(pid: str):
                         .replace("{{NOMBRE}}", nombre)
                         .replace("{{TOTAL}}", f"{total:,.2f}")
                         .replace("{{TOKENS_URL}}", f"{pw.base_url}/tokens")
-                        .replace("{{PUBLIC_KEY}}", pw.public_key))
+                        .replace("{{PUBLIC_KEY}}", pw.public_key)
+                        .replace("{{CS_ORG_ID}}", settings.payway_cs_org_id))
 
 
 # ── Cobro ────────────────────────────────────────────────────────────────────────
@@ -94,6 +95,7 @@ class ChargeIn(BaseModel):
     bin: str
     payment_method_id: int = 1   # 1 = Visa (default sandbox)
     installments: int = 1
+    device_id: str = ""          # fingerprint generado al tokenizar (Cybersource)
 
 
 @router.post("/payway/charge")
@@ -115,6 +117,8 @@ async def payway_charge(body: ChargeIn):
         payment_method_id=body.payment_method_id,
         bin=body.bin,
         installments=body.installments,
+        device_id=body.device_id,
+        producto=pending.get("sku_nombre", "Producto"),
     )
     if err or not data:
         logger.error(f"Payway charge falló: {err}")
@@ -220,7 +224,18 @@ _PAY_HTML = """<!doctype html><html lang="es"><head>
   <div id="msg"></div>
 </div>
 <script>
-const TOKENS_URL="{{TOKENS_URL}}", PUBLIC_KEY="{{PUBLIC_KEY}}", PID="{{PID}}";
+const TOKENS_URL="{{TOKENS_URL}}", PUBLIC_KEY="{{PUBLIC_KEY}}", PID="{{PID}}", CS_ORG_ID="{{CS_ORG_ID}}";
+// Fingerprint de dispositivo (Cybersource). Id único por pago.
+const DEVICE_ID = (PID + Math.random().toString(36).slice(2,10)).slice(0,32);
+if(CS_ORG_ID){
+  const s=document.createElement('script');
+  s.src="https://h.online-metrix.net/fp/tags.js?org_id="+CS_ORG_ID+"&session_id="+DEVICE_ID;
+  s.async=true; document.head.appendChild(s);
+  const n=document.createElement('noscript');
+  n.innerHTML='<iframe style="width:100px;height:100px;border:0;position:absolute;top:-5000px;" '+
+    'src="https://h.online-metrix.net/fp/tags?org_id='+CS_ORG_ID+'&session_id='+DEVICE_ID+'"></iframe>';
+  document.body.appendChild(n);
+}
 function msg(t,c){const m=document.getElementById('msg');m.textContent=t;m.style.color=c||'#94a3b8';}
 async function pagar(){
   const btn=document.getElementById('btn'); btn.disabled=true; msg('Procesando…');
@@ -230,11 +245,12 @@ async function pagar(){
     const tk=await fetch(TOKENS_URL,{method:'POST',headers:{'Content-Type':'application/json','apikey':PUBLIC_KEY},
       body:JSON.stringify({card_number:num,card_expiration_month:mm,card_expiration_year:aa,
         security_code:document.getElementById('cvv').value,card_holder_name:document.getElementById('name').value,
+        device_unique_identifier:DEVICE_ID,
         card_holder_identification:{type:document.getElementById('dtype').value,number:document.getElementById('dnum').value}})});
     const tkd=await tk.json();
     if(!tkd.id){msg('No se pudo validar la tarjeta: '+JSON.stringify(tkd),'#ef4444');btn.disabled=false;return;}
     const ch=await fetch('/payway/charge',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({pid:PID,token:tkd.id,bin:tkd.bin||num.slice(0,6)})});
+      body:JSON.stringify({pid:PID,token:tkd.id,bin:tkd.bin||num.slice(0,6),device_id:DEVICE_ID})});
     const chd=await ch.json();
     if(chd.status==='approved'){msg('✅ ¡Pago aprobado! Ya podés cerrar esta página.','#25d366');}
     else{msg('❌ Pago '+(chd.status||'rechazado')+'. '+(JSON.stringify(chd.detail||'')),'#ef4444');btn.disabled=false;}
