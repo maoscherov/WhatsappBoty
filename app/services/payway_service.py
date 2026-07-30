@@ -24,12 +24,25 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+# API de pagos (tokenize + charge)
 _SANDBOX_BASE = "https://developers.decidir.com/api/v2"
-_PROD_BASE = "https://live.decidir.com/api/v2"
+_PROD_BASE = "https://ventasonline.payway.com.ar/api/v2"
+
+# API del botón de pago / checkout hosteado (GenerateLink)
+_CHECKOUT_API_SANDBOX = "https://developers.decidir.com/api/v1/checkout-payment-button"
+_CHECKOUT_API_PROD = "https://ventasonline.payway.com.ar/api/v1/checkout-payment-button"
+
+# Base de la página del formulario hosteado (donde vive {payment_id})
+_CHECKOUT_WEB_SANDBOX = "https://developers.decidir.com/web/checkout"
+_CHECKOUT_WEB_PROD = "https://ventasonline.payway.com.ar/web/checkout"
 
 
-_CHECKOUT_SANDBOX = "https://developers.decidir.com/web/checkout"
-_CHECKOUT_PROD = "https://live.decidir.com/web/checkout"
+def _xsource() -> str:
+    """Header X-Source que espera el checkout (base64 de un JSON identificador)."""
+    import base64 as _b64
+    import json as _json
+    obj = {"service": "SDK-PYTHON", "grouper": "remedia", "developer": "remedia"}
+    return _b64.b64encode(_json.dumps(obj).encode()).decode()
 
 
 class PaywayService:
@@ -42,7 +55,8 @@ class PaywayService:
         self._template_id = template_id
         self._cybersource = cybersource
         self._base = _SANDBOX_BASE if sandbox else _PROD_BASE
-        self._checkout_base = _CHECKOUT_SANDBOX if sandbox else _CHECKOUT_PROD
+        self._checkout_api = _CHECKOUT_API_SANDBOX if sandbox else _CHECKOUT_API_PROD
+        self._checkout_web = _CHECKOUT_WEB_SANDBOX if sandbox else _CHECKOUT_WEB_PROD
 
     @property
     def base_url(self) -> str:
@@ -62,17 +76,29 @@ class PaywayService:
         installments: int = 1,
     ) -> tuple[Optional[str], Optional[str]]:
         """
-        GenerateLink: crea un checkout HOSTEADO en Payway y devuelve la URL a la
-        que mandar al cliente (equivalente al init_point de MP).
-        Retorna (checkout_url, error). Con logging completo para ajustar en sandbox.
+        GenerateLink (botón de pago): crea un checkout HOSTEADO en Payway y
+        devuelve la URL a la que mandar al cliente (equivalente al init_point
+        de MP). Payway hostea el formulario y maneja Cybersource por su cuenta.
+
+        Endpoint (según SDK oficial): POST {checkout_api}/link con apikey pública.
+        template_id: 1 = sin Cybersource, 2 = con Cybersource.
+        Retorna (checkout_url, error). Con logging completo para ajustar.
         """
+        # El botón de pago sólo admite template 1 (sin Cybersource) o 2 (con).
+        # Cualquier otro valor se ignora y se deriva del flag cybersource.
+        try:
+            tpl = int(self._template_id)
+        except (TypeError, ValueError):
+            tpl = 0
+        if tpl not in (1, 2):
+            tpl = 2 if self._cybersource else 1
         payload = {
             "origin_platform": "api",
             "site": self._site_id,
-            "template_id": self._template_id,
+            "template_id": tpl,
             "currency": "ARS",
-            "total_price": int(round(total * 100)),   # centavos (ajustar si Payway espera pesos)
-            "installments": str(installments),
+            "total_price": round(float(total), 2),   # PESOS con decimales (no centavos)
+            "installments": [int(installments)],     # array
             "success_url": success_url,
             "cancel_url": cancel_url,
             "notifications_url": notifications_url,
@@ -80,23 +106,28 @@ class PaywayService:
             "public_apikey": self._public,
             "auth_3ds": False,
         }
-        headers = {"apikey": self._public, "Content-Type": "application/json", "Cache-Control": "no-cache"}
-        url = f"{self._base}/payments/link"
+        headers = {
+            "apikey": self._public,
+            "Content-Type": "application/json",
+            "Cache-Control": "no-cache",
+            "X-Source": _xsource(),
+        }
+        url = f"{self._checkout_api}/link"
         logger.info(f"Payway GenerateLink → POST {url} payload={payload}")
         async with httpx.AsyncClient() as client:
             try:
                 resp = await client.post(url, headers=headers, json=payload, timeout=20)
                 body = resp.text
-                logger.info(f"Payway GenerateLink ← status={resp.status_code} body={body[:600]}")
+                logger.info(f"Payway GenerateLink ← status={resp.status_code} body={body[:800]}")
                 if resp.status_code not in (200, 201):
-                    return None, f"HTTP {resp.status_code}: {body[:400]}"
+                    return None, f"HTTP {resp.status_code}: {body[:500]}"
                 data = resp.json()
-                # La respuesta puede traer la URL directa o un payment_id para armarla
-                link = data.get("url") or data.get("payment_link") or data.get("link")
+                # La respuesta puede traer la URL directa o un id para armarla
+                link = data.get("url") or data.get("payment_link") or data.get("link") or data.get("checkout_url")
                 if not link:
-                    pid = data.get("id") or data.get("payment_id")
+                    pid = data.get("id") or data.get("payment_id") or data.get("hash")
                     if pid:
-                        link = f"{self._checkout_base}/{pid}"
+                        link = f"{self._checkout_web}/{pid}"
                 if not link:
                     return None, f"Respuesta sin link ni id: {data}"
                 return link, None
