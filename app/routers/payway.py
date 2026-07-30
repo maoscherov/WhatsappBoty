@@ -412,7 +412,7 @@ _BRAND_HEAD = """<meta charset="utf-8"><meta name="viewport" content="width=devi
   @media (prefers-reduced-motion: reduce){*{animation:none!important;transition:none!important}}
 </style>"""
 
-_MARCA_HTML = """<div class="marca"><div class="logo">R</div><div class="wordmark">Remedi<b>IA</b></div></div>"""
+_MARCA_HTML = """<div class="marca"><div class="logo">R</div><div class="wordmark">Remed<b>IA</b></div></div>"""
 
 _PIE_HTML = """<div class="pie">
 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="10" width="16" height="11" rx="2.5"/><path d="M8 10V7a4 4 0 118 0v3"/></svg>
