@@ -113,6 +113,12 @@ class PaywayService:
         """
         cents = int(round(amount * 100))
         return {
+            "send_to_cs": True,
+            "channel": "Web",
+            "dispatch_method": "Store Pick Up",
+            "csmdds": [
+                {"code": 17, "description": "Cliente Remedia"},
+            ],
             "device_unique_identifier": "remedia-web",
             "bill_to": {
                 "city": "CABA",
@@ -125,9 +131,9 @@ class PaywayService:
                 "postal_code": "1000",
                 "state": "C",
                 "street1": "Sin especificar",
+                "street2": "",
             },
             "purchase_totals": {"currency": "ARS", "amount": cents},
-            "channel": "Web",
         }
 
     async def crear_pago(
@@ -163,6 +169,8 @@ class PaywayService:
             payload["customer"] = {"email": email}
 
         headers = {"apikey": self._private, "Content-Type": "application/json", "Cache-Control": "no-cache"}
+        _log_payload = {**payload, "token": "***"}
+        logger.info(f"Payway payment → cybersource={self._cybersource} payload={_log_payload}")
         async with httpx.AsyncClient() as client:
             try:
                 resp = await client.post(f"{self._base}/payments", headers=headers, json=payload, timeout=20)
