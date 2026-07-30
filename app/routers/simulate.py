@@ -17,6 +17,7 @@ from app.services.sku_service import get_sku_service
 from app.services.session_service import get_session_service
 from app.services.intent_service import get_intent_service
 from app.services.payment_service import get_payment_service
+from app.services.payway_link import get_payway_link_service
 from app.services.image_service import get_image_service
 from app.services.perf_service import get_perf_service
 from app.services.socio_service import get_socio_service
@@ -85,7 +86,8 @@ async def simulate(req: SimulateRequest):
         sku_svc = None
     session_svc = get_session_service(settings.redis_url)
     intent_svc = get_intent_service(settings.anthropic_api_key, settings.openai_api_key, settings.llm_provider)
-    payment_svc = get_payment_service(settings.mp_access_token, settings.mp_notification_url, settings.mp_sandbox)
+    payment_svc = (get_payway_link_service() if settings.payment_provider == "payway"
+                   else get_payment_service(settings.mp_access_token, settings.mp_notification_url, settings.mp_sandbox))
     perf_svc = get_perf_service(settings.redis_url)
     socio_svc = get_socio_service(settings.socios_path)
     config_svc = get_config_service(settings.redis_url)

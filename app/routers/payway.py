@@ -23,13 +23,12 @@ from pydantic import BaseModel
 
 from app.config import get_settings
 from app.services.payway_service import get_payway_service
+from app.services.payway_link import crear_pago_pendiente, PENDING_TTL as _PENDING_TTL
 from app.services.order_service import get_order_service
 from app.services.whatsapp_service import get_whatsapp_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
-_PENDING_TTL = 60 * 60 * 24   # 24h
 
 
 def _redis():
@@ -46,24 +45,6 @@ def _bo_ok(key: str) -> bool:
     if not bo or not key:
         return False
     return key == bo or key.replace(" ", "+") == bo
-
-
-async def crear_pago_pendiente(phone: str, sku_id: str, sku_nombre: str,
-                               cantidad: int, total: float) -> str:
-    """Guarda un pago pendiente y devuelve la URL de la página de pago."""
-    settings = get_settings()
-    pid = uuid.uuid4().hex[:16]
-    data = {
-        "id": pid, "phone": phone, "sku_id": sku_id, "sku_nombre": sku_nombre,
-        "cantidad": cantidad, "total": total, "estado": "pendiente",
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-    try:
-        await _redis().setex(f"payway:pending:{pid}", _PENDING_TTL, json.dumps(data))
-    except Exception as e:
-        logger.error(f"No se pudo guardar pago pendiente Payway: {e}")
-    base = settings.public_base_url.rstrip("/")
-    return f"{base}/pay/{pid}"
 
 
 async def _get_pending(pid: str) -> dict | None:
@@ -142,18 +123,57 @@ async def payway_charge(body: ChargeIn):
         pending["estado"] = "aprobado"
         pending["payway_id"] = data.get("id")
         await _redis().setex(f"payway:pending:{body.pid}", _PENDING_TTL, json.dumps(pending))
-        # Crear el pedido + avisar por WhatsApp (mismo flujo que MP)
+        # Crear el pedido + avisar por WhatsApp + actualizar sesión (mismo flujo que MP)
         try:
+            from app.services.session_service import get_session_service
+            from app.services.config_service import get_config_service
+
+            phone = pending["phone"]
+            nombre_producto = pending["sku_nombre"]
+
+            session_svc = get_session_service(settings.redis_url)
+            session = await session_svc.get(phone)
+            tipo_entrega = session.get("tipo_entrega") or "retiro"
+            direccion_envio = session.get("direccion_envio")
+
             order_svc = get_order_service(settings.redis_url)
             order = await order_svc.create(
-                phone=pending["phone"], sku_id=pending["sku_id"],
-                sku_nombre=pending["sku_nombre"], cantidad=int(pending["cantidad"]),
+                phone=phone, sku_id=pending["sku_id"],
+                sku_nombre=nombre_producto, cantidad=int(pending["cantidad"]),
                 total=float(pending["total"]), mp_payment_id=str(data.get("id")),
+                tipo_entrega=tipo_entrega, direccion_envio=direccion_envio,
             )
+            logger.info(f"Pedido registrado (Payway): {order['order_id']} entrega={tipo_entrega}")
+
+            cfg_svc = get_config_service(settings.redis_url)
+            cfg = await cfg_svc.get_all()
+            hours = await cfg_svc.get_hours()
+            pickup_minutes = int(cfg.get("pickup_minutes") or settings.pickup_minutes)
+            pickup_text = cfg_svc.get_pickup_text(hours, pickup_minutes)
+            pickup_code = order.get("pickup_code", "")
+            pickup_line = f"\n{pickup_text}" if pickup_text else ""
+
+            if tipo_entrega == "envio":
+                dir_txt = f" a *{direccion_envio}*" if direccion_envio else ""
+                mensaje = (
+                    f"✅ *¡Pago confirmado!*\n\n"
+                    f"Recibimos tu pago de *{nombre_producto}*. 🙌\n"
+                    f"🚚 Te lo enviamos a domicilio{dir_txt}. Nos comunicamos para coordinar la entrega.\n"
+                    f"📋 Código de pedido: *{pickup_code}*\n\n"
+                    f"¡Muchas gracias! 💊"
+                )
+            else:
+                mensaje = (
+                    f"✅ *¡Pago confirmado!*\n\n"
+                    f"Recibimos tu pago de *{nombre_producto}*. 🙌\n"
+                    f"🔑 *Tu código de retiro es: {pickup_code}*{pickup_line}\n\n"
+                    f"Guardalo para presentarlo al retirar. ¡Muchas gracias! 💊"
+                )
+
             wa = get_whatsapp_service(settings.whatsapp_token, settings.whatsapp_phone_number_id)
-            await wa.send_text(pending["phone"],
-                               f"✅ *¡Pago confirmado!* Recibimos tu pago de *{pending['sku_nombre']}*. 🙌\n"
-                               f"🔑 Código de retiro: *{order.get('pickup_code','')}*\n¡Gracias! 💊")
+            await wa.send_text(phone, mensaje)
+            await session_svc.set_estado(phone, "pedido_confirmado")
+            await session_svc.add_message(phone, "assistant", mensaje)
         except Exception as e:
             logger.error(f"Post-pago Payway: {e}")
         return {"status": "approved"}

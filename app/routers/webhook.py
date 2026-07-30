@@ -26,6 +26,7 @@ from app.services.sku_service import get_sku_service
 from app.services.session_service import get_session_service
 from app.services.intent_service import get_intent_service
 from app.services.payment_service import get_payment_service
+from app.services.payway_link import get_payway_link_service
 from app.services.whatsapp_service import get_whatsapp_service
 from app.services.audio_service import get_audio_service
 from app.services.image_service import get_image_service
@@ -88,7 +89,8 @@ def _deps(settings=None):
         "sku":     get_sku_service(s.sku_csv_path),
         "session": get_session_service(s.redis_url),
         "intent":  get_intent_service(s.anthropic_api_key, s.openai_api_key, s.llm_provider),
-        "payment": get_payment_service(s.mp_access_token, s.mp_notification_url, s.mp_sandbox),
+        "payment": (get_payway_link_service() if s.payment_provider == "payway"
+                    else get_payment_service(s.mp_access_token, s.mp_notification_url, s.mp_sandbox)),
         "audio":   get_audio_service(audio_key, s.audio_provider),
         "image":   get_image_service(s.anthropic_api_key, s.openai_api_key, s.llm_provider),
         "perf":    get_perf_service(s.redis_url),
