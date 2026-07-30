@@ -264,17 +264,20 @@ class PaywayService:
         Anula/reembolsa un pago. POST {base}/payments/{id}/refunds con clave privada.
         amount=0 → reembolso total. Retorna (respuesta, error).
         """
-        headers = {"apikey": self._private, "Content-Type": "application/json", "Cache-Control": "no-cache"}
         url = f"{self._base}/payments/{payment_id}/refunds"
         logger.info(f"Payway refund → POST {url} amount={amount or 'total'}")
         async with httpx.AsyncClient() as client:
             try:
                 if amount:
-                    # Reembolso parcial: body con el monto en centavos
+                    # Reembolso parcial: body JSON con el monto en centavos
+                    headers = {"apikey": self._private, "Content-Type": "application/json",
+                               "Cache-Control": "no-cache"}
                     resp = await client.post(url, headers=headers,
                                              json={"amount": int(round(amount * 100))}, timeout=20)
                 else:
-                    # Reembolso total: POST sin body (un JSON vacío da "Invalid Json")
+                    # Reembolso total: POST sin body NI Content-Type (si va el header,
+                    # Decidir intenta parsear el body vacío y devuelve "Invalid Json")
+                    headers = {"apikey": self._private, "Cache-Control": "no-cache"}
                     resp = await client.post(url, headers=headers, timeout=20)
                 body = resp.text
                 logger.info(f"Payway refund ← status={resp.status_code} body={body[:400]}")
