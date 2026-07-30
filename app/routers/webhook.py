@@ -90,7 +90,7 @@ def _deps(settings=None):
         "intent":  get_intent_service(s.anthropic_api_key, s.openai_api_key, s.llm_provider),
         "payment": get_payment_service(s.mp_access_token, s.mp_notification_url, s.mp_sandbox),
         "audio":   get_audio_service(audio_key, s.audio_provider),
-        "image":   get_image_service(s.anthropic_api_key),
+        "image":   get_image_service(s.anthropic_api_key, s.openai_api_key, s.llm_provider),
         "perf":    get_perf_service(s.redis_url),
         "config":  get_config_service(s.redis_url),
         "socios":  get_socio_service(s.socios_path),

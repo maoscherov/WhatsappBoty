@@ -548,7 +548,7 @@ async def simulate_image(
 ):
     """Procesa una imagen (receta, foto de producto) y responde igual que /simulate."""
     settings = get_settings()
-    image_svc = get_image_service(settings.anthropic_api_key)
+    image_svc = get_image_service(settings.anthropic_api_key, settings.openai_api_key, settings.llm_provider)
 
     image_bytes = await image.read()
     media_type = image.content_type or "image/jpeg"

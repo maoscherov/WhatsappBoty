@@ -1,5 +1,8 @@
 """
-Analiza imágenes (recetas, credenciales, fotos de producto) con Claude vision.
+Analiza imágenes (recetas, credenciales, fotos de producto) con visión.
+
+Soporta Anthropic (Claude) y OpenAI (gpt-4o), con el mismo esquema de fallback
+que intent_service: si el proveedor primario falla (ej. sin crédito), cae al otro.
 
 analizar() clasifica el tipo de imagen para que el webhook decida:
   - receta / credencial  → derivar a una persona (no vender automáticamente)
@@ -14,10 +17,11 @@ import re
 from typing import Optional
 
 import anthropic
+import openai
 
 logger = logging.getLogger(__name__)
 
-_VISION_MODEL = "claude-haiku-4-5-20251001"
+_VISION_MODELS = {"anthropic": "claude-haiku-4-5-20251001", "openai": "gpt-4o"}
 
 _PROMPT = (
     "Analizá esta imagen enviada a una farmacia por WhatsApp y clasificala.\n"
@@ -33,38 +37,77 @@ _PROMPT = (
 
 
 class ImageService:
-    def __init__(self, api_key: str):
-        self._client = anthropic.AsyncAnthropic(api_key=api_key)
+    def __init__(self, anthropic_key: str, openai_key: str = "", provider: str = "anthropic"):
+        self._provider = provider if provider in ("anthropic", "openai") else "anthropic"
+        self._anthropic = anthropic.AsyncAnthropic(api_key=anthropic_key) if anthropic_key else None
+        self._openai = openai.AsyncOpenAI(api_key=openai_key) if openai_key else None
 
     async def analizar(self, image_bytes: bytes, media_type: str = "image/jpeg") -> dict:
         """
         Clasifica la imagen. Devuelve {"tipo": str, "items": str}.
-        Ante error, devuelve {"tipo": "otro", "items": ""}.
+        Prueba el proveedor primario y cae al otro si falla. Ante error total,
+        devuelve {"tipo": "otro", "items": ""}.
         """
         b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
-        try:
-            response = await self._client.messages.create(
-                model=_VISION_MODEL,
-                max_tokens=256,
-                messages=[{
-                    "role": "user",
-                    "content": [
-                        {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": b64}},
-                        {"type": "text", "text": _PROMPT},
-                    ],
-                }],
-            )
-            raw = response.content[0].text.strip()
-            match = re.search(r"\{.*\}", raw, re.DOTALL)
-            if match:
-                data = json.loads(match.group())
-                tipo = str(data.get("tipo", "otro")).lower().strip()
-                if tipo not in ("receta", "credencial", "producto", "otro"):
-                    tipo = "otro"
-                return {"tipo": tipo, "items": str(data.get("items", "")).strip()}
-        except Exception as e:
-            logger.error(f"Error procesando imagen con Claude: {e}")
+        orden = [self._provider, "anthropic" if self._provider == "openai" else "openai"]
+        for prov in orden:
+            if prov == "anthropic" and not self._anthropic:
+                continue
+            if prov == "openai" and not self._openai:
+                continue
+            try:
+                raw = (await self._openai_vision(b64, media_type)) if prov == "openai" \
+                    else (await self._anthropic_vision(b64, media_type))
+                parsed = self._parse(raw)
+                if parsed:
+                    return parsed
+            except Exception as e:
+                logger.warning(f"💥 Visión {prov} falló [{type(e).__name__}]: {str(e)[:200]} — probando fallback")
+                continue
         return {"tipo": "otro", "items": ""}
+
+    async def _anthropic_vision(self, b64: str, media_type: str) -> str:
+        response = await self._anthropic.messages.create(
+            model=_VISION_MODELS["anthropic"],
+            max_tokens=256,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": b64}},
+                    {"type": "text", "text": _PROMPT},
+                ],
+            }],
+        )
+        return response.content[0].text if getattr(response, "content", None) else ""
+
+    async def _openai_vision(self, b64: str, media_type: str) -> str:
+        resp = await self._openai.chat.completions.create(
+            model=_VISION_MODELS["openai"],
+            max_tokens=256,
+            response_format={"type": "json_object"},
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": _PROMPT},
+                    {"type": "image_url", "image_url": {"url": f"data:{media_type};base64,{b64}"}},
+                ],
+            }],
+        )
+        return resp.choices[0].message.content or ""
+
+    @staticmethod
+    def _parse(raw: str) -> Optional[dict]:
+        match = re.search(r"\{.*\}", raw or "", re.DOTALL)
+        if not match:
+            return None
+        try:
+            data = json.loads(match.group())
+        except json.JSONDecodeError:
+            return None
+        tipo = str(data.get("tipo", "otro")).lower().strip()
+        if tipo not in ("receta", "credencial", "producto", "otro"):
+            tipo = "otro"
+        return {"tipo": tipo, "items": str(data.get("items", "")).strip()}
 
     async def extraer_medicamentos(
         self, image_bytes: bytes, media_type: str = "image/jpeg"
@@ -77,8 +120,8 @@ class ImageService:
 _instance: Optional[ImageService] = None
 
 
-def get_image_service(api_key: str) -> ImageService:
+def get_image_service(anthropic_key: str, openai_key: str = "", provider: str = "anthropic") -> ImageService:
     global _instance
     if _instance is None:
-        _instance = ImageService(api_key)
+        _instance = ImageService(anthropic_key, openai_key, provider)
     return _instance
