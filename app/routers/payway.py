@@ -270,15 +270,18 @@ async def payway_recent(key: str = ""):
 
 
 @router.get("/payway/refund/{payment_id}")
-async def payway_refund(payment_id: str, key: str = ""):
-    """Anula/reembolsa un pago por su ID de Payway. Requiere ?key=BO_KEY."""
+async def payway_refund(payment_id: str, key: str = "", monto: float = 0):
+    """
+    Anula/reembolsa un pago por su ID de Payway. Requiere ?key=BO_KEY.
+    Sin `monto` → reembolso total (POST sin body). Con `monto` → parcial (body JSON).
+    """
     settings = get_settings()
     if not _bo_ok(key):
         raise HTTPException(status_code=403, detail="key inválida")
     pw = get_payway_service(settings.payway_public_key, settings.payway_private_key,
                             settings.payway_sandbox, settings.payway_site_id,
                             settings.payway_template_id, settings.payway_cybersource)
-    data, err = await pw.refund(payment_id)
+    data, err = await pw.refund(payment_id, amount=monto)
     if err:
         return {"ok": False, "error": err}
     return {"ok": True, "refund": data}
