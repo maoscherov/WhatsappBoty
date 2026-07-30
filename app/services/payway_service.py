@@ -106,8 +106,10 @@ class PaywayService:
             "public_apikey": self._public,
             "auth_3ds": False,
         }
+        # GenerateLink es server-a-server → va con la clave PRIVADA en el header
+        # (la pública viaja en el body como public_apikey).
         headers = {
-            "apikey": self._public,
+            "apikey": self._private,
             "Content-Type": "application/json",
             "Cache-Control": "no-cache",
             "X-Source": _xsource(),
