@@ -28,11 +28,20 @@ _SANDBOX_BASE = "https://developers.decidir.com/api/v2"
 _PROD_BASE = "https://live.decidir.com/api/v2"
 
 
+_CHECKOUT_SANDBOX = "https://developers.decidir.com/web/checkout"
+_CHECKOUT_PROD = "https://live.decidir.com/web/checkout"
+
+
 class PaywayService:
-    def __init__(self, public_key: str, private_key: str, sandbox: bool = True):
+    def __init__(self, public_key: str, private_key: str, sandbox: bool = True,
+                 site_id: str = "", template_id: int = 1):
         self._public = public_key
         self._private = private_key
+        self._sandbox = sandbox
+        self._site_id = site_id
+        self._template_id = template_id
         self._base = _SANDBOX_BASE if sandbox else _PROD_BASE
+        self._checkout_base = _CHECKOUT_SANDBOX if sandbox else _CHECKOUT_PROD
 
     @property
     def base_url(self) -> str:
@@ -41,6 +50,59 @@ class PaywayService:
     @property
     def public_key(self) -> str:
         return self._public
+
+    async def crear_link(
+        self,
+        total: float,
+        site_transaction_id: str,
+        success_url: str,
+        cancel_url: str,
+        notifications_url: str,
+        installments: int = 1,
+    ) -> tuple[Optional[str], Optional[str]]:
+        """
+        GenerateLink: crea un checkout HOSTEADO en Payway y devuelve la URL a la
+        que mandar al cliente (equivalente al init_point de MP).
+        Retorna (checkout_url, error). Con logging completo para ajustar en sandbox.
+        """
+        payload = {
+            "origin_platform": "api",
+            "site": self._site_id,
+            "template_id": int(self._template_id),
+            "currency": "ARS",
+            "total_price": int(round(total * 100)),   # centavos (ajustar si Payway espera pesos)
+            "installments": str(installments),
+            "success_url": success_url,
+            "cancel_url": cancel_url,
+            "notifications_url": notifications_url,
+            "siteOperationId": site_transaction_id,
+            "public_apikey": self._public,
+            "auth_3ds": False,
+        }
+        headers = {"apikey": self._public, "Content-Type": "application/json", "Cache-Control": "no-cache"}
+        url = f"{self._base}/payments/link"
+        logger.info(f"Payway GenerateLink → POST {url} payload={payload}")
+        async with httpx.AsyncClient() as client:
+            try:
+                resp = await client.post(url, headers=headers, json=payload, timeout=20)
+                body = resp.text
+                logger.info(f"Payway GenerateLink ← status={resp.status_code} body={body[:600]}")
+                if resp.status_code not in (200, 201):
+                    return None, f"HTTP {resp.status_code}: {body[:400]}"
+                data = resp.json()
+                # La respuesta puede traer la URL directa o un payment_id para armarla
+                link = data.get("url") or data.get("payment_link") or data.get("link")
+                if not link:
+                    pid = data.get("id") or data.get("payment_id")
+                    if pid:
+                        link = f"{self._checkout_base}/{pid}"
+                if not link:
+                    return None, f"Respuesta sin link ni id: {data}"
+                return link, None
+            except httpx.TimeoutException:
+                return None, "Timeout conectando a Payway"
+            except Exception as e:
+                return None, str(e)
 
     async def crear_pago(
         self,
@@ -103,8 +165,9 @@ class PaywayService:
 _instance: Optional[PaywayService] = None
 
 
-def get_payway_service(public_key: str, private_key: str, sandbox: bool = True) -> PaywayService:
+def get_payway_service(public_key: str, private_key: str, sandbox: bool = True,
+                       site_id: str = "", template_id: int = 1) -> PaywayService:
     global _instance
     if _instance is None:
-        _instance = PaywayService(public_key, private_key, sandbox)
+        _instance = PaywayService(public_key, private_key, sandbox, site_id, template_id)
     return _instance

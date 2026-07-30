@@ -34,8 +34,10 @@ class Settings(BaseSettings):
     payment_provider: str = "mercadopago"
     payway_public_key: str = ""
     payway_private_key: str = ""
+    payway_site_id: str = ""
+    payway_template_id: int = 1   # 1 = sin Cybersource, 2 = con Cybersource
     payway_sandbox: bool = True
-    public_base_url: str = ""   # ej: https://cerca.remedia.ar (para armar el link de /pay)
+    public_base_url: str = ""   # ej: https://cerca.remedia.ar (para success/notif urls)
 
     images_dir: str = "/data/images"          # volume mount en Railway
     image_server_api_key: str = ""            # clave para subir imágenes

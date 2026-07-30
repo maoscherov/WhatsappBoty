@@ -144,10 +144,41 @@ async def payway_charge(body: ChargeIn):
 
 @router.get("/payway/test/{monto}")
 async def payway_test(monto: float):
-    """Crea un pago de prueba y devuelve el link (para probar en sandbox)."""
+    """Formulario propio de prueba (flujo tokenize+charge)."""
     url = await crear_pago_pendiente(phone="549000000000", sku_id="TEST",
                                      sku_nombre="Producto de prueba", cantidad=1, total=monto)
     return {"pay_url": url}
+
+
+@router.get("/payway/link-test/{monto}")
+async def payway_link_test(monto: float):
+    """Prueba del GenerateLink (checkout HOSTEADO de Payway) — devuelve la URL o el error."""
+    settings = get_settings()
+    pw = get_payway_service(settings.payway_public_key, settings.payway_private_key,
+                            settings.payway_sandbox, settings.payway_site_id, settings.payway_template_id)
+    base = settings.public_base_url.rstrip("/")
+    link, err = await pw.crear_link(
+        total=monto,
+        site_transaction_id=f"test-{uuid.uuid4().hex[:10]}",
+        success_url=f"{base}/payway/return?r=ok",
+        cancel_url=f"{base}/payway/return?r=cancel",
+        notifications_url=f"{base}/payway/notification",
+    )
+    if err:
+        return {"ok": False, "error": err, "site_id": settings.payway_site_id, "template_id": settings.payway_template_id}
+    return {"ok": True, "checkout_url": link}
+
+
+@router.get("/payway/return")
+async def payway_return(r: str = ""):
+    return HTMLResponse(f"<h3>{'✅ Pago realizado' if r=='ok' else 'Pago cancelado'}. Podés cerrar esta página.</h3>")
+
+
+@router.post("/payway/notification")
+async def payway_notification(payload: dict):
+    """Notificación de Payway (webhook). Por ahora solo loguea para ver el formato."""
+    logger.info(f"Payway notification: {payload}")
+    return {"status": "ok"}
 
 
 # ── HTML de la página de pago (tokeniza en el navegador, cobra en el backend) ──────
