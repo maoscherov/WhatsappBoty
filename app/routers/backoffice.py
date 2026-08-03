@@ -94,6 +94,16 @@ async def bo_stats(_=Depends(_auth)):
     }
 
 
+def _nombre_socio(phone: str) -> str | None:
+    """Nombre del cliente si el número está en el padrón de socios."""
+    try:
+        settings = get_settings()
+        socio = get_socio_service(settings.socios_path).find_by_phone(phone)
+        return (socio or {}).get("nombre") or None
+    except Exception:
+        return None
+
+
 @router.get("/sessions")
 async def bo_sessions(_=Depends(_auth)):
     settings = get_settings()
@@ -106,14 +116,20 @@ async def bo_sessions(_=Depends(_auth)):
         ultimo = next(
             (m["content"] for m in reversed(history) if m["role"] == "user"), None
         )
+        ultimo_ts = next(
+            (m.get("ts") for m in reversed(history) if m["role"] == "user"), None
+        )
         result.append({
             "phone": phone,
+            "nombre": _nombre_socio(phone),
             "estado": s.get("estado", "idle"),
             "pending_sku_nombre": s.get("pending_sku_nombre"),
             "pending_precio": s.get("pending_precio"),
             "pending_cantidad": s.get("pending_cantidad", 1),
             "mensajes": len(history),
             "ultimo_mensaje": (ultimo[:80] + "…") if ultimo and len(ultimo) > 80 else ultimo,
+            "ultimo_mensaje_at": ultimo_ts,                    # epoch (seg) del último msj del cliente
+            "ultima_actividad": s.get("_last_activity"),       # epoch de la última actividad de la sesión
             "derivada_at": s.get("derivada_at"),
             "agente": s.get("agente"),
         })
@@ -139,6 +155,7 @@ async def bo_derivadas(_=Depends(_auth)):
         ultimo = next((m["content"] for m in reversed(history) if m["role"] == "user"), None)
         derivadas.append({
             "phone": phone,
+            "nombre": _nombre_socio(phone),
             "derivada_at": s.get("derivada_at"),
             "agente": s.get("agente"),
             "ultimo_mensaje": (ultimo[:80] + "…") if ultimo and len(ultimo) > 80 else ultimo,
@@ -152,7 +169,7 @@ async def bo_session_detail(phone: str, _=Depends(_auth)):
     settings = get_settings()
     session_svc = get_session_service(settings.redis_url)
     session = await session_svc.get(phone)
-    return {"phone": phone, **session}
+    return {"phone": phone, "nombre": _nombre_socio(phone), **session}
 
 
 @router.get("/perf")

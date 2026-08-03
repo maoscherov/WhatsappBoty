@@ -75,7 +75,7 @@ class SessionService:
 
     async def add_message(self, phone: str, role: str, content: str):
         session = await self.get(phone)
-        session["history"].append({"role": role, "content": content})
+        session["history"].append({"role": role, "content": content, "ts": time.time()})
         await self.save(phone, session)
 
     async def set_pending(self, phone: str, sku_id: str, sku_nombre: str, precio: float,
