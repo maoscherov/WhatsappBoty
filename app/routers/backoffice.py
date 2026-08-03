@@ -424,6 +424,7 @@ class ConfigUpdate(BaseModel):
     handoff_reminder_message: str | None = None
     socio_discount_pct: str | None = None        # "0" = apagado, ej "15"
     socio_discount_message: str | None = None    # admite {pct} y {antes}
+    derivadas_poll_seconds: str | None = None    # intervalo de polleo de /bo/derivadas
 
 
 @router.get("/config")

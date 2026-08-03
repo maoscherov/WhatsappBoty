@@ -50,6 +50,9 @@ DEFAULTS: dict[str, str] = {
         "🎉 Por ser socio de la Mutual te aplicamos un {pct}% de descuento "
         "(precio de lista: ${antes})."
     ),
+    # Cada cuántos segundos el backoffice pollea /bo/derivadas para la alerta
+    # sonora. Lo lee el frontend (Lovable) desde /bo/config.
+    "derivadas_poll_seconds": "15",
 }
 
 DEFAULT_HOURS = {
