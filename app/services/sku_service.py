@@ -62,6 +62,8 @@ VENTA_LIBRE: set[str] = {
     "mylanta", "gaviscon", "sertal", "buscapina",
     # Antihistamínicos OTC
     "loratadina",
+    # Confirmados por la farmacia (minuta 2026-07-31)
+    "advance", "betacort", "betacor",
 }
 
 
@@ -69,6 +71,16 @@ def es_venta_libre(nombre: str) -> bool:
     """True si el nombre del producto corresponde a un OTC de la lista blanca."""
     n = (nombre or "").lower()
     return any(kw in n for kw in VENTA_LIBRE)
+
+
+def _categoria_sin_receta(categoria: str) -> bool:
+    """
+    True si la categoría del catálogo indica un producto NO medicinal
+    (perfumería, accesorios, etc.) — esos nunca requieren receta, aunque el
+    flag venga mal cargado. Sólo se afirma con categoría explícita.
+    """
+    c = (categoria or "").strip().lower()
+    return bool(c) and "medicamento" not in c
 
 
 def requiere_derivacion(requiere_receta: str, modo: str = "conservador") -> bool:
@@ -149,8 +161,8 @@ class SKUService:
         requiere = (row.get("requiere_receta") or "").strip().lower()
         if requiere not in ("si", "ambiguo", "no"):
             requiere = "si" if categoria.lower() == "medicamentos bajo receta" else "no"
-        if es_venta_libre(nombre):   # override OTC: nunca requiere receta
-            requiere = "no"
+        if es_venta_libre(nombre) or _categoria_sin_receta(categoria):
+            requiere = "no"   # override: OTC conocido o rubro no medicinal (perfumería, etc.)
         try:
             return SKU(
                 sku_id=str(row.get("SKU", "")).strip(),
@@ -175,8 +187,8 @@ class SKUService:
         if not nombre:
             return None
         requiere = (row.get("requiere_receta") or "no").strip().lower()
-        if es_venta_libre(nombre):   # override OTC: nunca requiere receta
-            requiere = "no"
+        if es_venta_libre(nombre) or _categoria_sin_receta(row.get("categoria", "")):
+            requiere = "no"   # override: OTC conocido o rubro no medicinal (perfumería, etc.)
         try:
             return SKU(
                 sku_id=row.get("sku_id", "").strip(),

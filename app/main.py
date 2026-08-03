@@ -80,12 +80,51 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Postgres init falló: {e} — se usa solo Redis")
 
+    # Job de cierre por inactividad: avisa y cierra sesiones sin actividad
+    # (minuta 2026-07-31: 15 min). Solo con WhatsApp configurado (no en tests).
+    cierre_task = None
+    if settings.whatsapp_token:
+        cierre_task = asyncio.create_task(_cerrar_sesiones_inactivas())
+
     yield
 
+    if cierre_task:
+        cierre_task.cancel()
     try:
         await get_db(settings.database_url).close()
     except Exception:
         pass
+
+
+async def _cerrar_sesiones_inactivas():
+    """Cada 60s cierra (con mensaje de despedida) las sesiones inactivas."""
+    from app.services.config_service import get_config_service
+    from app.services.whatsapp_service import get_whatsapp_service
+
+    logger = logging.getLogger("app.inactividad")
+    settings = get_settings()
+    session_svc = get_session_service(settings.redis_url)
+    cfg_svc = get_config_service(settings.redis_url)
+    wa = get_whatsapp_service(settings.whatsapp_token, settings.whatsapp_phone_number_id)
+
+    while True:
+        try:
+            await asyncio.sleep(60)
+            cfg = await cfg_svc.get_all()
+            minutos = int(cfg.get("inactivity_minutes") or 15)
+            mensaje = cfg.get("inactivity_close_message") or ""
+            for phone, session in await session_svc.inactivas(minutos * 60):
+                if mensaje and session.get("history"):
+                    try:
+                        await wa.send_text(phone, mensaje)
+                    except Exception as e:
+                        logger.warning(f"No se pudo avisar cierre a {phone}: {e}")
+                await session_svc.delete(phone)
+                logger.info(f"Sesión cerrada por inactividad ({minutos} min): {phone}")
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            logger.error(f"Job de inactividad: {e}")
 
 
 app = FastAPI(

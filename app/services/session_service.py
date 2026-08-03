@@ -1,6 +1,9 @@
 """
 Persistencia de sesión de conversación en Redis.
-TTL: 30 minutos de inactividad.
+
+Cierre por inactividad (minuta 2026-07-31): a los 15 minutos sin actividad un
+job (main.py) envía el mensaje de cierre y borra la sesión. El TTL de Redis
+queda como red de seguridad por si el job no corre.
 
 Si Redis no está disponible, opera en modo in-memory (sin persistencia entre
 reinicios del servidor). El bot funciona igual pero pierde el historial si
@@ -9,12 +12,14 @@ la instancia se reinicia.
 
 import json
 import logging
+import time
 import redis.asyncio as aioredis
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-SESSION_TTL = 60 * 30
+SESSION_TTL = 60 * 60          # red de seguridad (el cierre real es el job de 15 min)
+INACTIVITY_CLOSE = 60 * 15     # inactividad que dispara el cierre con aviso
 MAX_HISTORY = 10
 
 _EMPTY_SESSION = lambda: {
@@ -59,6 +64,7 @@ class SessionService:
 
     async def save(self, phone: str, session: dict):
         session["history"] = session["history"][-MAX_HISTORY:]
+        session["_last_activity"] = time.time()
         if await self._use_redis():
             try:
                 await self._redis.setex(self._key(phone), SESSION_TTL, json.dumps(session))
@@ -179,6 +185,28 @@ class SessionService:
             except Exception:
                 pass
         return list(self._memory.items())
+
+    async def inactivas(self, threshold_secs: int = INACTIVITY_CLOSE) -> list[tuple[str, dict]]:
+        """
+        Sesiones sin actividad hace más de `threshold_secs`, candidatas al
+        cierre con aviso. Excluye las derivadas a operador (las maneja el
+        humano; a esas las limpia el TTL de Redis).
+
+        Las sesiones anteriores al deploy (sin _last_activity) se estampan
+        ahora en vez de cerrarse, para no mandar avisos masivos al deployar.
+        """
+        out = []
+        now = time.time()
+        for phone, session in await self.list_all():
+            if session.get("estado") == "operador":
+                continue
+            last = session.get("_last_activity")
+            if last is None:
+                await self.save(phone, session)   # estampa _last_activity
+                continue
+            if now - float(last) >= threshold_secs:
+                out.append((phone, session))
+        return out
 
     async def ping(self) -> bool:
         try:

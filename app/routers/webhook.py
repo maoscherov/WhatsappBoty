@@ -40,7 +40,7 @@ from app.services.message_store import get_message_store
 from app.services.checkout_helper import (
     confirmar_pedido, resolver_entrega, capturar_direccion,
     match_retiro, match_envio, pide_humano, derivar_si_receta, afirma_envio,
-    quiere_cambiar_direccion, extraer_direccion_de,
+    quiere_cambiar_direccion, extraer_direccion_de, contiene_link, pide_pago_manual,
 )
 
 logger = logging.getLogger(__name__)
@@ -276,6 +276,36 @@ async def receive_message(request: Request):
                 _intencion = "operador"
                 await deps["session"].add_message(phone, "user", texto)
                 logger.info(f"Modo operador activo para {phone} — bot silencioso")
+                continue
+
+            # ── Receta/bono enviado como LINK → derivar (igual que la foto) ──
+            if contiene_link(texto):
+                _intencion = "receta_link"
+                await deps["session"].set_estado(phone, "operador")
+                respuesta = (
+                    "Recibí tu link 🙌. Para gestionarlo te paso con alguien del equipo, "
+                    "que lo revisa y te ayuda. ¡En un momento te contactamos!"
+                )
+                _ts = _time.perf_counter()
+                await deps["wa"].send_text(phone, respuesta)
+                _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
+                await deps["session"].add_message(phone, "user", texto)
+                await deps["session"].add_message(phone, "assistant", respuesta)
+                continue
+
+            # ── Pide transferencia/efectivo → derivar (regla de negocio) ─────
+            if pide_pago_manual(texto):
+                _intencion = "pago_manual"
+                await deps["session"].set_estado(phone, "operador")
+                respuesta = (
+                    "Dale! Para pagar por ese medio te paso con alguien del equipo, "
+                    "que lo coordina con vos 🙌. ¡En un momento te contactamos!"
+                )
+                _ts = _time.perf_counter()
+                await deps["wa"].send_text(phone, respuesta)
+                _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
+                await deps["session"].add_message(phone, "user", texto)
+                await deps["session"].add_message(phone, "assistant", respuesta)
                 continue
 
             # ── Pide hablar con una persona → derivar (sin generar link) ─────

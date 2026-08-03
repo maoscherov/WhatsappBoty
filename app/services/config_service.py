@@ -28,6 +28,13 @@ DEFAULTS: dict[str, str] = {
     "pickup_minutes": "30",    # tiempo estimado de preparación/retiro
     "receta_mode":    "conservador",  # "conservador" (ambiguo deriva) | "estricto" (solo "si")
     "envio_enabled":  "true",  # ofrecer envío a domicilio además de retiro
+    # Cierre por inactividad (minuta 2026-07-31). El texto es provisorio hasta
+    # que la farmacia mande el definitivo — se cambia desde el backoffice.
+    "inactivity_minutes": "15",
+    "inactivity_close_message": (
+        "Como no tuvimos respuesta, damos por cerrada esta conversación 🙏 "
+        "Cuando quieras retomarla, escribinos de nuevo y te ayudamos. ¡Gracias!"
+    ),
 }
 
 DEFAULT_HOURS = {

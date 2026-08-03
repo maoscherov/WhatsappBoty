@@ -95,6 +95,37 @@ def pide_humano(t: str) -> bool:
     return any(re.search(p, t, re.IGNORECASE) for p in _HUMANO)
 
 
+_PAGO_MANUAL = [
+    r"\btransferencia\b", r"\btransferir\b", r"\btransfiero\b", r"\btransferis\b",
+    r"\befectivo\b", r"\bcbu\b", r"\balias\b", r"\bmercado\s*pago\b",
+]
+
+
+def pide_pago_manual(t: str) -> bool:
+    """
+    True si el cliente pide pagar por transferencia o efectivo. Regla de negocio
+    (minuta 2026-07-31): esos medios se derivan SIEMPRE a una persona — la
+    transferencia requiere validar comprobante, el efectivo no se ofrece por el bot.
+    """
+    return any(re.search(p, t, re.IGNORECASE) for p in _PAGO_MANUAL)
+
+
+_LINK_RE = re.compile(r"(https?://\S+|www\.\S+|\S+\.(?:pdf|jpg|jpeg|png)\b)", re.IGNORECASE)
+
+
+def contiene_link(t: str) -> bool:
+    """
+    True si el mensaje trae una URL o referencia a un archivo (receta/bono
+    enviado como link en vez de foto) → se deriva a una persona, igual que
+    una imagen de receta. Excluye los links de pago propios (pay/...).
+    """
+    m = _LINK_RE.search(t or "")
+    if not m:
+        return False
+    link = m.group(0).lower()
+    return "remedia.ar" not in link and "/pay/" not in link
+
+
 def necesita_receta(sku_svc, sku_id: str, modo: str) -> bool:
     """True si el producto pendiente requiere derivación por receta."""
     if not sku_id:
