@@ -7,6 +7,12 @@ class Settings(BaseSettings):
     whatsapp_phone_number_id: str = ""
     whatsapp_verify_token: str = "farma_verify_token"
 
+    # Proveedor de WhatsApp por número/farmacia: "meta" (Cloud API directa)
+    # o "kapso" (proxy API-compatible; onboarding y auth propios de Kapso).
+    wa_provider: str = "meta"
+    wa_api_base: str = ""      # pisa la URL base del proveedor si hace falta
+    kapso_api_key: str = ""
+
     anthropic_api_key: str = ""
 
     mp_access_token: str = ""

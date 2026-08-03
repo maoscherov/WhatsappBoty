@@ -1,18 +1,26 @@
 """
 Envía mensajes y descarga archivos de audio a través de la API de WhatsApp Business.
+
+Proveedor conmutable por env vars (por número/farmacia):
+  WA_PROVIDER=meta  (default) → Cloud API directa de Meta con WHATSAPP_TOKEN.
+  WA_PROVIDER=kapso           → proxy API-compatible de Kapso con KAPSO_API_KEY.
+La URL base se puede pisar con WA_API_BASE en ambos casos.
 """
 
 import httpx
 from typing import Optional
 
 WA_BASE = "https://graph.facebook.com/v19.0"
+KAPSO_BASE = "https://api.kapso.ai/meta/whatsapp"
 
 
 class WhatsAppService:
-    def __init__(self, token: str, phone_number_id: str):
+    def __init__(self, token: str, phone_number_id: str,
+                 base_url: str = "", headers: Optional[dict] = None):
         self._token = token
         self._phone_id = phone_number_id
-        self._headers = {"Authorization": f"Bearer {token}"}
+        self._base = (base_url or WA_BASE).rstrip("/")
+        self._headers = headers if headers is not None else {"Authorization": f"Bearer {token}"}
 
     async def send_text(self, to: str, text: str, simulate_typing: bool = True) -> bool:
         # simulate_typing conservado como parámetro por compatibilidad,
@@ -27,7 +35,7 @@ class WhatsAppService:
         async with httpx.AsyncClient() as client:
             try:
                 resp = await client.post(
-                    f"{WA_BASE}/{self._phone_id}/messages",
+                    f"{self._base}/{self._phone_id}/messages",
                     headers={**self._headers, "Content-Type": "application/json"},
                     json=payload,
                     timeout=10,
@@ -49,7 +57,7 @@ class WhatsAppService:
         async with httpx.AsyncClient() as client:
             try:
                 resp = await client.post(
-                    f"{WA_BASE}/{self._phone_id}/messages",
+                    f"{self._base}/{self._phone_id}/messages",
                     headers={**self._headers, "Content-Type": "application/json"},
                     json=payload,
                     timeout=10,
@@ -67,7 +75,7 @@ class WhatsAppService:
         async with httpx.AsyncClient() as client:
             try:
                 await client.post(
-                    f"{WA_BASE}/{self._phone_id}/messages",
+                    f"{self._base}/{self._phone_id}/messages",
                     headers={**self._headers, "Content-Type": "application/json"},
                     json=payload,
                     timeout=5,
@@ -79,7 +87,7 @@ class WhatsAppService:
         async with httpx.AsyncClient() as client:
             try:
                 resp = await client.get(
-                    f"{WA_BASE}/{media_id}",
+                    f"{self._base}/{media_id}",
                     headers=self._headers,
                     timeout=10,
                 )
@@ -104,7 +112,19 @@ _instance: Optional[WhatsAppService] = None
 
 
 def get_whatsapp_service(token: str, phone_number_id: str) -> WhatsAppService:
+    """
+    Singleton. El proveedor (Meta directo o Kapso) se resuelve desde settings,
+    así el resto del código no cambia según la farmacia/número.
+    """
     global _instance
     if _instance is None:
-        _instance = WhatsAppService(token, phone_number_id)
+        from app.config import get_settings
+        s = get_settings()
+        if s.wa_provider == "kapso":
+            base = s.wa_api_base or KAPSO_BASE
+            headers = {"X-API-Key": s.kapso_api_key}
+        else:
+            base = s.wa_api_base or WA_BASE
+            headers = {"Authorization": f"Bearer {token}"}
+        _instance = WhatsAppService(token, phone_number_id, base_url=base, headers=headers)
     return _instance
