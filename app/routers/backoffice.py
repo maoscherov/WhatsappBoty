@@ -418,6 +418,12 @@ class ConfigUpdate(BaseModel):
     pickup_minutes: str | None = None
     receta_mode: str | None = None    # "conservador" | "estricto"
     envio_enabled: str | None = None  # "true" | "false"
+    inactivity_minutes: str | None = None        # cierre por inactividad (min)
+    inactivity_close_message: str | None = None
+    handoff_reminder_minutes: str | None = None  # aviso de demora post-derivación ("0" = off)
+    handoff_reminder_message: str | None = None
+    socio_discount_pct: str | None = None        # "0" = apagado, ej "15"
+    socio_discount_message: str | None = None    # admite {pct} y {antes}
 
 
 @router.get("/config")
