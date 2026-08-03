@@ -114,9 +114,37 @@ async def bo_sessions(_=Depends(_auth)):
             "pending_cantidad": s.get("pending_cantidad", 1),
             "mensajes": len(history),
             "ultimo_mensaje": (ultimo[:80] + "…") if ultimo and len(ultimo) > 80 else ultimo,
+            "derivada_at": s.get("derivada_at"),
+            "agente": s.get("agente"),
         })
 
     return result
+
+
+@router.get("/derivadas")
+async def bo_derivadas(_=Depends(_auth)):
+    """
+    Conversaciones derivadas a atención humana (estado=operador), para la
+    alerta sonora del backoffice: el front puede pollear este endpoint y
+    sonar cuando aumenta `count` (igual que con pedidos).
+    """
+    settings = get_settings()
+    session_svc = get_session_service(settings.redis_url)
+    sessions = await session_svc.list_all()
+    derivadas = []
+    for phone, s in sessions:
+        if s.get("estado") != "operador":
+            continue
+        history = s.get("history", [])
+        ultimo = next((m["content"] for m in reversed(history) if m["role"] == "user"), None)
+        derivadas.append({
+            "phone": phone,
+            "derivada_at": s.get("derivada_at"),
+            "agente": s.get("agente"),
+            "ultimo_mensaje": (ultimo[:80] + "…") if ultimo and len(ultimo) > 80 else ultimo,
+        })
+    derivadas.sort(key=lambda d: d.get("derivada_at") or 0, reverse=True)
+    return {"count": len(derivadas), "derivadas": derivadas}
 
 
 @router.get("/session/{phone}")
@@ -434,6 +462,21 @@ async def bo_release(phone: str, _=Depends(_auth)):
     return {"status": "ok", "estado": "idle", "phone": phone}
 
 
+@router.post("/session/{phone}/take")
+async def bo_take(phone: str, agente: str = Query(...), _=Depends(_auth)):
+    """
+    Registra qué agente toma la conversación (número/nombre de usuario, sin
+    contraseña adicional — decisión de la farmacia, minuta 2026-07-31).
+    Permite el filtro "mis conversaciones" y trazar quién atendió cada chat.
+    """
+    settings = get_settings()
+    session_svc = get_session_service(settings.redis_url)
+    session = await session_svc.get(phone)
+    session["agente"] = agente.strip()
+    await session_svc.save(phone, session)
+    return {"status": "ok", "phone": phone, "agente": agente.strip()}
+
+
 @router.post("/session/{phone}/close")
 async def bo_close(phone: str, _=Depends(_auth)):
     """Cierra la conversación: elimina la sesión (sale de la lista de activas)."""
@@ -453,6 +496,59 @@ async def bo_sessions_clear(_=Depends(_auth)):
 
 
 # ── Historial permanente (Postgres) ────────────────────────────────────────────
+
+@router.get("/session/{phone}/resumen")
+async def bo_resumen(phone: str, _=Depends(_auth)):
+    """
+    Resumen corto de la conversación (LLM) para retomar un chat derivado sin
+    releer todo el historial. Usa Postgres si está; si no, la sesión de Redis.
+    """
+    settings = get_settings()
+
+    # Historial: Postgres (completo) o Redis (últimos mensajes)
+    mensajes = []
+    db = get_db(settings.database_url)
+    if db.available():
+        store = get_message_store(db)
+        mensajes = await store.history(phone, 60)
+    if not mensajes:
+        session = await get_session_service(settings.redis_url).get(phone)
+        mensajes = session.get("history", [])
+    if not mensajes:
+        return {"ok": False, "resumen": "", "detail": "Sin historial para este número"}
+
+    charla = "\n".join(
+        f"{'Cliente' if m.get('role') == 'user' else 'Bot'}: {m.get('content', '')[:300]}"
+        for m in mensajes[-40:]
+    )
+    prompt = (
+        "Sos asistente de una farmacia. Resumí esta conversación de WhatsApp en 3-4 "
+        "líneas para que un agente humano la retome rápido. Incluí: qué pide el cliente, "
+        "productos/precios mencionados, estado del pedido o pago, y qué falta resolver. "
+        "Respondé SOLO el resumen, en español.\n\n" + charla
+    )
+
+    resumen, err = "", None
+    for proveedor in ([settings.llm_provider, "openai" if settings.llm_provider == "anthropic" else "anthropic"]):
+        try:
+            if proveedor == "openai" and settings.openai_api_key:
+                from openai import AsyncOpenAI
+                r = await AsyncOpenAI(api_key=settings.openai_api_key).chat.completions.create(
+                    model="gpt-4o-mini", max_tokens=250,
+                    messages=[{"role": "user", "content": prompt}])
+                resumen = (r.choices[0].message.content or "").strip()
+            elif proveedor == "anthropic" and settings.anthropic_api_key:
+                from anthropic import AsyncAnthropic
+                r = await AsyncAnthropic(api_key=settings.anthropic_api_key).messages.create(
+                    model="claude-haiku-4-5-20251001", max_tokens=250,
+                    messages=[{"role": "user", "content": prompt}])
+                resumen = (r.content[0].text or "").strip()
+            if resumen:
+                return {"ok": True, "resumen": resumen, "mensajes": len(mensajes), "proveedor": proveedor}
+        except Exception as e:
+            err = str(e)
+    return {"ok": False, "resumen": "", "detail": err or "sin proveedor LLM configurado"}
+
 
 @router.get("/history/{phone}")
 async def bo_history(phone: str, _=Depends(_auth), limit: int = Query(200, le=1000)):

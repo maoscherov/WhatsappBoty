@@ -183,6 +183,25 @@ async def crear_link_y_responder(
     precio_unitario = session["pending_precio"]
     total = precio_unitario * cantidad
 
+    # Descuento automático de socio (config socio_discount_pct, 0 = apagado).
+    # Solo llega acá mercadería sin receta (la receta deriva antes).
+    descuento_line = ""
+    try:
+        from app.config import get_settings as _gs
+        from app.services.config_service import get_config_service as _gcs
+        from app.services.socio_service import get_socio_service as _gss
+        _settings = _gs()
+        _cfg = await _gcs(_settings.redis_url).get_all()
+        pct = float(_cfg.get("socio_discount_pct") or 0)
+        if pct > 0 and _gss(_settings.socios_path).find_by_phone(phone):
+            antes = total
+            precio_unitario = round(precio_unitario * (1 - pct / 100), 2)
+            total = precio_unitario * cantidad
+            plantilla = _cfg.get("socio_discount_message") or ""
+            descuento_line = plantilla.replace("{pct}", f"{pct:g}").replace("{antes}", f"{antes:,.2f}")
+    except Exception as e:
+        logger.warning(f"No se pudo evaluar descuento de socio para {phone}: {e}")
+
     link, err = await payment_svc.crear_link(
         sku_id=session["pending_sku_id"],
         nombre=session["pending_sku_nombre"],
@@ -202,10 +221,11 @@ async def crear_link_y_responder(
 
     nombre_con_cant = session["pending_sku_nombre"] + (f" x{cantidad}" if cantidad > 1 else "")
     entrega_line = texto_entrega(tipo_entrega, direccion)
+    descuento_bloque = f"{descuento_line}\n" if descuento_line else ""
     respuesta = (
         f"Perfecto! Acá te mando el link de pago para "
         f"{nombre_con_cant} (${total:,.2f}):\n\n{link}\n\n"
-        f"{entrega_line}\n"
+        f"{descuento_bloque}{entrega_line}\n"
         "El link tiene vigencia de 24hs. ¡Cualquier cosa me avisás!"
     )
     return respuesta, link

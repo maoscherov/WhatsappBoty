@@ -35,6 +35,21 @@ DEFAULTS: dict[str, str] = {
         "Como no tuvimos respuesta, damos por cerrada esta conversación 🙏 "
         "Cuando quieras retomarla, escribinos de nuevo y te ayudamos. ¡Gracias!"
     ),
+    # Aviso al cliente si la atención humana demora tras una derivación.
+    # 0 = desactivado. Texto provisorio — editable desde el backoffice.
+    "handoff_reminder_minutes": "15",
+    "handoff_reminder_message": (
+        "Seguimos con tu consulta 🙌 El equipo está con mucha demanda en este "
+        "momento, pero en breve te respondemos. ¡Gracias por la paciencia!"
+    ),
+    # Descuento automático de socio (compras sin receta). 0 = desactivado —
+    # activar cuando la farmacia valide el cruce del padrón. {pct} y {antes}
+    # se reemplazan por el porcentaje y el precio sin descuento.
+    "socio_discount_pct": "0",
+    "socio_discount_message": (
+        "🎉 Por ser socio de la Mutual te aplicamos un {pct}% de descuento "
+        "(precio de lista: ${antes})."
+    ),
 }
 
 DEFAULT_HOURS = {

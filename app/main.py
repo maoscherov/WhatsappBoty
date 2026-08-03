@@ -121,6 +121,19 @@ async def _cerrar_sesiones_inactivas():
                         logger.warning(f"No se pudo avisar cierre a {phone}: {e}")
                 await session_svc.delete(phone)
                 logger.info(f"Sesión cerrada por inactividad ({minutos} min): {phone}")
+
+            # Aviso de demora en derivaciones (0 = desactivado)
+            hr_min = int(cfg.get("handoff_reminder_minutes") or 0)
+            hr_msg = cfg.get("handoff_reminder_message") or ""
+            if hr_min > 0 and hr_msg:
+                for phone in await session_svc.derivadas_para_aviso(hr_min * 60):
+                    try:
+                        await wa.send_text(phone, hr_msg)
+                        await session_svc.add_message(phone, "assistant", hr_msg)
+                        logger.info(f"Aviso de demora enviado a {phone} ({hr_min} min derivada)")
+                    except Exception as e:
+                        logger.warning(f"No se pudo avisar demora a {phone}: {e}")
+                    await session_svc.marcar_handoff_avisado(phone)
         except asyncio.CancelledError:
             return
         except Exception as e:

@@ -114,6 +114,11 @@ class SessionService:
 
     async def set_estado(self, phone: str, estado: str):
         session = await self.get(phone)
+        if estado == "operador" and session.get("estado") != "operador":
+            # Derivación nueva: timestamp para la alerta del backoffice y el
+            # aviso automático si el humano demora en responder.
+            session["derivada_at"] = time.time()
+            session.pop("_handoff_avisado", None)
         session["estado"] = estado
         await self.save(phone, session)
 
@@ -207,6 +212,28 @@ class SessionService:
             if now - float(last) >= threshold_secs:
                 out.append((phone, session))
         return out
+
+    async def derivadas_para_aviso(self, threshold_secs: int) -> list[str]:
+        """
+        Teléfonos derivados a operador hace más de `threshold_secs` que todavía
+        no recibieron el aviso de demora. No detectamos la respuesta del humano
+        (contesta desde la app de WhatsApp), así que es un único aviso por
+        derivación — configurable/apagable desde el backoffice.
+        """
+        out = []
+        now = time.time()
+        for phone, session in await self.list_all():
+            if session.get("estado") != "operador" or session.get("_handoff_avisado"):
+                continue
+            derivada = session.get("derivada_at")
+            if derivada and now - float(derivada) >= threshold_secs:
+                out.append(phone)
+        return out
+
+    async def marcar_handoff_avisado(self, phone: str):
+        session = await self.get(phone)
+        session["_handoff_avisado"] = True
+        await self.save(phone, session)
 
     async def ping(self) -> bool:
         try:
