@@ -299,7 +299,8 @@ async def bo_sku_check(_=Depends(_auth), q: str = Query(...)):
         "csv_path": settings.sku_csv_path,
         "total_catalogo": svc.total,
         "resultados": [
-            {"nombre": r["nombre"], "precio": r["precio"], "requiere_receta": r["requiere_receta"]}
+            {"sku_id": r["sku_id"], "nombre": r["nombre"], "precio": r["precio"],
+             "requiere_receta": r["requiere_receta"], "estado": r.get("estado")}
             for r in res
         ],
     }
@@ -484,6 +485,75 @@ async def bo_release(phone: str, _=Depends(_auth)):
     session_svc = get_session_service(settings.redis_url)
     await session_svc.set_estado(phone, "idle")
     return {"status": "ok", "estado": "idle", "phone": phone}
+
+
+class PaylinkIn(BaseModel):
+    phone: str                    # cliente al que corresponde el pago
+    sku_id: str | None = None     # opción A: producto del catálogo
+    detalle: str | None = None    # opción B: concepto libre…
+    monto: float | None = None    # …con su monto (o para pisar el precio del SKU)
+    cantidad: int = 1
+    enviar: bool = False          # True → se lo manda por WhatsApp al cliente
+    mensaje: str | None = None    # texto opcional para acompañar el link
+
+
+@router.post("/paylink")
+async def bo_paylink(body: PaylinkIn, _=Depends(_auth)):
+    """
+    Genera un link de pago desde el backoffice (operador): por SKU del catálogo
+    o por detalle+monto libres. Devuelve el link (para copiar) y opcionalmente
+    lo envía por WhatsApp al cliente. Usa el proveedor de pago activo
+    (PAYMENT_PROVIDER). Sin control de receta: el operador ya validó el caso.
+    """
+    settings = get_settings()
+
+    # Resolver nombre y precio unitario
+    cantidad = max(1, int(body.cantidad))
+    if body.sku_id:
+        sku = get_sku_service(settings.sku_csv_path).get_by_id(body.sku_id)
+        if not sku:
+            raise HTTPException(status_code=404, detail=f"SKU {body.sku_id} no encontrado")
+        nombre = sku.sku_nombre
+        precio = float(body.monto) if body.monto else float(sku.precio_venta or 0)
+        sku_id = sku.sku_id
+    else:
+        if not body.detalle or not body.monto:
+            raise HTTPException(status_code=400, detail="Sin sku_id hacen falta detalle y monto")
+        nombre = body.detalle.strip()
+        precio = float(body.monto)
+        sku_id = "MANUAL"
+    if precio <= 0:
+        raise HTTPException(status_code=400, detail="El monto debe ser mayor a 0")
+    total = round(precio * cantidad, 2)
+
+    # Generar el link con el proveedor activo (misma interfaz que usa el bot)
+    if settings.payment_provider == "payway":
+        from app.services.payway_link import get_payway_link_service
+        payment_svc = get_payway_link_service()
+    else:
+        from app.services.payment_service import get_payment_service
+        payment_svc = get_payment_service(settings.mp_access_token, settings.mp_notification_url, settings.mp_sandbox)
+    link, err = await payment_svc.crear_link(
+        sku_id=sku_id, nombre=nombre, precio=precio, phone=body.phone, cantidad=cantidad,
+    )
+    if not link:
+        return {"ok": False, "error": err or "no se pudo generar el link"}
+
+    # Envío opcional por WhatsApp + registro en el historial de la conversación
+    enviado = False
+    nombre_cant = nombre + (f" x{cantidad}" if cantidad > 1 else "")
+    mensaje = body.mensaje or (
+        f"Acá te mando el link de pago para {nombre_cant} (${total:,.2f}):\n\n{link}\n\n"
+        "El link tiene vigencia de 24hs. ¡Cualquier cosa me avisás!"
+    )
+    if body.enviar:
+        wa = get_whatsapp_service(settings.whatsapp_token, settings.whatsapp_phone_number_id)
+        enviado = await wa.send_text(body.phone, mensaje)
+        if enviado:
+            await get_session_service(settings.redis_url).add_message(body.phone, "assistant", mensaje)
+
+    return {"ok": True, "link": link, "detalle": nombre_cant, "total": total,
+            "enviado": enviado, "mensaje": mensaje}
 
 
 @router.post("/session/{phone}/take")
