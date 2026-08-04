@@ -173,9 +173,10 @@ async def payway_charge(body: ChargeIn):
             device_id=body.device_id,
             producto=pending.get("sku_nombre", "Producto"),
         )
-        # 'invalid_param: payment_method_id' = ese medio no está habilitado en el
-        # site (validación, no consume token) → probar la siguiente variante.
-        if err and "payment_method_id" in err:
+        # Solo el error de VALIDACIÓN 'invalid_param: payment_method_id' amerita
+        # probar otra variante (no consume token). Un rechazo real (402) también
+        # menciona payment_method_id en el body — ese NO se reintenta.
+        if err and "invalid_request_error" in err and "'param': 'payment_method_id'" in err:
             logger.info(f"Payway: metodo {metodo} no habilitado para bin {body.bin}, pruebo siguiente")
             await _registrar_intento(body.pid, pending,
                                      {"resultado": "metodo_no_habilitado", "metodo": metodo,
@@ -185,7 +186,7 @@ async def payway_charge(body: ChargeIn):
     if err or not data:
         logger.error(f"Payway charge falló: {err}")
         await _registrar_intento(body.pid, pending,
-                                 {"resultado": "error", "detalle": (err or "")[:500],
+                                 {"resultado": "error", "detalle": (err or "")[:1200],
                                   "bin": body.bin, "metodo": metodo})
         return {"status": "error", "detail": err or "sin respuesta"}
 
