@@ -104,9 +104,39 @@ class ChargeIn(BaseModel):
     pid: str
     token: str
     bin: str
-    payment_method_id: int = 1   # 1 = Visa (default sandbox)
+    payment_method_id: int = 0   # 0 = autodetectar por BIN
     installments: int = 1
     device_id: str = ""          # fingerprint generado al tokenizar (Cybersource)
+
+
+def _metodo_por_bin(bin_: str) -> int:
+    """
+    payment_method_id de Decidir según la marca de la tarjeta (por BIN).
+    1=Visa, 15=Mastercard, 65=Amex, 63=Cabal, 24=Naranja. Default Visa.
+    """
+    b = (bin_ or "").strip()
+    if b.startswith("4"):
+        return 1                                        # Visa
+    if b[:2] in ("34", "37"):
+        return 65                                       # American Express
+    if b[:2] in ("51", "52", "53", "54", "55") or ("2221" <= b[:4] <= "2720"):
+        return 15                                       # Mastercard
+    if b[:6] in ("589657", "604201", "604220") or b[:4] == "6042":
+        return 63                                       # Cabal
+    if b[:6] == "589562":
+        return 24                                       # Naranja
+    return 1
+
+
+async def _registrar_intento(pid: str, pending: dict, resultado: dict):
+    """Guarda el último intento de cobro en el pago pendiente (visible en /payway/recent)."""
+    intentos = pending.get("intentos", [])
+    intentos.append({**resultado, "ts": datetime.now(timezone.utc).isoformat()})
+    pending["intentos"] = intentos[-5:]
+    try:
+        await _redis().setex(f"payway:pending:{pid}", _PENDING_TTL, json.dumps(pending))
+    except Exception:
+        pass
 
 
 @router.post("/payway/charge")
@@ -118,6 +148,7 @@ async def payway_charge(body: ChargeIn):
     if pending.get("estado") == "aprobado":
         return {"status": "approved", "ya_pagado": True}
 
+    metodo = body.payment_method_id or _metodo_por_bin(body.bin)
     pw = get_payway_service(settings.payway_public_key, settings.payway_private_key,
                             settings.payway_sandbox, settings.payway_site_id,
                             settings.payway_template_id, settings.payway_cybersource)
@@ -125,7 +156,7 @@ async def payway_charge(body: ChargeIn):
         token=body.token,
         amount=float(pending["total"]),
         site_transaction_id=f"{body.pid}-{int(datetime.now().timestamp())}",
-        payment_method_id=body.payment_method_id,
+        payment_method_id=metodo,
         bin=body.bin,
         installments=body.installments,
         device_id=body.device_id,
@@ -133,6 +164,9 @@ async def payway_charge(body: ChargeIn):
     )
     if err or not data:
         logger.error(f"Payway charge falló: {err}")
+        await _registrar_intento(body.pid, pending,
+                                 {"resultado": "error", "detalle": (err or "")[:500],
+                                  "bin": body.bin, "metodo": metodo})
         return {"status": "error", "detail": err or "sin respuesta"}
 
     estado = data.get("status")   # "approved" | "rejected" | ...
@@ -195,6 +229,16 @@ async def payway_charge(body: ChargeIn):
             logger.error(f"Post-pago Payway: {e}")
         return {"status": "approved"}
 
+    # Rechazado u otro estado → registrar el motivo real para poder revisarlo
+    sd = data.get("status_details") or {}
+    error_info = (sd.get("error") or {}) if isinstance(sd, dict) else {}
+    await _registrar_intento(body.pid, pending, {
+        "resultado": estado or "rejected",
+        "error_tipo": error_info.get("type"),
+        "error_motivo": (error_info.get("reason") or {}).get("description"),
+        "payway_id": data.get("id"),
+        "bin": body.bin, "metodo": metodo,
+    })
     return {"status": estado or "rejected", "detail": data.get("status_details") or data}
 
 
@@ -299,6 +343,7 @@ async def payway_recent(key: str = ""):
                 "payway_id": d.get("payway_id"), "total": d.get("total"),
                 "producto": d.get("sku_nombre"), "phone": d.get("phone"),
                 "created_at": d.get("created_at"),
+                "intentos": d.get("intentos", []),
             })
     except Exception as e:
         return {"ok": False, "error": str(e)}
