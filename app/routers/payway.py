@@ -127,7 +127,9 @@ def _metodos_por_bin(bin_: str) -> list[int]:
     if b[:2] in ("34", "37"):
         return [65, 6]
     if b[:2] in ("51", "52", "53", "54", "55") or ("2221" <= b[:4] <= "2720"):
-        return [15, 66, 99, 30, 42]
+        # Incluye banderas locales que emiten con logo MC (Argencard, Nativa,
+        # Naranja) — Payway exige el id de SU tabla para el BIN.
+        return [15, 66, 99, 30, 42, 24]
     if b[:6] in ("589657", "604201", "604220") or b[:4] == "6042":
         return [63, 27, 67]
     if b[:6] == "589562":
