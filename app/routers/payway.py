@@ -117,7 +117,9 @@ def _metodos_por_bin(bin_: str) -> list[int]:
     'invalid_param: payment_method_id' SIN consumir el token — por eso se
     prueba la cadena hasta dar con el habilitado.
     Tabla Decidir: 1 Visa, 31 Visa Déb, 15 MC, 66 MC Debit, 99 Maestro,
-    65/6 Amex, 63/27/67 Cabal, 24 Naranja.
+    30 Argencard, 42 Nativa (banderas locales con logo MC), 65/6 Amex,
+    63/27/67 Cabal, 24 Naranja. Payway valida el id contra el BIN del token,
+    así que un id de otra marca devuelve invalid_param (inocuo).
     """
     b = (bin_ or "").strip()
     if b.startswith("4"):
@@ -125,7 +127,7 @@ def _metodos_por_bin(bin_: str) -> list[int]:
     if b[:2] in ("34", "37"):
         return [65, 6]
     if b[:2] in ("51", "52", "53", "54", "55") or ("2221" <= b[:4] <= "2720"):
-        return [15, 66, 99]
+        return [15, 66, 99, 30, 42]
     if b[:6] in ("589657", "604201", "604220") or b[:4] == "6042":
         return [63, 27, 67]
     if b[:6] == "589562":
