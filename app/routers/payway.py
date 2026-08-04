@@ -109,23 +109,28 @@ class ChargeIn(BaseModel):
     device_id: str = ""          # fingerprint generado al tokenizar (Cybersource)
 
 
-def _metodo_por_bin(bin_: str) -> int:
+def _metodos_por_bin(bin_: str) -> list[int]:
     """
-    payment_method_id de Decidir según la marca de la tarjeta (por BIN).
-    1=Visa, 15=Mastercard, 65=Amex, 63=Cabal, 24=Naranja. Default Visa.
+    Candidatos de payment_method_id de Decidir según la marca (por BIN), en
+    orden de prueba. Cada comercio tiene habilitadas variantes distintas
+    (crédito/débito/prepaga), y un id no habilitado devuelve
+    'invalid_param: payment_method_id' SIN consumir el token — por eso se
+    prueba la cadena hasta dar con el habilitado.
+    Tabla Decidir: 1 Visa, 31 Visa Déb, 15 MC, 66 MC Debit, 99 Maestro,
+    65/6 Amex, 63/27/67 Cabal, 24 Naranja.
     """
     b = (bin_ or "").strip()
     if b.startswith("4"):
-        return 1                                        # Visa
+        return [1, 31]
     if b[:2] in ("34", "37"):
-        return 65                                       # American Express
+        return [65, 6]
     if b[:2] in ("51", "52", "53", "54", "55") or ("2221" <= b[:4] <= "2720"):
-        return 15                                       # Mastercard
+        return [15, 66, 99]
     if b[:6] in ("589657", "604201", "604220") or b[:4] == "6042":
-        return 63                                       # Cabal
+        return [63, 27, 67]
     if b[:6] == "589562":
-        return 24                                       # Naranja
-    return 1
+        return [24]
+    return [1, 31]
 
 
 async def _registrar_intento(pid: str, pending: dict, resultado: dict):
@@ -148,20 +153,31 @@ async def payway_charge(body: ChargeIn):
     if pending.get("estado") == "aprobado":
         return {"status": "approved", "ya_pagado": True}
 
-    metodo = body.payment_method_id or _metodo_por_bin(body.bin)
+    candidatos = [body.payment_method_id] if body.payment_method_id else _metodos_por_bin(body.bin)
     pw = get_payway_service(settings.payway_public_key, settings.payway_private_key,
                             settings.payway_sandbox, settings.payway_site_id,
                             settings.payway_template_id, settings.payway_cybersource)
-    data, err = await pw.crear_pago(
-        token=body.token,
-        amount=float(pending["total"]),
-        site_transaction_id=f"{body.pid}-{int(datetime.now().timestamp())}",
-        payment_method_id=metodo,
-        bin=body.bin,
-        installments=body.installments,
-        device_id=body.device_id,
-        producto=pending.get("sku_nombre", "Producto"),
-    )
+    data, err, metodo = None, None, candidatos[0]
+    for metodo in candidatos:
+        data, err = await pw.crear_pago(
+            token=body.token,
+            amount=float(pending["total"]),
+            site_transaction_id=f"{body.pid}-{int(datetime.now().timestamp())}",
+            payment_method_id=metodo,
+            bin=body.bin,
+            installments=body.installments,
+            device_id=body.device_id,
+            producto=pending.get("sku_nombre", "Producto"),
+        )
+        # 'invalid_param: payment_method_id' = ese medio no está habilitado en el
+        # site (validación, no consume token) → probar la siguiente variante.
+        if err and "payment_method_id" in err:
+            logger.info(f"Payway: metodo {metodo} no habilitado para bin {body.bin}, pruebo siguiente")
+            await _registrar_intento(body.pid, pending,
+                                     {"resultado": "metodo_no_habilitado", "metodo": metodo,
+                                      "bin": body.bin, "detalle": err[:300]})
+            continue
+        break
     if err or not data:
         logger.error(f"Payway charge falló: {err}")
         await _registrar_intento(body.pid, pending,
@@ -349,6 +365,27 @@ async def payway_recent(key: str = ""):
         return {"ok": False, "error": str(e)}
     out.sort(key=lambda x: x.get("created_at") or "", reverse=True)
     return {"ok": True, "pagos": out[:30]}
+
+
+@router.get("/payway/methods")
+async def payway_methods(key: str = ""):
+    """Consulta a Decidir los medios de pago habilitados del site. Requiere ?key=BO_KEY."""
+    settings = get_settings()
+    if not settings.bo_key or key != settings.bo_key:
+        raise HTTPException(status_code=403, detail="key inválida")
+    pw = get_payway_service(settings.payway_public_key, settings.payway_private_key,
+                            settings.payway_sandbox, settings.payway_site_id,
+                            settings.payway_template_id, settings.payway_cybersource)
+    async with httpx.AsyncClient() as client:
+        out = {}
+        for nombre, apikey in (("private", settings.payway_private_key), ("public", settings.payway_public_key)):
+            try:
+                r = await client.get(f"{pw.base_url}/payment_methods",
+                                     headers={"apikey": apikey, "Cache-Control": "no-cache"}, timeout=15)
+                out[nombre] = {"status": r.status_code, "body": r.text[:1500]}
+            except Exception as e:
+                out[nombre] = {"error": str(e)}
+    return out
 
 
 @router.get("/payway/refund/{payment_id}")
