@@ -227,7 +227,8 @@ async def receive_message(request: Request):
                 # Receta o credencial → derivar a una persona (nunca vender automático)
                 if img["tipo"] in ("receta", "credencial"):
                     _intencion = f"imagen_{img['tipo']}"
-                    await deps["session"].set_estado(phone, "operador")
+                    await deps["session"].set_estado(phone, "operador",
+                                                     motivo="receta_foto" if img["tipo"] == "receta" else "credencial")
                     que = "la receta" if img["tipo"] == "receta" else "la credencial"
                     respuesta = (
                         f"Recibí {que} 🙌. Para gestionarla te paso con alguien del equipo, "
@@ -281,7 +282,7 @@ async def receive_message(request: Request):
             # ── Receta/bono enviado como LINK → derivar (igual que la foto) ──
             if contiene_link(texto):
                 _intencion = "receta_link"
-                await deps["session"].set_estado(phone, "operador")
+                await deps["session"].set_estado(phone, "operador", motivo="receta_link")
                 respuesta = (
                     "Recibí tu link 🙌. Para gestionarlo te paso con alguien del equipo, "
                     "que lo revisa y te ayuda. ¡En un momento te contactamos!"
@@ -298,7 +299,7 @@ async def receive_message(request: Request):
             if (str(_cfg_pm.get("derivar_pago_manual", "true")).lower() == "true"
                     and pide_pago_manual(texto)):
                 _intencion = "pago_manual"
-                await deps["session"].set_estado(phone, "operador")
+                await deps["session"].set_estado(phone, "operador", motivo="transferencia_efectivo")
                 respuesta = _cfg_pm.get("pago_manual_message") or (
                     "Dale! Para pagar por ese medio te paso con alguien del equipo, "
                     "que lo coordina con vos 🙌. ¡En un momento te contactamos!"
@@ -313,7 +314,7 @@ async def receive_message(request: Request):
             # ── Pide hablar con una persona → derivar (sin generar link) ─────
             if pide_humano(texto):
                 _intencion = "derivado_humano"
-                await deps["session"].set_estado(phone, "operador")
+                await deps["session"].set_estado(phone, "operador", motivo="pidio_humano")
                 _saludo = f"Dale {_nombre_socio}, " if _nombre_socio else "Dale, "
                 respuesta = f"{_saludo}te paso con alguien del equipo. En un momento te contactamos 🙌"
                 _ts = _time.perf_counter()

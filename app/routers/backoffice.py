@@ -131,6 +131,7 @@ async def bo_sessions(_=Depends(_auth)):
             "ultimo_mensaje_at": ultimo_ts,                    # epoch (seg) del último msj del cliente
             "ultima_actividad": s.get("_last_activity"),       # epoch de la última actividad de la sesión
             "derivada_at": s.get("derivada_at"),
+            "derivada_motivo": s.get("derivada_motivo"),
             "agente": s.get("agente"),
         })
 
@@ -157,6 +158,7 @@ async def bo_derivadas(_=Depends(_auth)):
             "phone": phone,
             "nombre": _nombre_socio(phone),
             "derivada_at": s.get("derivada_at"),
+            "derivada_motivo": s.get("derivada_motivo"),
             "agente": s.get("agente"),
             "ultimo_mensaje": (ultimo[:80] + "…") if ultimo and len(ultimo) > 80 else ultimo,
         })

@@ -112,12 +112,13 @@ class SessionService:
         session["direccion_envio"] = direccion
         await self.save(phone, session)
 
-    async def set_estado(self, phone: str, estado: str):
+    async def set_estado(self, phone: str, estado: str, motivo: str | None = None):
         session = await self.get(phone)
         if estado == "operador" and session.get("estado") != "operador":
             # Derivación nueva: timestamp para la alerta del backoffice y el
             # aviso automático si el humano demora en responder.
             session["derivada_at"] = time.time()
+            session["derivada_motivo"] = motivo
             session.pop("_handoff_avisado", None)
         session["estado"] = estado
         await self.save(phone, session)
