@@ -293,11 +293,13 @@ async def receive_message(request: Request):
                 await deps["session"].add_message(phone, "assistant", respuesta)
                 continue
 
-            # ── Pide transferencia/efectivo → derivar (regla de negocio) ─────
-            if pide_pago_manual(texto):
+            # ── Pide transferencia/efectivo → derivar (configurable en el BO) ─
+            _cfg_pm = await deps["config"].get_all()
+            if (str(_cfg_pm.get("derivar_pago_manual", "true")).lower() == "true"
+                    and pide_pago_manual(texto)):
                 _intencion = "pago_manual"
                 await deps["session"].set_estado(phone, "operador")
-                respuesta = (
+                respuesta = _cfg_pm.get("pago_manual_message") or (
                     "Dale! Para pagar por ese medio te paso con alguien del equipo, "
                     "que lo coordina con vos 🙌. ¡En un momento te contactamos!"
                 )
