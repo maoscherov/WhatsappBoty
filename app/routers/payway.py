@@ -266,8 +266,10 @@ async def payway_charge(body: ChargeIn):
 # ── Test rápido (sandbox) ────────────────────────────────────────────────────────
 
 @router.get("/payway/test/{monto}")
-async def payway_test(monto: float):
-    """Formulario propio de prueba (flujo tokenize+charge)."""
+async def payway_test(monto: float, key: str = ""):
+    """Formulario propio de prueba (flujo tokenize+charge). Requiere ?key=BO_KEY."""
+    if not _bo_ok(key):
+        raise HTTPException(status_code=403, detail="key inválida")
     url = await crear_pago_pendiente(phone="549000000000", sku_id="TEST",
                                      sku_nombre="Producto de prueba", cantidad=1, total=monto)
     return {"pay_url": url}
