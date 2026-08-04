@@ -195,4 +195,11 @@ async def orders_ui():
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "bot": "Remedia"}
+    import os
+    return {
+        "status": "ok",
+        "bot": "Remedia",
+        # Railway inyecta el SHA del commit deployado — permite verificar qué
+        # versión está corriendo sin mirar los logs.
+        "commit": (os.getenv("RAILWAY_GIT_COMMIT_SHA") or "")[:9] or None,
+    }
