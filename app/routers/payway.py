@@ -141,7 +141,7 @@ async def _registrar_intento(pid: str, pending: dict, resultado: dict):
     """Guarda el último intento de cobro en el pago pendiente (visible en /payway/recent)."""
     intentos = pending.get("intentos", [])
     intentos.append({**resultado, "ts": datetime.now(timezone.utc).isoformat()})
-    pending["intentos"] = intentos[-5:]
+    pending["intentos"] = intentos[-12:]
     try:
         await _redis().setex(f"payway:pending:{pid}", _PENDING_TTL, json.dumps(pending))
     except Exception:
