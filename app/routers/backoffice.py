@@ -24,6 +24,7 @@ from app.services.db import get_db
 from app.services.embeddings import get_embedding_service
 from app.services.rag_service import get_rag_service
 from app.services.message_store import get_message_store
+from app.services.order_service import get_order_service
 
 
 def _rag():
@@ -94,6 +95,17 @@ async def bo_stats(_=Depends(_auth)):
     }
 
 
+async def _pedidos_pendientes() -> dict[str, int]:
+    """{phone: pedidos en estado pendiente} para el chip "N pedidos" de la cola
+    unificada. Si falla, devuelve {} — el listado no depende de esto."""
+    try:
+        settings = get_settings()
+        return await get_order_service(settings.redis_url).pendientes_por_phone()
+    except Exception as e:
+        logger.warning(f"No se pudieron contar pedidos pendientes: {e}")
+        return {}
+
+
 def _nombre_socio(phone: str) -> str | None:
     """Nombre del cliente si el número está en el padrón de socios."""
     try:
@@ -109,6 +121,7 @@ async def bo_sessions(_=Depends(_auth)):
     settings = get_settings()
     session_svc = get_session_service(settings.redis_url)
     sessions = await session_svc.list_all()
+    pendientes = await _pedidos_pendientes()
 
     result = []
     for phone, s in sessions:
@@ -133,6 +146,7 @@ async def bo_sessions(_=Depends(_auth)):
             "derivada_at": s.get("derivada_at"),
             "derivada_motivo": s.get("derivada_motivo"),
             "agente": s.get("agente"),
+            "pedidos_pendientes": pendientes.get(phone, 0),
         })
 
     return result
@@ -148,6 +162,7 @@ async def bo_derivadas(_=Depends(_auth)):
     settings = get_settings()
     session_svc = get_session_service(settings.redis_url)
     sessions = await session_svc.list_all()
+    pendientes = await _pedidos_pendientes()
     derivadas = []
     for phone, s in sessions:
         if s.get("estado") != "operador":
@@ -160,6 +175,7 @@ async def bo_derivadas(_=Depends(_auth)):
             "derivada_at": s.get("derivada_at"),
             "derivada_motivo": s.get("derivada_motivo"),
             "agente": s.get("agente"),
+            "pedidos_pendientes": pendientes.get(phone, 0),
             "ultimo_mensaje": (ultimo[:80] + "…") if ultimo and len(ultimo) > 80 else ultimo,
         })
     derivadas.sort(key=lambda d: d.get("derivada_at") or 0, reverse=True)
