@@ -294,10 +294,27 @@ async def receive_message(request: Request):
                 await deps["session"].add_message(phone, "assistant", respuesta)
                 continue
 
-            # ── Pide transferencia/efectivo → derivar (configurable en el BO) ─
+            # ── Pide transferencia/efectivo → según config del backoffice ────
+            #   "derivar" (default) → atención humana.
+            #   "solo_tarjeta"      → avisa que solo hay tarjeta, sin derivar.
             _cfg_pm = await deps["config"].get_all()
-            if (str(_cfg_pm.get("derivar_pago_manual", "true")).lower() == "true"
-                    and pide_pago_manual(texto)):
+            # Compat: derivar_pago_manual=false (clave vieja) equivale a solo_tarjeta.
+            _pm_mode = _cfg_pm.get("pago_manual_mode") or "derivar"
+            if str(_cfg_pm.get("derivar_pago_manual", "true")).lower() == "false":
+                _pm_mode = "solo_tarjeta"
+            if pide_pago_manual(texto) and _pm_mode == "solo_tarjeta":
+                _intencion = "pago_solo_tarjeta"
+                respuesta = _cfg_pm.get("pago_solo_tarjeta_message") or (
+                    "Por este canal aceptamos pago con tarjeta (débito o crédito) 💳. "
+                    "Si querés, seguimos con tu pedido y te mando el link de pago seguro."
+                )
+                _ts = _time.perf_counter()
+                await deps["wa"].send_text(phone, respuesta)
+                _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
+                await deps["session"].add_message(phone, "user", texto)
+                await deps["session"].add_message(phone, "assistant", respuesta)
+                continue
+            if pide_pago_manual(texto) and _pm_mode == "derivar":
                 _intencion = "pago_manual"
                 await deps["session"].set_estado(phone, "operador", motivo="transferencia_efectivo")
                 respuesta = _cfg_pm.get("pago_manual_message") or (

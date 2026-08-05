@@ -438,8 +438,10 @@ class ConfigUpdate(BaseModel):
     pickup_minutes: str | None = None
     receta_mode: str | None = None    # "conservador" | "estricto"
     envio_enabled: str | None = None  # "true" | "false"
-    derivar_pago_manual: str | None = None       # "true"/"false" — transferencia/efectivo deriva
+    derivar_pago_manual: str | None = None       # compat: "false" = solo_tarjeta
+    pago_manual_mode: str | None = None          # "derivar" | "solo_tarjeta"
     pago_manual_message: str | None = None
+    pago_solo_tarjeta_message: str | None = None
     inactivity_minutes: str | None = None        # cierre por inactividad (min)
     inactivity_close_message: str | None = None
     handoff_reminder_minutes: str | None = None  # aviso de demora post-derivación ("0" = off)

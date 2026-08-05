@@ -28,12 +28,18 @@ DEFAULTS: dict[str, str] = {
     "pickup_minutes": "30",    # tiempo estimado de preparación/retiro
     "receta_mode":    "conservador",  # "conservador" (ambiguo deriva) | "estricto" (solo "si")
     "envio_enabled":  "true",  # ofrecer envío a domicilio además de retiro
-    # Derivación por medio de pago manual (transferencia/efectivo/CBU/alias):
-    # "true" deriva a una persona; "false" deja que el bot siga el flujo normal.
-    "derivar_pago_manual": "true",
+    # Qué hacer si el cliente pide transferencia/efectivo/CBU/alias:
+    #   "derivar"      → lo atiende una persona (mensaje pago_manual_message).
+    #   "solo_tarjeta" → el bot responde que solo se acepta tarjeta (mensaje
+    #                    pago_solo_tarjeta_message) y sigue la venta normal.
+    "pago_manual_mode": "derivar",
     "pago_manual_message": (
         "Dale! Para pagar por ese medio te paso con alguien del equipo, "
         "que lo coordina con vos 🙌. ¡En un momento te contactamos!"
+    ),
+    "pago_solo_tarjeta_message": (
+        "Por este canal aceptamos pago con tarjeta (débito o crédito) 💳. "
+        "Si querés, seguimos con tu pedido y te mando el link de pago seguro."
     ),
     # Cierre por inactividad (minuta 2026-07-31). El texto es provisorio hasta
     # que la farmacia mande el definitivo — se cambia desde el backoffice.
