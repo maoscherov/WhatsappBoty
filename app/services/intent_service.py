@@ -261,18 +261,24 @@ class IntentService:
         label_sku: str = "RESULTADOS DEL CATÁLOGO",
         contexto_cliente: Optional[str] = None,
         contexto_kb: Optional[str] = None,
+        situacion: Optional[str] = None,
     ) -> dict:
         """
         Pasada completa — usa claude-sonnet-4-5 (~1500-2500ms).
 
         Se llama cuando hay resultados de SKU para incluir en el contexto,
         o en el flujo de confirmación donde la precisión es crítica.
+
+        `situacion`: en qué punto del flujo está la conversación, para que la
+        respuesta atienda la consulta sin sacar al cliente de ese paso.
         """
         user_content = mensaje
         if resultados_sku is not None:
             productos_txt = self._formatear_productos(resultados_sku)
             user_content = f"{mensaje}\n\n[{label_sku}]\n{productos_txt}"
         user_content = self._con_contexto(user_content, contexto_cliente, contexto_kb)
+        if situacion:
+            user_content += f"\n\n[SITUACIÓN DEL FLUJO]\n{situacion}"
         messages = self._armar(history, user_content)
         result = await self._llamar("full", messages)
         logger.debug(f"Sonnet → intención={result.get('intencion')} sku_index={result.get('sku_seleccionado_index')}")

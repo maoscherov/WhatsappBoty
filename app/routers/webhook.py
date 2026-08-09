@@ -41,7 +41,7 @@ from app.services.checkout_helper import (
     confirmar_pedido, resolver_entrega, capturar_direccion,
     match_retiro, match_envio, pide_humano, derivar_si_receta, afirma_envio,
     quiere_cambiar_direccion, extraer_direccion_de, contiene_link, pide_pago_manual,
-    producto_respaldado,
+    producto_respaldado, parece_direccion,
 )
 
 logger = logging.getLogger(__name__)
@@ -122,6 +122,31 @@ async def _maybe_send_image(
     )
     if debe_enviar:
         await wa.send_image(phone, imagen_url)
+
+
+async def _responder_consulta_en_flujo(deps, phone: str, session: dict, texto: str,
+                                       ctx_socio, situacion: str, fallback: str) -> str:
+    """
+    Responde una consulta hecha en medio de un paso del flujo (elegir entrega,
+    dar dirección) sin sacar al cliente de ese paso: le pasa a Claude el pedido
+    pendiente y la situación, y devuelve su respuesta. Ante cualquier problema
+    cae al mensaje de siempre — el flujo nunca se corta por esto.
+    """
+    try:
+        pend = deps["sku"].get_by_id(session.get("pending_sku_id") or "")
+        contexto = [deps["sku"]._to_response(pend)] if pend else None
+        resultado = await deps["intent"].procesar(
+            mensaje=texto,
+            history=session.get("history", []),
+            resultados_sku=contexto,
+            label_sku="PEDIDO PENDIENTE",
+            contexto_cliente=ctx_socio,
+            situacion=situacion,
+        )
+        return (resultado.get("respuesta") or "").strip() or fallback
+    except Exception as e:
+        logger.warning(f"No se pudo responder la consulta en flujo para {phone}: {e}")
+        return fallback
 
 
 @router.get("/webhook")
@@ -356,12 +381,28 @@ async def receive_message(request: Request):
                         deps["payment"], deps["session"], phone, session, _dir_expl,
                     )
                 else:
-                    respuesta, _intencion = await resolver_entrega(
-                        deps["payment"], deps["session"], deps["socios"],
-                        phone, session,
-                        es_retiro=match_retiro(texto_lower),
-                        es_envio=match_envio(texto_lower) or afirma_envio(texto_lower),
-                    )
+                    _es_retiro = match_retiro(texto_lower)
+                    _es_envio = match_envio(texto_lower) or afirma_envio(texto_lower)
+                    if not _es_retiro and not _es_envio:
+                        # No eligió entrega: está preguntando otra cosa (precio,
+                        # demora, si llega a tal zona). Se responde la consulta y
+                        # se vuelve a ofrecer la elección, en lugar de repetir la
+                        # pregunta ignorando lo que preguntó.
+                        _intencion = "consulta_en_entrega"
+                        respuesta = await _responder_consulta_en_flujo(
+                            deps, phone, session, texto, _ctx_socio,
+                            "El cliente ya confirmó este pedido y está eligiendo cómo recibirlo. "
+                            "Respondé su consulta con los datos del pedido y terminá preguntándole "
+                            "si prefiere *retiro en sucursal* o *envío a domicilio*. "
+                            "No generes links de pago ni cambies el producto.",
+                            "¿Preferís *retiro en sucursal* o *envío a domicilio*? 🙂",
+                        )
+                    else:
+                        respuesta, _intencion = await resolver_entrega(
+                            deps["payment"], deps["session"], deps["socios"],
+                            phone, session,
+                            es_retiro=_es_retiro, es_envio=_es_envio,
+                        )
                 _ts = _time.perf_counter()
                 await deps["wa"].send_text(phone, respuesta)
                 _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
@@ -397,9 +438,21 @@ async def receive_message(request: Request):
                     _intencion = "pedido_cancelado"
                     await deps["session"].clear_pending(phone)
                     respuesta = "Dale, sin problema. ¿En qué más te puedo ayudar?"
-                else:
+                elif extraer_direccion_de(texto) or parece_direccion(texto):
                     respuesta, _intencion = await capturar_direccion(
                         deps["payment"], deps["session"], phone, session, texto,
+                    )
+                else:
+                    # No es una dirección: es una consulta ("¿cuánto sale el
+                    # envío?"). Antes se tomaba el texto como dirección y el
+                    # link salía con esa frase como domicilio de entrega.
+                    _intencion = "consulta_en_direccion"
+                    respuesta = await _responder_consulta_en_flujo(
+                        deps, phone, session, texto, _ctx_socio,
+                        "El cliente está por darnos la dirección de envío de este pedido. "
+                        "Respondé su consulta y terminá pidiéndole la dirección completa "
+                        "(calle, número y localidad). No generes links de pago.",
+                        "Pasame la dirección completa (calle, número y localidad) y te lo enviamos 🚚",
                     )
                 _ts = _time.perf_counter()
                 await deps["wa"].send_text(phone, respuesta)

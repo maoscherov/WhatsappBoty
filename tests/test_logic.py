@@ -217,3 +217,33 @@ def test_producto_respaldado_por_respuesta():
     ofrece = "Sí, tenemos FRAMINTROL COM x 30 a $49.866,75. ¿Te lo reservo?"
     elegido = ch.producto_respaldado(ofrece, resultados)
     assert elegido and elegido["sku_id"] == "B"
+
+
+# ── Consultas en medio del flujo (no deben tomarse como respuesta del paso) ─────
+@pytest.mark.parametrize("txt", [
+    "tendrás el precio", "cuánto sale el envío?", "hacen envío a Funes?",
+    "cuánto tardan en prepararlo",
+])
+def test_consulta_no_es_direccion(txt):
+    """
+    Regresión: estando en 'esperando_direccion' cualquier texto se tomaba como
+    domicilio y el link salía con la pregunta del cliente como dirección.
+    """
+    assert ch.extraer_direccion_de(txt) is None
+    assert ch.parece_direccion(txt) is False
+
+
+@pytest.mark.parametrize("txt", [
+    "San Javier 837", "Av. Pellegrini 1234 piso 3", "donado 608 bis", "9 de julio 1200",
+])
+def test_direccion_sigue_reconociendose(txt):
+    """El guard no debe rechazar direcciones reales."""
+    assert ch.extraer_direccion_de(txt) or ch.parece_direccion(txt)
+
+
+def test_consulta_no_matchea_entrega():
+    """'tendrás el precio' no es ni retiro ni envío → debe responderse, no repetir."""
+    t = "tendrás el precio"
+    assert ch.match_retiro(t) is False
+    assert ch.match_envio(t) is False
+    assert ch.afirma_envio(t) is False
