@@ -66,7 +66,8 @@ import re as _re
 
 _PALABRAS_SI = [r"\bsi\b", r"\bsí\b", r"\bdale\b", r"\bok\b", r"\blisto\b",
                 r"\bperfecto\b", r"\bconfirmo\b", r"\bvamos\b", r"\bva\b",
-                r"\bconfirma\b", r"\bmanda\b", r"\bmandame\b", r"\bprocede\b"]
+                r"\bconfirma\b", r"\bmanda\b", r"\bmandame\b", r"\bprocede\b",
+                r"\bbueno\b", r"\bpor favor\b", r"\bobvio\b", r"\bclaro\b"]
 
 _NO_EXACTO = [r"^no$", r"^nope$", r"^cancel$", r"^cancela$"]
 _NO_FRASE  = [r"\bno quiero\b", r"\bno gracias\b", r"\bmejor no\b",
@@ -323,6 +324,30 @@ async def receive_message(request: Request):
             # ── Pide transferencia/efectivo → según config del backoffice ────
             #   "derivar" (default) → atención humana.
             #   "solo_tarjeta"      → avisa que solo hay tarjeta, sin derivar.
+            # ── Aceptó que consultemos un producto que no tenemos → derivar ───
+            _ofrecida = session.get("derivacion_ofrecida")
+            if _ofrecida:
+                _cfg_ss = await deps["config"].get_all()
+                if _match_si(texto) and not _match_no(texto):
+                    _intencion = "sin_stock_derivado"
+                    _s = await deps["session"].get(phone)
+                    _s.pop("derivacion_ofrecida", None)
+                    await deps["session"].save(phone, _s)
+                    await deps["session"].set_estado(phone, "operador", motivo="sin_stock")
+                    respuesta = _cfg_ss.get("sin_stock_derivar_message") or (
+                        "Te paso con alguien del equipo para ver si podemos conseguirlo 🙌"
+                    )
+                    _ts = _time.perf_counter()
+                    await deps["wa"].send_text(phone, respuesta)
+                    _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
+                    await deps["session"].add_message(phone, "user", texto)
+                    await deps["session"].add_message(phone, "assistant", respuesta)
+                    continue
+                # No aceptó: la oferta vale sólo para el turno siguiente.
+                _s = await deps["session"].get(phone)
+                _s.pop("derivacion_ofrecida", None)
+                await deps["session"].save(phone, _s)
+
             _cfg_pm = await deps["config"].get_all()
             # Compat: derivar_pago_manual=false (clave vieja) equivale a solo_tarjeta.
             _pm_mode = _cfg_pm.get("pago_manual_mode") or "derivar"
@@ -760,6 +785,27 @@ async def receive_message(request: Request):
                             deps["wa"], phone, resultados_sku,
                             producto_elegido, solicita_imagen, send_images_cfg,
                         )
+
+                # Pidió un producto y no hay nada que ofrecerle (no está en el
+                # catálogo o está sin stock): según config, ofrecer consultarlo
+                # con el equipo o derivar directo. Antes la consulta moría acá.
+                if not _sku_pendiente_nuevo and intencion in ("pedido", "consulta_precio", "consulta_stock"):
+                    _cfg_ss = await deps["config"].get_all()
+                    _modo_ss = (_cfg_ss.get("sin_stock_mode") or "preguntar").lower()
+                    if _modo_ss == "derivar":
+                        _intencion = "sin_stock_derivado"
+                        await deps["session"].set_estado(phone, "operador", motivo="sin_stock")
+                        respuesta = _cfg_ss.get("sin_stock_derivar_message") or respuesta
+                    elif _modo_ss == "preguntar":
+                        _intencion = "sin_stock_ofrecido"
+                        _oferta = _cfg_ss.get("sin_stock_ofrecer_message") or ""
+                        # Si Claude ya ofreció consultarlo, no repetirlo.
+                        if _oferta and not any(k in (respuesta or "").lower()
+                                               for k in ("consult", "encarg", "equipo")):
+                            respuesta = f"{respuesta}\n\n{_oferta}".strip()
+                        _s = await deps["session"].get(phone)
+                        _s["derivacion_ofrecida"] = entidad or texto[:60]
+                        await deps["session"].save(phone, _s)
 
             elif ya_tiene_pending:
                 pending_opciones = session.get("pending_opciones", [])

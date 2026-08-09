@@ -454,6 +454,9 @@ class ConfigUpdate(BaseModel):
     pickup_minutes: str | None = None
     receta_mode: str | None = None    # "conservador" | "estricto"
     envio_enabled: str | None = None  # "true" | "false"
+    sin_stock_mode: str | None = None            # "preguntar" | "derivar" | "nunca"
+    sin_stock_ofrecer_message: str | None = None
+    sin_stock_derivar_message: str | None = None
     derivar_pago_manual: str | None = None       # compat: "false" = solo_tarjeta
     pago_manual_mode: str | None = None          # "derivar" | "solo_tarjeta"
     pago_manual_message: str | None = None

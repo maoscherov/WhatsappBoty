@@ -28,6 +28,20 @@ DEFAULTS: dict[str, str] = {
     "pickup_minutes": "30",    # tiempo estimado de preparación/retiro
     "receta_mode":    "conservador",  # "conservador" (ambiguo deriva) | "estricto" (solo "si")
     "envio_enabled":  "true",  # ofrecer envío a domicilio además de retiro
+    # Qué hacer cuando el cliente pide un producto que no tenemos (no está en
+    # el catálogo o está sin stock):
+    #   "preguntar" → el bot ofrece consultarlo y deriva si el cliente acepta.
+    #   "derivar"   → deriva directo a una persona.
+    #   "nunca"     → sólo avisa que no está (comportamiento anterior).
+    "sin_stock_mode": "preguntar",
+    "sin_stock_ofrecer_message": (
+        "No me figura disponible en este momento 🙏 ¿Querés que lo consulte "
+        "con el equipo para conseguírtelo o encargarlo?"
+    ),
+    "sin_stock_derivar_message": (
+        "Te paso con alguien del equipo para ver si podemos conseguirlo o "
+        "encargarlo 🙌 ¡En un momento te contactamos!"
+    ),
     # Qué hacer si el cliente pide transferencia/efectivo/CBU/alias:
     #   "derivar"      → lo atiende una persona (mensaje pago_manual_message).
     #   "solo_tarjeta" → el bot responde que solo se acepta tarjeta (mensaje

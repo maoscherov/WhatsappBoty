@@ -247,3 +247,21 @@ def test_consulta_no_matchea_entrega():
     assert ch.match_retiro(t) is False
     assert ch.match_envio(t) is False
     assert ch.afirma_envio(t) is False
+
+
+# ── Aceptación de la oferta de consultar un producto sin stock ─────────────────
+@pytest.mark.parametrize("txt", ["si por favor", "dale", "sí, consultalo", "bueno", "claro"])
+def test_acepta_consulta_sin_stock(txt):
+    """
+    El "si por favor" del caso real (respuesta a "¿lo consulto con el equipo?")
+    debe reconocerse como aceptación para derivar a una persona.
+    """
+    from app.routers.webhook import _match_si, _match_no
+    assert _match_si(txt) is True
+    assert _match_no(txt) is False
+
+
+@pytest.mark.parametrize("txt", ["no", "no gracias", "mejor no"])
+def test_rechaza_consulta_sin_stock(txt):
+    from app.routers.webhook import _match_no
+    assert _match_no(txt) is True
