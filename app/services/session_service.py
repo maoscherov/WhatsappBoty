@@ -18,7 +18,7 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-SESSION_TTL = 60 * 60          # red de seguridad (el cierre real es el job de 15 min)
+SESSION_TTL = 60 * 60 * 25     # red de seguridad — debe superar las 24hs del link de pago
 INACTIVITY_CLOSE = 60 * 15     # inactividad que dispara el cierre con aviso
 MAX_HISTORY = 10
 
@@ -192,11 +192,16 @@ class SessionService:
                 pass
         return list(self._memory.items())
 
-    async def inactivas(self, threshold_secs: int = INACTIVITY_CLOSE) -> list[tuple[str, dict]]:
+    async def inactivas(self, threshold_secs: int = INACTIVITY_CLOSE,
+                        threshold_pago_secs: int | None = None) -> list[tuple[str, dict]]:
         """
         Sesiones sin actividad hace más de `threshold_secs`, candidatas al
         cierre con aviso. Excluye las derivadas a operador (las maneja el
         humano; a esas las limpia el TTL de Redis).
+
+        `threshold_pago_secs`: umbral distinto (mayor) para sesiones en
+        estado esperando_pago — el link de pago vale 24hs y no corresponde
+        "cerrar" a los 15 minutos a alguien que todavía puede pagar.
 
         Las sesiones anteriores al deploy (sin _last_activity) se estampan
         ahora en vez de cerrarse, para no mandar avisos masivos al deployar.
@@ -210,7 +215,10 @@ class SessionService:
             if last is None:
                 await self.save(phone, session)   # estampa _last_activity
                 continue
-            if now - float(last) >= threshold_secs:
+            umbral = threshold_secs
+            if session.get("estado") == "esperando_pago" and threshold_pago_secs:
+                umbral = threshold_pago_secs
+            if now - float(last) >= umbral:
                 out.append((phone, session))
         return out
 

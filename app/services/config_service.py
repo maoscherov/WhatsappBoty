@@ -48,6 +48,14 @@ DEFAULTS: dict[str, str] = {
         "Como no tuvimos respuesta, damos por cerrada esta conversación 🙏 "
         "Cuando quieras retomarla, escribinos de nuevo y te ayudamos. ¡Gracias!"
     ),
+    # Cierre distinto para conversaciones con LINK DE PAGO enviado: el link
+    # vale 24hs, así que el cierre acompaña esa vigencia y el mensaje lo aclara.
+    "inactivity_minutes_pago": "1440",
+    "inactivity_close_message_pago": (
+        "Cerramos esta conversación por inactividad 🙏 Tu link de pago sigue "
+        "vigente — podés pagar cuando quieras dentro de las 24hs. "
+        "¡Cualquier duda escribinos!"
+    ),
     # Aviso al cliente si la atención humana demora tras una derivación.
     # 0 = desactivado. Texto provisorio — editable desde el backoffice.
     "handoff_reminder_minutes": "15",

@@ -112,15 +112,21 @@ async def _cerrar_sesiones_inactivas():
             await asyncio.sleep(60)
             cfg = await cfg_svc.get_all()
             minutos = int(cfg.get("inactivity_minutes") or 15)
+            minutos_pago = int(cfg.get("inactivity_minutes_pago") or 1440)
             mensaje = cfg.get("inactivity_close_message") or ""
-            for phone, session in await session_svc.inactivas(minutos * 60):
-                if mensaje and session.get("history"):
+            mensaje_pago = cfg.get("inactivity_close_message_pago") or mensaje
+            for phone, session in await session_svc.inactivas(minutos * 60, minutos_pago * 60):
+                con_link = session.get("estado") == "esperando_pago"
+                texto_cierre = mensaje_pago if con_link else mensaje
+                if texto_cierre and session.get("history"):
                     try:
-                        await wa.send_text(phone, mensaje)
+                        await wa.send_text(phone, texto_cierre)
                     except Exception as e:
                         logger.warning(f"No se pudo avisar cierre a {phone}: {e}")
                 await session_svc.delete(phone)
-                logger.info(f"Sesión cerrada por inactividad ({minutos} min): {phone}")
+                logger.info(f"Sesión cerrada por inactividad "
+                            f"({minutos_pago if con_link else minutos} min, "
+                            f"{'con link de pago' if con_link else 'normal'}): {phone}")
 
             # Aviso de demora en derivaciones (0 = desactivado)
             hr_min = int(cfg.get("handoff_reminder_minutes") or 0)

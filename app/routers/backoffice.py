@@ -460,6 +460,8 @@ class ConfigUpdate(BaseModel):
     pago_solo_tarjeta_message: str | None = None
     inactivity_minutes: str | None = None        # cierre por inactividad (min)
     inactivity_close_message: str | None = None
+    inactivity_minutes_pago: str | None = None   # cierre cuando hay link de pago enviado
+    inactivity_close_message_pago: str | None = None
     handoff_reminder_minutes: str | None = None  # aviso de demora post-derivación ("0" = off)
     handoff_reminder_message: str | None = None
     socio_discount_pct: str | None = None        # "0" = apagado, ej "15"
