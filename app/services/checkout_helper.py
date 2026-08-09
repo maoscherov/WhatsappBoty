@@ -95,6 +95,52 @@ def pide_humano(t: str) -> bool:
     return any(re.search(p, t, re.IGNORECASE) for p in _HUMANO)
 
 
+_PRECIO_RE = re.compile(r"\$?\s?(\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{2})?|\d+[.,]\d{2}|\d{3,})")
+
+
+def precios_mencionados(texto: str) -> set[float]:
+    """
+    Precios que aparecen en un texto, tolerando los formatos que mezcla el LLM
+    ($18,057.61 / $18.057,61 / 18057.61). Se usa para verificar que la respuesta
+    enviada al cliente realmente ofrece un producto concreto.
+    """
+    out: set[float] = set()
+    for crudo in _PRECIO_RE.findall(texto or ""):
+        s = crudo.strip()
+        # El último separador es el decimal sólo si le siguen exactamente 2 dígitos.
+        if len(s) > 3 and s[-3] in ".," :
+            entero = re.sub(r"[.,]", "", s[:-3])
+            s = f"{entero}.{s[-2:]}"
+        else:
+            s = re.sub(r"[.,]", "", s)
+        try:
+            out.add(round(float(s), 2))
+        except ValueError:
+            continue
+    return out
+
+
+def producto_respaldado(respuesta: str, resultados: list[dict]) -> Optional[dict]:
+    """
+    Producto de `resultados` cuyo precio aparece en la respuesta enviada al
+    cliente, o None si ninguno. Es la evidencia de que el bot está ofreciendo
+    ese producto: si respondió "no lo tengo" (sin precio), no hay nada que
+    dejar pendiente y no debe generarse un link de pago.
+    """
+    if not respuesta or not resultados:
+        return None
+    precios = precios_mencionados(respuesta)
+    if not precios:
+        return None
+    for r in resultados:
+        try:
+            if round(float(r.get("precio") or 0), 2) in precios:
+                return r
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
 _PAGO_MANUAL = [
     r"\btransferencia\b", r"\btransferir\b", r"\btransfiero\b", r"\btransferis\b",
     r"\befectivo\b", r"\bcbu\b", r"\balias\b", r"\bmercado\s*pago\b",

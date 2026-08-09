@@ -41,6 +41,7 @@ from app.services.checkout_helper import (
     confirmar_pedido, resolver_entrega, capturar_direccion,
     match_retiro, match_envio, pide_humano, derivar_si_receta, afirma_envio,
     quiere_cambiar_direccion, extraer_direccion_de, contiene_link, pide_pago_manual,
+    producto_respaldado,
 )
 
 logger = logging.getLogger(__name__)
@@ -667,32 +668,31 @@ async def receive_message(request: Request):
 
                     # 2. Validación por precio: si la respuesta menciona un precio que no
                     #    coincide con el producto elegido, buscar el que sí coincide.
-                    #    Evita que index=null caiga al primer resultado incorrecto.
+                    #    Evita que un índice equivocado deje pendiente otro producto.
                     if producto_elegido and respuesta:
-                        precio_str = f"{producto_elegido['precio']:.2f}".replace(".", ",")
-                        precio_str2 = f"{producto_elegido['precio']:,.2f}".replace(".", ",")
-                        if precio_str not in respuesta and precio_str2 not in respuesta:
-                            # El precio del elegido no aparece en la respuesta → buscar el correcto
-                            import re as _re2
-                            precios_mencionados = _re2.findall(r'\$[\d.,]+', respuesta)
-                            for r_sku in resultados_sku:
-                                p_str = f"${r_sku['precio']:,.2f}".replace(".", ",")
-                                p_str2 = f"${r_sku['precio']:.2f}".replace(".", ",")
-                                if any(p in respuesta for p in [p_str, p_str2]):
-                                    producto_elegido = r_sku
-                                    logger.info(f"SKU corregido por precio: {r_sku['nombre']}")
-                                    break
+                        _por_precio = producto_respaldado(respuesta, resultados_sku)
+                        if _por_precio and _por_precio["sku_id"] != producto_elegido["sku_id"]:
+                            producto_elegido = _por_precio
+                            logger.info(f"SKU corregido por precio: {_por_precio['nombre']}")
 
-                    # 3. Fallback: primer vendible (disponible + con precio)
+                    # 3. Sin índice de Claude: NO adivinar con el primer resultado.
+                    #    index=null significa "ninguno es el que pide" (ej. respondió
+                    #    "no me figura disponible"). Sólo se acepta un producto si su
+                    #    precio aparece en la respuesta enviada al cliente — evidencia
+                    #    de que el bot efectivamente lo está ofreciendo.
                     if not producto_elegido:
-                        producto_elegido = (
-                            next((r for r in resultados_sku if r.get("vendible")), None)
-                            or resultados_sku[0]
-                        )
+                        producto_elegido = producto_respaldado(respuesta, resultados_sku)
+                        if producto_elegido:
+                            logger.info(f"SKU inferido por precio en la respuesta: {producto_elegido['nombre']}")
+                        else:
+                            logger.info(
+                                f"Sin SKU seleccionado para {entidad!r} — no se deja pendiente "
+                                f"({len(resultados_sku)} resultados descartados)"
+                            )
                     # Solo se marca como pendiente (comprable) si es VENDIBLE.
                     # Si es sin stock / sin precio, no entra al flujo de compra —
                     # Claude ya respondió ofreciendo las alternativas disponibles.
-                    if producto_elegido.get("vendible", True):
+                    if producto_elegido and producto_elegido.get("vendible", True):
                         await deps["session"].set_pending(
                             phone=phone,
                             sku_id=producto_elegido["sku_id"],

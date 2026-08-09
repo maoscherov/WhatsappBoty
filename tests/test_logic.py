@@ -106,6 +106,24 @@ def test_busqueda_sinonimo(sku_svc):
     assert any("ibuprofeno" in x["nombre"].lower() for x in r)
 
 
+def test_busqueda_nombre_completo_no_arrastra_por_palabra_generica(sku_svc):
+    """
+    Regresión: un pedido con palabras de marketing ("plus", "power") no debe
+    ranquear por esa palabra suelta. Caso real: "Framintrol Power NAD+"
+    devolvía primero un GILLETTE DEO GEL *POWER* RUSH (perfumería) y el bot
+    terminó enviando un link de pago de ese producto.
+    """
+    r = sku_svc.buscar("Bagovit A Plus crema hidratante")
+    assert r, "debería encontrar el Bagovit"
+    assert "bagovit" in r[0]["nombre"].lower(), f"primero quedó: {r[0]['nombre']}"
+
+
+def test_busqueda_prioriza_token_distintivo(sku_svc):
+    """El nombre propio pesa más que un formato compartido ('cre', 'x100')."""
+    r = sku_svc.buscar("platsul crema x800")
+    assert r and "platsul" in r[0]["nombre"].lower(), f"primero quedó: {r[0]['nombre']}"
+
+
 # ── Matchers de entrega / humano ────────────────────────────────────────────────
 @pytest.mark.parametrize("txt", ["retiro", "lo paso a buscar", "voy a la sucursal"])
 def test_match_retiro(txt):
@@ -171,3 +189,31 @@ async def test_derivar_receta_limpia_pending():
     sess = await ss.get("549")
     assert sess["estado"] == "operador"
     assert sess["pending_sku_id"] is None   # producto limpiado
+
+
+# ── Coherencia respuesta ↔ producto pendiente ──────────────────────────────────
+def test_precios_mencionados_formatos():
+    """Reconoce el precio en los formatos que escribe el LLM."""
+    assert 18057.61 in ch.precios_mencionados("link de pago ($18,057.61):")
+    assert 18057.61 in ch.precios_mencionados("sale $18.057,61 con envío")
+    assert 3148.88 in ch.precios_mencionados("el DOVE sale $3148.88")
+    assert ch.precios_mencionados("no me figura disponible en este momento") == set()
+
+
+def test_producto_respaldado_por_respuesta():
+    """
+    Regresión del caso real: el bot respondió "no me figura disponible" y el
+    sistema igual dejó pendiente un GILLETTE de $18.057 (primer resultado de
+    una búsqueda mala), terminando en un link de pago de ese producto.
+    Sin precio en la respuesta no hay producto respaldado.
+    """
+    resultados = [
+        {"sku_id": "A", "nombre": "GILLETTE DEO GEL POWER RUSH", "precio": 18057.61},
+        {"sku_id": "B", "nombre": "FRAMINTROL COM x 30", "precio": 49866.75},
+    ]
+    sin_stock = "No me figura disponible el Framintrol Power NAD+ en este momento."
+    assert ch.producto_respaldado(sin_stock, resultados) is None
+
+    ofrece = "Sí, tenemos FRAMINTROL COM x 30 a $49.866,75. ¿Te lo reservo?"
+    elegido = ch.producto_respaldado(ofrece, resultados)
+    assert elegido and elegido["sku_id"] == "B"

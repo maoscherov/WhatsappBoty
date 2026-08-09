@@ -16,6 +16,7 @@ que se corra el ETL de ObServer.
 
 import csv
 import logging
+import math
 from pathlib import Path
 from typing import Optional
 
@@ -71,6 +72,12 @@ def es_venta_libre(nombre: str) -> bool:
     """True si el nombre del producto corresponde a un OTC de la lista blanca."""
     n = (nombre or "").lower()
     return any(kw in n for kw in VENTA_LIBRE)
+
+
+def _tokens(texto: str) -> list[str]:
+    """Palabras de 3+ caracteres, para medir cuán distintivo es cada término."""
+    import re as _re
+    return _re.findall(r"[a-záéíóúñ0-9]{3,}", (texto or "").lower())
 
 
 def _categoria_sin_receta(categoria: str) -> bool:
@@ -140,6 +147,16 @@ class SKUService:
                         sku.laboratorio.lower(),
                     ]))
                     self._search_index.append(search_text)
+
+        # Frecuencia de cada token en el catálogo: permite distinguir palabras
+        # distintivas ("framintrol", en 2 productos) de genéricas de marketing
+        # ("power", en decenas) al ordenar los resultados.
+        from collections import Counter
+        df: Counter = Counter()
+        for texto in self._search_index:
+            for tok in set(_tokens(texto)):
+                df[tok] += 1
+        self._token_df = df
 
         logger.info(f"SKUService: {len(self._skus)} productos cargados desde {csv_path}")
 
@@ -245,11 +262,14 @@ class SKUService:
             if generico in clean_query:
                 variantes.extend(marcas)
 
-        # Guardamos el MEJOR score por producto, entre los dos scorers y todas
-        # las variantes de la query. token_set_ratio maneja multi-palabra/orden.
-        scored: dict[int, float] = {}
+        # Se guarda el mejor score de CADA scorer por separado (entre todas las
+        # variantes). Importa mantenerlos separados: con nombres largos del
+        # catálogo WRatio satura (~85 para todo) y, si se tomara el máximo,
+        # tapaba a token_set_ratio —que sí discrimina— dejando el orden al azar.
+        best_wr: dict[int, float] = {}
+        best_ts: dict[int, float] = {}
         for variante in variantes:
-            for scorer in (fuzz.WRatio, fuzz.token_set_ratio):
+            for scorer, destino in ((fuzz.WRatio, best_wr), (fuzz.token_set_ratio, best_ts)):
                 for _text, score, idx in process.extract(
                     variante,
                     self._search_index,
@@ -257,11 +277,32 @@ class SKUService:
                     limit=top_n * 8,
                     score_cutoff=score_cutoff,
                 ):
-                    if score > scored.get(idx, 0):
-                        scored[idx] = score
+                    if score > destino.get(idx, 0):
+                        destino[idx] = score
+
+        # Candidatos: los mismos de antes (cualquiera de los dos scorers supera
+        # el umbral). Lo que cambia es cómo se ORDENAN.
+        total_docs = max(1, len(self._search_index))
+        q_tokens = {t for t in _tokens(clean_query) if len(t) >= 4}
+        log_total = math.log(total_docs + 1)
+
+        def _relevancia(idx: int) -> float:
+            wr = best_wr.get(idx, 0)
+            ts = best_ts.get(idx, 0)
+            base = 0.65 * ts + 0.35 * wr
+            # Bonus por término distintivo: un token del pedido presente en el
+            # nombre suma según su rareza en el catálogo. Así "framintrol"
+            # (raro) pesa mucho más que "power" (común en perfumería).
+            texto = self._search_index[idx]
+            bonus = 0.0
+            for tok in q_tokens:
+                if tok in texto:
+                    df = self._token_df.get(tok, total_docs)
+                    bonus += 25.0 * (math.log(total_docs / max(df, 1)) / log_total)
+            return base + min(bonus, 50.0)
 
         candidatos = [
-            (self._skus[idx], sc) for idx, sc in scored.items()
+            (self._skus[idx], _relevancia(idx)) for idx in set(best_wr) | set(best_ts)
             if not self._skus[idx].pausado
         ]
         # Relevancia primero; disponibilidad y ventas sólo desempatan matches parejos.
