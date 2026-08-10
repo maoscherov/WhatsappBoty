@@ -265,3 +265,22 @@ def test_acepta_consulta_sin_stock(txt):
 def test_rechaza_consulta_sin_stock(txt):
     from app.routers.webhook import _match_no
     assert _match_no(txt) is True
+
+
+# ── La aceptación de "consultar sin stock" no debe secuestrar una compra ───────
+@pytest.mark.parametrize("txt", ["si por favor", "dale", "sí, consultalo", "ok dale", "claro que si"])
+def test_afirmacion_pura(txt):
+    from app.routers.webhook import _es_afirmacion_pura
+    assert _es_afirmacion_pura(txt) is True
+
+
+@pytest.mark.parametrize("txt", [
+    "dale dame un dove",              # afirma pero además pide otro producto
+    "ok mandame el link de pago",     # afirma pero pide otra cosa
+    "si, pero quiero el shampoo",
+    "no gracias",
+])
+def test_no_es_afirmacion_pura(txt):
+    """Regresión: un 'dale' dentro de otro pedido no debe derivar la conversación."""
+    from app.routers.webhook import _es_afirmacion_pura
+    assert _es_afirmacion_pura(txt) is False

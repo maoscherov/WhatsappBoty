@@ -25,7 +25,7 @@ from app.services.config_service import get_config_service
 from app.services.checkout_helper import (
     confirmar_pedido, resolver_entrega, capturar_direccion,
     match_retiro, match_envio, pide_humano, derivar_si_receta, afirma_envio,
-    quiere_cambiar_direccion, extraer_direccion_de,
+    quiere_cambiar_direccion, extraer_direccion_de, producto_respaldado,
 )
 
 
@@ -349,18 +349,16 @@ async def simulate(req: SimulateRequest):
                             except (ValueError, TypeError):
                                 pass
                         if not producto_elegido:
-                            producto_elegido = (
-                                next((r for r in resultados_nuevos if r["estado"] == "disponible"), None)
-                                or resultados_nuevos[0]
+                            producto_elegido = producto_respaldado(respuesta, resultados_nuevos)
+                        if producto_elegido:
+                            await session_svc.set_pending(
+                                phone=req.phone,
+                                sku_id=producto_elegido["sku_id"],
+                                sku_nombre=producto_elegido["nombre"],
+                                precio=producto_elegido["precio"],
+                                cantidad=cantidad,
+                                opciones=resultados_nuevos,
                             )
-                        await session_svc.set_pending(
-                            phone=req.phone,
-                            sku_id=producto_elegido["sku_id"],
-                            sku_nombre=producto_elegido["nombre"],
-                            precio=producto_elegido["precio"],
-                            cantidad=cantidad,
-                            opciones=resultados_nuevos,
-                        )
                     else:
                         # Producto nuevo no encontrado en catálogo
                         respuesta = f"No encontramos {nueva_entidad} en el catálogo en este momento. ¿Buscás algo más?"
@@ -447,22 +445,15 @@ async def simulate(req: SimulateRequest):
                     pass
             # Validación por precio si el índice no coincide con el texto
             if producto_elegido and respuesta:
-                import re as _re2
-                for r_sku in productos_encontrados:
-                    p_str = f"${r_sku['precio']:,.2f}".replace(".", ",")
-                    p_str2 = f"${r_sku['precio']:.2f}".replace(".", ",")
-                    if any(p in respuesta for p in [p_str, p_str2]):
-                        precio_elegido = f"${producto_elegido['precio']:,.2f}".replace(".", ",")
-                        if precio_elegido not in respuesta:
-                            producto_elegido = r_sku
-                        break
+                _por_precio = producto_respaldado(respuesta, productos_encontrados)
+                if _por_precio and _por_precio["sku_id"] != producto_elegido["sku_id"]:
+                    producto_elegido = _por_precio
+            # Sin índice: no adivinar con el primer resultado (mismo criterio que
+            # el webhook). Sólo vale si su precio aparece en la respuesta.
             if not producto_elegido:
-                producto_elegido = (
-                    next((r for r in productos_encontrados if r.get("vendible")), None)
-                    or productos_encontrados[0]
-                )
+                producto_elegido = producto_respaldado(respuesta, productos_encontrados)
             # Solo comprable si es vendible (con stock y precio)
-            if producto_elegido.get("vendible", True):
+            if producto_elegido and producto_elegido.get("vendible", True):
                 await session_svc.set_pending(
                     phone=req.phone,
                     sku_id=producto_elegido["sku_id"],

@@ -76,6 +76,26 @@ _NO_FRASE  = [r"\bno quiero\b", r"\bno gracias\b", r"\bmejor no\b",
 def _match_si(t: str) -> bool:
     return any(_re.search(p, t, _re.IGNORECASE) for p in _PALABRAS_SI)
 
+_AFIRMACION = (r"\b(si|sí|dale|ok|okey|oka|listo|bueno|claro|obvio|perfecto|genial|va|vale|"
+               r"por|favor|porfa|gracias|please|consultalo|consulta|consultá|averigualo|"
+               r"averigua|averiguá|preguntalo|pregunta|encargalo|encarga|encargá|lo|la|me|"
+               r"te|eso|esa|ese|sería|seria|estaría|estaria|buenísimo|buenisimo|joya|barbaro|bárbaro)\b")
+
+
+def _es_afirmacion_pura(t: str) -> bool:
+    """
+    True si el mensaje es SÓLO una aceptación ("sí por favor", "dale, consultalo")
+    y no una afirmación que además pide otra cosa ("dale, mandame un Dove").
+    Se quitan las palabras de aceptación y cortesía: si no queda nada sustancial,
+    era una aceptación pura.
+    """
+    if not _match_si(t) or _match_no(t):
+        return False
+    resto = _re.sub(_AFIRMACION, " ", t.lower())
+    resto = _re.sub(r"[^\wáéíóúñ]+", " ", resto)
+    return len(resto.replace(" ", "")) <= 3
+
+
 def _match_no(t: str) -> bool:
     t = t.strip()
     if any(_re.fullmatch(p, t, _re.IGNORECASE) for p in _NO_EXACTO):
@@ -321,14 +341,13 @@ async def receive_message(request: Request):
                 await deps["session"].add_message(phone, "assistant", respuesta)
                 continue
 
-            # ── Pide transferencia/efectivo → según config del backoffice ────
-            #   "derivar" (default) → atención humana.
-            #   "solo_tarjeta"      → avisa que solo hay tarjeta, sin derivar.
             # ── Aceptó que consultemos un producto que no tenemos → derivar ───
+            # Sólo si no hay una compra en curso: con un pedido pendiente, un
+            # "dale" es la confirmación de esa compra, no de la consulta.
             _ofrecida = session.get("derivacion_ofrecida")
-            if _ofrecida:
+            if _ofrecida and not session.get("pending_sku_id"):
                 _cfg_ss = await deps["config"].get_all()
-                if _match_si(texto) and not _match_no(texto):
+                if _es_afirmacion_pura(texto):
                     _intencion = "sin_stock_derivado"
                     _s = await deps["session"].get(phone)
                     _s.pop("derivacion_ofrecida", None)
@@ -348,6 +367,9 @@ async def receive_message(request: Request):
                 _s.pop("derivacion_ofrecida", None)
                 await deps["session"].save(phone, _s)
 
+            # ── Pide transferencia/efectivo → según config del backoffice ────
+            #   "derivar" (default) → atención humana.
+            #   "solo_tarjeta"      → avisa que solo hay tarjeta, sin derivar.
             _cfg_pm = await deps["config"].get_all()
             # Compat: derivar_pago_manual=false (clave vieja) equivale a solo_tarjeta.
             _pm_mode = _cfg_pm.get("pago_manual_mode") or "derivar"
