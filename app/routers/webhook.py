@@ -103,6 +103,18 @@ def _match_no(t: str) -> bool:
     return any(_re.search(p, t, _re.IGNORECASE) for p in _NO_FRASE)
 
 
+def payment_svc_para(cfg: dict, s=None):
+    """
+    Proveedor de cobro activo. Se elige desde el backoffice (clave
+    payment_provider); si no está configurado, cae a la variable de entorno.
+    """
+    s = s or get_settings()
+    prov = (cfg.get("payment_provider") or s.payment_provider or "mercadopago").strip().lower()
+    if prov == "payway":
+        return get_payway_link_service()
+    return get_payment_service(s.mp_access_token, s.mp_notification_url, s.mp_sandbox)
+
+
 def _deps(settings=None):
     s = settings or get_settings()
     audio_key = s.groq_api_key if s.audio_provider == "groq" else s.openai_api_key
@@ -371,6 +383,8 @@ async def receive_message(request: Request):
             #   "derivar" (default) → atención humana.
             #   "solo_tarjeta"      → avisa que solo hay tarjeta, sin derivar.
             _cfg_pm = await deps["config"].get_all()
+            # El proveedor de cobro se elige desde el backoffice, no por deploy.
+            deps["payment"] = payment_svc_para(_cfg_pm, _s)
             # Compat: derivar_pago_manual=false (clave vieja) equivale a solo_tarjeta.
             _pm_mode = _cfg_pm.get("pago_manual_mode") or "derivar"
             if str(_cfg_pm.get("derivar_pago_manual", "true")).lower() == "false":

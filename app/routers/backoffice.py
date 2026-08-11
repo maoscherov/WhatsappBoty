@@ -454,6 +454,7 @@ class ConfigUpdate(BaseModel):
     pickup_minutes: str | None = None
     receta_mode: str | None = None    # "conservador" | "estricto"
     envio_enabled: str | None = None  # "true" | "false"
+    payment_provider: str | None = None          # "payway" | "mercadopago"
     sin_stock_mode: str | None = None            # "preguntar" | "derivar" | "nunca"
     sin_stock_ofrecer_message: str | None = None
     sin_stock_derivar_message: str | None = None
@@ -553,13 +554,9 @@ async def bo_paylink(body: PaylinkIn, _=Depends(_auth)):
         raise HTTPException(status_code=400, detail="El monto debe ser mayor a 0")
     total = round(precio * cantidad, 2)
 
-    # Generar el link con el proveedor activo (misma interfaz que usa el bot)
-    if settings.payment_provider == "payway":
-        from app.services.payway_link import get_payway_link_service
-        payment_svc = get_payway_link_service()
-    else:
-        from app.services.payment_service import get_payment_service
-        payment_svc = get_payment_service(settings.mp_access_token, settings.mp_notification_url, settings.mp_sandbox)
+    # Generar el link con el proveedor activo (el mismo que usa el bot)
+    from app.routers.webhook import payment_svc_para
+    payment_svc = payment_svc_para(await get_config_service(settings.redis_url).get_all(), settings)
     link, err = await payment_svc.crear_link(
         sku_id=sku_id, nombre=nombre, precio=precio, phone=body.phone, cantidad=cantidad,
     )

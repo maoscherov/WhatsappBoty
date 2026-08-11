@@ -28,6 +28,9 @@ DEFAULTS: dict[str, str] = {
     "pickup_minutes": "30",    # tiempo estimado de preparación/retiro
     "receta_mode":    "conservador",  # "conservador" (ambiguo deriva) | "estricto" (solo "si")
     "envio_enabled":  "true",  # ofrecer envío a domicilio además de retiro
+    # Pasarela con la que se cobra: "payway" | "mercadopago". Vacío = usa la
+    # variable de entorno del deploy. Se cambia desde el backoffice sin deploy.
+    "payment_provider": "",
     # Qué hacer cuando el cliente pide un producto que no tenemos (no está en
     # el catálogo o está sin stock):
     #   "preguntar" → el bot ofrece consultarlo y deriva si el cliente acepta.
