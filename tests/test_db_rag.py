@@ -213,3 +213,17 @@ async def test_pagos_por_marca(db):
     assert mc["intentos"] == 4 and mc["aprobados"] == 0
     assert mc["alerta"] is True
     assert mc["motivo_top"] == "TARJETA INVALIDA"
+
+
+async def test_busquedas_sin_resultado(db):
+    """Ranking de lo que pidieron y no tenemos, agrupando términos normalizados."""
+    from app.services.metrics_store import MetricsStore
+    m = MetricsStore(db)
+    await m.evento("busqueda_sin_resultado", phone="549A", dato="framintrol nad")
+    await m.evento("busqueda_sin_resultado", phone="549B", dato="framintrol nad")
+    await m.evento("busqueda_sin_resultado", phone="549A", dato="collar antipulgas")
+
+    r = await m.busquedas_sin_resultado(7)
+    assert r[0]["termino"] == "framintrol nad"
+    assert r[0]["veces"] == 2 and r[0]["clientes"] == 2
+    assert r[1]["termino"] == "collar antipulgas" and r[1]["veces"] == 1

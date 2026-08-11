@@ -134,6 +134,28 @@ class MetricsStore:
             logger.warning(f"metrics.dashboard: {e}")
             return None
 
+    async def busquedas_sin_resultado(self, days: int = 7, limit: int = 20) -> list[dict]:
+        """Términos que los clientes pidieron y el catálogo no tiene."""
+        if not self._db.available():
+            return []
+        try:
+            rows = await self._db.fetch("""
+                SELECT dato AS termino, COUNT(*) AS veces,
+                       COUNT(DISTINCT phone) AS clientes, MAX(created_at) AS ultima_vez
+                FROM eventos
+                WHERE tipo = 'busqueda_sin_resultado' AND dato IS NOT NULL
+                  AND created_at >= now() - make_interval(days => $1)
+                GROUP BY 1 ORDER BY 2 DESC, 4 DESC LIMIT $2
+            """, days, limit)
+            return [
+                {"termino": r["termino"], "veces": r["veces"], "clientes": r["clientes"],
+                 "ultima_vez": r["ultima_vez"].isoformat()}
+                for r in rows
+            ]
+        except Exception as e:
+            logger.warning(f"metrics.busquedas_sin_resultado: {e}")
+            return []
+
     async def pagos_por_marca(self, days: int = 7) -> list[dict]:
         """
         Intentos y aprobaciones por marca de tarjeta. Una marca con tasa baja y

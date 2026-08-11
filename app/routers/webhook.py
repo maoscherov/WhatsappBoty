@@ -752,6 +752,14 @@ async def receive_message(request: Request):
                         if _sku:
                             resultados_sku.append(deps["sku"]._to_response(_sku))
                 _steps["sku_ms"] = int((_time.perf_counter() - _tsku) * 1000)
+                if not resultados_sku:
+                    # Nos pidieron algo que no tenemos (ni por texto ni por
+                    # significado): el ranking de estos términos le dice a la
+                    # farmacia qué le falta al catálogo.
+                    await deps["metrics"].evento(
+                        "busqueda_sin_resultado", phone=phone,
+                        dato=" ".join((entidad or "").lower().split())[:80],
+                    )
 
                 _tc2 = _time.perf_counter()
                 intent_result = await deps["intent"].procesar(

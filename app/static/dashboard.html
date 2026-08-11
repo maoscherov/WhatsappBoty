@@ -23,7 +23,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 
 #header {
   background: var(--surface); border-bottom: 1px solid var(--border);
-  padding: 14px 28px; display: flex; align-items: center; gap: 16px;
+  padding: 14px 28px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
 }
 #header .logo { font-size: 22px; font-weight: 700; color: var(--accent); }
 #header .sub { font-size: 13px; color: var(--text-muted); }
@@ -49,6 +49,10 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 }
 
 #content { padding: 24px 28px; max-width: 1400px; }
+@media (max-width: 640px) {
+  #header, #key-bar, #content { padding-left: 14px; padding-right: 14px; }
+  .hbar-row { grid-template-columns: 110px 1fr 34px; }
+}
 h2 { font-size: 15px; font-weight: 600; margin: 28px 0 14px; color: var(--text-muted); }
 
 #stats-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; }
@@ -107,7 +111,7 @@ h2 { font-size: 15px; font-weight: 600; margin: 28px 0 14px; color: var(--text-m
   background: var(--surface); border: 1px solid var(--border); color: var(--text);
   border-radius: 6px; padding: 8px 12px; font-size: 13px; width: 240px; outline: none;
 }
-.table-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.table-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; }
 thead th { text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-muted); padding: 10px 14px; border-bottom: 1px solid var(--border); }
 tbody td { padding: 10px 14px; font-size: 13px; border-bottom: 1px solid #1f2330; vertical-align: top; }
@@ -185,6 +189,9 @@ tr.chat-row td { background: #12151f; padding: 14px 20px; }
       <div class="panel" id="panel-intenciones"><div class="empty">Sin datos</div></div>
     </div>
     <div>
+      <h2 style="margin-top:12px">Nos pidieron y no tenemos</h2>
+      <div class="panel" id="panel-sinresultado"><div class="empty">Sin datos</div></div>
+
       <h2 style="margin-top:12px">Demanda por hora · tipos de mensaje</h2>
       <div class="panel">
         <div id="horas-wrap"></div>
@@ -265,6 +272,7 @@ async function loadDashboard() {
 
   drawFallos(d.envios_fallidos);
   drawPagos(d.pagos_por_marca);
+  drawSinResultado(d.busquedas_sin_resultado);
   drawEmbudo(d.embudo);
   drawSerie(d.por_dia);
   drawIntenciones(d.intenciones);
@@ -330,6 +338,23 @@ function drawSerie(dias) {
   ctx.stroke();
   ctx.fillStyle = '#3b82f6'; ctx.font = '10px sans-serif';
   ctx.fillText(fmtMs(maxMs), W - padR + 4, padT + 8);
+}
+
+function drawSinResultado(items) {
+  const p = document.getElementById('panel-sinresultado');
+  if (!items || !items.length) {
+    p.innerHTML = '<div class="empty">Todo lo que pidieron estaba en el catálogo</div>';
+    return;
+  }
+  const max = items[0].veces;
+  p.innerHTML = items.slice(0, 12).map(x => `
+    <div class="hbar-row">
+      <span class="name" title="${escapeHtml(x.termino)}">${escapeHtml(x.termino)}</span>
+      <div class="hbar-track"><div class="hbar-fill deriv" style="width:${Math.max(3, x.veces / max * 100)}%"></div></div>
+      <span class="num">${x.veces}</span>
+    </div>`).join('') +
+    `<div style="font-size:11.5px;color:var(--text-muted);margin-top:10px">
+       Términos que los clientes pidieron y la búsqueda no encontró.</div>`;
 }
 
 function drawPagos(marcas) {
