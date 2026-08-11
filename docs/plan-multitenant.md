@@ -58,6 +58,21 @@ fecha de alta. Las credenciales cifradas en reposo.
 - **Configuración**: `ConfigService` con prefijo por comercio; los valores por defecto
   siguen siendo los mismos.
 
+### Webhooks de pago por comercio
+El webhook de Mercado Pago sólo trae un **id de pago**: para consultarlo hace falta
+el access token del comercio dueño de ese pago. Por eso **el comercio tiene que ser
+identificable desde la URL de notificación**, no del contenido.
+
+- URL por comercio: `https://{cliente}.remedia.ar/mp/notification` (o `/mp/notification/{cliente}`).
+- La `notification_url` se manda en cada preferencia (ya funciona así), de modo que
+  la arma el sistema a partir del comercio y no depende de lo que el cliente cargue
+  en su panel de MP.
+- La **firma del webhook es por aplicación**: `mp_webhook_secret` pasa a ser por
+  comercio. Hoy la firma se valida pero no se rechaza (sólo loguea) porque el estado
+  real se consulta contra la API de MP; en multitenant conviene rechazar.
+- Payway no tiene este problema hoy (el cobro es sincrónico), pero su
+  `notifications_url` sigue el mismo criterio.
+
 ### Panel multi-cliente
 - **Usuarios reales** con contraseña (hash), en lugar de la clave compartida.
 - **Roles**: `admin` (nosotros, ve todos los comercios), `dueño` (su comercio completo),
