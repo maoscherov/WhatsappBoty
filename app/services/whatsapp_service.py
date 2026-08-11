@@ -7,11 +7,32 @@ Proveedor conmutable por env vars (por número/farmacia):
 La URL base se puede pisar con WA_API_BASE en ambos casos.
 """
 
+import logging
+
 import httpx
 from typing import Optional
 
+logger = logging.getLogger(__name__)
+
 WA_BASE = "https://graph.facebook.com/v19.0"
 KAPSO_BASE = "https://api.kapso.ai/meta/whatsapp"
+
+
+async def _registrar_fallo(to: str, tipo: str, detalle: str):
+    """
+    Deja registro de un envío rechazado por WhatsApp. Sin esto el cliente se
+    queda sin respuesta y nadie se entera. Best-effort: nunca propaga error.
+    """
+    logger.warning(f"WhatsApp NO envió {tipo} a …{to[-4:]}: {detalle[:300]}")
+    try:
+        from app.config import get_settings
+        from app.services.db import get_db
+        from app.services.metrics_store import get_metrics_store
+        await get_metrics_store(get_db(get_settings().database_url)).evento(
+            "wa_send_fallo", phone=to, dato=tipo, extra={"detalle": detalle[:500]},
+        )
+    except Exception:
+        pass
 
 
 class WhatsAppService:
@@ -40,8 +61,12 @@ class WhatsAppService:
                     json=payload,
                     timeout=10,
                 )
-                return resp.status_code == 200
-            except Exception:
+                if resp.status_code != 200:
+                    await _registrar_fallo(to, "text", f"HTTP {resp.status_code}: {resp.text}")
+                    return False
+                return True
+            except Exception as e:
+                await _registrar_fallo(to, "text", f"{type(e).__name__}: {e}")
                 return False
 
     async def send_image(self, to: str, url: str, caption: str = "") -> bool:
@@ -62,8 +87,12 @@ class WhatsAppService:
                     json=payload,
                     timeout=10,
                 )
-                return resp.status_code == 200
-            except Exception:
+                if resp.status_code != 200:
+                    await _registrar_fallo(to, "image", f"HTTP {resp.status_code}: {resp.text}")
+                    return False
+                return True
+            except Exception as e:
+                await _registrar_fallo(to, "image", f"{type(e).__name__}: {e}")
                 return False
 
     async def mark_read(self, message_id: str):

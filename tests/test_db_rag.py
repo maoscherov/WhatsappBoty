@@ -178,3 +178,17 @@ async def test_embudo_venta(db):
     assert emb["links"]["enviados"] == 2
     assert emb["links"]["abandonados"] == 1
     assert emb["links"]["monto_abandonado"] == 2000.0   # solo el link no pagado
+
+
+async def test_envios_fallidos(db):
+    """Los envíos rechazados por WhatsApp quedan registrados y contados."""
+    from app.services.metrics_store import MetricsStore
+    m = MetricsStore(db)
+    await m.evento("wa_send_fallo", phone="549111", dato="text",
+                   extra={"detalle": "HTTP 400: token expirado"})
+    await m.evento("wa_send_fallo", phone="549222", dato="image",
+                   extra={"detalle": "HTTP 470: fuera de ventana de 24hs"})
+    f = await m.envios_fallidos(7)
+    assert f["total"] == 2
+    assert len(f["ultimos"]) == 2
+    assert "token expirado" in " ".join(u["detalle"] for u in f["ultimos"])

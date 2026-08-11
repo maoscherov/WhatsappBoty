@@ -134,6 +134,38 @@ class MetricsStore:
             logger.warning(f"metrics.dashboard: {e}")
             return None
 
+    async def envios_fallidos(self, days: int = 7, limit: int = 10) -> dict:
+        """
+        Envíos de WhatsApp rechazados: total del período y los últimos casos.
+        Un valor > 0 significa clientes que se quedaron sin respuesta.
+        """
+        if not self._db.available():
+            return {"total": 0, "ultimos": []}
+        try:
+            tot = await self._db.fetch("""
+                SELECT COUNT(*) AS n FROM eventos
+                WHERE tipo = 'wa_send_fallo'
+                  AND created_at >= now() - make_interval(days => $1)
+            """, days)
+            ult = await self._db.fetch("""
+                SELECT phone, dato, extra, created_at FROM eventos
+                WHERE tipo = 'wa_send_fallo'
+                  AND created_at >= now() - make_interval(days => $1)
+                ORDER BY created_at DESC LIMIT $2
+            """, days, limit)
+            return {
+                "total": tot[0]["n"] if tot else 0,
+                "ultimos": [
+                    {"phone": r["phone"], "tipo": r["dato"],
+                     "detalle": (json.loads(r["extra"]) if r["extra"] else {}).get("detalle", "")[:160],
+                     "ts": r["created_at"].isoformat()}
+                    for r in ult
+                ],
+            }
+        except Exception as e:
+            logger.warning(f"metrics.envios_fallidos: {e}")
+            return {"total": 0, "ultimos": []}
+
     async def embudo(self, days: int = 7) -> Optional[dict]:
         """
         Embudo de venta: de cuántas conversaciones se llega a ofrecer producto,
