@@ -271,6 +271,7 @@ td .product-price { color: var(--accent); font-size: 12px; }
   <div class="logo">💊 Remedia BO</div>
   <div class="sub">Remedia — Backoffice</div>
   <div class="spacer"></div>
+  <a href="/dashboard" style="color:var(--text-muted);text-decoration:none;font-size:13px;border:1px solid var(--border);border-radius:6px;padding:7px 12px;background:var(--surface)">📊 Dashboard</a>
   <span class="refresh-info">Auto-refresh 30s</span>
   <button id="btn-mute" onclick="toggleMute()" title="Sonido activado" style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:7px 12px;cursor:pointer;font-size:14px;color:var(--text)">🔔</button>
   <button id="btn-clear-sessions" onclick="clearAllSessions()" title="Cerrar todas las conversaciones (para demos)" style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:7px 12px;cursor:pointer;font-size:13px;color:var(--text-muted)">🧹 Limpiar todo</button>
@@ -496,6 +497,13 @@ function toggleMute() {
 function key() {
   return document.getElementById('key-input').value.trim();
 }
+
+// Compartir la clave con el dashboard (/dashboard) vía localStorage
+(function () {
+  const inp = document.getElementById('key-input');
+  if (!inp.value) inp.value = localStorage.getItem('bo_key') || '';
+  inp.addEventListener('change', () => localStorage.setItem('bo_key', key()));
+})();
 
 function apiUrl(path) {
   const k = key();

@@ -198,6 +198,10 @@ async def backoffice_ui():
 async def orders_ui():
     return FileResponse(STATIC_DIR / "orders.html")
 
+@app.get("/dashboard")
+async def dashboard_ui():
+    return FileResponse(STATIC_DIR / "dashboard.html")
+
 
 @app.get("/health")
 async def health():

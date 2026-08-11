@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Remedia — Dashboard</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg: #0f1117;
+  --surface: #1a1d27;
+  --border: #2a2d3e;
+  --text: #e2e8f0;
+  --text-muted: #64748b;
+  --accent: #25d366;
+  --accent2: #128c7e;
+  --warn: #f59e0b;
+  --danger: #ef4444;
+  --info: #3b82f6;
+  --purple: #8b5cf6;
+}
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+
+#header {
+  background: var(--surface); border-bottom: 1px solid var(--border);
+  padding: 14px 28px; display: flex; align-items: center; gap: 16px;
+}
+#header .logo { font-size: 22px; font-weight: 700; color: var(--accent); }
+#header .sub { font-size: 13px; color: var(--text-muted); }
+#header .spacer { flex: 1; }
+#header a.nav {
+  color: var(--text-muted); text-decoration: none; font-size: 13px;
+  border: 1px solid var(--border); border-radius: 6px; padding: 7px 12px; background: var(--surface);
+}
+#header a.nav:hover { color: var(--text); }
+.range-btn {
+  background: var(--surface); border: 1px solid var(--border); color: var(--text-muted);
+  border-radius: 6px; padding: 7px 14px; cursor: pointer; font-size: 13px; font-weight: 500;
+}
+.range-btn.active { background: var(--accent2); border-color: var(--accent2); color: #fff; }
+
+#key-bar {
+  background: #12151f; border-bottom: 1px solid var(--border); padding: 8px 28px;
+  display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--text-muted);
+}
+#key-input {
+  background: var(--surface); border: 1px solid var(--border); color: var(--text);
+  border-radius: 5px; padding: 4px 10px; font-size: 12px; width: 200px; outline: none;
+}
+
+#content { padding: 24px 28px; max-width: 1400px; }
+h2 { font-size: 15px; font-weight: 600; margin: 28px 0 14px; color: var(--text-muted); }
+
+#stats-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; }
+.stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 18px 20px; }
+.stat-card .label { font-size: 12px; color: var(--text-muted); margin-bottom: 8px; text-transform: uppercase; letter-spacing: .06em; }
+.stat-card .value { font-size: 30px; font-weight: 700; line-height: 1; }
+.stat-card .sub { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+.val-green { color: var(--accent); }
+.val-warn  { color: var(--warn); }
+.val-info  { color: var(--info); }
+.val-purple{ color: var(--purple); }
+
+.panel { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 18px 20px; }
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 900px) { .grid-2 { grid-template-columns: 1fr; } }
+
+/* Serie diaria (canvas) */
+#chart-dias { width: 100%; height: 220px; display: block; }
+.legend { display: flex; gap: 16px; font-size: 12px; color: var(--text-muted); margin-top: 10px; flex-wrap: wrap; }
+.legend .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+
+/* Barras horizontales (intenciones) */
+.hbar-row { display: grid; grid-template-columns: 170px 1fr 46px; align-items: center; gap: 10px; margin-bottom: 8px; font-size: 12.5px; }
+.hbar-row .name { color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hbar-track { background: #12151f; border-radius: 4px; height: 16px; overflow: hidden; }
+.hbar-fill { height: 100%; border-radius: 4px; background: var(--accent2); }
+.hbar-fill.deriv { background: var(--warn); }
+.hbar-row .num { text-align: right; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+
+/* Por hora */
+#horas-wrap { display: flex; align-items: flex-end; gap: 3px; height: 120px; }
+.hora-col { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; height: 100%; }
+.hora-bar { background: var(--info); border-radius: 3px 3px 0 0; min-height: 2px; opacity: .85; }
+.horas-labels { display: flex; gap: 3px; margin-top: 6px; }
+.horas-labels span { flex: 1; text-align: center; font-size: 9px; color: var(--text-muted); }
+
+/* Chips tipos */
+.chips { display: flex; gap: 10px; flex-wrap: wrap; }
+.chip { background: #12151f; border: 1px solid var(--border); border-radius: 20px; padding: 6px 14px; font-size: 13px; }
+.chip b { color: var(--accent); }
+
+/* Historial */
+.hist-controls { display: flex; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
+#hist-q {
+  background: var(--surface); border: 1px solid var(--border); color: var(--text);
+  border-radius: 6px; padding: 8px 12px; font-size: 13px; width: 240px; outline: none;
+}
+.table-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+table { width: 100%; border-collapse: collapse; }
+thead th { text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-muted); padding: 10px 14px; border-bottom: 1px solid var(--border); }
+tbody td { padding: 10px 14px; font-size: 13px; border-bottom: 1px solid #1f2330; vertical-align: top; }
+tbody tr.row-conv { cursor: pointer; }
+tbody tr.row-conv:hover { background: #1f2330; }
+td .muted { color: var(--text-muted); font-size: 12px; }
+.empty { text-align: center; color: var(--text-muted); padding: 26px; font-size: 13px; }
+
+/* Chat expandido */
+tr.chat-row td { background: #12151f; padding: 14px 20px; }
+.bubbles { max-height: 420px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+.bubble { max-width: 72%; padding: 8px 12px; border-radius: 10px; font-size: 13px; white-space: pre-wrap; word-break: break-word; }
+.bubble.user { align-self: flex-start; background: #2a2d3e; }
+.bubble.assistant { align-self: flex-end; background: var(--accent2); color: #fff; }
+.bubble .t { display: block; font-size: 10px; opacity: .65; margin-top: 3px; }
+.spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; vertical-align: -2px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<div id="header">
+  <div class="logo">📊 Remedia</div>
+  <div class="sub">Dashboard histórico</div>
+  <div class="spacer"></div>
+  <button class="range-btn" data-days="7">7 días</button>
+  <button class="range-btn" data-days="30">30 días</button>
+  <button class="range-btn" data-days="90">90 días</button>
+  <a class="nav" href="/bo">← Backoffice</a>
+</div>
+
+<div id="key-bar">
+  🔑 Clave de acceso:
+  <input id="key-input" type="password" placeholder="Vacío si no configuraste BO_KEY" />
+</div>
+
+<div id="content">
+
+  <div id="stats-row">
+    <div class="stat-card"><div class="label">Conversaciones</div><div class="value val-green" id="k-conv">—</div><div class="sub">teléfonos distintos</div></div>
+    <div class="stat-card"><div class="label">Mensajes</div><div class="value val-purple" id="k-msgs">—</div><div class="sub">respuestas del bot</div></div>
+    <div class="stat-card"><div class="label">Derivaciones</div><div class="value val-warn" id="k-deriv">—</div><div class="sub" id="k-deriv-pct">a atención humana</div></div>
+    <div class="stat-card"><div class="label">Pedidos confirmados</div><div class="value val-info" id="k-pedidos">—</div><div class="sub">links de pago generados</div></div>
+    <div class="stat-card"><div class="label">Respuesta p50</div><div class="value val-green" id="k-p50">—</div><div class="sub" id="k-p95">p95: —</div></div>
+  </div>
+
+  <h2>Actividad por día</h2>
+  <div class="panel">
+    <canvas id="chart-dias" height="220"></canvas>
+    <div class="legend">
+      <span><span class="sw" style="background:var(--accent2)"></span>Mensajes</span>
+      <span><span class="sw" style="background:var(--warn)"></span>Derivaciones</span>
+      <span><span class="sw" style="background:var(--purple)"></span>Conversaciones</span>
+      <span><span class="sw" style="background:var(--info)"></span>p50 respuesta (línea, eje derecho)</span>
+    </div>
+  </div>
+
+  <div class="grid-2" style="margin-top:16px">
+    <div>
+      <h2 style="margin-top:12px">Intenciones</h2>
+      <div class="panel" id="panel-intenciones"><div class="empty">Sin datos</div></div>
+    </div>
+    <div>
+      <h2 style="margin-top:12px">Demanda por hora · tipos de mensaje</h2>
+      <div class="panel">
+        <div id="horas-wrap"></div>
+        <div class="horas-labels" id="horas-labels"></div>
+        <div class="chips" id="chips-tipos" style="margin-top:16px"></div>
+      </div>
+    </div>
+  </div>
+
+  <h2>Conversaciones históricas</h2>
+  <div class="hist-controls">
+    <input id="hist-q" placeholder="Buscar por teléfono…" />
+    <span class="sub" style="font-size:12px;color:var(--text-muted);align-self:center" id="hist-info"></span>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Cliente</th><th>Mensajes</th><th>Primera actividad</th><th>Última actividad</th><th>Último mensaje</th></tr>
+      </thead>
+      <tbody id="hist-body">
+        <tr><td colspan="5" class="empty"><span class="spinner"></span> Cargando…</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+</div>
+
+<script>
+const API = '';
+let DAYS = 7;
+
+function key() { return document.getElementById('key-input').value.trim(); }
+function apiUrl(path, params) {
+  const q = new URLSearchParams(params || {});
+  const k = key();
+  if (k) q.set('key', k);
+  const qs = q.toString();
+  return `${API}${path}${qs ? '?' + qs : ''}`;
+}
+
+// La clave se comparte con el backoffice vía localStorage
+const keyInput = document.getElementById('key-input');
+keyInput.value = localStorage.getItem('bo_key') || '';
+keyInput.addEventListener('change', () => { localStorage.setItem('bo_key', key()); loadAll(); });
+
+// ── Dashboard ────────────────────────────────────────────────────────────────
+
+function fmtMs(ms) {
+  if (ms == null) return '—';
+  return ms >= 1000 ? (ms / 1000).toFixed(1).replace('.', ',') + ' s' : Math.round(ms) + ' ms';
+}
+
+async function loadDashboard() {
+  const r = await fetch(apiUrl('/bo/dashboard', { days: DAYS }));
+  if (!r.ok) return;
+  const d = await r.json();
+  if (!d.available) {
+    document.getElementById('k-conv').textContent = '—';
+    return;
+  }
+  const t = d.totales;
+  document.getElementById('k-conv').textContent = t.conversaciones;
+  document.getElementById('k-msgs').textContent = t.mensajes;
+  document.getElementById('k-deriv').textContent = t.derivaciones;
+  document.getElementById('k-deriv-pct').textContent =
+    t.mensajes ? `${(t.derivaciones / t.mensajes * 100).toFixed(1)}% de los mensajes` : 'a atención humana';
+  document.getElementById('k-pedidos').textContent = t.pedidos_confirmados;
+  document.getElementById('k-p50').textContent = fmtMs(t.p50_ms);
+  document.getElementById('k-p95').textContent = 'p95: ' + fmtMs(t.p95_ms);
+
+  drawSerie(d.por_dia);
+  drawIntenciones(d.intenciones);
+  drawHoras(d.por_hora);
+  drawTipos(d.tipos_mensaje);
+}
+
+const DERIV_INTENTS = new Set(['derivado_humano','derivado_receta','pago_manual','sin_stock_derivado',
+                               'receta_link','imagen_receta','imagen_credencial','cambio_postventa','operador']);
+
+function drawSerie(dias) {
+  const cv = document.getElementById('chart-dias');
+  const W = cv.clientWidth, H = 220;
+  cv.width = W * devicePixelRatio; cv.height = H * devicePixelRatio;
+  const ctx = cv.getContext('2d');
+  ctx.scale(devicePixelRatio, devicePixelRatio);
+  ctx.clearRect(0, 0, W, H);
+  if (!dias || !dias.length) {
+    ctx.fillStyle = '#64748b'; ctx.font = '13px sans-serif';
+    ctx.fillText('Sin datos en el rango', W / 2 - 60, H / 2);
+    return;
+  }
+  const padL = 34, padR = 44, padB = 26, padT = 10;
+  const iw = W - padL - padR, ih = H - padT - padB;
+  const maxMsg = Math.max(...dias.map(x => x.mensajes), 1);
+  const maxMs = Math.max(...dias.map(x => x.p50_ms || 0), 1);
+  const bw = Math.min(46, iw / dias.length * 0.62);
+
+  // grid + eje izq
+  ctx.strokeStyle = '#2a2d3e'; ctx.fillStyle = '#64748b'; ctx.font = '10px sans-serif';
+  for (let g = 0; g <= 3; g++) {
+    const y = padT + ih - (ih * g / 3);
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(W - padR, y); ctx.stroke();
+    ctx.fillText(String(Math.round(maxMsg * g / 3)), 4, y + 3);
+  }
+  dias.forEach((d, i) => {
+    const cx = padL + iw * (i + 0.5) / dias.length;
+    // mensajes
+    const hM = ih * d.mensajes / maxMsg;
+    ctx.fillStyle = '#128c7e';
+    ctx.fillRect(cx - bw / 2, padT + ih - hM, bw, hM);
+    // derivaciones (overlay)
+    const hD = ih * d.derivaciones / maxMsg;
+    ctx.fillStyle = '#f59e0b';
+    ctx.fillRect(cx - bw / 2, padT + ih - hD, bw * 0.45, hD);
+    // conversaciones (punto)
+    const hC = ih * d.conversaciones / maxMsg;
+    ctx.fillStyle = '#8b5cf6';
+    ctx.beginPath(); ctx.arc(cx, padT + ih - hC, 3.5, 0, Math.PI * 2); ctx.fill();
+    // etiqueta fecha
+    ctx.fillStyle = '#64748b'; ctx.font = '10px sans-serif';
+    const lbl = d.dia.slice(5);   // MM-DD
+    if (dias.length <= 16 || i % Math.ceil(dias.length / 16) === 0)
+      ctx.fillText(lbl, cx - 13, H - 8);
+  });
+  // línea p50 (eje derecho)
+  ctx.strokeStyle = '#3b82f6'; ctx.lineWidth = 1.6; ctx.beginPath();
+  dias.forEach((d, i) => {
+    const cx = padL + iw * (i + 0.5) / dias.length;
+    const y = padT + ih - ih * (d.p50_ms || 0) / maxMs;
+    i === 0 ? ctx.moveTo(cx, y) : ctx.lineTo(cx, y);
+  });
+  ctx.stroke();
+  ctx.fillStyle = '#3b82f6'; ctx.font = '10px sans-serif';
+  ctx.fillText(fmtMs(maxMs), W - padR + 4, padT + 8);
+}
+
+function drawIntenciones(items) {
+  const p = document.getElementById('panel-intenciones');
+  if (!items || !items.length) { p.innerHTML = '<div class="empty">Sin datos</div>'; return; }
+  const max = items[0].cantidad;
+  p.innerHTML = items.slice(0, 12).map(x => `
+    <div class="hbar-row">
+      <span class="name" title="${x.intencion}">${x.intencion}</span>
+      <div class="hbar-track"><div class="hbar-fill ${DERIV_INTENTS.has(x.intencion) ? 'deriv' : ''}"
+        style="width:${Math.max(3, x.cantidad / max * 100)}%"></div></div>
+      <span class="num">${x.cantidad}</span>
+    </div>`).join('');
+}
+
+function drawHoras(horas) {
+  const map = new Map((horas || []).map(h => [h.hora, h.cantidad]));
+  const max = Math.max(...map.values(), 1);
+  document.getElementById('horas-wrap').innerHTML = Array.from({length: 24}, (_, h) => {
+    const v = map.get(h) || 0;
+    return `<div class="hora-col" title="${h}:00 — ${v} mensajes">
+      <div class="hora-bar" style="height:${v / max * 100}%"></div></div>`;
+  }).join('');
+  document.getElementById('horas-labels').innerHTML =
+    Array.from({length: 24}, (_, h) => `<span>${h % 6 === 0 ? h : ''}</span>`).join('');
+}
+
+function drawTipos(tipos) {
+  const total = (tipos || []).reduce((a, x) => a + x.cantidad, 0) || 1;
+  const emoji = { text: '💬', audio: '🎙', image: '📷' };
+  document.getElementById('chips-tipos').innerHTML = (tipos || []).map(x =>
+    `<span class="chip">${emoji[x.tipo] || '💬'} ${x.tipo} <b>${(x.cantidad / total * 100).toFixed(0)}%</b> · ${x.cantidad}</span>`
+  ).join('') || '<span class="empty">Sin datos</span>';
+}
+
+// ── Historial de conversaciones ──────────────────────────────────────────────
+
+async function loadHistorial() {
+  const q = document.getElementById('hist-q').value.trim();
+  const body = document.getElementById('hist-body');
+  const r = await fetch(apiUrl('/bo/conversaciones', { days: Math.max(DAYS, 30), q, limit: 100 }));
+  if (!r.ok) { body.innerHTML = '<tr><td colspan="5" class="empty">Error de acceso — revisá la clave</td></tr>'; return; }
+  const d = await r.json();
+  if (!d.available) { body.innerHTML = '<tr><td colspan="5" class="empty">Requiere base de datos (Postgres)</td></tr>'; return; }
+  const convs = d.conversaciones || [];
+  document.getElementById('hist-info').textContent = `${convs.length} conversaciones`;
+  if (!convs.length) { body.innerHTML = '<tr><td colspan="5" class="empty">Sin conversaciones en el rango</td></tr>'; return; }
+  body.innerHTML = convs.map(c => `
+    <tr class="row-conv" data-phone="${c.phone}">
+      <td>${c.nombre ? `${c.nombre}<br><span class="muted">${c.phone}</span>` : c.phone}</td>
+      <td>${c.mensajes} <span class="muted">(${c.mensajes_cliente} del cliente)</span></td>
+      <td class="muted">${fmtFecha(c.primera_actividad)}</td>
+      <td>${fmtFecha(c.ultima_actividad)}</td>
+      <td class="muted">${escapeHtml(c.ultimo_mensaje || '')}</td>
+    </tr>`).join('');
+  body.querySelectorAll('.row-conv').forEach(tr =>
+    tr.addEventListener('click', () => toggleChat(tr)));
+}
+
+function fmtFecha(iso) {
+  const d = new Date(iso), hoy = new Date();
+  const dia = d.toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit' });
+  const hora = d.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' });
+  return d.toDateString() === hoy.toDateString() ? `hoy ${hora}` : `${dia} ${hora}`;
+}
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+async function toggleChat(tr) {
+  const next = tr.nextElementSibling;
+  if (next && next.classList.contains('chat-row')) { next.remove(); return; }
+  document.querySelectorAll('.chat-row').forEach(x => x.remove());
+  const phone = tr.dataset.phone;
+  const row = document.createElement('tr');
+  row.className = 'chat-row';
+  row.innerHTML = `<td colspan="5"><span class="spinner"></span> Cargando conversación…</td>`;
+  tr.after(row);
+  const r = await fetch(apiUrl(`/bo/history/${encodeURIComponent(phone)}`));
+  const d = r.ok ? await r.json() : { available: false };
+  if (!d.available || !d.messages || !d.messages.length) {
+    row.innerHTML = `<td colspan="5" class="empty">Sin historial en base para este número</td>`;
+    return;
+  }
+  row.innerHTML = `<td colspan="5"><div class="bubbles">` + d.messages.map(m => `
+    <div class="bubble ${m.role === 'user' ? 'user' : 'assistant'}">${escapeHtml(m.content)}
+      <span class="t">${fmtFecha(m.ts)}</span></div>`).join('') + `</div></td>`;
+  row.querySelector('.bubbles').scrollTop = 1e9;
+}
+
+// ── Rango + init ─────────────────────────────────────────────────────────────
+
+document.querySelectorAll('.range-btn').forEach(b => b.addEventListener('click', () => {
+  DAYS = parseInt(b.dataset.days);
+  document.querySelectorAll('.range-btn').forEach(x => x.classList.toggle('active', x === b));
+  loadAll();
+}));
+document.querySelector('.range-btn[data-days="7"]').classList.add('active');
+
+let _histTimer = null;
+document.getElementById('hist-q').addEventListener('input', () => {
+  clearTimeout(_histTimer);
+  _histTimer = setTimeout(loadHistorial, 400);
+});
+
+function loadAll() { loadDashboard(); loadHistorial(); }
+loadAll();
+setInterval(loadDashboard, 60000);
+</script>
+</body>
+</html>
