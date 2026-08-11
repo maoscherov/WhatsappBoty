@@ -32,7 +32,43 @@ async def test_schema_existe(db):
 
 async def test_alembic_version(db):
     rows = await db.fetch("SELECT version_num FROM alembic_version")
-    assert rows and rows[0]["version_num"] == "0001"
+    assert rows and rows[0]["version_num"] == "0002"
+
+
+async def test_tabla_interacciones(db):
+    """La migración 0002 crea la tabla de métricas del dashboard."""
+    from app.services.metrics_store import MetricsStore
+    m = MetricsStore(db)
+    await m.record("549341000", "text", "pedido", 1200, {"claude1_ms": 800}, ["claude"])
+    await m.record("549341000", "text", "derivado_humano", 900, {}, [])
+    await m.record("549341999", "audio", "consulta_precio", 2500, {}, ["groq"])
+
+    dash = await m.dashboard(7)
+    assert dash is not None
+    assert dash["totales"]["mensajes"] == 3
+    assert dash["totales"]["conversaciones"] == 2
+    assert dash["totales"]["derivaciones"] == 1
+    assert any(i["intencion"] == "pedido" for i in dash["intenciones"])
+    assert dash["por_dia"] and dash["por_dia"][0]["mensajes"] == 3
+
+
+async def test_conversaciones_historicas(db):
+    """Listado histórico agrupado por teléfono, con filtro por número."""
+    from app.services.metrics_store import MetricsStore
+    store = MessageStore(db)
+    await store.save("549111", "user", "hola, tenés ibuprofeno?")
+    await store.save("549111", "assistant", "Sí! Actron 600 a $4.770")
+    await store.save("549222", "user", "cuánto sale el dove?")
+
+    m = MetricsStore(db)
+    todas = await m.conversaciones(days=7)
+    assert {c["phone"] for c in todas} >= {"549111", "549222"}
+    c1 = next(c for c in todas if c["phone"] == "549111")
+    assert c1["mensajes"] == 2 and c1["mensajes_cliente"] == 1
+    assert c1["ultimo_mensaje"].startswith("Sí! Actron")
+
+    filtradas = await m.conversaciones(days=7, q="222")
+    assert [c["phone"] for c in filtradas] == ["549222"]
 
 
 async def test_pgvector_habilitado(db):

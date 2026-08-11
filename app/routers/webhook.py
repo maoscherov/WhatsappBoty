@@ -37,6 +37,7 @@ from app.services.db import get_db
 from app.services.embeddings import get_embedding_service
 from app.services.rag_service import get_rag_service
 from app.services.message_store import get_message_store
+from app.services.metrics_store import get_metrics_store
 from app.services.checkout_helper import (
     confirmar_pedido, resolver_entrega, capturar_direccion,
     match_retiro, match_envio, pide_humano, derivar_si_receta, afirma_envio,
@@ -131,6 +132,7 @@ def _deps(settings=None):
         "config":  get_config_service(s.redis_url),
         "socios":  get_socio_service(s.socios_path),
         "msgs":    get_message_store(get_db(s.database_url)),
+        "metrics": get_metrics_store(get_db(s.database_url)),
         "rag":     get_rag_service(get_db(s.database_url), get_embedding_service(s.openai_api_key)),
     }
 
@@ -930,6 +932,9 @@ async def receive_message(request: Request):
                     "steps": dict(_steps),
                     "apis": _apis,
                 })
+                # Histórico permanente para el dashboard (Postgres, best-effort)
+                await deps["metrics"].record(phone, _tipo, _intencion, _total,
+                                             dict(_steps), _apis)
                 # Historial permanente en Postgres (best-effort, no-op sin DB)
                 try:
                     if texto:

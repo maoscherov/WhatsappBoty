@@ -668,6 +668,38 @@ async def bo_resumen(phone: str, _=Depends(_auth)):
     return {"ok": False, "resumen": "", "detail": err or "sin proveedor LLM configurado"}
 
 
+@router.get("/dashboard")
+async def bo_dashboard(_=Depends(_auth), days: int = Query(7, ge=1, le=90)):
+    """
+    Métricas históricas para el dashboard del backoffice: volumen diario,
+    intenciones, tiempos de respuesta (avg/p50/p95), derivaciones, tipos de
+    mensaje y distribución horaria. Fuente: Postgres (tabla interacciones).
+    """
+    from app.services.metrics_store import get_metrics_store
+    settings = get_settings()
+    data = await get_metrics_store(get_db(settings.database_url)).dashboard(days)
+    if data is None:
+        return {"available": False,
+                "detail": "Postgres no disponible — el dashboard requiere base de datos"}
+    return {"available": True, **data}
+
+
+@router.get("/conversaciones")
+async def bo_conversaciones(_=Depends(_auth), days: int = Query(30, ge=1, le=365),
+                            q: str = Query(""), limit: int = Query(50, le=200)):
+    """
+    Conversaciones históricas (Postgres): una fila por teléfono con actividad
+    en el rango, ordenadas por última actividad. `q` filtra por teléfono.
+    El detalle de cada una se abre con GET /bo/history/{phone}.
+    """
+    from app.services.metrics_store import get_metrics_store
+    settings = get_settings()
+    convs = await get_metrics_store(get_db(settings.database_url)).conversaciones(days, q.strip(), limit)
+    for c in convs:
+        c["nombre"] = _nombre_socio(c["phone"])
+    return {"available": get_db(settings.database_url).available(), "conversaciones": convs}
+
+
 @router.get("/history/{phone}")
 async def bo_history(phone: str, _=Depends(_auth), limit: int = Query(200, le=1000)):
     """Historial completo de la conversación desde Postgres (persistente)."""
