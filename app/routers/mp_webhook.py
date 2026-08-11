@@ -126,6 +126,18 @@ async def mp_notification(request: Request):
     tipo_entrega = session.get("tipo_entrega") or "retiro"
     direccion_envio = session.get("direccion_envio")
 
+    # Métrica de embudo (MP no notifica rechazos por webhook: solo aprobados)
+    try:
+        from app.services.db import get_db
+        from app.services.metrics_store import get_metrics_store
+        await get_metrics_store(get_db(settings.database_url)).evento(
+            "pago_aprobado", phone=phone,
+            dato=(payment.get("payment_method_id") or "mercadopago"),
+            monto=total, ref=str(payment_id), extra={"pasarela": "mercadopago"},
+        )
+    except Exception as e:
+        logger.debug(f"evento pago_aprobado (MP): {e}")
+
     # ── Crear pedido en la consola de operaciones ────────────────────────────
     order_svc = get_order_service(settings.redis_url)
     order = await order_svc.create(

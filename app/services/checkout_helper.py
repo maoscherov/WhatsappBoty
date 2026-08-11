@@ -265,6 +265,19 @@ async def crear_link_y_responder(
     await session_svc.set_entrega(phone, tipo_entrega, direccion)
     await session_svc.set_estado(phone, "esperando_pago")
 
+    # Métrica de embudo: punto único por el que pasan bot, simulador y backoffice.
+    try:
+        from app.config import get_settings as _gs2
+        from app.services.db import get_db as _gdb
+        from app.services.metrics_store import get_metrics_store as _gms
+        await _gms(_gdb(_gs2().database_url)).evento(
+            "link_enviado", phone=phone, monto=total,
+            ref=link.rsplit("/", 1)[-1][:64],
+            extra={"producto": session["pending_sku_nombre"], "cantidad": cantidad},
+        )
+    except Exception as e:
+        logger.debug(f"evento link_enviado: {e}")
+
     nombre_con_cant = session["pending_sku_nombre"] + (f" x{cantidad}" if cantidad > 1 else "")
     entrega_line = texto_entrega(tipo_entrega, direccion)
     descuento_bloque = f"{descuento_line}\n" if descuento_line else ""

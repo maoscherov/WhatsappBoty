@@ -677,11 +677,12 @@ async def bo_dashboard(_=Depends(_auth), days: int = Query(7, ge=1, le=90)):
     """
     from app.services.metrics_store import get_metrics_store
     settings = get_settings()
-    data = await get_metrics_store(get_db(settings.database_url)).dashboard(days)
+    store = get_metrics_store(get_db(settings.database_url))
+    data = await store.dashboard(days)
     if data is None:
         return {"available": False,
                 "detail": "Postgres no disponible — el dashboard requiere base de datos"}
-    return {"available": True, **data}
+    return {"available": True, **data, "embudo": await store.embudo(days)}
 
 
 @router.get("/conversaciones")

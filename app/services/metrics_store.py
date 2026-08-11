@@ -134,6 +134,79 @@ class MetricsStore:
             logger.warning(f"metrics.dashboard: {e}")
             return None
 
+    async def embudo(self, days: int = 7) -> Optional[dict]:
+        """
+        Embudo de venta: de cuántas conversaciones se llega a ofrecer producto,
+        a enviar link y a cobrar. Incluye links abandonados (enviados y nunca
+        pagados) con el monto que quedó sin cobrar.
+        """
+        if not self._db.available():
+            return None
+        try:
+            etapas = await self._db.fetch("""
+                SELECT
+                  (SELECT COUNT(DISTINCT phone) FROM interacciones
+                    WHERE created_at >= now() - make_interval(days => $1))            AS conversaciones,
+                  (SELECT COUNT(DISTINCT phone) FROM eventos
+                    WHERE tipo = 'producto_ofrecido'
+                      AND created_at >= now() - make_interval(days => $1))            AS con_oferta,
+                  (SELECT COUNT(DISTINCT phone) FROM eventos
+                    WHERE tipo = 'link_enviado'
+                      AND created_at >= now() - make_interval(days => $1))            AS con_link,
+                  (SELECT COUNT(DISTINCT phone) FROM eventos
+                    WHERE tipo = 'pago_aprobado'
+                      AND created_at >= now() - make_interval(days => $1))            AS pagados
+            """, days)
+
+            links = await self._db.fetch("""
+                SELECT COUNT(*)                                   AS enviados,
+                       COUNT(*) FILTER (WHERE p.ref IS NOT NULL)  AS pagados,
+                       COALESCE(SUM(l.monto) FILTER (WHERE p.ref IS NULL), 0) AS monto_abandonado,
+                       percentile_cont(0.5) WITHIN GROUP (
+                           ORDER BY EXTRACT(EPOCH FROM (p.created_at - l.created_at))
+                       ) FILTER (WHERE p.ref IS NOT NULL)         AS mediana_seg_pago
+                FROM eventos l
+                LEFT JOIN eventos p
+                       ON p.tipo = 'pago_aprobado' AND p.phone = l.phone
+                      AND p.created_at >= l.created_at
+                WHERE l.tipo = 'link_enviado'
+                  AND l.created_at >= now() - make_interval(days => $1)
+            """, days)
+
+            e = dict(etapas[0]) if etapas else {}
+            li = dict(links[0]) if links else {}
+            conv = e.get("conversaciones") or 0
+
+            def _pct(n, d):
+                return round(n / d * 100, 1) if d else None
+
+            enviados = li.get("enviados") or 0
+            pagados_link = li.get("pagados") or 0
+            mediana = li.get("mediana_seg_pago")
+            return {
+                "etapas": [
+                    {"etapa": "Conversaciones", "cantidad": conv, "pct": 100.0 if conv else None},
+                    {"etapa": "Producto ofrecido", "cantidad": e.get("con_oferta") or 0,
+                     "pct": _pct(e.get("con_oferta") or 0, conv)},
+                    {"etapa": "Link enviado", "cantidad": e.get("con_link") or 0,
+                     "pct": _pct(e.get("con_link") or 0, conv)},
+                    {"etapa": "Pago aprobado", "cantidad": e.get("pagados") or 0,
+                     "pct": _pct(e.get("pagados") or 0, conv)},
+                ],
+                "conversion_total_pct": _pct(e.get("pagados") or 0, conv),
+                "links": {
+                    "enviados": enviados,
+                    "pagados": pagados_link,
+                    "abandonados": enviados - pagados_link,
+                    "pct_abandono": _pct(enviados - pagados_link, enviados),
+                    "monto_abandonado": round(float(li.get("monto_abandonado") or 0), 2),
+                    "mediana_min_hasta_pago": round(float(mediana) / 60, 1) if mediana else None,
+                },
+            }
+        except Exception as e:
+            logger.warning(f"metrics.embudo: {e}")
+            return None
+
     async def conversaciones(self, days: int = 30, q: str = "", limit: int = 50) -> list[dict]:
         """
         Conversaciones históricas desde Postgres (tabla messages): una fila por

@@ -195,6 +195,19 @@ async def payway_charge(body: ChargeIn):
         pending["estado"] = "aprobado"
         pending["payway_id"] = data.get("id")
         await _redis().setex(f"payway:pending:{body.pid}", _PENDING_TTL, json.dumps(pending))
+        # Métrica de embudo + fiabilidad por marca de tarjeta
+        try:
+            from app.services.db import get_db
+            from app.services.metrics_store import get_metrics_store
+            await get_metrics_store(get_db(settings.database_url)).evento(
+                "pago_aprobado", phone=pending.get("phone"),
+                dato=(data.get("card_brand") or "").strip() or None,
+                monto=float(pending["total"]), ref=str(data.get("id")),
+                extra={"metodo": metodo, "bin": body.bin},
+            )
+        except Exception as e:
+            logger.debug(f"evento pago_aprobado: {e}")
+
         # Crear el pedido + avisar por WhatsApp + actualizar sesión (mismo flujo que MP)
         try:
             from app.services.session_service import get_session_service

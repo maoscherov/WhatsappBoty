@@ -818,6 +818,11 @@ async def receive_message(request: Request):
                             opciones=resultados_sku,
                         )
                         _sku_pendiente_nuevo = producto_elegido["sku_id"]
+                        await deps["metrics"].evento(
+                            "producto_ofrecido", phone=phone,
+                            dato=producto_elegido["nombre"][:120],
+                            monto=producto_elegido["precio"], ref=producto_elegido["sku_id"],
+                        )
                         send_images_cfg = await deps["config"].get("send_images")
                         await _maybe_send_image(
                             deps["wa"], phone, resultados_sku,

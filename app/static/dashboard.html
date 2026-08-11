@@ -70,6 +70,16 @@ h2 { font-size: 15px; font-weight: 600; margin: 28px 0 14px; color: var(--text-m
 .legend { display: flex; gap: 16px; font-size: 12px; color: var(--text-muted); margin-top: 10px; flex-wrap: wrap; }
 .legend .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
 
+/* Embudo */
+.funnel-step { margin-bottom: 12px; }
+.funnel-head { display: flex; justify-content: space-between; font-size: 12.5px; margin-bottom: 5px; }
+.funnel-head .n { font-variant-numeric: tabular-nums; }
+.funnel-head .pct { color: var(--text-muted); font-size: 12px; }
+.funnel-track { background: #12151f; border-radius: 4px; height: 22px; overflow: hidden; }
+.funnel-fill { height: 100%; border-radius: 4px; background: linear-gradient(90deg, var(--accent2), var(--accent)); }
+.drop { font-size: 11px; color: var(--danger); margin-top: 3px; }
+.big-num { font-size: 26px; font-weight: 700; line-height: 1.15; }
+
 /* Barras horizontales (intenciones) */
 .hbar-row { display: grid; grid-template-columns: 170px 1fr 46px; align-items: center; gap: 10px; margin-bottom: 8px; font-size: 12.5px; }
 .hbar-row .name { color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -141,6 +151,15 @@ tr.chat-row td { background: #12151f; padding: 14px 20px; }
     <div class="stat-card"><div class="label">Derivaciones</div><div class="value val-warn" id="k-deriv">—</div><div class="sub" id="k-deriv-pct">a atención humana</div></div>
     <div class="stat-card"><div class="label">Pedidos confirmados</div><div class="value val-info" id="k-pedidos">—</div><div class="sub">links de pago generados</div></div>
     <div class="stat-card"><div class="label">Respuesta p50</div><div class="value val-green" id="k-p50">—</div><div class="sub" id="k-p95">p95: —</div></div>
+  </div>
+
+  <h2>Embudo de venta</h2>
+  <div class="grid-2">
+    <div class="panel" id="panel-embudo"><div class="empty">Sin datos</div></div>
+    <div class="panel">
+      <div style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:12px">Links de pago</div>
+      <div id="links-info" class="empty">Sin datos</div>
+    </div>
   </div>
 
   <h2>Actividad por día</h2>
@@ -230,6 +249,7 @@ async function loadDashboard() {
   document.getElementById('k-p50').textContent = fmtMs(t.p50_ms);
   document.getElementById('k-p95').textContent = 'p95: ' + fmtMs(t.p95_ms);
 
+  drawEmbudo(d.embudo);
   drawSerie(d.por_dia);
   drawIntenciones(d.intenciones);
   drawHoras(d.por_hora);
@@ -294,6 +314,48 @@ function drawSerie(dias) {
   ctx.stroke();
   ctx.fillStyle = '#3b82f6'; ctx.font = '10px sans-serif';
   ctx.fillText(fmtMs(maxMs), W - padR + 4, padT + 8);
+}
+
+function fmtPesos(v) {
+  return '$ ' + (v || 0).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function drawEmbudo(emb) {
+  const p = document.getElementById('panel-embudo');
+  const li = document.getElementById('links-info');
+  if (!emb || !emb.etapas || !emb.etapas[0].cantidad) {
+    p.innerHTML = '<div class="empty">Sin datos en el rango</div>';
+    li.innerHTML = '<div class="empty">Sin links enviados</div>';
+    return;
+  }
+  const base = emb.etapas[0].cantidad;
+  p.innerHTML = emb.etapas.map((e, i) => {
+    const prev = i > 0 ? emb.etapas[i - 1].cantidad : null;
+    const caida = prev && prev > e.cantidad ? prev - e.cantidad : 0;
+    return `<div class="funnel-step">
+      <div class="funnel-head">
+        <span>${e.etapa}</span>
+        <span><span class="n">${e.cantidad}</span> <span class="pct">${e.pct != null ? e.pct + '%' : ''}</span></span>
+      </div>
+      <div class="funnel-track"><div class="funnel-fill" style="width:${Math.max(2, e.cantidad / base * 100)}%"></div></div>
+      ${caida ? `<div class="drop">↓ se perdieron ${caida} en este paso</div>` : ''}
+    </div>`;
+  }).join('') +
+  `<div style="margin-top:14px;font-size:13px;color:var(--text-muted)">
+     Conversión total: <b style="color:var(--accent)">${emb.conversion_total_pct ?? 0}%</b>
+   </div>`;
+
+  const L = emb.links;
+  li.innerHTML = `
+    <div class="big-num val-warn">${L.abandonados}</div>
+    <div style="font-size:12px;color:var(--text-muted);margin-bottom:14px">
+      links sin pagar de ${L.enviados} enviados ${L.pct_abandono != null ? `(${L.pct_abandono}%)` : ''}
+    </div>
+    <div style="font-size:13px;line-height:1.9">
+      <div>💸 Sin cobrar: <b class="val-warn">${fmtPesos(L.monto_abandonado)}</b></div>
+      <div>✅ Pagados: <b class="val-green">${L.pagados}</b></div>
+      <div>⏱ Tardan en pagar: <b>${L.mediana_min_hasta_pago != null ? L.mediana_min_hasta_pago + ' min' : '—'}</b> <span style="color:var(--text-muted)">(mediana)</span></div>
+    </div>`;
 }
 
 function drawIntenciones(items) {

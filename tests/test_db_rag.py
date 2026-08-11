@@ -16,7 +16,8 @@ async def db(pg_dsn):
     ok = await d.connect()
     assert ok, "no se pudo conectar al Postgres de test"
     # Limpiar tablas entre tests
-    await d.execute("TRUNCATE messages, sku_embeddings, kb_documents RESTART IDENTITY")
+    await d.execute("TRUNCATE messages, sku_embeddings, kb_documents, "
+                    "interacciones, eventos RESTART IDENTITY")
     yield d
     await d.close()
 
@@ -151,3 +152,29 @@ async def test_kb_add_search_delete(db, fake_emb):
 
     await rag.kb_delete(docs[0]["id"])
     assert len(await rag.kb_list()) == 1
+
+
+async def test_embudo_venta(db):
+    """Embudo: etapas, conversión y links abandonados con su monto."""
+    from app.services.metrics_store import MetricsStore
+    m = MetricsStore(db)
+    # 2 conversaciones (interacciones), ambas con oferta y link, una sola paga
+    await m.record("549A", "text", "pedido", 1000, {}, [])
+    await m.record("549B", "text", "pedido", 1000, {}, [])
+    await m.evento("producto_ofrecido", phone="549A", monto=1500.0, ref="S1")
+    await m.evento("producto_ofrecido", phone="549B", monto=2000.0, ref="S2")
+    await m.evento("link_enviado", phone="549A", monto=1500.0, ref="p1")
+    await m.evento("link_enviado", phone="549B", monto=2000.0, ref="p2")
+    await m.evento("pago_aprobado", phone="549A", monto=1500.0, ref="tx1", dato="Visa")
+
+    emb = await m.embudo(7)
+    assert emb is not None
+    etapas = {e["etapa"]: e["cantidad"] for e in emb["etapas"]}
+    assert etapas["Conversaciones"] == 2
+    assert etapas["Producto ofrecido"] == 2
+    assert etapas["Link enviado"] == 2
+    assert etapas["Pago aprobado"] == 1
+    assert emb["conversion_total_pct"] == 50.0
+    assert emb["links"]["enviados"] == 2
+    assert emb["links"]["abandonados"] == 1
+    assert emb["links"]["monto_abandonado"] == 2000.0   # solo el link no pagado
