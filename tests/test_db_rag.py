@@ -192,3 +192,24 @@ async def test_envios_fallidos(db):
     assert f["total"] == 2
     assert len(f["ultimos"]) == 2
     assert "token expirado" in " ".join(u["detalle"] for u in f["ultimos"])
+
+
+async def test_pagos_por_marca(db):
+    """Tasa de aprobación por marca; alerta cuando una marca casi no aprueba."""
+    from app.services.metrics_store import MetricsStore
+    m = MetricsStore(db)
+    for _ in range(4):
+        await m.evento("pago_aprobado", phone="549A", dato="Visa", monto=100.0)
+    await m.evento("pago_rechazado", phone="549B", dato="Visa", monto=100.0,
+                   extra={"motivo": "FONDOS INSUFICIENTES"})
+    for _ in range(4):   # Mastercard nunca aprueba → alerta
+        await m.evento("pago_rechazado", phone="549C", dato="MasterCard", monto=100.0,
+                       extra={"motivo": "TARJETA INVALIDA"})
+
+    marcas = {x["marca"]: x for x in await m.pagos_por_marca(7)}
+    assert marcas["Visa"]["aprobados"] == 4 and marcas["Visa"]["tasa_aprobacion"] == 80.0
+    assert marcas["Visa"]["alerta"] is False
+    mc = marcas["MasterCard"]
+    assert mc["intentos"] == 4 and mc["aprobados"] == 0
+    assert mc["alerta"] is True
+    assert mc["motivo_top"] == "TARJETA INVALIDA"

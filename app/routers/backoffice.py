@@ -684,7 +684,8 @@ async def bo_dashboard(_=Depends(_auth), days: int = Query(7, ge=1, le=90)):
                 "detail": "Postgres no disponible — el dashboard requiere base de datos"}
     return {"available": True, **data,
             "embudo": await store.embudo(days),
-            "envios_fallidos": await store.envios_fallidos(days)}
+            "envios_fallidos": await store.envios_fallidos(days),
+            "pagos_por_marca": await store.pagos_por_marca(days)}
 
 
 @router.get("/conversaciones")

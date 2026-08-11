@@ -266,13 +266,26 @@ async def payway_charge(body: ChargeIn):
     # Rechazado u otro estado → registrar el motivo real para poder revisarlo
     sd = data.get("status_details") or {}
     error_info = (sd.get("error") or {}) if isinstance(sd, dict) else {}
+    _motivo = (error_info.get("reason") or {}).get("description")
     await _registrar_intento(body.pid, pending, {
         "resultado": estado or "rejected",
         "error_tipo": error_info.get("type"),
-        "error_motivo": (error_info.get("reason") or {}).get("description"),
+        "error_motivo": _motivo,
         "payway_id": data.get("id"),
         "bin": body.bin, "metodo": metodo,
     })
+    # Métrica: fiabilidad de cobro por marca de tarjeta
+    try:
+        from app.services.db import get_db
+        from app.services.metrics_store import get_metrics_store
+        await get_metrics_store(get_db(settings.database_url)).evento(
+            "pago_rechazado", phone=pending.get("phone"),
+            dato=(data.get("card_brand") or "").strip() or None,
+            monto=float(pending["total"]), ref=str(data.get("id")),
+            extra={"motivo": _motivo or error_info.get("type"), "bin": body.bin, "metodo": metodo},
+        )
+    except Exception as e:
+        logger.debug(f"evento pago_rechazado: {e}")
     return {"status": estado or "rejected", "detail": data.get("status_details") or data}
 
 

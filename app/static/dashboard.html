@@ -194,6 +194,14 @@ tr.chat-row td { background: #12151f; padding: 14px 20px; }
     </div>
   </div>
 
+  <h2>Pagos por tarjeta</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Marca</th><th>Intentos</th><th>Aprobados</th><th>Rechazados</th><th>Tasa</th><th>Motivo más común</th></tr></thead>
+      <tbody id="pagos-body"><tr><td colspan="6" class="empty">Sin pagos en el rango</td></tr></tbody>
+    </table>
+  </div>
+
   <h2>Conversaciones históricas</h2>
   <div class="hist-controls">
     <input id="hist-q" placeholder="Buscar por teléfono…" />
@@ -256,6 +264,7 @@ async function loadDashboard() {
   document.getElementById('k-p95').textContent = 'p95: ' + fmtMs(t.p95_ms);
 
   drawFallos(d.envios_fallidos);
+  drawPagos(d.pagos_por_marca);
   drawEmbudo(d.embudo);
   drawSerie(d.por_dia);
   drawIntenciones(d.intenciones);
@@ -321,6 +330,26 @@ function drawSerie(dias) {
   ctx.stroke();
   ctx.fillStyle = '#3b82f6'; ctx.font = '10px sans-serif';
   ctx.fillText(fmtMs(maxMs), W - padR + 4, padT + 8);
+}
+
+function drawPagos(marcas) {
+  const body = document.getElementById('pagos-body');
+  if (!marcas || !marcas.length) {
+    body.innerHTML = '<tr><td colspan="6" class="empty">Sin pagos en el rango</td></tr>';
+    return;
+  }
+  body.innerHTML = marcas.map(m => `
+    <tr>
+      <td>${m.alerta ? '⚠️ ' : ''}${escapeHtml(m.marca)}</td>
+      <td>${m.intentos}</td>
+      <td class="val-green">${m.aprobados}</td>
+      <td class="${m.rechazados ? 'val-warn' : ''}">${m.rechazados}</td>
+      <td class="${m.alerta ? 'val-danger' : 'val-green'}"><b>${m.tasa_aprobacion != null ? m.tasa_aprobacion + '%' : '—'}</b></td>
+      <td class="muted">${escapeHtml(m.motivo_top || '')}</td>
+    </tr>
+    ${m.alerta ? `<tr><td colspan="6" style="color:var(--danger);font-size:12px;padding-top:0">
+      Esta tarjeta casi no aprueba: puede no estar habilitada para cobros por internet en el comercio.</td></tr>` : ''}
+  `).join('');
 }
 
 function drawFallos(f) {

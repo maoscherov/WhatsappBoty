@@ -134,6 +134,48 @@ class MetricsStore:
             logger.warning(f"metrics.dashboard: {e}")
             return None
 
+    async def pagos_por_marca(self, days: int = 7) -> list[dict]:
+        """
+        Intentos y aprobaciones por marca de tarjeta. Una marca con tasa baja y
+        varios intentos indica un problema de habilitación en el comercio (no
+        del cliente) — como el caso Mastercard de agosto 2026.
+        """
+        if not self._db.available():
+            return []
+        try:
+            rows = await self._db.fetch("""
+                SELECT COALESCE(NULLIF(dato, ''), 'sin marca') AS marca,
+                       COUNT(*)                                          AS intentos,
+                       COUNT(*) FILTER (WHERE tipo = 'pago_aprobado')    AS aprobados,
+                       COUNT(*) FILTER (WHERE tipo = 'pago_rechazado')   AS rechazados,
+                       MODE() WITHIN GROUP (
+                           ORDER BY extra ->> 'motivo'
+                       ) FILTER (WHERE tipo = 'pago_rechazado')          AS motivo_top
+                FROM eventos
+                WHERE tipo IN ('pago_aprobado', 'pago_rechazado')
+                  AND created_at >= now() - make_interval(days => $1)
+                GROUP BY 1 ORDER BY 2 DESC
+            """, days)
+            out = []
+            for r in rows:
+                intentos = r["intentos"] or 0
+                aprobados = r["aprobados"] or 0
+                tasa = round(aprobados / intentos * 100, 1) if intentos else None
+                out.append({
+                    "marca": r["marca"],
+                    "intentos": intentos,
+                    "aprobados": aprobados,
+                    "rechazados": r["rechazados"] or 0,
+                    "tasa_aprobacion": tasa,
+                    "motivo_top": r["motivo_top"],
+                    # Señal de alarma: varios intentos y casi ninguno aprueba
+                    "alerta": bool(intentos >= 3 and tasa is not None and tasa < 50),
+                })
+            return out
+        except Exception as e:
+            logger.warning(f"metrics.pagos_por_marca: {e}")
+            return []
+
     async def envios_fallidos(self, days: int = 7, limit: int = 10) -> dict:
         """
         Envíos de WhatsApp rechazados: total del período y los últimos casos.
