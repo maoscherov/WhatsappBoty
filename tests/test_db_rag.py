@@ -32,7 +32,19 @@ async def test_schema_existe(db):
 
 async def test_alembic_version(db):
     rows = await db.fetch("SELECT version_num FROM alembic_version")
-    assert rows and rows[0]["version_num"] == "0002"
+    assert rows and rows[0]["version_num"] == "0003"
+
+
+async def test_eventos_registro(db):
+    """La migración 0003 crea la tabla de eventos de negocio."""
+    from app.services.metrics_store import MetricsStore
+    m = MetricsStore(db)
+    await m.evento("link_enviado", phone="549111", monto=1500.0, ref="pid1")
+    await m.evento("busqueda_sin_resultado", phone="549111", dato="framintrol")
+    rows = await db.fetch("SELECT tipo, phone, dato, monto, ref FROM eventos ORDER BY id")
+    assert [r["tipo"] for r in rows] == ["link_enviado", "busqueda_sin_resultado"]
+    assert rows[0]["monto"] == 1500.0 and rows[0]["ref"] == "pid1"
+    assert rows[1]["dato"] == "framintrol"
 
 
 async def test_tabla_interacciones(db):

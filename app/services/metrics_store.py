@@ -23,6 +23,23 @@ class MetricsStore:
     def __init__(self, db):
         self._db = db
 
+    # ── Eventos de negocio ──────────────────────────────────────────────────
+    async def evento(self, tipo: str, phone: str = None, dato: str = None,
+                     monto: float = None, ref: str = None, extra: dict = None):
+        """
+        Registra un evento de negocio (embudo, pagos, búsquedas, envíos).
+        Best-effort: sin Postgres es no-op y nunca interrumpe el flujo del bot.
+        """
+        try:
+            await self._db.execute(
+                "INSERT INTO eventos (tipo, phone, dato, monto, ref, extra) "
+                "VALUES ($1, $2, $3, $4, $5, $6)",
+                tipo, phone, (dato or None), monto, ref,
+                json.dumps(extra) if extra else None,
+            )
+        except Exception as e:
+            logger.debug(f"metrics.evento({tipo}): {e}")
+
     async def record(self, phone: str, tipo: str, intencion: str,
                      total_ms: int, steps: dict, apis: list):
         try:
