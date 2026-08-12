@@ -63,7 +63,22 @@ El webhook de Mercado Pago sólo trae un **id de pago**: para consultarlo hace f
 el access token del comercio dueño de ese pago. Por eso **el comercio tiene que ser
 identificable desde la URL de notificación**, no del contenido.
 
-- URL por comercio: `https://{cliente}.remedia.ar/mp/notification` (o `/mp/notification/{cliente}`).
+**Decisión (2026-08-11): path, no subdominio.** El subdominio exigiría DNS y
+certificado wildcard para que el alta sea automática — infraestructura que hoy no
+existe y que no aporta nada urgente. Con path, dar de alta un cliente es una fila
+en la base.
+
+- URL por comercio: `https://remedia.ar/mp/notification/{cliente}`.
+- La **URL base de cada comercio es un dato de su ficha**, no una convención del
+  código: si mañana uno quiere dominio propio o subdominio, se carga ese valor y
+  funciona sin tocar código (la notification_url la genera el sistema).
+- El tenant sólo se necesita en la URL para el webhook de MP. El bot lo resuelve por
+  `phone_number_id`, la página de pago por el id del pago, y el panel por el usuario
+  logueado.
+- ⚠️ **Consecuencia del path**: todos los comercios comparten origen, así que el
+  navegador comparte cookies/almacenamiento. La sesión del panel debe quedar atada al
+  comercio **dentro del token**, no por origen. Es el punto donde un descuido expone
+  datos de otro comercio.
 - La `notification_url` se manda en cada preferencia (ya funciona así), de modo que
   la arma el sistema a partir del comercio y no depende de lo que el cliente cargue
   en su panel de MP.
