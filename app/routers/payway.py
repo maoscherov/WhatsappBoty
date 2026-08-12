@@ -482,9 +482,13 @@ async def payway_return(r: str = ""):
 
 
 @router.post("/payway/notification")
-async def payway_notification(payload: dict):
-    """Notificación de Payway (webhook). Por ahora solo loguea para ver el formato."""
-    logger.info(f"Payway notification: {payload}")
+@router.post("/payway/notification/{comercio}")
+async def payway_notification(payload: dict, comercio: str = ""):
+    """
+    Notificación de Payway (webhook). Por ahora solo loguea para ver el formato.
+    `comercio` en la ruta sigue el mismo criterio que el webhook de MP.
+    """
+    logger.info(f"Payway notification (comercio={comercio or '-'}): {payload}")
     return {"status": "ok"}
 
 

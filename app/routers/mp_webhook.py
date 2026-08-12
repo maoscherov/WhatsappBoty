@@ -49,10 +49,17 @@ def _validate_mp_signature(request: Request, body_bytes: bytes, secret: str) -> 
 
 
 @router.post("/mp/notification")
-async def mp_notification(request: Request):
+@router.post("/mp/notification/{comercio}")
+async def mp_notification(request: Request, comercio: str = ""):
     """
     MP envía: { "type": "payment", "data": { "id": "123456789" } }
     También puede enviar como query param: ?id=xxx&topic=payment
+
+    `comercio` identifica al cliente en la URL (ej. /mp/notification/ami). Hoy
+    hay uno solo y se ignora, pero deja la URL estable para cuando cada comercio
+    tenga sus propias credenciales: el webhook de MP sólo trae el id del pago,
+    así que el dueño tiene que venir en la ruta. La forma sin comercio se
+    mantiene por compatibilidad con preferencias ya emitidas.
     """
     settings = get_settings()
     body_bytes = await request.body()
@@ -80,7 +87,8 @@ async def mp_notification(request: Request):
         or str(body.get("id", ""))
     )
 
-    logger.info(f"MP notification → topic={topic} payment_id={payment_id}")
+    logger.info(f"MP notification → comercio={comercio or '(sin path)'} "
+                f"topic={topic} payment_id={payment_id}")
 
     # Solo procesamos notificaciones de pagos
     if topic not in ("payment", "") or not payment_id or payment_id == "0":

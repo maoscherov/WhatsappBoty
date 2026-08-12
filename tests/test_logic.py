@@ -284,3 +284,16 @@ def test_no_es_afirmacion_pura(txt):
     """Regresión: un 'dale' dentro de otro pedido no debe derivar la conversación."""
     from app.routers.webhook import _es_afirmacion_pura
     assert _es_afirmacion_pura(txt) is False
+
+
+# ── Webhooks de pago con comercio en la ruta (preparación multi-cliente) ────────
+def test_rutas_webhook_con_comercio():
+    """
+    El webhook de MP sólo trae el id del pago: el comercio debe poder venir en
+    la URL. Se registran ambas formas — con y sin comercio — para no invalidar
+    las preferencias ya emitidas.
+    """
+    import app.main as m
+    rutas = {r.path for r in m.app.routes if hasattr(r, "path")}
+    assert {"/mp/notification", "/mp/notification/{comercio}"} <= rutas
+    assert {"/payway/notification", "/payway/notification/{comercio}"} <= rutas
