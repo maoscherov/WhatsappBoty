@@ -668,6 +668,46 @@ async def bo_resumen(phone: str, _=Depends(_auth)):
     return {"ok": False, "resumen": "", "detail": err or "sin proveedor LLM configurado"}
 
 
+@router.get("/mp/pago/{payment_id}")
+async def bo_mp_pago(payment_id: str, _=Depends(_auth)):
+    """
+    Diagnóstico: consulta un pago en Mercado Pago tal como lo ve el sistema.
+    Sirve para saber por qué una compra no se cerró (¿llegó? ¿está aprobada?
+    ¿trae la referencia con el teléfono?).
+    """
+    from app.services.payment_service import get_payment_service
+    settings = get_settings()
+    svc = get_payment_service(settings.mp_access_token, settings.mp_notification_url, settings.mp_sandbox)
+    pago = await svc.get_payment_info(payment_id)
+    if not pago:
+        return {"ok": False, "detail": "MP no devolvió el pago (¿id incorrecto o token de otra cuenta?)"}
+    items = (pago.get("additional_info") or {}).get("items") or []
+    return {
+        "ok": True,
+        "id": pago.get("id"),
+        "estado": pago.get("status"),
+        "detalle_estado": pago.get("status_detail"),
+        "monto": pago.get("transaction_amount"),
+        "external_reference": pago.get("external_reference"),
+        "notification_url": pago.get("notification_url"),
+        "producto": items[0].get("title") if items else None,
+        "fecha": pago.get("date_approved") or pago.get("date_created"),
+    }
+
+
+@router.post("/mp/reprocesar/{payment_id}")
+async def bo_mp_reprocesar(payment_id: str, _=Depends(_auth)):
+    """
+    Reprocesa un pago de Mercado Pago cuya notificación se perdió: crea el
+    pedido, envía el WhatsApp con el código y actualiza la sesión, igual que
+    haría el webhook. Recupera la venta sin que el cliente tenga que pagar de nuevo.
+    """
+    from app.routers.mp_webhook import procesar_pago
+    resultado = await procesar_pago(payment_id)
+    logger.info(f"Reproceso manual del pago {payment_id}: {resultado}")
+    return resultado
+
+
 @router.get("/dashboard")
 async def bo_dashboard(_=Depends(_auth), days: int = Query(7, ge=1, le=90)):
     """

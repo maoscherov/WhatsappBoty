@@ -94,6 +94,18 @@ async def mp_notification(request: Request, comercio: str = ""):
     if topic not in ("payment", "") or not payment_id or payment_id == "0":
         return {"status": "ignored"}
 
+    return await procesar_pago(payment_id)
+
+
+async def procesar_pago(payment_id: str) -> dict:
+    """
+    Consulta el pago en MP y, si está aprobado, cierra la venta: crea el pedido,
+    avisa por WhatsApp con el código y actualiza la sesión.
+
+    Vive aparte del webhook para poder reprocesar a mano un pago cuya
+    notificación se perdió (endpoint /bo/mp/reprocesar/{id}).
+    """
+    settings = get_settings()
     payment_svc = get_payment_service(settings.mp_access_token, settings.mp_notification_url)
     payment = await payment_svc.get_payment_info(payment_id)
 
