@@ -289,6 +289,7 @@ td .product-price { color: var(--accent); font-size: 12px; }
     <div class="status-pill"><div class="dot unk" id="dot-redis"></div> Redis</div>
     <div class="status-pill"><div class="dot unk" id="dot-claude"></div> Claude API</div>
     <div class="status-pill"><div class="dot unk" id="dot-mp"></div> Mercado Pago</div>
+    <div class="status-pill" id="pill-mp-notif" style="display:none"><div class="dot err"></div> <span title="Sin esta URL, MP cobra pero no confirma el pedido">MP sin aviso de pago</span></div>
     <div class="status-pill"><div class="dot unk" id="dot-wa"></div> WhatsApp</div>
     <div class="status-pill"><div class="dot unk" id="dot-sku"></div> <span id="lbl-sku">Catálogo</span></div>
   </div>
@@ -524,6 +525,10 @@ async function loadHealth() {
     setDot('dot-redis',  d.redis);
     setDot('dot-claude', d.anthropic_key_ok);
     setDot('dot-mp',     d.mp_token_ok);
+    // Aviso visible: con token pero sin URL de notificación, los cobros de MP
+    // no se confirman solos (el cliente paga y no recibe su código).
+    const pillNotif = document.getElementById('pill-mp-notif');
+    if (pillNotif) pillNotif.style.display = (d.mp_token_ok && !d.mp_notification_ok) ? 'flex' : 'none';
     setDot('dot-wa',     d.whatsapp_ok);
     setDot('dot-sku',    d.sku_total > 0);
     document.getElementById('lbl-sku').textContent = `Catálogo (${d.sku_total.toLocaleString('es-AR')} SKUs)`;

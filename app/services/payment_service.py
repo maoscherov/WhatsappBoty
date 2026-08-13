@@ -50,6 +50,14 @@ class PaymentService:
 
         if self._notification_url:
             payload["notification_url"] = self._notification_url
+        else:
+            # Sin esta URL, MP cobra pero no avisa: el cliente paga y no recibe
+            # su código ni se crea el pedido. Falla silenciosa y cara.
+            logger.error(
+                "MP_NOTIFICATION_URL vacía: el link se genera SIN aviso de pago. "
+                "Los cobros no se van a confirmar solos (habrá que reprocesarlos "
+                "con /bo/mp/reprocesar/{id})."
+            )
 
         logger.info(f"MP request → sku_id={sku_id} precio={precio} token_prefix={self._token[:12]}...")
 

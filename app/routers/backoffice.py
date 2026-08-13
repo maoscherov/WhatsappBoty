@@ -63,6 +63,9 @@ async def bo_health(_=Depends(_auth)):
         "sku_total": sku_total,
         "anthropic_key_ok": bool(settings.anthropic_api_key and not settings.anthropic_api_key.startswith("placeholder")),
         "mp_token_ok": bool(settings.mp_access_token and not settings.mp_access_token.startswith("placeholder")),
+        # Sin URL de aviso, MP cobra pero no confirma: hay que verlo en el panel.
+        "mp_notification_ok": bool(settings.mp_notification_url),
+        "mp_notification_url": settings.mp_notification_url or "(sin configurar)",
         "whatsapp_ok": bool(settings.whatsapp_token and settings.whatsapp_phone_number_id),
     }
 
