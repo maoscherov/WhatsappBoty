@@ -42,6 +42,7 @@ from app.services.checkout_helper import (
     confirmar_pedido, resolver_entrega, capturar_direccion,
     match_retiro, match_envio, pide_humano, derivar_si_receta, afirma_envio,
     quiere_cambiar_direccion, extraer_direccion_de, contiene_link, pide_pago_manual,
+    necesita_receta,
     producto_respaldado, parece_direccion,
 )
 
@@ -1146,7 +1147,29 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     # Solo se marca como pendiente (comprable) si es VENDIBLE.
                     # Si es sin stock / sin precio, no entra al flujo de compra —
                     # Claude ya respondió ofreciendo las alternativas disponibles.
-                    if producto_elegido and producto_elegido.get("vendible", True):
+                    if producto_elegido and producto_elegido.get("vendible", True) and \
+                            intent_result.get("agregar_al_pedido") and session.get("pending_sku_id"):
+                        # "Agregame también..." → suma al pedido en curso, no lo pisa.
+                        _cfg_rec = await deps["config"].get_all()
+                        if necesita_receta(deps["sku"], producto_elegido["sku_id"],
+                                           _cfg_rec.get("receta_mode", "conservador")):
+                            respuesta = (f"{producto_elegido['nombre']} requiere receta 🩺, así que "
+                                         "ese no lo puedo sumar al pedido. El resto sigue como está "
+                                         "— ¿lo confirmamos?")
+                        else:
+                            items = await deps["session"].agregar_item(
+                                phone, producto_elegido["sku_id"], producto_elegido["nombre"],
+                                producto_elegido["precio"], cantidad,
+                            )
+                            _total_items = sum(i["precio"] * i.get("cantidad", 1) for i in items)
+                            _lista = "\n".join(
+                                f"• {i['nombre']} — ${i['precio'] * i.get('cantidad', 1):,.2f}"
+                                for i in items
+                            )
+                            respuesta = (f"¡Listo, lo sumé! Tu pedido queda así:\n{_lista}\n\n"
+                                         f"Total: *${_total_items:,.2f}* — ¿lo confirmamos?")
+                            _intencion = "item_agregado"
+                    elif producto_elegido and producto_elegido.get("vendible", True):
                         await deps["session"].set_pending(
                             phone=phone,
                             sku_id=producto_elegido["sku_id"],
@@ -1167,10 +1190,34 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                             producto_elegido, solicita_imagen, send_images_cfg,
                         )
 
+                # Productos ADICIONALES del mismo mensaje ("...y unas gomitas y
+                # caramelos"): se buscan POR SEPARADO y su disponibilidad se
+                # agrega acá, con datos reales. Buscados como una sola frase
+                # devolvían cualquier cosa (caramelos antibióticos con receta), y
+                # el modelo prometía "voy a verificar" sin verificación posible.
+                _extras = [e for e in (intent_result.get("entidades_adicionales") or [])
+                           if isinstance(e, str) and e.strip()][:3]
+                if _extras:
+                    _lineas_extra = []
+                    for _ent2 in _extras:
+                        _r2 = deps["sku"].buscar(_ent2)
+                        _top2 = next((r for r in _r2 if r.get("vendible")
+                                      and r.get("requiere_receta") not in ("si", "ambiguo")), None)
+                        if _top2:
+                            _lineas_extra.append(
+                                f"• {_ent2}: {_top2['nombre']} — ${_top2['precio']:,.2f}")
+                        else:
+                            _lineas_extra.append(f"• {_ent2}: no lo encontré en el catálogo")
+                            await deps["metrics"].evento("busqueda_sin_resultado", phone=phone,
+                                                         dato=" ".join(_ent2.lower().split())[:80])
+                    respuesta += ("\n\nSobre lo demás que me pediste:\n" + "\n".join(_lineas_extra)
+                                  + "\n\nSi querés sumar alguno al pedido, decime cuál 🙂")
+
                 # Pidió un producto y no hay nada que ofrecerle (no está en el
                 # catálogo o está sin stock): según config, ofrecer consultarlo
                 # con el equipo o derivar directo. Antes la consulta moría acá.
-                if not _sku_pendiente_nuevo and intencion in ("pedido", "consulta_precio", "consulta_stock"):
+                if not _sku_pendiente_nuevo and _intencion != "item_agregado" \
+                        and intencion in ("pedido", "consulta_precio", "consulta_stock"):
                     _cfg_ss = await deps["config"].get_all()
                     _modo_ss = (_cfg_ss.get("sin_stock_mode") or "preguntar").lower()
                     if _modo_ss == "derivar":

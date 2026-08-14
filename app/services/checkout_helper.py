@@ -225,8 +225,18 @@ async def crear_link_y_responder(
 
     Devuelve (respuesta_para_el_cliente, link_o_None).
     """
-    cantidad = session.get("pending_cantidad", 1)
-    precio_unitario = session["pending_precio"]
+    # Carrito: si hay más de un producto, el link sale por el total de todos.
+    items = session.get("pending_items") or []
+    if len(items) > 1:
+        cantidad = 1
+        precio_unitario = sum(i["precio"] * i.get("cantidad", 1) for i in items)
+        nombre_link = f"{len(items)} productos"
+        sku_link = "MULTI"
+    else:
+        cantidad = session.get("pending_cantidad", 1)
+        precio_unitario = session["pending_precio"]
+        nombre_link = session["pending_sku_nombre"]
+        sku_link = session["pending_sku_id"]
     total = precio_unitario * cantidad
 
     # Descuento automático de socio (config socio_discount_pct, 0 = apagado).
@@ -249,8 +259,8 @@ async def crear_link_y_responder(
         logger.warning(f"No se pudo evaluar descuento de socio para {phone}: {e}")
 
     link, err = await payment_svc.crear_link(
-        sku_id=session["pending_sku_id"],
-        nombre=session["pending_sku_nombre"],
+        sku_id=sku_link,
+        nombre=nombre_link,
         precio=precio_unitario,
         phone=phone,
         cantidad=cantidad,
@@ -273,12 +283,18 @@ async def crear_link_y_responder(
         await _gms(_gdb(_gs2().database_url)).evento(
             "link_enviado", phone=phone, monto=total,
             ref=link.rsplit("/", 1)[-1][:64],
-            extra={"producto": session["pending_sku_nombre"], "cantidad": cantidad},
+            extra={"producto": nombre_link, "cantidad": cantidad},
         )
     except Exception as e:
         logger.debug(f"evento link_enviado: {e}")
 
-    nombre_con_cant = session["pending_sku_nombre"] + (f" x{cantidad}" if cantidad > 1 else "")
+    if len(items) > 1:
+        nombre_con_cant = " + ".join(
+            i["nombre"] + (f" x{i.get('cantidad', 1)}" if i.get("cantidad", 1) > 1 else "")
+            for i in items
+        )
+    else:
+        nombre_con_cant = session["pending_sku_nombre"] + (f" x{cantidad}" if cantidad > 1 else "")
     entrega_line = texto_entrega(tipo_entrega, direccion)
     descuento_bloque = f"{descuento_line}\n" if descuento_line else ""
     respuesta = (

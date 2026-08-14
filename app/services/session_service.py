@@ -87,9 +87,33 @@ class SessionService:
             "pending_precio": precio,
             "pending_cantidad": max(1, int(cantidad)),
             "pending_opciones": opciones if opciones is not None else session.get("pending_opciones", []),
+            # Un pending nuevo arranca el carrito de cero (reemplaza, no suma)
+            "pending_items": [{"sku_id": sku_id, "nombre": sku_nombre,
+                               "precio": precio, "cantidad": max(1, int(cantidad))}],
             "estado": "esperando_confirmacion",
         })
         await self.save(phone, session)
+
+    async def agregar_item(self, phone: str, sku_id: str, sku_nombre: str, precio: float,
+                           cantidad: int = 1) -> list[dict]:
+        """
+        Suma un producto al pedido en curso (carrito). El primero del carrito
+        sigue siendo el pending "principal" por compatibilidad; el link de pago
+        se arma con la lista completa.
+        """
+        session = await self.get(phone)
+        items = session.get("pending_items") or []
+        if not items and session.get("pending_sku_id"):
+            items = [{"sku_id": session["pending_sku_id"],
+                      "nombre": session["pending_sku_nombre"],
+                      "precio": session["pending_precio"],
+                      "cantidad": session.get("pending_cantidad", 1)}]
+        items.append({"sku_id": sku_id, "nombre": sku_nombre,
+                      "precio": precio, "cantidad": max(1, int(cantidad))})
+        session["pending_items"] = items
+        session["estado"] = "esperando_confirmacion"
+        await self.save(phone, session)
+        return items
 
     async def clear_pending(self, phone: str):
         session = await self.get(phone)
@@ -99,6 +123,7 @@ class SessionService:
             "pending_precio": None,
             "pending_cantidad": 1,
             "pending_opciones": [],
+            "pending_items": [],
             "estado": "idle",
             "tipo_entrega": None,
             "direccion_envio": None,

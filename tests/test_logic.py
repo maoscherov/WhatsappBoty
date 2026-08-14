@@ -614,3 +614,43 @@ def test_sin_precio_no_hay_producto_ofrecido():
     ofrece = "Te puedo ofrecer la tintura KOLESTON SING 60 RUBIO OSCUR por $9.555,28."
     elegido = ch.producto_respaldado(ofrece, resultados)
     assert elegido and elegido["sku_id"] == "B"
+
+
+# ── Carrito: varios productos en un pedido ─────────────────────────────────────
+async def test_carrito_acumula_items():
+    """'Agregame también...' suma al pedido en curso en vez de pisarlo."""
+    from app.services.session_service import SessionService
+    ss = SessionService("redis://127.0.0.1:1")
+    await ss.set_pending("549", sku_id="T1", sku_nombre="Tintura Koleston",
+                         precio=9555.28, cantidad=1, opciones=[])
+    items = await ss.agregar_item("549", "G1", "Gomitas de menta", 300.0, 2)
+    assert len(items) == 2
+    assert items[0]["nombre"] == "Tintura Koleston"
+    assert items[1]["cantidad"] == 2
+    s = await ss.get("549")
+    assert s["estado"] == "esperando_confirmacion"
+    # Un pedido NUEVO reinicia el carrito
+    await ss.set_pending("549", sku_id="X", sku_nombre="Otro", precio=100, cantidad=1)
+    assert len((await ss.get("549"))["pending_items"]) == 1
+
+
+async def test_link_de_pago_suma_el_carrito():
+    """El link sale por el total de todos los productos, con el detalle."""
+    from app.services.session_service import SessionService
+    ss = SessionService("redis://127.0.0.1:1")
+    await ss.set_pending("549", sku_id="T1", sku_nombre="Tintura", precio=1000.0, cantidad=1)
+    await ss.agregar_item("549", "G1", "Gomitas", 300.0, 2)
+
+    capturado = {}
+    class _FakePago:
+        async def crear_link(self, sku_id, nombre, precio, phone, cantidad=1):
+            capturado.update(sku_id=sku_id, nombre=nombre, precio=precio, cantidad=cantidad)
+            return "https://pago/x", None
+
+    sesion = await ss.get("549")
+    respuesta, link = await ch.crear_link_y_responder(_FakePago(), ss, "549", sesion, "retiro", None)
+    assert link
+    assert capturado["sku_id"] == "MULTI"
+    assert capturado["precio"] == 1000.0 + 300.0 * 2      # total del carrito
+    assert "Tintura + Gomitas x2" in respuesta
+    assert "$1,600.00" in respuesta
