@@ -581,3 +581,16 @@ def test_amt_avisa_sellado_reducido_y_lo_no_incluido():
     assert "sellado" in txt.lower()
     assert "mitad" in txt.lower()          # a 29 días se reduce
     assert "no incluye" in txt.lower()     # y no está contemplado en el número
+
+
+async def test_no_repetir_aviso_de_cierre():
+    """
+    Regresión: un cliente recibió tres veces el mismo mensaje de cierre. Si la
+    sesión reaparece (dos instancias del job durante un deploy, o un Redis
+    compartido entre entornos), el aviso no debe repetirse.
+    """
+    from app.services.session_service import SessionService
+    ss = SessionService("redis://127.0.0.1:1")
+    assert await ss.cierre_ya_avisado("549A") is False   # primera vez: se avisa
+    assert await ss.cierre_ya_avisado("549A") is True    # ya avisado: no repetir
+    assert await ss.cierre_ya_avisado("549B") is False   # otro cliente sí recibe

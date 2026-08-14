@@ -124,10 +124,15 @@ async def _cerrar_sesiones_inactivas():
                 con_link = session.get("estado") == "esperando_pago"
                 texto_cierre = mensaje_pago if con_link else mensaje
                 if texto_cierre and session.get("history"):
-                    try:
-                        await wa.send_text(phone, texto_cierre)
-                    except Exception as e:
-                        logger.warning(f"No se pudo avisar cierre a {phone}: {e}")
+                    # Una sola vez por cliente: si la sesión reaparece, no se
+                    # le repite el mismo aviso de cierre.
+                    if await session_svc.cierre_ya_avisado(phone):
+                        logger.info(f"Cierre ya avisado a {phone}, no se repite")
+                    else:
+                        try:
+                            await wa.send_text(phone, texto_cierre)
+                        except Exception as e:
+                            logger.warning(f"No se pudo avisar cierre a {phone}: {e}")
                 await session_svc.delete(phone)
                 logger.info(f"Sesión cerrada por inactividad "
                             f"({minutos_pago if con_link else minutos} min, "

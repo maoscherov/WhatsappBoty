@@ -239,6 +239,25 @@ class SessionService:
                 out.append(phone)
         return out
 
+    async def cierre_ya_avisado(self, phone: str, ttl: int = 3 * 3600) -> bool:
+        """
+        True si ya se le mandó el aviso de cierre hace poco (y lo marca si no).
+
+        Protege contra el aviso repetido: si la sesión reaparece —dos instancias
+        del job durante un deploy, o un Redis compartido entre entornos— el
+        cliente recibiría el mismo mensaje varias veces.
+        """
+        key = f"cierre_avisado:{phone}"
+        if await self._use_redis():
+            try:
+                creado = await self._redis.set(key, "1", ex=ttl, nx=True)
+                return creado is None      # ya existía → alguien lo avisó antes
+            except Exception:
+                pass
+        ya = key in self._processed_ids
+        self._processed_ids.add(key)
+        return ya
+
     async def derivadas_sin_atender(self, threshold_secs: int) -> list[str]:
         """
         Conversaciones derivadas hace más de `threshold_secs` que **nadie tomó**
