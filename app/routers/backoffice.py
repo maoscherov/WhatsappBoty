@@ -609,6 +609,23 @@ async def bo_close(phone: str, _=Depends(_auth)):
     return {"status": "ok", "closed": phone}
 
 
+@router.post("/sessions/liberar-todas")
+async def bo_liberar_todas(_=Depends(_auth)):
+    """
+    Devuelve al bot todas las conversaciones que quedaron en atención humana.
+    Útil cuando nadie está atendiendo y quedaron mudas.
+    """
+    settings = get_settings()
+    session_svc = get_session_service(settings.redis_url)
+    liberadas = []
+    for phone, s in await session_svc.list_all():
+        if s.get("estado") == "operador":
+            await session_svc.liberar(phone)
+            liberadas.append(phone)
+    logger.info(f"Liberadas {len(liberadas)} conversaciones del modo operador")
+    return {"ok": True, "liberadas": liberadas}
+
+
 @router.post("/sessions/clear")
 async def bo_sessions_clear(_=Depends(_auth)):
     """Elimina TODAS las sesiones activas (resetear el tablero antes de una demo)."""

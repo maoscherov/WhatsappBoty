@@ -80,11 +80,16 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Postgres init falló: {e} — se usa solo Redis")
 
-    # Job de cierre por inactividad: avisa y cierra sesiones sin actividad
-    # (minuta 2026-07-31: 15 min). Solo con WhatsApp configurado (no en tests).
+    # Job periódico: cierre por inactividad, aviso de demora y devolución al bot
+    # de las derivaciones sin atender. Arranca con cualquier proveedor de
+    # WhatsApp configurado (con Kapso, WHATSAPP_TOKEN va vacío).
     cierre_task = None
-    if settings.whatsapp_token:
+    if settings.whatsapp_token or settings.kapso_api_key:
         cierre_task = asyncio.create_task(_cerrar_sesiones_inactivas())
+        logger.info("Job de sesiones activo (inactividad, avisos y auto-liberación)")
+    else:
+        logger.warning("Sin credenciales de WhatsApp: el job de sesiones NO arranca "
+                       "(no habrá cierre por inactividad ni auto-liberación)")
 
     yield
 
