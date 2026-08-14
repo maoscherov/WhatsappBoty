@@ -34,6 +34,9 @@ DEFAULTS: dict[str, str] = {
     "mutual_max_turnos": "30",                # corte por conversación larga
     "mutual_max_minutos": "90",
     "mutual_turno_ofrecer_asesor": "10",      # desde qué turno se recuerda el asesor
+    # Corte de relevancia de la base de conocimiento. Bajo a propósito: las
+    # preguntas cortas puntúan poco contra documentos largos y se perdía el dato.
+    "mutual_kb_min_score": "0.05",
     "mutual_escalada_message": (
         "Perdón por las vueltas 🙏 Te paso con alguien del equipo para que te "
         "ayude personalmente."

@@ -870,6 +870,27 @@ async def bo_kb_add(body: KBDoc, _=Depends(_auth)):
     return {"status": "ok"}
 
 
+@router.get("/kb/buscar")
+async def bo_kb_buscar(_=Depends(_auth), q: str = Query(...), n: int = Query(5)):
+    """
+    Diagnóstico: qué documentos encuentra la búsqueda para una consulta y con
+    qué puntaje. Sirve para ver si al bot le está llegando el dato o no.
+    """
+    rag = _rag()
+    if not rag.enabled():
+        return {"ok": False, "detail": "RAG deshabilitado (falta Postgres u OPENAI_API_KEY)"}
+    docs = await rag.kb_search(q, n=n, min_score=0.0)   # sin filtrar, para ver todo
+    return {
+        "ok": True, "consulta": q,
+        "total_en_base": len(await rag.kb_list()),
+        "resultados": [
+            {"titulo": d["titulo"], "score": round(d["score"], 3),
+             "extracto": d["contenido"][:120]}
+            for d in docs
+        ],
+    }
+
+
 @router.post("/kb/cargar-mutual")
 async def bo_kb_cargar_mutual(_=Depends(_auth), reemplazar: bool = Query(False)):
     """

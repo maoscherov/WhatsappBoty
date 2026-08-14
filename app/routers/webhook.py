@@ -202,9 +202,16 @@ async def _flujo_mutual(deps, phone: str, session: dict, texto: str,
                 "sigue con vos desde acá 🙌"), "derivado_conversacion_larga"
 
     # 3. Base de conocimiento como contexto (es la única fuente de verdad).
+    # Umbral bajo a propósito: una pregunta corta ("me das el cvu?") da un
+    # puntaje de similitud chico contra un documento largo y quedaba filtrada,
+    # dejando al modelo sin el dato. Con el tope de 4 documentos alcanza para
+    # que llegue lo relevante; el prompt decide qué usar.
     _tkb = _time.perf_counter()
-    docs = await deps["rag"].kb_search(texto, n=4)
+    _min_score = float(cfg.get("mutual_kb_min_score") or 0.05)
+    docs = await deps["rag"].kb_search(texto, n=4, min_score=_min_score)
     steps["kb_ms"] = int((_time.perf_counter() - _tkb) * 1000)
+    logger.info(f"KB: {len(docs)} documentos para {texto[:40]!r} "
+                f"→ {[d['titulo'][:28] for d in docs]}")
     contexto_kb = "\n\n".join(f"{d['titulo']}: {d['contenido']}".strip(": ") for d in docs) or None
 
     _tc = _time.perf_counter()
