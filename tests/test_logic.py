@@ -528,3 +528,29 @@ def test_no_simula_si_el_mensaje_no_lo_pide(txt):
     """
     from app.services.mutual_helper import menciona_simulacion
     assert menciona_simulacion(txt) is False
+
+
+async def test_liberar_reinicia_contadores_de_conversacion():
+    """
+    Regresión: al volver del modo operador quedaban el reloj de la charla y el
+    contador de negatividad. Con un `_conv_inicio` viejo, el bot derivaba por
+    "conversación larga" en el primer mensaje y entraba en bucle: derivar →
+    liberar → derivar.
+    """
+    import time
+    from app.services.session_service import SessionService
+
+    ss = SessionService("redis://127.0.0.1:1")
+    await ss.set_estado("X", "operador", motivo="prestamo")
+    s = await ss.get("X")
+    s["_conv_inicio"] = time.time() - 8 * 3600     # charla de anoche
+    s["_negativos"] = 2
+    s["derivacion_ofrecida"] = "prestamo"
+    await ss.save("X", s)
+
+    await ss.liberar("X")
+    s2 = await ss.get("X")
+    assert s2["estado"] == "idle"
+    for k in ("_conv_inicio", "_negativos", "derivacion_ofrecida",
+              "derivada_at", "derivada_motivo", "agente"):
+        assert k not in s2, f"quedó {k} y volvería a derivar"

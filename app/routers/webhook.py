@@ -189,11 +189,23 @@ async def _flujo_mutual(deps, phone: str, session: dict, texto: str,
         return mensaje_derivacion(motivo, nombre_socio), f"derivado_{motivo}"
 
     # 2. Corte por conversación larga: evita el efecto bucle (spec 4.2).
+    # El reloj arranca de nuevo si pasó un rato sin hablar: es otra charla, no
+    # la misma. Sin esto, una sesión vieja hacía que el bot derivara siempre.
     turnos = len([m for m in session.get("history", []) if m.get("role") == "user"]) + 1
     max_turnos = int(cfg.get("mutual_max_turnos") or 30)
     max_minutos = int(cfg.get("mutual_max_minutos") or 90)
-    inicio = session.get("_conv_inicio") or _time.time()
-    minutos = (_time.time() - float(inicio)) / 60
+    corte_inactividad = int(cfg.get("inactivity_minutes") or 15) * 60
+
+    inicio = session.get("_conv_inicio")
+    ultima = session.get("_last_activity")
+    if inicio and ultima and (_time.time() - float(ultima)) > corte_inactividad:
+        inicio = None   # charla nueva: se descarta el reloj anterior
+        _sr = await deps["session"].get(phone)
+        for k in ("_conv_inicio", "_negativos"):
+            _sr.pop(k, None)
+        await deps["session"].save(phone, _sr)
+    minutos = (_time.time() - float(inicio)) / 60 if inicio else 0
+
     if turnos >= max_turnos or minutos >= max_minutos:
         await deps["session"].set_estado(phone, "operador", motivo="conversacion_larga")
         logger.info(f"Derivación por conversación larga: {phone} turnos={turnos} min={minutos:.0f}")

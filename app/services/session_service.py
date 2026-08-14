@@ -256,10 +256,17 @@ class SessionService:
         return out
 
     async def liberar(self, phone: str):
-        """Devuelve la conversación al bot (sale del modo operador)."""
+        """
+        Devuelve la conversación al bot (sale del modo operador).
+
+        También reinicia los contadores de la charla: si no, el reloj de
+        "conversación larga" sigue corriendo desde el inicio original y el bot
+        vuelve a derivar en el primer mensaje, entrando en un bucle.
+        """
         session = await self.get(phone)
         session["estado"] = "idle"
-        for k in ("derivada_at", "derivada_motivo", "_handoff_avisado", "agente"):
+        for k in ("derivada_at", "derivada_motivo", "_handoff_avisado", "agente",
+                  "_conv_inicio", "_negativos", "derivacion_ofrecida"):
             session.pop(k, None)
         await self.save(phone, session)
 
