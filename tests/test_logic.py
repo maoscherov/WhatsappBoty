@@ -654,3 +654,21 @@ async def test_link_de_pago_suma_el_carrito():
     assert capturado["precio"] == 1000.0 + 300.0 * 2      # total del carrito
     assert "Tintura + Gomitas x2" in respuesta
     assert "$1,600.00" in respuesta
+
+
+# ── Un mensaje que arranca con "no" nunca confirma ─────────────────────────────
+@pytest.mark.parametrize("txt", ["no esta bien", "No, está bien", "no sé", "no  mejor otro"])
+def test_empieza_con_no(txt):
+    """
+    Regresión (caso real): "no esta bien" es ambiguo y el modelo lo tomó como
+    confirmación — el cliente recibió el flujo de entrega tras decir que algo
+    estaba mal. Ante la duda, se pregunta.
+    """
+    from app.routers.webhook import _empieza_con_no
+    assert _empieza_con_no(txt) is True
+
+
+@pytest.mark.parametrize("txt", ["dale", "si", "bueno", "nova el shampoo", "noviembre"])
+def test_no_empieza_con_no(txt):
+    from app.routers.webhook import _empieza_con_no
+    assert _empieza_con_no(txt) is False

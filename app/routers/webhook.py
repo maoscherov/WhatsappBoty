@@ -72,6 +72,16 @@ _PALABRAS_SI = [r"\bsi\b", r"\bsí\b", r"\bdale\b", r"\bok\b", r"\blisto\b",
                 r"\bbueno\b", r"\bpor favor\b", r"\bobvio\b", r"\bclaro\b"]
 
 _NO_EXACTO = [r"^no$", r"^nope$", r"^cancel$", r"^cancela$"]
+
+
+def _empieza_con_no(t: str) -> bool:
+    """
+    True si el mensaje arranca con "no". Un mensaje así NUNCA confirma un
+    pedido: "no está bien" es ambiguo ("no, está bien" vs "no está bien") y
+    ante la duda se pregunta — confirmar de más termina en un link de pago
+    que el cliente no quería (caso real).
+    """
+    return bool(_re.match(r"^\s*no\b", t or "", _re.IGNORECASE))
 _NO_FRASE  = [r"\bno quiero\b", r"\bno gracias\b", r"\bmejor no\b",
               r"\bcancela(r|me)?\b", r"\bnope\b"]
 
@@ -871,7 +881,8 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     await deps["session"].add_message(phone, "assistant", respuesta)
                     continue
 
-                elif _match_si(texto_lower) or match_envio(texto_lower) or match_retiro(texto_lower):
+                elif (_match_si(texto_lower) or match_envio(texto_lower) or match_retiro(texto_lower)) \
+                        and not _empieza_con_no(texto_lower):
                     # Confirma. Si además ya indicó cómo recibirlo, se resuelve sin re-preguntar.
                     _entrega = ("envio" if match_envio(texto_lower)
                                 else "retiro" if match_retiro(texto_lower) else None)
@@ -907,6 +918,18 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     respuesta     = intent_result.get("respuesta", "")
                     _entidad_nueva = intent_result.get("entidad_producto")
                     sku_index     = intent_result.get("sku_seleccionado_index")
+
+                    # Un mensaje que arranca con "no" NUNCA confirma. "no está
+                    # bien" es ambiguo ("no, está bien" vs "no está bien") y el
+                    # modelo eligió confirmar (caso real → link no deseado).
+                    # Ante la duda, se pregunta.
+                    if confirmacion is True and _empieza_con_no(texto_lower):
+                        confirmacion = None
+                        _intencion = "confirmacion_ambigua"
+                        _prod = session.get("pending_sku_nombre", "el pedido")
+                        respuesta = (f"Perdón, no te entendí bien 🙏 ¿Confirmo {_prod}, "
+                                     "o preferís cambiar algo?")
+                        logger.info(f"Confirmación bloqueada (mensaje arranca con 'no'): {texto[:40]!r}")
 
                     # ── Paso 1: Si el usuario seleccionó una opción de la lista existente,
                     #    actualizar pending ANTES de evaluar confirmacion/cambio.
