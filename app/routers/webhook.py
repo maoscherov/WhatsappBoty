@@ -42,7 +42,7 @@ from app.services.checkout_helper import (
     confirmar_pedido, resolver_entrega, capturar_direccion,
     match_retiro, match_envio, pide_humano, derivar_si_receta, afirma_envio,
     quiere_cambiar_direccion, extraer_direccion_de, contiene_link, pide_pago_manual,
-    necesita_receta,
+    necesita_receta, pide_foto,
     producto_respaldado, parece_direccion,
 )
 
@@ -760,6 +760,23 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 await deps["session"].add_message(phone, "assistant", respuesta)
                 continue
 
+            # ── Pide una FOTO del producto → derivar (regla de negocio) ──────
+            # La foto real la saca y la manda una persona del equipo; el bot
+            # no tiene imágenes confiables de los productos.
+            if pide_foto(texto):
+                _intencion = "pide_foto"
+                await deps["session"].set_estado(phone, "operador", motivo="pide_foto")
+                respuesta = (
+                    "¡Dale! Te paso con alguien del equipo que te manda la foto "
+                    "del producto 📷 En un momento te contactamos."
+                )
+                _ts = _time.perf_counter()
+                await deps["wa"].send_text(phone, respuesta)
+                _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
+                await deps["session"].add_message(phone, "user", texto)
+                await deps["session"].add_message(phone, "assistant", respuesta)
+                continue
+
             # ── Pide hablar con una persona → derivar (sin generar link) ─────
             if pide_humano(texto):
                 _intencion = "derivado_humano"
@@ -1132,9 +1149,25 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 cantidad = max(1, int(intent_result.get("cantidad") or 1))
                 respuesta = intent_result.get("respuesta", "")
 
+                # El modelo detectó que pide una foto (frases que el matcher no
+                # cubre): misma regla, lo atiende una persona.
+                if intent_result.get("solicita_imagen"):
+                    _intencion = "pide_foto"
+                    await deps["session"].set_estado(phone, "operador", motivo="pide_foto")
+                    respuesta = (
+                        "¡Dale! Te paso con alguien del equipo que te manda la foto "
+                        "del producto 📷 En un momento te contactamos."
+                    )
+                    _ts = _time.perf_counter()
+                    await deps["wa"].send_text(phone, respuesta)
+                    _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
+                    await deps["session"].add_message(phone, "user", texto)
+                    await deps["session"].add_message(phone, "assistant", respuesta)
+                    continue
+
                 if resultados_sku:
                     sku_index = intent_result.get("sku_seleccionado_index")
-                    solicita_imagen = bool(intent_result.get("solicita_imagen"))
+                    solicita_imagen = False   # pedir foto deriva; no se manda imagen de catálogo
                     producto_elegido = None
 
                     # 1. Intentar con el índice que devolvió Claude

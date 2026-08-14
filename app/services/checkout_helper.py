@@ -156,6 +156,22 @@ def pide_pago_manual(t: str) -> bool:
     return any(re.search(p, t, re.IGNORECASE) for p in _PAGO_MANUAL)
 
 
+_PIDE_FOTO = [
+    r"\b(mand|pas|env[ií]|ten[eé]|hay|ver|mostr|sac)\w*\b.{0,25}\b(foto|fotos|imagen|im[aá]genes)\b",
+    r"\b(foto|fotos|imagen|im[aá]genes)\b.{0,25}\b(mand|pas|env[ií]|ten[eé]|mostr)\w*\b",
+    r"\bc[oó]mo\s+(es|viene|se\s+ve)\b.{0,20}\?",
+]
+
+
+def pide_foto(t: str) -> bool:
+    """
+    True si el cliente pide ver una foto/imagen de un producto. Regla de
+    negocio: eso lo atiende una persona (saca la foto real del producto y se
+    la manda), no el bot.
+    """
+    return any(re.search(p, t, re.IGNORECASE) for p in _PIDE_FOTO)
+
+
 _LINK_RE = re.compile(r"(https?://\S+|www\.\S+|\S+\.(?:pdf|jpg|jpeg|png)\b)", re.IGNORECASE)
 
 

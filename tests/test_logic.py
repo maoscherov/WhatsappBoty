@@ -672,3 +672,18 @@ def test_empieza_con_no(txt):
 def test_no_empieza_con_no(txt):
     from app.routers.webhook import _empieza_con_no
     assert _empieza_con_no(txt) is False
+
+
+# ── Pedir foto de un producto → derivar a una persona ──────────────────────────
+@pytest.mark.parametrize("txt", [
+    "me mandás una foto del producto?", "tenés fotos de la crema?",
+    "me pasás una imagen", "quiero ver una foto", "cómo es? tenés foto?",
+])
+def test_pide_foto_deriva(txt):
+    """La foto real del producto la saca y la manda una persona del equipo."""
+    assert ch.pide_foto(txt) is True
+
+
+@pytest.mark.parametrize("txt", ["quiero un ibuprofeno", "hola", "cuánto sale", "dale confirmo"])
+def test_no_pide_foto(txt):
+    assert ch.pide_foto(txt) is False
