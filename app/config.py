@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     wa_provider: str = "meta"
     wa_api_base: str = ""      # pisa la URL base del proveedor si hace falta
     kapso_api_key: str = ""
+    kapso_webhook_secret: str = ""   # firma de los webhooks de Kapso (X-Webhook-Signature)
 
     anthropic_api_key: str = ""
 

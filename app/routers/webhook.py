@@ -327,14 +327,54 @@ def _kapso_a_mensajes(evento: dict) -> list[dict]:
     }]
 
 
+def _firma_kapso_valida(body_bytes: bytes, firma: str, secret: str) -> bool:
+    """
+    Verifica el header X-Webhook-Signature: HMAC-SHA256 del cuerpo, en hexa.
+
+    Se compara contra dos serializaciones del JSON porque Kapso firma el objeto
+    ya serializado (con separadores estilo JavaScript) y no siempre coincide
+    byte a byte con lo que llega.
+    """
+    import hashlib
+    import hmac as _hmac
+    import json as _json
+
+    if not firma:
+        return False
+    candidatos = [body_bytes]
+    try:
+        data = _json.loads(body_bytes)
+        candidatos.append(_json.dumps(data, separators=(",", ":"), ensure_ascii=False).encode())
+        candidatos.append(_json.dumps(data, ensure_ascii=False).encode())
+    except Exception:
+        pass
+    firma = firma.strip().lower().removeprefix("sha256=")
+    for cuerpo in candidatos:
+        esperada = _hmac.new(secret.encode(), cuerpo, hashlib.sha256).hexdigest()
+        if _hmac.compare_digest(esperada, firma):
+            return True
+    return False
+
+
 @router.post("/webhook/kapso")
 async def receive_kapso(request: Request):
     """
     Webhook de Kapso (tipo "Kapso events"). Es el único disponible en sandbox.
 
     Acepta un evento suelto o un lote (`{batch: true, data: [...]}`), y sólo
-    procesa los mensajes entrantes.
+    procesa los mensajes entrantes. Si hay secret configurado, se exige la
+    firma: sin eso, cualquiera que conozca la URL podría inyectar mensajes.
     """
+    body_bytes = await request.body()
+    _secret = get_settings().kapso_webhook_secret
+    if _secret:
+        if not _firma_kapso_valida(body_bytes, request.headers.get("x-webhook-signature", ""), _secret):
+            logger.warning("Kapso webhook: firma inválida — mensaje descartado")
+            raise HTTPException(status_code=401, detail="firma inválida")
+    else:
+        logger.warning("KAPSO_WEBHOOK_SECRET sin configurar: el webhook acepta "
+                       "requests sin verificar su origen")
+
     body = await request.json()
     tipo_evento = request.headers.get("x-webhook-event", "")
     logger.info(f"Kapso webhook → evento={tipo_evento or '(sin header)'} "

@@ -379,3 +379,29 @@ def test_kapso_imagen_con_url():
     assert m["media_url"] == "https://x/y.jpg"
     assert m["image_mime_type"] == "image/png"
     assert m["text"] == "mirá esto"
+
+
+# ── Firma del webhook de Kapso ─────────────────────────────────────────────────
+def test_firma_kapso():
+    """
+    Sin verificación, cualquiera que conozca la URL podría inyectar mensajes
+    y hacer que el bot le escriba a números arbitrarios.
+    """
+    import hashlib, hmac, json
+    from app.routers.webhook import _firma_kapso_valida
+
+    secret = "sk_test_abc123"
+    payload = {"message": {"id": "x", "from": "549", "type": "text", "text": {"body": "hola"}}}
+    raw = json.dumps(payload).encode()
+    firma = hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
+
+    assert _firma_kapso_valida(raw, firma, secret) is True
+    assert _firma_kapso_valida(raw, "sha256=" + firma.upper(), secret) is True   # tolerante
+    assert _firma_kapso_valida(raw, "a" * 64, secret) is False                   # firma falsa
+    assert _firma_kapso_valida(raw, "", secret) is False                         # sin firma
+
+    # Kapso firma el JSON re-serializado (estilo JavaScript), que no siempre
+    # coincide byte a byte con el cuerpo recibido.
+    compacto = json.dumps(payload, separators=(",", ":")).encode()
+    firma_js = hmac.new(secret.encode(), compacto, hashlib.sha256).hexdigest()
+    assert _firma_kapso_valida(raw, firma_js, secret) is True
