@@ -851,6 +851,35 @@ async def bo_kb_add(body: KBDoc, _=Depends(_auth)):
     return {"status": "ok"}
 
 
+@router.post("/kb/cargar-mutual")
+async def bo_kb_cargar_mutual(_=Depends(_auth), reemplazar: bool = Query(False)):
+    """
+    Carga la base de conocimiento de Mutual AMI (horarios, préstamos, AMT,
+    beneficios) desde la especificación. Evita tener que correr el script a mano
+    en el servidor. Con `reemplazar=true` borra lo existente y recarga.
+    """
+    from scripts.cargar_kb_mutual import DOCUMENTOS
+    rag = _rag()
+    if not rag.enabled():
+        return {"ok": False, "detail": "Falta OPENAI_API_KEY para generar los embeddings"}
+
+    if reemplazar:
+        for doc in await rag.kb_list():
+            await rag.kb_delete(doc["id"])
+
+    existentes = {d["titulo"] for d in await rag.kb_list()}
+    nuevos, fallidos = [], []
+    for titulo, contenido in DOCUMENTOS:
+        if titulo in existentes:
+            continue
+        if await rag.kb_add(titulo, contenido):
+            nuevos.append(titulo)
+        else:
+            fallidos.append(titulo)
+    return {"ok": not fallidos, "cargados": nuevos, "fallidos": fallidos,
+            "total_en_base": len(await rag.kb_list())}
+
+
 @router.delete("/kb/{doc_id}")
 async def bo_kb_delete(doc_id: int, _=Depends(_auth)):
     await _rag().kb_delete(doc_id)
