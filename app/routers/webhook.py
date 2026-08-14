@@ -171,6 +171,17 @@ async def _flujo_mutual(deps, phone: str, session: dict, texto: str,
 
     cfg = await deps["config"].get_all()
 
+    # 0. Aceptó que lo pasemos con un oficial (tras una simulación).
+    if session.get("derivacion_ofrecida") == "prestamo":
+        _s0 = await deps["session"].get(phone)
+        _s0.pop("derivacion_ofrecida", None)
+        await deps["session"].save(phone, _s0)
+        if _es_afirmacion_pura(texto):
+            await deps["session"].set_estado(phone, "operador", motivo="prestamo")
+            return (cfg.get("mutual_derivar_oficial_message") or
+                    "Dale, te paso con un oficial de créditos 🙌 En un momento te contactan."
+                    ), "derivado_prestamo"
+
     # 1. Consultas de cuenta: derivan siempre, antes de llegar al modelo.
     motivo = requiere_derivacion_financiera(texto)
     if motivo:
@@ -222,6 +233,11 @@ async def _flujo_mutual(deps, phone: str, session: dict, texto: str,
             respuesta = texto_simulacion(sim, cfg)
             intencion = "simulacion_prestamo"
             logger.info(f"Simulación de préstamo: {monto} en {cuotas} cuotas → {sim}")
+            # Se ofrece el oficial: si acepta en el próximo mensaje, se deriva.
+            if not sim.get("error"):
+                _s2 = await deps["session"].get(phone)
+                _s2["derivacion_ofrecida"] = "prestamo"
+                await deps["session"].save(phone, _s2)
 
     # 4. Pidió hablar con una persona.
     if intencion == "derivacion" or pide_humano(texto):

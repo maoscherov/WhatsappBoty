@@ -54,6 +54,13 @@ DEFAULTS: dict[str, str] = {
         "Es un cálculo estimativo: el importe final surge de la evaluación del "
         "equipo y puede incluir gastos según el caso."
     ),
+    # La simulación es capital + interés; para avanzar se pasa con un oficial.
+    "mutual_simulador_ofrecer_oficial": (
+        "Si querés avanzar, te paso con un oficial de créditos que lo ve con vos 🙂"
+    ),
+    "mutual_derivar_oficial_message": (
+        "Dale, te paso con un oficial de créditos 🙌 En un momento te contactan."
+    ),
     # Pasarela con la que se cobra: "payway" | "mercadopago". Vacío = usa la
     # variable de entorno del deploy. Se cambia desde el backoffice sin deploy.
     "payment_provider": "",

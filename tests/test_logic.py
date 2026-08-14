@@ -452,3 +452,10 @@ def test_simulador_aclara_lo_que_no_incluye():
     txt = texto_simulacion(simular_prestamo(1_500_000, 12, {}), {})
     assert "estimativo" in txt.lower()
     assert "no incluye" in txt.lower()
+
+
+def test_simulacion_ofrece_oficial():
+    """La simulación es capital + interés: para avanzar se pasa con un oficial."""
+    from app.services.mutual_helper import simular_prestamo, texto_simulacion
+    txt = texto_simulacion(simular_prestamo(1_500_000, 12, {}), {})
+    assert "oficial" in txt.lower()

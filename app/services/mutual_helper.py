@@ -102,9 +102,14 @@ def texto_simulacion(sim: dict, cfg: dict | None = None) -> str:
         faltantes.append("gastos administrativos")
     nota = f" No incluye {' ni '.join(faltantes)}." if faltantes else ""
 
+    # La simulación es sólo capital + interés: para avanzar hay que hablar con
+    # un oficial, que evalúa el caso y da el detalle final.
+    ofrecer = cfg.get("mutual_simulador_ofrecer_oficial") or (
+        "Si querés avanzar, te paso con un oficial de créditos que lo ve con vos 🙂"
+    )
     return (f"Por {_p(sim['monto'])} en {sim['cuotas']} cuotas {linea_txt} ({sim['tna']:g}% TNA), "
             f"la cuota estimada es de *{_p(sim['cuota'])}*.\n\n"
-            f"{aclaracion}{nota}")
+            f"{aclaracion}{nota}\n\n{ofrecer}")
 
 # ── Consultas que SIEMPRE derivan (sección 2.9 de la especificación) ───────────
 # Se resuelven en código, antes de llegar al modelo: son datos de cuentas y no
