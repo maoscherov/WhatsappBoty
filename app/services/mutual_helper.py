@@ -21,6 +21,21 @@ LINEAS_DEFAULT = {
 }
 
 
+# Indicios de que el mensaje ACTUAL pide una simulación. Hace falta porque el
+# modelo arrastra los datos del turno anterior: sin este control, después de
+# simular respondía la misma cuota a cualquier otra pregunta.
+_INDICIOS_SIMULACION = (
+    r"\d|\bmill[oó]n\w*\b|\bmil\b|\bluca\w*\b|\bpalo\w*\b|\bcuota\w*\b|"
+    r"\bmes(es)?\b|\ba[nñ]os?\b|\bsimul\w+\b|\bfinanci\w+\b|"
+    r"\bcu[aá]nto\s+(pagar\w*|ser[ií]a|me\s+sale|quedar\w*|es\s+la\s+cuota)\b"
+)
+
+
+def menciona_simulacion(texto: str) -> bool:
+    """True si el mensaje trae datos o intención de simular un préstamo."""
+    return bool(re.search(_INDICIOS_SIMULACION, texto or "", re.IGNORECASE))
+
+
 def _cuota_francesa(capital: float, tna: float, n: int) -> float:
     """Cuota constante: capital * i / (1 - (1+i)^-n), con i = tasa mensual."""
     i = (tna / 100) / 12

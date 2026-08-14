@@ -504,3 +504,27 @@ def test_alias_esta_en_la_base_de_conocimiento():
     texto = " ".join(c for _, c in DOCUMENTOS).upper()
     assert "AMICORREA" in texto
     assert "CBU" in texto and "CVU" in texto   # se busca de todas esas formas
+
+
+@pytest.mark.parametrize("txt", [
+    "quiero un préstamo de un millón y medio en 12 cuotas",
+    "y en 24 cuotas?", "cuánto sería en 36 meses",
+    "cuánto pagaría por 2 millones", "simulame 500000 en un año",
+])
+def test_menciona_simulacion(txt):
+    from app.services.mutual_helper import menciona_simulacion
+    assert menciona_simulacion(txt) is True
+
+
+@pytest.mark.parametrize("txt", [
+    "me pasás el cvu?", "cuál es el alias", "qué horarios tienen",
+    "gracias!", "dale", "cómo me asocio",
+])
+def test_no_simula_si_el_mensaje_no_lo_pide(txt):
+    """
+    Regresión: tras simular, el modelo arrastraba monto y plazo del turno
+    anterior y el bot repetía la misma cuota ante cualquier otra pregunta
+    (caso real: se preguntó el CVU y respondió la simulación).
+    """
+    from app.services.mutual_helper import menciona_simulacion
+    assert menciona_simulacion(txt) is False

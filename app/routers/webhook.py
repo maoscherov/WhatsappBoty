@@ -222,12 +222,18 @@ async def _flujo_mutual(deps, phone: str, session: dict, texto: str,
 
     # Simulación de préstamo: los números los calcula el código, nunca el modelo.
     if str(cfg.get("mutual_simulador_activo", "true")).lower() == "true":
-        from app.services.mutual_helper import simular_prestamo, texto_simulacion
+        from app.services.mutual_helper import (simular_prestamo, texto_simulacion,
+                                                menciona_simulacion)
         try:
             monto = float(resultado.get("simulacion_monto") or 0)
             cuotas = int(resultado.get("simulacion_cuotas") or 0)
         except (TypeError, ValueError):
             monto, cuotas = 0, 0
+        # El modelo arrastra los datos del turno anterior: sólo se simula si el
+        # mensaje actual efectivamente pide una simulación.
+        if (monto > 0 or cuotas > 0) and not menciona_simulacion(texto):
+            logger.info(f"Simulación descartada (el mensaje no la pide): {texto[:60]!r}")
+            monto = cuotas = 0
         if monto > 0 and cuotas > 0:
             sim = simular_prestamo(monto, cuotas, cfg)
             respuesta = texto_simulacion(sim, cfg)
