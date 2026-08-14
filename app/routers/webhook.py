@@ -1122,29 +1122,27 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                         except (ValueError, TypeError):
                             pass
 
-                    # 2. Validación por precio: si la respuesta menciona un precio que no
-                    #    coincide con el producto elegido, buscar el que sí coincide.
-                    #    Evita que un índice equivocado deje pendiente otro producto.
-                    if producto_elegido and respuesta:
-                        _por_precio = producto_respaldado(respuesta, resultados_sku)
-                        if _por_precio and _por_precio["sku_id"] != producto_elegido["sku_id"]:
-                            producto_elegido = _por_precio
-                            logger.info(f"SKU corregido por precio: {_por_precio['nombre']}")
-
-                    # 3. Sin índice de Claude: NO adivinar con el primer resultado.
-                    #    index=null significa "ninguno es el que pide" (ej. respondió
-                    #    "no me figura disponible"). Sólo se acepta un producto si su
-                    #    precio aparece en la respuesta enviada al cliente — evidencia
-                    #    de que el bot efectivamente lo está ofreciendo.
-                    if not producto_elegido:
-                        producto_elegido = producto_respaldado(respuesta, resultados_sku)
-                        if producto_elegido:
-                            logger.info(f"SKU inferido por precio en la respuesta: {producto_elegido['nombre']}")
-                        else:
-                            logger.info(
-                                f"Sin SKU seleccionado para {entidad!r} — no se deja pendiente "
-                                f"({len(resultados_sku)} resultados descartados)"
-                            )
+                    # 2. El precio en la respuesta manda, SIEMPRE.
+                    #    Un producto sólo queda pendiente si el bot le dijo su precio
+                    #    al cliente: esa es la única evidencia de que se lo está
+                    #    ofreciendo. Si respondió "no tengo stock" (sin precio), no hay
+                    #    nada que comprar, por más que el modelo haya elegido un índice
+                    #    — así se colaba un producto que el cliente nunca pidió y
+                    #    terminaba en un link de pago.
+                    _respaldo = producto_respaldado(respuesta, resultados_sku)
+                    if _respaldo:
+                        if not producto_elegido or _respaldo["sku_id"] != producto_elegido["sku_id"]:
+                            logger.info(f"SKU tomado del precio en la respuesta: {_respaldo['nombre']}")
+                        producto_elegido = _respaldo
+                    elif producto_elegido:
+                        logger.info(
+                            f"Descartado {producto_elegido['nombre']!r}: la respuesta no menciona "
+                            "su precio, así que no se está ofreciendo"
+                        )
+                        producto_elegido = None
+                    else:
+                        logger.info(f"Sin producto ofrecido para {entidad!r} "
+                                    f"({len(resultados_sku)} resultados descartados)")
                     # Solo se marca como pendiente (comprable) si es VENDIBLE.
                     # Si es sin stock / sin precio, no entra al flujo de compra —
                     # Claude ya respondió ofreciendo las alternativas disponibles.

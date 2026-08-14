@@ -594,3 +594,23 @@ async def test_no_repetir_aviso_de_cierre():
     assert await ss.cierre_ya_avisado("549A") is False   # primera vez: se avisa
     assert await ss.cierre_ya_avisado("549A") is True    # ya avisado: no repetir
     assert await ss.cierre_ya_avisado("549B") is False   # otro cliente sí recibe
+
+
+def test_sin_precio_no_hay_producto_ofrecido():
+    """
+    Regresión (caso real, tintura rubio ceniza): el bot respondió "no tengo
+    stock" pero el modelo igual eligió un índice, y ese producto —un L'Oréal de
+    $33.437 que nadie pidió— quedó pendiente y terminó en un link de pago.
+    Sin precio dicho al cliente, no hay nada ofrecido.
+    """
+    resultados = [
+        {"sku_id": "A", "nombre": "LOREAL MAGIC RETOUCH RUBIO CLARO MEDIO", "precio": 33437.53},
+        {"sku_id": "B", "nombre": "KOLESTON SING 60 RUBIO OSCUR", "precio": 9555.28},
+    ]
+    sin_stock = ("Justo no tengo stock de una tintura rubio ceniza en este momento. "
+                 "¿Te gustaría que te encargue la tintura rubio ceniza?")
+    assert ch.producto_respaldado(sin_stock, resultados) is None
+
+    ofrece = "Te puedo ofrecer la tintura KOLESTON SING 60 RUBIO OSCUR por $9.555,28."
+    elegido = ch.producto_respaldado(ofrece, resultados)
+    assert elegido and elegido["sku_id"] == "B"

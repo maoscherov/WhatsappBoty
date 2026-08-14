@@ -444,15 +444,10 @@ async def simulate(req: SimulateRequest):
                         producto_elegido = productos_encontrados[idx]
                 except (ValueError, TypeError):
                     pass
-            # Validación por precio si el índice no coincide con el texto
-            if producto_elegido and respuesta:
-                _por_precio = producto_respaldado(respuesta, productos_encontrados)
-                if _por_precio and _por_precio["sku_id"] != producto_elegido["sku_id"]:
-                    producto_elegido = _por_precio
-            # Sin índice: no adivinar con el primer resultado (mismo criterio que
-            # el webhook). Sólo vale si su precio aparece en la respuesta.
-            if not producto_elegido:
-                producto_elegido = producto_respaldado(respuesta, productos_encontrados)
+            # El precio en la respuesta manda (mismo criterio que el webhook):
+            # sin precio dicho al cliente, no hay producto ofrecido.
+            _respaldo = producto_respaldado(respuesta, productos_encontrados)
+            producto_elegido = _respaldo if _respaldo else None
             # Solo comprable si es vendible (con stock y precio)
             if producto_elegido and producto_elegido.get("vendible", True):
                 await session_svc.set_pending(
