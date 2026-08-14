@@ -64,6 +64,16 @@ DEFAULTS: dict[str, str] = {
     "mutual_derivar_oficial_message": (
         "Dale, te paso con un oficial de créditos 🙌 En un momento te contactan."
     ),
+    # Plazo fijo (AMT): interés simple por días exactos. El sellado queda
+    # pendiente de dato, por eso el mensaje aclara que no está incluido.
+    "mutual_amt_tna_online": "26",
+    "mutual_amt_tna_presencial": "23.5",
+    "mutual_amt_monto_minimo": "1000",
+    "mutual_amt_dias_min": "29",
+    "mutual_amt_dias_max": "60",
+    "mutual_amt_ofrecer_asesor": (
+        "Si querés constituirlo, te paso con alguien del equipo 🙂"
+    ),
     # Pasarela con la que se cobra: "payway" | "mercadopago". Vacío = usa la
     # variable de entorno del deploy. Se cambia desde el backoffice sin deploy.
     "payment_provider": "",

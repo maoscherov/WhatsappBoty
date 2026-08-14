@@ -253,6 +253,24 @@ async def _flujo_mutual(deps, phone: str, session: dict, texto: str,
         if (monto > 0 or cuotas > 0) and not menciona_simulacion(texto):
             logger.info(f"Simulación descartada (el mensaje no la pide): {texto[:60]!r}")
             monto = cuotas = 0
+        # Plazo fijo (AMT): mismo criterio, el cálculo lo hace el código.
+        try:
+            amt_monto = float(resultado.get("amt_monto") or 0)
+            amt_dias = int(resultado.get("amt_dias") or 0)
+        except (TypeError, ValueError):
+            amt_monto = amt_dias = 0
+        if amt_monto > 0 and amt_dias > 0 and menciona_simulacion(texto):
+            from app.services.mutual_helper import simular_amt, texto_amt
+            sim_amt = simular_amt(amt_monto, amt_dias, cfg)
+            respuesta = texto_amt(sim_amt, cfg)
+            intencion = "simulacion_amt"
+            logger.info(f"Simulación AMT: {amt_monto} a {amt_dias} días → {sim_amt}")
+            if not sim_amt.get("error"):
+                _sa = await deps["session"].get(phone)
+                _sa["derivacion_ofrecida"] = "prestamo"   # mismo hand-off al equipo
+                await deps["session"].save(phone, _sa)
+            return respuesta, intencion
+
         if monto > 0 and cuotas > 0:
             sim = simular_prestamo(monto, cuotas, cfg)
             respuesta = texto_simulacion(sim, cfg)

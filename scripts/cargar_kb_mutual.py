@@ -56,9 +56,15 @@ DOCUMENTOS: list[tuple[str, str]] = [
      "de la primera cuota pasa al mes subsiguiente, por lo que su importe es más alto que el resto. "
      "El importe final de la cuota lo calcula el equipo al evaluar la solicitud."),
 
-    ("Ahorro Mutual a Término (AMT)",
-     "Tasa presencial: 23,5% TNA. Tasa online: 26% TNA. "
+    # "AMT" no se lo dice a nadie de afuera: se agregan las formas en que la
+    # gente pregunta (plazo fijo, invertir, cuánto rinde, depositar a plazo).
+    ("Ahorro Mutual a Término (AMT), plazo fijo e inversión",
+     "El Ahorro Mutual a Término (AMT) es nuestro plazo fijo: depositás una suma por un plazo "
+     "y al vencimiento la retirás con los intereses. Es lo que responde a 'plazo fijo', "
+     "'invertir', 'cuánto me rinde', 'depositar a plazo' o 'poner plata a interés'. "
+     "Tasa online: 26% TNA. Tasa presencial (en sucursal): 23,5% TNA. "
      "Plazo: de 29 a 60 días, siempre finalizando en día hábil. "
+     "Monto mínimo: $1.000. "
      "A 29 días se reduce a la mitad el gasto de sellado."),
 
     ("Beneficios para socios",

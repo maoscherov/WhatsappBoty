@@ -554,3 +554,30 @@ async def test_liberar_reinicia_contadores_de_conversacion():
     for k in ("_conv_inicio", "_negativos", "derivacion_ofrecida",
               "derivada_at", "derivada_motivo", "agente"):
         assert k not in s2, f"quedó {k} y volvería a derivar"
+
+
+# ── Simulador de plazo fijo (AMT) ──────────────────────────────────────────────
+def test_amt_interes_por_dias_exactos():
+    """Interés simple prorrateado por días exactos: monto × TNA × días / 365."""
+    from app.services.mutual_helper import simular_amt
+    s = simular_amt(1_000_000, 30, {})
+    assert abs(s["online"]["interes"] - 1_000_000 * 0.26 * 30 / 365) < 0.01
+    assert abs(s["presencial"]["interes"] - 1_000_000 * 0.235 * 30 / 365) < 0.01
+    assert s["online"]["interes"] > s["presencial"]["interes"]   # online rinde más
+    assert s["online"]["total"] == round(s["monto"] + s["online"]["interes"], 2)
+
+
+def test_amt_valida_monto_y_plazo():
+    from app.services.mutual_helper import simular_amt
+    assert simular_amt(500, 30, {})["error"] == "monto_minimo"       # mínimo $1.000
+    assert simular_amt(50_000, 90, {})["error"] == "plazo_invalido"  # máximo 60 días
+    assert simular_amt(50_000, 20, {})["error"] == "plazo_invalido"  # mínimo 29 días
+    assert "error" not in simular_amt(1_000, 29, {})
+
+
+def test_amt_avisa_sellado_reducido_y_lo_no_incluido():
+    from app.services.mutual_helper import simular_amt, texto_amt
+    txt = texto_amt(simular_amt(100_000, 29, {}), {})
+    assert "sellado" in txt.lower()
+    assert "mitad" in txt.lower()          # a 29 días se reduce
+    assert "no incluye" in txt.lower()     # y no está contemplado en el número

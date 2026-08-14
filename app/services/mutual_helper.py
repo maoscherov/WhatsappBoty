@@ -93,6 +93,76 @@ def simular_prestamo(monto: float, cuotas: int, cfg: dict | None = None) -> dict
     }
 
 
+def simular_amt(monto: float, dias: int, cfg: dict | None = None) -> dict:
+    """
+    Ahorro Mutual a Término (plazo fijo). Interés simple por días exactos:
+    monto × TNA × días / 365. Muestra las dos modalidades para que se vea la
+    diferencia de poner el plazo fijo online.
+
+    El sellado no está incluido (falta el dato): se aclara en el mensaje.
+    """
+    cfg = cfg or {}
+
+    def _num(clave, default):
+        try:
+            return float(cfg.get(clave) or default)
+        except (TypeError, ValueError):
+            return float(default)
+
+    minimo = _num("mutual_amt_monto_minimo", 1000)
+    dias_min = int(_num("mutual_amt_dias_min", 29))
+    dias_max = int(_num("mutual_amt_dias_max", 60))
+    tna_online = _num("mutual_amt_tna_online", 26)
+    tna_pres = _num("mutual_amt_tna_presencial", 23.5)
+
+    if monto < minimo:
+        return {"error": "monto_minimo", "minimo": minimo}
+    if not (dias_min <= dias <= dias_max):
+        return {"error": "plazo_invalido", "dias_min": dias_min, "dias_max": dias_max}
+
+    def _interes(tna):
+        return monto * (tna / 100) * dias / 365
+
+    return {
+        "monto": round(monto, 2),
+        "dias": int(dias),
+        "online": {"tna": tna_online, "interes": round(_interes(tna_online), 2),
+                   "total": round(monto + _interes(tna_online), 2)},
+        "presencial": {"tna": tna_pres, "interes": round(_interes(tna_pres), 2),
+                       "total": round(monto + _interes(tna_pres), 2)},
+        "sellado_reducido": dias == dias_min,
+    }
+
+
+def texto_amt(sim: dict, cfg: dict | None = None) -> str:
+    """Mensaje del AMT. Los importes los calcula el código, nunca el modelo."""
+    cfg = cfg or {}
+    if sim.get("error") == "monto_minimo":
+        return f"El monto mínimo para un plazo fijo es de ${sim['minimo']:,.0f}".replace(",", ".") + \
+               ". ¿Querés que lo calcule con otro importe?"
+    if sim.get("error") == "plazo_invalido":
+        return (f"El plazo va de {sim['dias_min']} a {sim['dias_max']} días. "
+                "¿Con cuántos días lo calculo?")
+    if sim.get("error"):
+        return "Para calcularlo necesito el monto y a cuántos días. ¿Me los pasás?"
+
+    def _p(v):
+        return f"${v:,.0f}".replace(",", ".")
+
+    on, pre = sim["online"], sim["presencial"]
+    extra = ("\nA 29 días el gasto de sellado se reduce a la mitad."
+             if sim["sellado_reducido"] else "")
+    ofrecer = cfg.get("mutual_amt_ofrecer_asesor") or (
+        "Si querés constituirlo, te paso con alguien del equipo 🙂")
+
+    return (f"Por {_p(sim['monto'])} a {sim['dias']} días:\n\n"
+            f"• *Online* ({on['tna']:g}% TNA): ganás {_p(on['interes'])} "
+            f"→ retirás {_p(on['total'])}\n"
+            f"• *En sucursal* ({pre['tna']:g}% TNA): ganás {_p(pre['interes'])} "
+            f"→ retirás {_p(pre['total'])}\n\n"
+            f"No incluye el gasto de sellado.{extra}\n\n{ofrecer}")
+
+
 def texto_simulacion(sim: dict, cfg: dict | None = None) -> str:
     """Arma el mensaje de la simulación. Los números los pone el código, nunca el modelo."""
     cfg = cfg or {}
@@ -217,13 +287,20 @@ Respondé SIEMPRE con un JSON con este esquema (sin texto extra):
   "sentimiento": "positivo|neutro|negativo",
   "simulacion_monto": null,
   "simulacion_cuotas": null,
+  "amt_monto": null,
+  "amt_dias": null,
   "respuesta": "texto que se envía al cliente por WhatsApp"
 }
 
 Los campos "simulacion_monto" y "simulacion_cuotas" (números, sin puntos ni símbolos) se completan
-SOLO cuando el cliente pide calcular una cuota y dio ambos datos. Interpretá el lenguaje natural:
-"un millón y medio" son 1500000, "dos palos" son 2000000, "en un año" son 12 cuotas.
-En cualquier otro caso van en null.
+SOLO cuando el cliente pide calcular la cuota de un PRÉSTAMO y dio ambos datos. Interpretá el
+lenguaje natural: "un millón y medio" son 1500000, "dos palos" son 2000000, "en un año" son 12 cuotas.
+
+Los campos "amt_monto" y "amt_dias" se completan SOLO cuando el cliente quiere saber cuánto gana
+por un PLAZO FIJO / AMT / inversión y dio monto y plazo en días ("un mes" son 30 días).
+Nunca calcules vos el interés: el sistema lo hace y lo agrega.
+
+Todos estos campos van en null si el mensaje no pide ese cálculo.
 
 Guía de intenciones:
 - informacion: horarios, requisitos, beneficios, cómo asociarse, datos generales.
