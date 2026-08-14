@@ -239,6 +239,30 @@ class SessionService:
                 out.append(phone)
         return out
 
+    async def derivadas_sin_atender(self, threshold_secs: int) -> list[str]:
+        """
+        Conversaciones derivadas hace más de `threshold_secs` que **nadie tomó**
+        (sin agente asignado). Se usan para devolverlas al bot: si no hay quien
+        atienda, es mejor que el bot siga ayudando a que el cliente quede mudo.
+        """
+        out = []
+        now = time.time()
+        for phone, session in await self.list_all():
+            if session.get("estado") != "operador" or session.get("agente"):
+                continue
+            derivada = session.get("derivada_at")
+            if derivada and now - float(derivada) >= threshold_secs:
+                out.append(phone)
+        return out
+
+    async def liberar(self, phone: str):
+        """Devuelve la conversación al bot (sale del modo operador)."""
+        session = await self.get(phone)
+        session["estado"] = "idle"
+        for k in ("derivada_at", "derivada_motivo", "_handoff_avisado", "agente"):
+            session.pop(k, None)
+        await self.save(phone, session)
+
     async def marcar_handoff_avisado(self, phone: str):
         session = await self.get(phone)
         session["_handoff_avisado"] = True

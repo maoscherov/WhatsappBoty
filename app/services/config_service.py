@@ -106,6 +106,13 @@ DEFAULTS: dict[str, str] = {
         "vigente — podés pagar cuando quieras dentro de las 24hs. "
         "¡Cualquier duda escribinos!"
     ),
+    # Si nadie toma una conversación derivada en N minutos, vuelve al bot.
+    # 0 = nunca (queda esperando a una persona, comportamiento por defecto).
+    "auto_liberar_minutos": "0",
+    "auto_liberar_message": (
+        "Sigo yo mientras tanto 🙂 Contame en qué te puedo ayudar y, si hace "
+        "falta, te paso con alguien del equipo."
+    ),
     # Aviso al cliente si la atención humana demora tras una derivación.
     # 0 = desactivado. Texto provisorio — editable desde el backoffice.
     "handoff_reminder_minutes": "15",

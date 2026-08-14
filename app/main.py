@@ -128,6 +128,22 @@ async def _cerrar_sesiones_inactivas():
                             f"({minutos_pago if con_link else minutos} min, "
                             f"{'con link de pago' if con_link else 'normal'}): {phone}")
 
+            # Devolver al bot las derivaciones que nadie tomó (0 = desactivado).
+            # Sin gente atendiendo, una conversación derivada queda muda: es
+            # preferible que el bot siga ayudando.
+            libre_min = int(cfg.get("auto_liberar_minutos") or 0)
+            if libre_min > 0:
+                aviso = cfg.get("auto_liberar_message") or ""
+                for phone in await session_svc.derivadas_sin_atender(libre_min * 60):
+                    await session_svc.liberar(phone)
+                    if aviso:
+                        try:
+                            await wa.send_text(phone, aviso)
+                            await session_svc.add_message(phone, "assistant", aviso)
+                        except Exception as e:
+                            logger.warning(f"No se pudo avisar la reanudación a {phone}: {e}")
+                    logger.info(f"Conversación devuelta al bot tras {libre_min} min sin atender: {phone}")
+
             # Aviso de demora en derivaciones (0 = desactivado)
             hr_min = int(cfg.get("handoff_reminder_minutes") or 0)
             hr_msg = cfg.get("handoff_reminder_message") or ""

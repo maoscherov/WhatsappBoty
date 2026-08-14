@@ -459,3 +459,28 @@ def test_simulacion_ofrece_oficial():
     from app.services.mutual_helper import simular_prestamo, texto_simulacion
     txt = texto_simulacion(simular_prestamo(1_500_000, 12, {}), {})
     assert "oficial" in txt.lower()
+
+
+# ── Auto-liberación: si nadie atiende, la conversación vuelve al bot ───────────
+async def test_auto_liberar_derivadas_sin_atender():
+    """
+    Sin gente atendiendo, una conversación derivada queda muda. Se devuelve al
+    bot, salvo que un agente ya la haya tomado.
+    """
+    import time
+    from app.services.session_service import SessionService
+
+    ss = SessionService("redis://127.0.0.1:1")
+    await ss.set_estado("A", "operador", motivo="saldo")      # nadie la tomó
+    ss._memory["A"]["derivada_at"] = time.time() - 1200
+    await ss.set_estado("B", "operador", motivo="saldo")      # la tomó un agente
+    ss._memory["B"]["derivada_at"] = time.time() - 1200
+    ss._memory["B"]["agente"] = "belen"
+    await ss.set_estado("C", "operador", motivo="saldo")      # recién derivada
+
+    assert await ss.derivadas_sin_atender(600) == ["A"]
+
+    await ss.liberar("A")
+    s = await ss.get("A")
+    assert s["estado"] == "idle"
+    assert "derivada_at" not in s and "derivada_motivo" not in s

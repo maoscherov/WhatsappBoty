@@ -465,6 +465,8 @@ class ConfigUpdate(BaseModel):
     pago_manual_mode: str | None = None          # "derivar" | "solo_tarjeta"
     pago_manual_message: str | None = None
     pago_solo_tarjeta_message: str | None = None
+    auto_liberar_minutos: str | None = None      # derivación sin atender vuelve al bot (0 = nunca)
+    auto_liberar_message: str | None = None
     inactivity_minutes: str | None = None        # cierre por inactividad (min)
     inactivity_close_message: str | None = None
     inactivity_minutes_pago: str | None = None   # cierre cuando hay link de pago enviado
