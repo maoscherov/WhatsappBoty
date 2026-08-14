@@ -34,6 +34,31 @@ class MessageStore:
             for r in rows
         ]
 
+    async def recurrencia(self, phone: str) -> dict:
+        """
+        Si el cliente ya escribió antes y con qué frecuencia (spec 4.3).
+        Una "conversación" es un día con actividad: alcanza para distinguir a
+        quien nos escribe por primera vez del que vuelve seguido.
+        """
+        rows = await self._db.fetch(
+            "SELECT COUNT(*) AS mensajes, "
+            "COUNT(DISTINCT date_trunc('day', created_at)) AS dias, "
+            "MAX(created_at) AS ultima "
+            "FROM messages WHERE phone = $1 AND role = 'user'",
+            phone,
+        )
+        if not rows:
+            return {"tipo": "primera_vez", "mensajes": 0, "conversaciones": 0}
+        r = rows[0]
+        dias = r["dias"] or 0
+        tipo = "primera_vez" if dias == 0 else ("frecuente" if dias >= 3 else "ocasional")
+        return {
+            "tipo": tipo,
+            "mensajes": r["mensajes"] or 0,
+            "conversaciones": dias,
+            "ultima": r["ultima"].isoformat() if r["ultima"] else None,
+        }
+
     async def recent_phones(self, limit: int = 100) -> list[dict]:
         """Teléfonos con actividad reciente + último mensaje (para el backoffice)."""
         rows = await self._db.fetch(

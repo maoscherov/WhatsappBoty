@@ -134,6 +134,81 @@ class MetricsStore:
             logger.warning(f"metrics.dashboard: {e}")
             return None
 
+    async def kpis_conversacionales(self, days: int = 7) -> Optional[dict]:
+        """
+        KPIs de la especificación 4.5: duración y cantidad de interacciones por
+        conversación, resolución en el primer contacto (FCR) y emocionalidad.
+
+        Una "conversación" es un día de actividad de un teléfono. Se cuenta como
+        resuelta si no terminó derivada a una persona.
+        """
+        if not self._db.available():
+            return None
+        try:
+            conv = await self._db.fetch(f"""
+                WITH conversaciones AS (
+                    SELECT phone,
+                           date_trunc('day', created_at)                     AS dia,
+                           COUNT(*)                                          AS interacciones,
+                           EXTRACT(EPOCH FROM (MAX(created_at) - MIN(created_at)))/60 AS minutos,
+                           BOOL_OR(intencion LIKE 'derivado%%')              AS derivada
+                    FROM interacciones
+                    WHERE created_at >= now() - make_interval(days => $1)
+                    GROUP BY phone, date_trunc('day', created_at)
+                )
+                SELECT COUNT(*)                                              AS total,
+                       ROUND(AVG(interacciones), 1)                          AS interacciones_prom,
+                       percentile_cont(0.5) WITHIN GROUP (ORDER BY interacciones) AS interacciones_mediana,
+                       ROUND(AVG(minutos)::numeric, 1)                       AS minutos_prom,
+                       percentile_cont(0.5) WITHIN GROUP (ORDER BY minutos)  AS minutos_mediana,
+                       COUNT(*) FILTER (WHERE NOT derivada)                  AS resueltas_por_el_bot
+                FROM conversaciones
+            """, days)
+
+            emo = await self._db.fetch("""
+                SELECT dato AS sentimiento, COUNT(*) AS cantidad
+                FROM eventos
+                WHERE tipo = 'sentimiento'
+                  AND created_at >= now() - make_interval(days => $1)
+                GROUP BY 1
+            """, days)
+
+            causales = await self._db.fetch("""
+                SELECT intencion, COUNT(*) AS cantidad
+                FROM interacciones
+                WHERE intencion LIKE 'derivado%%'
+                  AND created_at >= now() - make_interval(days => $1)
+                GROUP BY 1 ORDER BY 2 DESC
+            """, days)
+
+            c = dict(conv[0]) if conv else {}
+            total = c.get("total") or 0
+            resueltas = c.get("resueltas_por_el_bot") or 0
+            emo_total = sum(r["cantidad"] for r in emo) or 1
+
+            def _f(v):
+                return round(float(v), 1) if v is not None else None
+
+            return {
+                "conversaciones": total,
+                "interacciones_promedio": _f(c.get("interacciones_prom")),
+                "interacciones_mediana": _f(c.get("interacciones_mediana")),
+                "minutos_promedio": _f(c.get("minutos_prom")),
+                "minutos_mediana": _f(c.get("minutos_mediana")),
+                # FCR: resueltas sin pasar por una persona
+                "fcr_pct": round(resueltas / total * 100, 1) if total else None,
+                "emocionalidad": {
+                    r["sentimiento"]: round(r["cantidad"] / emo_total * 100, 1) for r in emo
+                },
+                "derivaciones_por_causal": [
+                    {"causal": r["intencion"].replace("derivado_", ""), "cantidad": r["cantidad"]}
+                    for r in causales
+                ],
+            }
+        except Exception as e:
+            logger.warning(f"metrics.kpis_conversacionales: {e}")
+            return None
+
     async def busquedas_sin_resultado(self, days: int = 7, limit: int = 20) -> list[dict]:
         """Términos que los clientes pidieron y el catálogo no tiene."""
         if not self._db.available():

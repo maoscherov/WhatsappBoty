@@ -796,7 +796,8 @@ async def bo_dashboard(_=Depends(_auth), days: int = Query(7, ge=1, le=90)):
             "embudo": await store.embudo(days),
             "envios_fallidos": await store.envios_fallidos(days),
             "pagos_por_marca": await store.pagos_por_marca(days),
-            "busquedas_sin_resultado": await store.busquedas_sin_resultado(days)}
+            "busquedas_sin_resultado": await store.busquedas_sin_resultado(days),
+            "kpis_conversacionales": await store.kpis_conversacionales(days)}
 
 
 @router.get("/conversaciones")

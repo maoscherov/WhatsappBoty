@@ -227,3 +227,37 @@ async def test_busquedas_sin_resultado(db):
     assert r[0]["termino"] == "framintrol nad"
     assert r[0]["veces"] == 2 and r[0]["clientes"] == 2
     assert r[1]["termino"] == "collar antipulgas" and r[1]["veces"] == 1
+
+
+async def test_recurrencia_cliente(db):
+    """Distingue a quien escribe por primera vez del que ya conversó (spec 4.3)."""
+    store = MessageStore(db)
+    assert (await store.recurrencia("549NUEVO"))["tipo"] == "primera_vez"
+
+    await store.save("549VUELVE", "user", "hola")
+    await store.save("549VUELVE", "assistant", "¡Hola!")
+    rec = await store.recurrencia("549VUELVE")
+    assert rec["tipo"] == "ocasional"
+    assert rec["mensajes"] == 1        # solo cuenta los del cliente
+    assert rec["conversaciones"] == 1
+
+
+async def test_kpis_conversacionales(db):
+    """FCR, duración e interacciones por conversación, y causales de derivación."""
+    from app.services.metrics_store import MetricsStore
+    m = MetricsStore(db)
+    # Cliente A: dos interacciones, resuelto por el bot
+    await m.record("549A", "text", "informacion", 900, {}, [])
+    await m.record("549A", "text", "agradecimiento", 800, {}, [])
+    # Cliente B: derivado por consulta de saldo
+    await m.record("549B", "text", "informacion", 900, {}, [])
+    await m.record("549B", "text", "derivado_saldo", 500, {}, [])
+    await m.evento("sentimiento", phone="549B", dato="negativo")
+    await m.evento("sentimiento", phone="549A", dato="positivo")
+
+    k = await m.kpis_conversacionales(7)
+    assert k["conversaciones"] == 2
+    assert k["fcr_pct"] == 50.0                     # solo A se resolvió sin derivar
+    assert k["interacciones_promedio"] == 2.0
+    assert k["emocionalidad"]["negativo"] == 50.0
+    assert k["derivaciones_por_causal"][0]["causal"] == "saldo"

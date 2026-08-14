@@ -226,12 +226,32 @@ async def _flujo_mutual(deps, phone: str, session: dict, texto: str,
                 f"→ {[d['titulo'][:28] for d in docs]}")
     contexto_kb = "\n\n".join(f"{d['titulo']}: {d['contenido']}".strip(": ") for d in docs) or None
 
+    # Personalización por recurrencia (spec 4.3): a quien escribe por primera
+    # vez se le presenta la mutual; al que vuelve no se le repite lo mismo.
+    situacion = None
+    try:
+        rec = await deps["msgs"].recurrencia(phone)
+        if rec["tipo"] == "primera_vez":
+            situacion = ("Es la PRIMERA vez que esta persona nos escribe. Presentate en una línea "
+                         "(qué es Mutual AMI), respondé lo que pregunta y, si viene al caso, "
+                         "mencioná brevemente un beneficio o cómo asociarse. Sin abrumar.")
+        elif rec["tipo"] == "frecuente":
+            situacion = (f"Ya nos escribió otras veces ({rec['conversaciones']} conversaciones). "
+                         "Tratalo como conocido: sin presentaciones ni explicaciones de qué es la "
+                         "mutual, y no le vuelvas a pedir datos que ya dio.")
+        else:
+            situacion = ("Ya nos escribió antes. No hace falta presentarse de nuevo; "
+                         "andá directo a lo que necesita.")
+    except Exception as e:
+        logger.debug(f"recurrencia: {e}")
+
     _tc = _time.perf_counter()
     resultado = await deps["intent"].procesar(
         mensaje=texto,
         history=session.get("history", []),
         contexto_cliente=ctx_socio,
         contexto_kb=contexto_kb,
+        situacion=situacion,
     )
     steps["claude_ms"] = int((_time.perf_counter() - _tc) * 1000)
 
@@ -286,6 +306,14 @@ async def _flujo_mutual(deps, phone: str, session: dict, texto: str,
     if intencion == "derivacion" or pide_humano(texto):
         await deps["session"].set_estado(phone, "operador", motivo="pidio_humano")
         return respuesta, "derivado_humano"
+
+    # Sentimiento del cliente: se guarda para el KPI de emocionalidad (spec 4.5).
+    if resultado.get("sentimiento"):
+        try:
+            await deps["metrics"].evento("sentimiento", phone=phone,
+                                         dato=resultado["sentimiento"])
+        except Exception as e:
+            logger.debug(f"evento sentimiento: {e}")
 
     # 5. Frustración sostenida: dos mensajes negativos seguidos → ofrecer escalar.
     sesion = await deps["session"].get(phone)

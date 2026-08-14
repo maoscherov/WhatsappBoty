@@ -163,6 +163,12 @@ tr.chat-row td { background: #12151f; padding: 14px 20px; }
     <div id="fallos-list" style="font-size:12.5px;line-height:1.8"></div>
   </div>
 
+  <h2>Calidad de la conversación</h2>
+  <div class="grid-2">
+    <div class="panel" id="panel-kpis"><div class="empty">Sin datos</div></div>
+    <div class="panel" id="panel-causales"><div class="empty">Sin derivaciones</div></div>
+  </div>
+
   <h2>Embudo de venta</h2>
   <div class="grid-2">
     <div class="panel" id="panel-embudo"><div class="empty">Sin datos</div></div>
@@ -273,6 +279,7 @@ async function loadDashboard() {
   drawFallos(d.envios_fallidos);
   drawPagos(d.pagos_por_marca);
   drawSinResultado(d.busquedas_sin_resultado);
+  drawKpis(d.kpis_conversacionales);
   drawEmbudo(d.embudo);
   drawSerie(d.por_dia);
   drawIntenciones(d.intenciones);
@@ -338,6 +345,43 @@ function drawSerie(dias) {
   ctx.stroke();
   ctx.fillStyle = '#3b82f6'; ctx.font = '10px sans-serif';
   ctx.fillText(fmtMs(maxMs), W - padR + 4, padT + 8);
+}
+
+function drawKpis(k) {
+  const p = document.getElementById('panel-kpis');
+  const c = document.getElementById('panel-causales');
+  if (!k || !k.conversaciones) {
+    p.innerHTML = '<div class="empty">Sin conversaciones en el rango</div>';
+    c.innerHTML = '<div class="empty">Sin derivaciones</div>';
+    return;
+  }
+  const emo = k.emocionalidad || {};
+  const neg = emo.negativo || 0;
+  p.innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+      <div><div class="big-num val-green">${k.fcr_pct != null ? k.fcr_pct + '%' : '—'}</div>
+        <div style="font-size:12px;color:var(--text-muted)">resueltas sin derivar (FCR)</div></div>
+      <div><div class="big-num">${k.conversaciones}</div>
+        <div style="font-size:12px;color:var(--text-muted)">conversaciones</div></div>
+    </div>
+    <div style="margin-top:16px;font-size:13px;line-height:2;border-top:1px solid var(--border);padding-top:12px">
+      <div>Interacciones: <b>${k.interacciones_promedio ?? '—'}</b> promedio
+        <span style="color:var(--text-muted)">· ${k.interacciones_mediana ?? '—'} mediana</span></div>
+      <div>Duración: <b>${k.minutos_promedio ?? '—'} min</b> promedio
+        <span style="color:var(--text-muted)">· ${k.minutos_mediana ?? '—'} min mediana</span></div>
+      <div>Clientes molestos: <b class="${neg > 20 ? 'val-warn' : ''}">${neg}%</b> de los mensajes</div>
+    </div>`;
+
+  const causales = k.derivaciones_por_causal || [];
+  if (!causales.length) { c.innerHTML = '<div class="empty">Sin derivaciones</div>'; return; }
+  const max = causales[0].cantidad;
+  c.innerHTML = '<div style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:12px">Por qué se derivó</div>' +
+    causales.slice(0, 10).map(x => `
+      <div class="hbar-row">
+        <span class="name">${escapeHtml(x.causal)}</span>
+        <div class="hbar-track"><div class="hbar-fill deriv" style="width:${Math.max(3, x.cantidad / max * 100)}%"></div></div>
+        <span class="num">${x.cantidad}</span>
+      </div>`).join('');
 }
 
 function drawSinResultado(items) {
