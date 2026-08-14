@@ -25,11 +25,21 @@ DOCUMENTOS: list[tuple[str, str]] = [
      "Administración: lunes a viernes de 7:30 a 15:00, sábados de 8 a 12. "
      "Farmacia: lunes a viernes de 7:30 a 15:00, sábados de 8 a 12."),
 
+    # El alias es de las consultas más frecuentes: se le suman las formas en que
+    # la gente lo pide (CBU, CVU, "dónde deposito") para que la búsqueda lo
+    # encuentre siempre. Pedir el alias NO es lo mismo que pedir una
+    # transferencia: lo primero se responde, lo segundo deriva.
+    ("Alias para transferencias, CBU y CVU",
+     "El alias para transferir o depositar es AMICORREA. "
+     "Si te piden CBU o CVU, el dato para transferencias es el alias AMICORREA. "
+     "Sirve para depósitos, pagos y transferencias a la mutual. "
+     "Después de transferir, mandanos el comprobante y una persona del equipo lo acredita."),
+
     ("Datos generales y alta de socio",
-     "Alias para transferencias: AMICORREA. "
      "Cuota social: $4.000. "
      "Las cuotas de préstamos vencen hasta el día 10 inclusive de cada mes. "
-     "Para asociarse hace falta fotocopia de DNI."),
+     "Para asociarse hace falta fotocopia de DNI. "
+     "Alias para transferencias: AMICORREA."),
 
     ("Requisitos para préstamos personales",
      "Se necesita: DNI; los 3 últimos recibos de sueldo, pagos de monotributo o DDJJ de IVA; "

@@ -484,3 +484,23 @@ async def test_auto_liberar_derivadas_sin_atender():
     s = await ss.get("A")
     assert s["estado"] == "idle"
     assert "derivada_at" not in s and "derivada_motivo" not in s
+
+
+@pytest.mark.parametrize("txt", [
+    "cuál es el alias?", "me pasás el cbu", "necesito el cvu para transferir",
+    "¿dónde deposito?", "a qué cuenta transfiero", "datos para transferencia",
+])
+def test_pedir_alias_no_deriva(txt):
+    """
+    Pedir el alias/CBU es información pública que el bot debe responder.
+    Distinto de "necesito que hagan una transferencia", que sí deriva.
+    """
+    from app.services.mutual_helper import requiere_derivacion_financiera
+    assert requiere_derivacion_financiera(txt) is None
+
+
+def test_alias_esta_en_la_base_de_conocimiento():
+    from scripts.cargar_kb_mutual import DOCUMENTOS
+    texto = " ".join(c for _, c in DOCUMENTOS).upper()
+    assert "AMICORREA" in texto
+    assert "CBU" in texto and "CVU" in texto   # se busca de todas esas formas
