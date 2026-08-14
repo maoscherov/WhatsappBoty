@@ -276,8 +276,88 @@ async def verify_webhook(
     raise HTTPException(status_code=403, detail="Verify token mismatch")
 
 
+async def _descargar_url(url: str) -> bytes | None:
+    """Descarga un archivo por URL (Kapso entrega los adjuntos así)."""
+    import httpx
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(url, timeout=30, follow_redirects=True)
+            return r.content if r.status_code == 200 else None
+    except Exception as e:
+        logger.warning(f"No se pudo descargar el adjunto: {e}")
+        return None
+
+
+def _kapso_a_mensajes(evento: dict) -> list[dict]:
+    """
+    Traduce un evento de Kapso al formato interno de mensajes.
+
+    Kapso manda su propio payload (no el de Meta): estructura plana con
+    `message` y `conversation`, el audio ya transcripto y los archivos con URL
+    directa en vez de un id para descargar.
+
+    Se ignoran los mensajes salientes (`direction: outbound`): son los que
+    enviamos nosotros y reprocesarlos haría que el bot se responda solo.
+    """
+    msg = evento.get("message") or {}
+    kapso = msg.get("kapso") or {}
+    if kapso.get("direction") == "outbound":
+        return []
+
+    telefono = msg.get("from") or (evento.get("conversation") or {}).get("phone_number")
+    if not telefono:
+        return []
+
+    tipo = msg.get("type") or "text"
+    media_url = kapso.get("media_url") or (kapso.get("media_data") or {}).get("url")
+    transcripcion = (kapso.get("transcript") or {}).get("text") or ""
+
+    return [{
+        "from": str(telefono).lstrip("+"),
+        "id": msg.get("id") or "",
+        "type": tipo,
+        "text": (msg.get("text") or {}).get("body", "") or (msg.get("image") or {}).get("caption", ""),
+        "audio_id": None,
+        "image_id": None,
+        "image_mime_type": (kapso.get("media_data") or {}).get("content_type", "image/jpeg"),
+        "phone_number_id": evento.get("phone_number_id"),
+        # Propios de Kapso
+        "media_url": media_url,
+        "texto_transcripto": transcripcion,
+    }]
+
+
+@router.post("/webhook/kapso")
+async def receive_kapso(request: Request):
+    """
+    Webhook de Kapso (tipo "Kapso events"). Es el único disponible en sandbox.
+
+    Acepta un evento suelto o un lote (`{batch: true, data: [...]}`), y sólo
+    procesa los mensajes entrantes.
+    """
+    body = await request.json()
+    tipo_evento = request.headers.get("x-webhook-event", "")
+    logger.info(f"Kapso webhook → evento={tipo_evento or '(sin header)'} "
+                f"batch={bool(body.get('batch'))}")
+
+    eventos = body.get("data") if body.get("batch") else [body.get("data") or body]
+    mensajes: list[dict] = []
+    for ev in (eventos or []):
+        if not isinstance(ev, dict):
+            continue
+        # Sólo mensajes recibidos; el resto de los eventos se ignoran.
+        if tipo_evento and "message.received" not in tipo_evento and not ev.get("message"):
+            continue
+        mensajes.extend(_kapso_a_mensajes(ev))
+
+    if not mensajes:
+        return {"status": "no_messages"}
+    return await procesar_mensajes(mensajes)
+
+
 @router.post("/webhook")
 async def receive_message(request: Request):
+    """Webhook de la Cloud API de Meta (formato oficial de WhatsApp)."""
     body = await request.json()
 
     try:
@@ -288,7 +368,17 @@ async def receive_message(request: Request):
     messages = payload.get_messages()
     if not messages:
         return {"status": "no_messages"}
+    return await procesar_mensajes(messages)
 
+
+async def procesar_mensajes(messages: list[dict]) -> dict:
+    """
+    Procesa los mensajes ya normalizados, venga el webhook de Meta o de Kapso.
+
+    Cada mensaje es un dict con: from, id, type, text, audio_id, image_id,
+    image_mime_type, phone_number_id. Kapso además puede traer `media_url`
+    (descarga directa) y `texto_transcripto` (audio ya pasado a texto).
+    """
     _s = get_settings()
     deps = _deps(_s)
 
@@ -323,8 +413,14 @@ async def receive_message(request: Request):
 
             texto = msg["text"]
 
+            # Audio con transcripción de Kapso: ya viene resuelto, no hace falta
+            # descargar ni pasar por Whisper.
+            if msg_type == "audio" and msg.get("texto_transcripto"):
+                texto = msg["texto_transcripto"]
+                _audio_prov_used = "kapso"
+
             # Audio → transcripción
-            if msg_type == "audio" and msg["audio_id"]:
+            elif msg_type == "audio" and msg["audio_id"]:
                 _ta = _time.perf_counter()
                 audio_bytes = await deps["wa"].download_audio(msg["audio_id"])
                 if audio_bytes:
@@ -339,9 +435,12 @@ async def receive_message(request: Request):
                     continue
 
             # Imagen → clasificar (receta/credencial derivan; producto sigue el flujo)
-            if msg_type == "image" and msg.get("image_id"):
+            if msg_type == "image" and (msg.get("image_id") or msg.get("media_url")):
                 _ti = _time.perf_counter()
-                image_bytes = await deps["wa"].download_image(msg["image_id"])
+                if msg.get("media_url"):
+                    image_bytes = await _descargar_url(msg["media_url"])   # Kapso: URL directa
+                else:
+                    image_bytes = await deps["wa"].download_image(msg["image_id"])
                 if not image_bytes:
                     await deps["wa"].send_text(phone, "No pude procesar la imagen. ¿Me lo escribís?")
                     continue

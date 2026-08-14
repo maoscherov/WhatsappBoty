@@ -335,3 +335,47 @@ def test_mensaje_derivacion_personalizado():
     msg = mensaje_derivacion("saldo", "Claudia")
     assert msg.startswith("Claudia,")
     assert "saldo" in msg.lower()
+
+
+# ── Webhook de Kapso: traducción a nuestro formato ─────────────────────────────
+def test_kapso_traduce_texto():
+    from app.routers.webhook import _kapso_a_mensajes
+    ev = {"phone_number_id": "123",
+          "message": {"id": "wamid.1", "from": "+5493416470114", "type": "text",
+                      "text": {"body": "¿qué horarios tienen?"},
+                      "kapso": {"direction": "inbound"}}}
+    m = _kapso_a_mensajes(ev)[0]
+    assert m["from"] == "5493416470114"      # sin el "+"
+    assert m["text"] == "¿qué horarios tienen?"
+    assert m["phone_number_id"] == "123"
+
+
+def test_kapso_ignora_salientes():
+    """Los mensajes que enviamos vuelven como evento: si se procesaran, el bot
+    se respondería a sí mismo."""
+    from app.routers.webhook import _kapso_a_mensajes
+    ev = {"message": {"id": "x", "from": "549", "type": "text",
+                      "text": {"body": "respuesta del bot"},
+                      "kapso": {"direction": "outbound"}}}
+    assert _kapso_a_mensajes(ev) == []
+
+
+def test_kapso_audio_ya_transcripto():
+    """Kapso transcribe el audio: no hace falta descargarlo ni pasarlo por Whisper."""
+    from app.routers.webhook import _kapso_a_mensajes
+    ev = {"message": {"id": "a1", "from": "549", "type": "audio",
+                      "kapso": {"direction": "inbound",
+                                "transcript": {"text": "necesito un préstamo"}}}}
+    assert _kapso_a_mensajes(ev)[0]["texto_transcripto"] == "necesito un préstamo"
+
+
+def test_kapso_imagen_con_url():
+    from app.routers.webhook import _kapso_a_mensajes
+    ev = {"message": {"id": "i1", "from": "549", "type": "image",
+                      "image": {"caption": "mirá esto"},
+                      "kapso": {"direction": "inbound", "media_url": "https://x/y.jpg",
+                                "media_data": {"content_type": "image/png"}}}}
+    m = _kapso_a_mensajes(ev)[0]
+    assert m["media_url"] == "https://x/y.jpg"
+    assert m["image_mime_type"] == "image/png"
+    assert m["text"] == "mirá esto"
