@@ -209,6 +209,20 @@ async def _flujo_mutual(deps, phone: str, session: dict, texto: str,
     respuesta = (resultado.get("respuesta") or "").strip() or (
         "Disculpá, no pude procesar tu consulta. ¿Me la repetís?")
 
+    # Simulación de préstamo: los números los calcula el código, nunca el modelo.
+    if str(cfg.get("mutual_simulador_activo", "true")).lower() == "true":
+        from app.services.mutual_helper import simular_prestamo, texto_simulacion
+        try:
+            monto = float(resultado.get("simulacion_monto") or 0)
+            cuotas = int(resultado.get("simulacion_cuotas") or 0)
+        except (TypeError, ValueError):
+            monto, cuotas = 0, 0
+        if monto > 0 and cuotas > 0:
+            sim = simular_prestamo(monto, cuotas, cfg)
+            respuesta = texto_simulacion(sim, cfg)
+            intencion = "simulacion_prestamo"
+            logger.info(f"Simulación de préstamo: {monto} en {cuotas} cuotas → {sim}")
+
     # 4. Pidió hablar con una persona.
     if intencion == "derivacion" or pide_humano(texto):
         await deps["session"].set_estado(phone, "operador", motivo="pidio_humano")

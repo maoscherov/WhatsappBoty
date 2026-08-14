@@ -405,3 +405,50 @@ def test_firma_kapso():
     compacto = json.dumps(payload, separators=(",", ":")).encode()
     firma_js = hmac.new(secret.encode(), compacto, hashlib.sha256).hexdigest()
     assert _firma_kapso_valida(raw, firma_js, secret) is True
+
+
+# ── Simulador de préstamos (Mutual AMI) ────────────────────────────────────────
+def test_simulador_amortiza_correctamente():
+    """
+    La cuota tiene que amortizar el capital exactamente en el plazo: se verifica
+    descontando mes a mes hasta que el saldo quede en cero.
+    """
+    from app.services.mutual_helper import simular_prestamo
+    monto, cuotas, tna = 1_500_000, 12, 55
+    s = simular_prestamo(monto, cuotas, {})
+    i = (tna / 100) / 12
+    saldo = monto
+    for _ in range(cuotas):
+        saldo = saldo + saldo * i - s["cuota"]
+    assert abs(saldo) < 1, f"quedó saldo {saldo:.2f}: la cuota no amortiza"
+
+
+def test_simulador_elige_linea():
+    """Preferencial sólo si el monto y el plazo entran en su rango."""
+    from app.services.mutual_helper import simular_prestamo
+    assert simular_prestamo(1_500_000, 12, {})["linea"] == "preferencial"
+    assert simular_prestamo(500_000, 24, {})["linea"] == "general"      # monto bajo
+    assert simular_prestamo(2_000_000, 24, {})["linea"] == "general"    # plazo largo
+    assert simular_prestamo(1_000_000, 48, {}).get("error") == "plazo_excedido"
+
+
+def test_simulador_tasas_configurables():
+    """Las tasas cambian seguido: deben poder editarse sin tocar código."""
+    from app.services.mutual_helper import simular_prestamo
+    # 500.000 queda fuera del rango preferencial → usa la tasa general
+    base = simular_prestamo(500_000, 24, {})
+    otra = simular_prestamo(500_000, 24, {"mutual_tna_general": "90"})
+    assert base["tna"] == 75 and otra["tna"] == 90
+    assert otra["cuota"] > base["cuota"]
+
+    # Y la preferencial se ajusta por su propia clave
+    pref = simular_prestamo(2_000_000, 12, {"mutual_tna_preferencial": "40"})
+    assert pref["linea"] == "preferencial" and pref["tna"] == 40
+
+
+def test_simulador_aclara_lo_que_no_incluye():
+    """Sin IVA ni gastos cargados, el mensaje tiene que decirlo explícitamente."""
+    from app.services.mutual_helper import simular_prestamo, texto_simulacion
+    txt = texto_simulacion(simular_prestamo(1_500_000, 12, {}), {})
+    assert "estimativo" in txt.lower()
+    assert "no incluye" in txt.lower()

@@ -42,6 +42,18 @@ DEFAULTS: dict[str, str] = {
         "Para no hacerte perder más tiempo, te paso con alguien del equipo que "
         "sigue con vos desde acá 🙌"
     ),
+    # Simulador de préstamos. Las tasas cambian seguido: se editan acá, sin deploy.
+    "mutual_simulador_activo": "true",
+    "mutual_tna_preferencial": "55",
+    "mutual_tna_general": "75",
+    # Ajustes para acercar la cuota al importe real. En 0 hasta que la mutual
+    # confirme qué incluye: informar de menos genera un problema con el cliente.
+    "mutual_simulador_iva": "0",      # % de IVA sobre los intereses
+    "mutual_simulador_gastos": "0",   # % de gastos sobre el capital
+    "mutual_simulador_aclaracion": (
+        "Es un cálculo estimativo: el importe final surge de la evaluación del "
+        "equipo y puede incluir gastos según el caso."
+    ),
     # Pasarela con la que se cobra: "payway" | "mercadopago". Vacío = usa la
     # variable de entorno del deploy. Se cambia desde el backoffice sin deploy.
     "payment_provider": "",

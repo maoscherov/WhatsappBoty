@@ -11,6 +11,101 @@ Ver docs/plan-cerca-mutual.md (fases 1 y 2).
 import re
 from typing import Optional
 
+
+# ── Simulador de préstamos ─────────────────────────────────────────────────────
+# Sistema francés (cuota constante). Los valores por defecto salen de la spec 2.4
+# y son configurables desde el backoffice porque las tasas cambian seguido.
+LINEAS_DEFAULT = {
+    "preferencial": {"tna": 55.0, "min": 1_500_000.0, "max": 6_000_000.0, "cuotas_max": 12},
+    "general":      {"tna": 75.0, "min": 0.0,         "max": 0.0,         "cuotas_max": 36},
+}
+
+
+def _cuota_francesa(capital: float, tna: float, n: int) -> float:
+    """Cuota constante: capital * i / (1 - (1+i)^-n), con i = tasa mensual."""
+    i = (tna / 100) / 12
+    if i <= 0:
+        return capital / n
+    return capital * i / (1 - (1 + i) ** -n)
+
+
+def simular_prestamo(monto: float, cuotas: int, cfg: dict | None = None) -> dict:
+    """
+    Calcula la cuota estimada. Elige la línea preferencial si el monto y el
+    plazo entran en su rango; si no, la de público general.
+
+    `iva_intereses` y `gastos_pct` permiten acercar el número al real sin tocar
+    código: por defecto están en 0 porque la especificación no los define, y un
+    importe informado de menos genera un problema con el cliente.
+
+    Devuelve el detalle, o {"error": ...} si los datos no son válidos.
+    """
+    cfg = cfg or {}
+
+    def _num(clave, default):
+        try:
+            return float(cfg.get(clave) or default)
+        except (TypeError, ValueError):
+            return float(default)
+
+    pref = dict(LINEAS_DEFAULT["preferencial"]); pref["tna"] = _num("mutual_tna_preferencial", pref["tna"])
+    gral = dict(LINEAS_DEFAULT["general"]);      gral["tna"] = _num("mutual_tna_general", gral["tna"])
+    iva = _num("mutual_simulador_iva", 0)            # % sobre los intereses
+    gastos_pct = _num("mutual_simulador_gastos", 0)  # % sobre el capital, prorrateado
+
+    if monto <= 0 or cuotas <= 0:
+        return {"error": "datos_invalidos"}
+    if cuotas > gral["cuotas_max"]:
+        return {"error": "plazo_excedido", "cuotas_max": int(gral["cuotas_max"])}
+
+    entra_pref = (pref["min"] <= monto <= pref["max"]) and cuotas <= pref["cuotas_max"]
+    linea = "preferencial" if entra_pref else "general"
+    tna = pref["tna"] if entra_pref else gral["tna"]
+
+    cuota_pura = _cuota_francesa(monto, tna, cuotas)
+    interes_mensual_prom = cuota_pura - (monto / cuotas)
+    cuota = cuota_pura + interes_mensual_prom * (iva / 100) + (monto * gastos_pct / 100) / cuotas
+
+    return {
+        "linea": linea,
+        "tna": round(tna, 2),
+        "monto": round(monto, 2),
+        "cuotas": int(cuotas),
+        "cuota": round(cuota, 2),
+        "total": round(cuota * cuotas, 2),
+        "incluye_iva": iva > 0,
+        "incluye_gastos": gastos_pct > 0,
+    }
+
+
+def texto_simulacion(sim: dict, cfg: dict | None = None) -> str:
+    """Arma el mensaje de la simulación. Los números los pone el código, nunca el modelo."""
+    cfg = cfg or {}
+    if sim.get("error") == "plazo_excedido":
+        return f"El plazo máximo es de {sim['cuotas_max']} cuotas. ¿Querés que lo calcule con ese plazo?"
+    if sim.get("error"):
+        return "Para simularlo necesito el monto y en cuántas cuotas lo pensás. ¿Me los pasás?"
+
+    def _p(v):
+        return f"${v:,.0f}".replace(",", ".")
+
+    linea_txt = ("con tasa preferencial" if sim["linea"] == "preferencial"
+                 else "con tasa de público general")
+    aclaracion = cfg.get("mutual_simulador_aclaracion") or (
+        "Es un cálculo estimativo: el importe final surge de la evaluación del equipo "
+        "y puede incluir gastos según el caso."
+    )
+    faltantes = []
+    if not sim["incluye_iva"]:
+        faltantes.append("impuestos")
+    if not sim["incluye_gastos"]:
+        faltantes.append("gastos administrativos")
+    nota = f" No incluye {' ni '.join(faltantes)}." if faltantes else ""
+
+    return (f"Por {_p(sim['monto'])} en {sim['cuotas']} cuotas {linea_txt} ({sim['tna']:g}% TNA), "
+            f"la cuota estimada es de *{_p(sim['cuota'])}*.\n\n"
+            f"{aclaracion}{nota}")
+
 # ── Consultas que SIEMPRE derivan (sección 2.9 de la especificación) ───────────
 # Se resuelven en código, antes de llegar al modelo: son datos de cuentas y no
 # deben intentar responderse nunca, por más que el cliente insista.
@@ -85,16 +180,26 @@ CONCISIÓN (importante):
 - Si el tema es amplio (por ejemplo préstamos), dá lo esencial y preguntá qué parte le interesa.
 - Dejá siempre a la vista que puede hablar con un asesor si lo prefiere.
 
-SIMULACIONES Y PROMESAS:
-- No calcules cuotas ni prometas aprobación de préstamos. Podés informar tasas, montos y plazos vigentes, y aclarar que el importe final surge de la evaluación del equipo.
+SIMULACIÓN DE PRÉSTAMOS:
+- NUNCA calcules vos el importe de la cuota ni lo escribas en tu respuesta: el sistema lo calcula y lo agrega. Si ponés un número inventado, le estás dando un dato falso a alguien que va a tomar una decisión de dinero.
+- Cuando el cliente quiera saber cuánto pagaría, extraé el monto y la cantidad de cuotas en los campos correspondientes y respondé algo breve como "Te lo calculo" (el detalle lo agrega el sistema).
+- Si falta el monto o el plazo, pediselo con naturalidad y dejá los campos en null.
+- Nunca prometas aprobación: el otorgamiento depende de la evaluación del equipo.
 
 FORMATO DE RESPUESTA:
 Respondé SIEMPRE con un JSON con este esquema (sin texto extra):
 {
   "intencion": "saludo|social|informacion|ventas|soporte|feedback|derivacion|agradecimiento|desconocido",
   "sentimiento": "positivo|neutro|negativo",
+  "simulacion_monto": null,
+  "simulacion_cuotas": null,
   "respuesta": "texto que se envía al cliente por WhatsApp"
 }
+
+Los campos "simulacion_monto" y "simulacion_cuotas" (números, sin puntos ni símbolos) se completan
+SOLO cuando el cliente pide calcular una cuota y dio ambos datos. Interpretá el lenguaje natural:
+"un millón y medio" son 1500000, "dos palos" son 2000000, "en un año" son 12 cuotas.
+En cualquier otro caso van en null.
 
 Guía de intenciones:
 - informacion: horarios, requisitos, beneficios, cómo asociarse, datos generales.
