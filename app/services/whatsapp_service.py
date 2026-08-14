@@ -15,7 +15,8 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 WA_BASE = "https://graph.facebook.com/v19.0"
-KAPSO_BASE = "https://api.kapso.ai/meta/whatsapp"
+# Kapso incluye la versión de la API de Meta en la ruta; sin ella devuelve 404.
+KAPSO_BASE = "https://api.kapso.ai/meta/whatsapp/v24.0"
 
 
 async def _registrar_fallo(to: str, tipo: str, detalle: str):

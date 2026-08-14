@@ -671,6 +671,54 @@ async def bo_resumen(phone: str, _=Depends(_auth)):
     return {"ok": False, "resumen": "", "detail": err or "sin proveedor LLM configurado"}
 
 
+@router.get("/wa/config-check")
+async def bo_wa_config(_=Depends(_auth)):
+    """Config de WhatsApp cargada (claves enmascaradas) y URL efectiva de envío."""
+    from app.services.whatsapp_service import get_whatsapp_service
+    s = get_settings()
+    wa = get_whatsapp_service(s.whatsapp_token, s.whatsapp_phone_number_id)
+
+    def _mask(v: str) -> str:
+        v = v or ""
+        return f"{v[:4]}…{v[-4:]} ({len(v)})" if len(v) >= 8 else ("(vacío)" if not v else "***")
+
+    return {
+        "proveedor": s.wa_provider,
+        "phone_number_id": s.whatsapp_phone_number_id or "(vacío)",
+        "url_envio": f"{wa.base_url}/{s.whatsapp_phone_number_id}/messages",
+        "whatsapp_token": _mask(s.whatsapp_token),
+        "kapso_api_key": _mask(s.kapso_api_key),
+        "kapso_webhook_secret": _mask(s.kapso_webhook_secret),
+        "vertical": s.vertical,
+    }
+
+
+@router.post("/wa/test")
+async def bo_wa_test(to: str = Query(...), texto: str = Query("Prueba de envío ✅"),
+                     _=Depends(_auth)):
+    """
+    Envía un mensaje de prueba y devuelve la respuesta cruda del proveedor.
+    Sirve para ver el error exacto cuando el bot recibe pero no responde.
+    """
+    import httpx
+    from app.services.whatsapp_service import get_whatsapp_service
+    s = get_settings()
+    wa = get_whatsapp_service(s.whatsapp_token, s.whatsapp_phone_number_id)
+    url = f"{wa.base_url}/{s.whatsapp_phone_number_id}/messages"
+    headers = ({"X-API-Key": s.kapso_api_key} if s.wa_provider == "kapso"
+               else {"Authorization": f"Bearer {s.whatsapp_token}"})
+    payload = {"messaging_product": "whatsapp", "to": to.lstrip("+"),
+               "type": "text", "text": {"body": texto}}
+    async with httpx.AsyncClient() as client:
+        try:
+            r = await client.post(url, headers={**headers, "Content-Type": "application/json"},
+                                  json=payload, timeout=20)
+            return {"ok": r.status_code == 200, "status": r.status_code,
+                    "url": url, "proveedor": s.wa_provider, "respuesta": r.text[:800]}
+        except Exception as e:
+            return {"ok": False, "url": url, "error": f"{type(e).__name__}: {e}"}
+
+
 @router.get("/mp/pago/{payment_id}")
 async def bo_mp_pago(payment_id: str, _=Depends(_auth)):
     """
