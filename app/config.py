@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379"
     database_url: str = ""   # Postgres (Railway) — vacío = features de Postgres/RAG inactivas
 
+    # Rubro del asistente: "farmacia" (catálogo, carrito y cobro) o
+    # "mutual" (información institucional + derivación, sin venta).
+    vertical: str = "farmacia"
+
     env: str = "development"
     sku_csv_path: str = "data/catalogo_base.csv"
     socios_path: str = "data/socios.csv"      # padrón de socios (CSV o XLSX)

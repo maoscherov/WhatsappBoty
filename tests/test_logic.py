@@ -297,3 +297,41 @@ def test_rutas_webhook_con_comercio():
     rutas = {r.path for r in m.app.routes if hasattr(r, "path")}
     assert {"/mp/notification", "/mp/notification/{comercio}"} <= rutas
     assert {"/payway/notification", "/payway/notification/{comercio}"} <= rutas
+
+
+# ── Vertical mutual: derivaciones financieras obligatorias ─────────────────────
+@pytest.mark.parametrize("txt,motivo", [
+    ("hola, te paso el comprobante de la transferencia", "comprobante"),
+    ("necesito hacer una transferencia", "transferencia"),
+    ("quiero renovar mi plazo fijo", "plazo_fijo_renovacion"),
+    ("cuánto es la cuota de mi préstamo?", "cuota_prestamo"),
+    ("me decís el saldo de mi caja de ahorro?", "saldo"),
+    ("cuándo vence mi plazo fijo", "plazo_fijo_vencimiento"),
+])
+def test_derivacion_financiera_obligatoria(txt, motivo):
+    """
+    Datos de cuentas: el bot no debe intentar responderlos nunca (spec 2.9).
+    Se resuelve en código, antes de llegar al modelo.
+    """
+    from app.services.mutual_helper import requiere_derivacion_financiera
+    assert requiere_derivacion_financiera(txt) == motivo
+
+
+@pytest.mark.parametrize("txt", [
+    "qué horarios tienen?",
+    "cuáles son los requisitos para un préstamo?",
+    "qué beneficios tiene ser socio",
+    "cuánto está la cuota social",
+    "hola buen día",
+])
+def test_consultas_informativas_no_derivan(txt):
+    """Lo institucional lo responde el bot con la base de conocimiento."""
+    from app.services.mutual_helper import requiere_derivacion_financiera
+    assert requiere_derivacion_financiera(txt) is None
+
+
+def test_mensaje_derivacion_personalizado():
+    from app.services.mutual_helper import mensaje_derivacion
+    msg = mensaje_derivacion("saldo", "Claudia")
+    assert msg.startswith("Claudia,")
+    assert "saldo" in msg.lower()

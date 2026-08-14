@@ -28,6 +28,20 @@ DEFAULTS: dict[str, str] = {
     "pickup_minutes": "30",    # tiempo estimado de preparación/retiro
     "receta_mode":    "conservador",  # "conservador" (ambiguo deriva) | "estricto" (solo "si")
     "envio_enabled":  "true",  # ofrecer envío a domicilio además de retiro
+    # ── Vertical "mutual" (CERCA Sucursales) ──────────────────────────────
+    # Escalada por señal conversacional (spec 4.2). 0 desactiva cada regla.
+    "mutual_negativos_para_escalar": "2",     # mensajes negativos seguidos
+    "mutual_max_turnos": "30",                # corte por conversación larga
+    "mutual_max_minutos": "90",
+    "mutual_turno_ofrecer_asesor": "10",      # desde qué turno se recuerda el asesor
+    "mutual_escalada_message": (
+        "Perdón por las vueltas 🙏 Te paso con alguien del equipo para que te "
+        "ayude personalmente."
+    ),
+    "mutual_corte_message": (
+        "Para no hacerte perder más tiempo, te paso con alguien del equipo que "
+        "sigue con vos desde acá 🙌"
+    ),
     # Pasarela con la que se cobra: "payway" | "mercadopago". Vacío = usa la
     # variable de entorno del deploy. Se cambia desde el backoffice sin deploy.
     "payment_provider": "",

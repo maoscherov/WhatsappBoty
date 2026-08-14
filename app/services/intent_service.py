@@ -139,12 +139,21 @@ _SYSTEM_CACHED = SYSTEM_PROMPT
 
 
 class IntentService:
-    def __init__(self, anthropic_key: str, openai_key: str = "", provider: str = "anthropic"):
+    def __init__(self, anthropic_key: str, openai_key: str = "", provider: str = "anthropic",
+                 vertical: str = "farmacia"):
         self._provider = provider if provider in ("anthropic", "openai") else "anthropic"
+        self._vertical = vertical if vertical in ("farmacia", "mutual") else "farmacia"
         self._anthropic = anthropic.AsyncAnthropic(api_key=anthropic_key) if anthropic_key else None
         self._openai = openai.AsyncOpenAI(api_key=openai_key) if openai_key else None
-        logger.info(f"IntentService: proveedor primario '{self._provider}' "
+        logger.info(f"IntentService: vertical '{self._vertical}', proveedor primario '{self._provider}' "
                     f"(anthropic={'ok' if self._anthropic else 'no'}, openai={'ok' if self._openai else 'no'})")
+
+    def _system_prompt(self) -> str:
+        """Prompt según el vertical: farmacia (catálogo y venta) o mutual (información)."""
+        if self._vertical == "mutual":
+            from app.services.mutual_helper import SYSTEM_PROMPT_MUTUAL
+            return SYSTEM_PROMPT_MUTUAL
+        return SYSTEM_PROMPT
 
     # ── Helpers internos ──────────────────────────────────────────────────────
 
@@ -208,7 +217,7 @@ class IntentService:
             try:
                 msgs = messages + ([{"role": "assistant", "content": "{"}] if con_prefill else [])
                 response = await self._anthropic.messages.create(
-                    model=model, max_tokens=512, system=SYSTEM_PROMPT, messages=msgs,
+                    model=model, max_tokens=512, system=self._system_prompt(), messages=msgs,
                 )
                 text = response.content[0].text if getattr(response, "content", None) else ""
                 return self._parse_response(("{" + text) if con_prefill else text)
@@ -223,7 +232,7 @@ class IntentService:
         resp = await self._openai.chat.completions.create(
             model=model, max_tokens=512, temperature=0.3,
             response_format={"type": "json_object"},
-            messages=[{"role": "system", "content": SYSTEM_PROMPT}] + messages,
+            messages=[{"role": "system", "content": self._system_prompt()}] + messages,
         )
         return self._parse_response(resp.choices[0].message.content or "")
 
@@ -337,8 +346,9 @@ class IntentService:
 _instance: Optional[IntentService] = None
 
 
-def get_intent_service(anthropic_key: str, openai_key: str = "", provider: str = "anthropic") -> IntentService:
+def get_intent_service(anthropic_key: str, openai_key: str = "", provider: str = "anthropic",
+                       vertical: str = "farmacia") -> IntentService:
     global _instance
     if _instance is None:
-        _instance = IntentService(anthropic_key, openai_key, provider)
+        _instance = IntentService(anthropic_key, openai_key, provider, vertical)
     return _instance

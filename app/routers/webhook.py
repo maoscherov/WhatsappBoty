@@ -123,7 +123,7 @@ def _deps(settings=None):
         "wa":      get_whatsapp_service(s.whatsapp_token, s.whatsapp_phone_number_id),
         "sku":     get_sku_service(s.sku_csv_path),
         "session": get_session_service(s.redis_url),
-        "intent":  get_intent_service(s.anthropic_api_key, s.openai_api_key, s.llm_provider),
+        "intent":  get_intent_service(s.anthropic_api_key, s.openai_api_key, s.llm_provider, s.vertical),
         "payment": (get_payway_link_service() if s.payment_provider == "payway"
                     else get_payment_service(s.mp_access_token, s.mp_notification_url, s.mp_sandbox)),
         "audio":   get_audio_service(audio_key, s.audio_provider),
@@ -157,6 +157,86 @@ async def _maybe_send_image(
     )
     if debe_enviar:
         await wa.send_image(phone, imagen_url)
+
+
+async def _flujo_mutual(deps, phone: str, session: dict, texto: str,
+                        ctx_socio, nombre_socio: str, steps: dict) -> tuple[str, str]:
+    """
+    Vertical "mutual": responde con la base de conocimiento institucional y
+    deriva a una persona todo lo que toque cuentas o dinero.
+
+    Devuelve (respuesta, intencion). No genera links de pago ni usa catálogo.
+    """
+    from app.services.mutual_helper import requiere_derivacion_financiera, mensaje_derivacion
+
+    cfg = await deps["config"].get_all()
+
+    # 1. Consultas de cuenta: derivan siempre, antes de llegar al modelo.
+    motivo = requiere_derivacion_financiera(texto)
+    if motivo:
+        await deps["session"].set_estado(phone, "operador", motivo=motivo)
+        return mensaje_derivacion(motivo, nombre_socio), f"derivado_{motivo}"
+
+    # 2. Corte por conversación larga: evita el efecto bucle (spec 4.2).
+    turnos = len([m for m in session.get("history", []) if m.get("role") == "user"]) + 1
+    max_turnos = int(cfg.get("mutual_max_turnos") or 30)
+    max_minutos = int(cfg.get("mutual_max_minutos") or 90)
+    inicio = session.get("_conv_inicio") or _time.time()
+    minutos = (_time.time() - float(inicio)) / 60
+    if turnos >= max_turnos or minutos >= max_minutos:
+        await deps["session"].set_estado(phone, "operador", motivo="conversacion_larga")
+        logger.info(f"Derivación por conversación larga: {phone} turnos={turnos} min={minutos:.0f}")
+        return (cfg.get("mutual_corte_message") or
+                "Para no hacerte perder más tiempo, te paso con alguien del equipo que "
+                "sigue con vos desde acá 🙌"), "derivado_conversacion_larga"
+
+    # 3. Base de conocimiento como contexto (es la única fuente de verdad).
+    _tkb = _time.perf_counter()
+    docs = await deps["rag"].kb_search(texto, n=4)
+    steps["kb_ms"] = int((_time.perf_counter() - _tkb) * 1000)
+    contexto_kb = "\n\n".join(f"{d['titulo']}: {d['contenido']}".strip(": ") for d in docs) or None
+
+    _tc = _time.perf_counter()
+    resultado = await deps["intent"].procesar(
+        mensaje=texto,
+        history=session.get("history", []),
+        contexto_cliente=ctx_socio,
+        contexto_kb=contexto_kb,
+    )
+    steps["claude_ms"] = int((_time.perf_counter() - _tc) * 1000)
+
+    intencion = resultado.get("intencion", "desconocido")
+    respuesta = (resultado.get("respuesta") or "").strip() or (
+        "Disculpá, no pude procesar tu consulta. ¿Me la repetís?")
+
+    # 4. Pidió hablar con una persona.
+    if intencion == "derivacion" or pide_humano(texto):
+        await deps["session"].set_estado(phone, "operador", motivo="pidio_humano")
+        return respuesta, "derivado_humano"
+
+    # 5. Frustración sostenida: dos mensajes negativos seguidos → ofrecer escalar.
+    sesion = await deps["session"].get(phone)
+    negativos = int(sesion.get("_negativos") or 0)
+    negativos = negativos + 1 if resultado.get("sentimiento") == "negativo" else 0
+    sesion["_negativos"] = negativos
+    if not sesion.get("_conv_inicio"):
+        sesion["_conv_inicio"] = _time.time()
+    await deps["session"].save(phone, sesion)
+
+    umbral = int(cfg.get("mutual_negativos_para_escalar") or 2)
+    if umbral and negativos >= umbral:
+        await deps["session"].set_estado(phone, "operador", motivo="cliente_molesto")
+        logger.info(f"Derivación por emoción negativa sostenida: {phone} ({negativos} seguidos)")
+        return (cfg.get("mutual_escalada_message") or
+                "Perdón por las vueltas 🙏 Te paso con alguien del equipo para que te ayude "
+                "personalmente."), "derivado_cliente_molesto"
+
+    # 6. Conversación larga: recordar que puede hablar con un asesor (spec 4.4).
+    turno_aviso = int(cfg.get("mutual_turno_ofrecer_asesor") or 10)
+    if turno_aviso and turnos >= turno_aviso and "asesor" not in respuesta.lower():
+        respuesta += "\n\nSi preferís, también te puedo pasar con un asesor 🙂"
+
+    return respuesta, intencion
 
 
 async def _responder_consulta_en_flujo(deps, phone: str, session: dict, texto: str,
@@ -347,6 +427,18 @@ async def receive_message(request: Request):
                 respuesta = (
                     "Recibí tu link 🙌. Para gestionarlo te paso con alguien del equipo, "
                     "que lo revisa y te ayuda. ¡En un momento te contactamos!"
+                )
+                _ts = _time.perf_counter()
+                await deps["wa"].send_text(phone, respuesta)
+                _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
+                await deps["session"].add_message(phone, "user", texto)
+                await deps["session"].add_message(phone, "assistant", respuesta)
+                continue
+
+            # ── Vertical "mutual": información + derivación, sin venta ───────
+            if _s.vertical == "mutual":
+                respuesta, _intencion = await _flujo_mutual(
+                    deps, phone, session, texto, _ctx_socio, _nombre_socio, _steps,
                 )
                 _ts = _time.perf_counter()
                 await deps["wa"].send_text(phone, respuesta)
