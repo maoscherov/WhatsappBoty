@@ -156,6 +156,29 @@ def pide_pago_manual(t: str) -> bool:
     return any(re.search(p, t, re.IGNORECASE) for p in _PAGO_MANUAL)
 
 
+# Frases de espera que el modelo promete y nunca cumple ("ahora verifico...").
+# El prompt las prohíbe pero a veces se cuelan: se eliminan por oración.
+_FRASE_ESPERA = re.compile(
+    r"(?:^|(?<=[.!?…]))\s*[^.!?…]*"
+    r"\b(ahora|voy\s+a|dejame|d[eé]jame|en\s+un\s+momento|ya\s+te|luego\s+te|"
+    r"despu[eé]s\s+te|un\s+segundito|aguardame|esperame)\b"
+    r"[^.!?…]*\b(verific\w+|chequ\w+|consulto|confirmo|busco|averig\w+|reviso|fijo)\w*"
+    r"[^.!?…]*[.!?…]?",
+    re.IGNORECASE,
+)
+
+
+def quitar_frases_de_espera(texto: str) -> str:
+    """
+    Elimina oraciones tipo "Ahora verifico X para vos": prometen una
+    verificación que nunca llega (no hay segundo mensaje). Si el resultado
+    queda vacío, se devuelve el original — mejor una promesa fea que silencio.
+    """
+    limpio = _FRASE_ESPERA.sub(" ", texto or "").strip()
+    limpio = re.sub(r"\s{2,}", " ", limpio)
+    return limpio if limpio else (texto or "")
+
+
 _PIDE_FOTO = [
     r"\b(mand|pas|env[ií]|ten[eé]|hay|ver|mostr|sac)\w*\b.{0,25}\b(foto|fotos|imagen|im[aá]genes)\b",
     r"\b(foto|fotos|imagen|im[aá]genes)\b.{0,25}\b(mand|pas|env[ií]|ten[eé]|mostr)\w*\b",

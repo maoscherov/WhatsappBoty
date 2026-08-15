@@ -80,6 +80,20 @@ def _tokens(texto: str) -> list[str]:
     return _re.findall(r"[a-záéíóúñ0-9]{3,}", (texto or "").lower())
 
 
+def nombre_coincide(query: str, nombre: str) -> bool:
+    """
+    True si el producto encontrado corresponde a lo que se pidió: algún término
+    distintivo de la consulta (4+ letras, con tolerancia a typos por prefijo)
+    aparece en el nombre. Evita presentar un sustituto de otra marca como si
+    fuera el producto pedido ("sedal..." → Capilatis).
+    """
+    n = (nombre or "").lower()
+    for tok in _tokens(query):
+        if len(tok) >= 4 and tok[:5] in n:
+            return True
+    return False
+
+
 def _categoria_sin_receta(categoria: str) -> bool:
     """
     True si la categoría del catálogo indica un producto NO medicinal
@@ -248,7 +262,8 @@ class SKUService:
         import re as _re
         _STOP = (
             r'\b(dame|quiero|necesito|ten[eé]s|tienen|hay|precio|cu[aá]nto|cuanto|sale|'
-            r'en|de|para|gotas|gota|comprimidos|comprimido|comp|jarabe|crema|pomada|\d+)\b'
+            r'en|de|para|gotas|gota|comprimidos|comprimido|comp|jarabe|crema|pomada|'
+            r'sha|shampoo|shampu|champu|aco|acondicionador|jab|jabon|jab[oó]n|env|\d+)\b'
         )
         clean_query = _re.sub(_STOP, '', query.lower())
         clean_query = _re.sub(r'\s+', ' ', clean_query).strip()

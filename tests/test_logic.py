@@ -687,3 +687,39 @@ def test_pide_foto_deriva(txt):
 @pytest.mark.parametrize("txt", ["quiero un ibuprofeno", "hola", "cuánto sale", "dale confirmo"])
 def test_no_pide_foto(txt):
     assert ch.pide_foto(txt) is False
+
+
+# ── Frases de espera y sustitutos presentados como lo pedido ───────────────────
+def test_quitar_frases_de_espera():
+    """
+    Regresión (caso real): "Ahora verifico el Sedal Cerámicas Sha para vos"
+    promete una verificación que nunca llega. Se elimina la oración, sin tocar
+    frases legítimas.
+    """
+    r = ch.quitar_frases_de_espera(
+        "Tengo el Doncella Algodón a $1002.26. ¿Lo agrego? "
+        "Ahora verifico el Sedal Cerámicas Sha para vos.")
+    assert "verifico" not in r.lower()
+    assert "Doncella" in r
+    # No toca ofertas ni derivaciones legítimas
+    assert "consulte" in ch.quitar_frases_de_espera("¿Querés que lo consulte con el equipo?")
+    assert "contactamos" in ch.quitar_frases_de_espera("En un momento te contactamos!")
+    # Nunca devuelve vacío
+    assert ch.quitar_frases_de_espera("Ahora verifico eso.") != ""
+
+
+def test_nombre_coincide_no_presenta_sustitutos():
+    """
+    Regresión (caso real): pidió "sedal cerámicas sha" y se le presentó un
+    CAPILATIS ORTIGA como si fuera lo pedido. Un resultado de otra marca se
+    ofrece como "lo más parecido", nunca como el producto solicitado.
+    """
+    from app.services.sku_service import nombre_coincide
+    assert nombre_coincide("sedal ceramicas sha", "Unilever SEDAL CERAMIDAS ACO x 340")
+    assert not nombre_coincide("sedal ceramicas sha", "Capilatis S.A CAPILATIS ORTIGA SHA X 410")
+
+
+def test_busqueda_ignora_palabras_de_formato(sku_svc):
+    """'sha'/'shampoo' arrastran a otros shampoos de otra marca: se filtran."""
+    r = sku_svc.buscar("sedal ceramidas sha")
+    assert r and "sedal" in r[0]["nombre"].lower(), f"primero quedó: {r[0]['nombre']}"

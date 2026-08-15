@@ -42,7 +42,7 @@ from app.services.checkout_helper import (
     confirmar_pedido, resolver_entrega, capturar_direccion,
     match_retiro, match_envio, pide_humano, derivar_si_receta, afirma_envio,
     quiere_cambiar_direccion, extraer_direccion_de, contiene_link, pide_pago_manual,
-    necesita_receta, pide_foto,
+    necesita_receta, pide_foto, quitar_frases_de_espera,
     producto_respaldado, parece_direccion,
 )
 
@@ -1077,7 +1077,7 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
             intencion = intent_result.get("intencion", "desconocido")
             _intencion = intencion
             entidad = intent_result.get("entidad_producto")
-            respuesta = intent_result.get("respuesta", "")
+            respuesta = quitar_frases_de_espera(intent_result.get("respuesta", ""))
 
             # Base de conocimiento (RAG): preguntas generales sin producto →
             # responder con la info de la farmacia si hay algo relevante.
@@ -1147,7 +1147,7 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 _intencion = intencion
                 entidad = intent_result.get("entidad_producto")
                 cantidad = max(1, int(intent_result.get("cantidad") or 1))
-                respuesta = intent_result.get("respuesta", "")
+                respuesta = quitar_frases_de_espera(intent_result.get("respuesta", ""))
 
                 # El modelo detectó que pide una foto (frases que el matcher no
                 # cubre): misma regla, lo atiende una persona.
@@ -1254,18 +1254,28 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 _extras = [e for e in (intent_result.get("entidades_adicionales") or [])
                            if isinstance(e, str) and e.strip()][:3]
                 if _extras:
+                    from app.services.sku_service import nombre_coincide
                     _lineas_extra = []
                     for _ent2 in _extras:
                         _r2 = deps["sku"].buscar(_ent2)
                         _top2 = next((r for r in _r2 if r.get("vendible")
                                       and r.get("requiere_receta") not in ("si", "ambiguo")), None)
-                        if _top2:
+                        if _top2 and nombre_coincide(_ent2, _top2["nombre"]):
                             _lineas_extra.append(
                                 f"• {_ent2}: {_top2['nombre']} — ${_top2['precio']:,.2f}")
+                        elif _top2:
+                            # Hay algo parecido pero de OTRA marca/producto: se
+                            # ofrece como similar, nunca como si fuera lo pedido.
+                            _lineas_extra.append(
+                                f"• {_ent2}: no lo encontré tal cual; lo más parecido "
+                                f"que tengo es {_top2['nombre']} — ${_top2['precio']:,.2f}")
+                            await deps["metrics"].evento("busqueda_sin_resultado", phone=phone,
+                                                         dato=" ".join(_ent2.lower().split())[:80])
                         else:
                             _lineas_extra.append(f"• {_ent2}: no lo encontré en el catálogo")
                             await deps["metrics"].evento("busqueda_sin_resultado", phone=phone,
                                                          dato=" ".join(_ent2.lower().split())[:80])
+                    respuesta = quitar_frases_de_espera(respuesta)
                     respuesta += ("\n\nSobre lo demás que me pediste:\n" + "\n".join(_lineas_extra)
                                   + "\n\nSi querés sumar alguno al pedido, decime cuál 🙂")
 
@@ -1305,7 +1315,7 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
 
                 sku_index = intent_result.get("sku_seleccionado_index")
                 cantidad_nueva = intent_result.get("cantidad")
-                respuesta = intent_result.get("respuesta", "")
+                respuesta = quitar_frases_de_espera(intent_result.get("respuesta", ""))
 
                 if sku_index is not None and pending_opciones:
                     try:
