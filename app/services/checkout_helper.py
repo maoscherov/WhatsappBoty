@@ -120,25 +120,34 @@ def precios_mencionados(texto: str) -> set[float]:
     return out
 
 
-def producto_respaldado(respuesta: str, resultados: list[dict]) -> Optional[dict]:
-    """
-    Producto de `resultados` cuyo precio aparece en la respuesta enviada al
-    cliente, o None si ninguno. Es la evidencia de que el bot está ofreciendo
-    ese producto: si respondió "no lo tengo" (sin precio), no hay nada que
-    dejar pendiente y no debe generarse un link de pago.
-    """
+def productos_con_precio(respuesta: str, resultados: list[dict]) -> list[dict]:
+    """Productos de `resultados` cuyo precio aparece en la respuesta enviada."""
     if not respuesta or not resultados:
-        return None
+        return []
     precios = precios_mencionados(respuesta)
     if not precios:
-        return None
+        return []
+    out = []
     for r in resultados:
         try:
             if round(float(r.get("precio") or 0), 2) in precios:
-                return r
+                out.append(r)
         except (TypeError, ValueError):
             continue
-    return None
+    return out
+
+
+def producto_respaldado(respuesta: str, resultados: list[dict]) -> Optional[dict]:
+    """
+    El ÚNICO producto cuyo precio aparece en la respuesta, o None.
+
+    Exactamente uno: si la respuesta menciona varios precios es una LISTA de
+    opciones ("elegí cuál"), no la oferta de un producto — dejar el primero
+    como pendiente hizo que "perfecto, rubio oscuro" confirmara la opción 1
+    en vez de la 2 (caso real, link de $33.437 por el producto equivocado).
+    """
+    matches = productos_con_precio(respuesta, resultados)
+    return matches[0] if len(matches) == 1 else None
 
 
 _PAGO_MANUAL = [

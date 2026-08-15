@@ -92,6 +92,8 @@ class SessionService:
                                "precio": precio, "cantidad": max(1, int(cantidad))}],
             "estado": "esperando_confirmacion",
         })
+        # Elegir un producto concreto levanta la espera de elección de opciones
+        session.pop("_espera_eleccion", None)
         await self.save(phone, session)
 
     async def agregar_item(self, phone: str, sku_id: str, sku_nombre: str, precio: float,

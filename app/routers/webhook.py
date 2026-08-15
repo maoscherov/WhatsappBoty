@@ -43,7 +43,7 @@ from app.services.checkout_helper import (
     match_retiro, match_envio, pide_humano, derivar_si_receta, afirma_envio,
     quiere_cambiar_direccion, extraer_direccion_de, contiene_link, pide_pago_manual,
     necesita_receta, pide_foto, quitar_frases_de_espera,
-    producto_respaldado, parece_direccion,
+    producto_respaldado, productos_con_precio, parece_direccion,
 )
 
 logger = logging.getLogger(__name__)
@@ -898,8 +898,23 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     await deps["session"].add_message(phone, "assistant", respuesta)
                     continue
 
-                elif (_match_si(texto_lower) or match_envio(texto_lower) or match_retiro(texto_lower)) \
-                        and not _empieza_con_no(texto_lower):
+                elif session.get("_espera_eleccion") and _es_afirmacion_pura(texto_lower):
+                    # Se mostraron varias opciones y contestó "sí" pelado: no se
+                    # sabe cuál quiere — confirmar la primera fue el bug del
+                    # "perfecto, rubio oscuro" → link de la opción equivocada.
+                    _intencion = "eleccion_pendiente"
+                    respuesta = "¿Cuál de las opciones preferís? Decime el número o el nombre 🙂"
+                    _ts = _time.perf_counter()
+                    await deps["wa"].send_text(phone, respuesta)
+                    _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
+                    await deps["session"].add_message(phone, "user", texto)
+                    await deps["session"].add_message(phone, "assistant", respuesta)
+                    continue
+
+                elif (_es_afirmacion_pura(texto_lower) or match_envio(texto_lower)
+                      or match_retiro(texto_lower)) \
+                        and not _empieza_con_no(texto_lower) \
+                        and not session.get("_espera_eleccion"):
                     # Confirma. Si además ya indicó cómo recibirlo, se resuelve sin re-preguntar.
                     _entrega = ("envio" if match_envio(texto_lower)
                                 else "retiro" if match_retiro(texto_lower) else None)
@@ -969,6 +984,17 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                                 logger.info(f"Opción {sku_index} seleccionada: {elegido['nombre']}")
                         except (ValueError, TypeError):
                             pass
+
+                    # ── Paso 1a: con opciones ofrecidas y sin elección (ni acá ni
+                    #    antes), una confirmación no confirma nada — hay que saber
+                    #    cuál quiere. Si eligió por índice, el Paso 1 ya limpió la
+                    #    marca vía set_pending.
+                    _sesion_fresca = await deps["session"].get(phone)
+                    if confirmacion is True and _sesion_fresca.get("_espera_eleccion"):
+                        confirmacion = None
+                        _intencion = "eleccion_pendiente"
+                        respuesta = "¿Cuál de las opciones preferís? Decime el número o el nombre 🙂"
+                        logger.info("Confirmación bloqueada: hay opciones ofrecidas sin elegir")
 
                     # ── Paso 1b: si la opción elegida requiere receta, derivar YA
                     #    (no ofrecer link). Anula el resto del flujo de confirmación.
@@ -1165,6 +1191,7 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     await deps["session"].add_message(phone, "assistant", respuesta)
                     continue
 
+                _opciones_ofrecidas = False
                 if resultados_sku:
                     sku_index = intent_result.get("sku_seleccionado_index")
                     solicita_imagen = False   # pedir foto deriva; no se manda imagen de catálogo
@@ -1181,16 +1208,34 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
 
                     # 2. El precio en la respuesta manda, SIEMPRE.
                     #    Un producto sólo queda pendiente si el bot le dijo su precio
-                    #    al cliente: esa es la única evidencia de que se lo está
-                    #    ofreciendo. Si respondió "no tengo stock" (sin precio), no hay
-                    #    nada que comprar, por más que el modelo haya elegido un índice
-                    #    — así se colaba un producto que el cliente nunca pidió y
-                    #    terminaba en un link de pago.
-                    _respaldo = producto_respaldado(respuesta, resultados_sku)
-                    if _respaldo:
-                        if not producto_elegido or _respaldo["sku_id"] != producto_elegido["sku_id"]:
-                            logger.info(f"SKU tomado del precio en la respuesta: {_respaldo['nombre']}")
-                        producto_elegido = _respaldo
+                    #    al cliente. Un precio = oferta concreta. Varios precios =
+                    #    LISTA de opciones: el cliente todavía no eligió, y dejar la
+                    #    primera como pendiente hizo que un "perfecto, rubio oscuro"
+                    #    confirmara la opción equivocada (caso real).
+                    _matches = productos_con_precio(respuesta, resultados_sku)
+                    _opciones_ofrecidas = len(_matches) > 1
+                    if len(_matches) == 1:
+                        if not producto_elegido or _matches[0]["sku_id"] != producto_elegido["sku_id"]:
+                            logger.info(f"SKU tomado del precio en la respuesta: {_matches[0]['nombre']}")
+                        producto_elegido = _matches[0]
+                    elif _opciones_ofrecidas:
+                        # Se ofrecieron varias opciones: guardar la lista para que
+                        # "el 2" / "rubio oscuro" seleccione, pero marcar que falta
+                        # elegir — un "sí" pelado no confirma ninguna.
+                        producto_elegido = None
+                        await deps["session"].set_pending(
+                            phone=phone,
+                            sku_id=_matches[0]["sku_id"],
+                            sku_nombre=_matches[0]["nombre"],
+                            precio=_matches[0]["precio"],
+                            cantidad=cantidad,
+                            opciones=resultados_sku,
+                        )
+                        _s_op = await deps["session"].get(phone)
+                        _s_op["_espera_eleccion"] = True
+                        await deps["session"].save(phone, _s_op)
+                        logger.info(f"{len(_matches)} opciones ofrecidas para {entidad!r} — "
+                                    "esperando elección")
                     elif producto_elegido:
                         logger.info(
                             f"Descartado {producto_elegido['nombre']!r}: la respuesta no menciona "
@@ -1283,6 +1328,7 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 # catálogo o está sin stock): según config, ofrecer consultarlo
                 # con el equipo o derivar directo. Antes la consulta moría acá.
                 if not _sku_pendiente_nuevo and _intencion != "item_agregado" \
+                        and not _opciones_ofrecidas \
                         and intencion in ("pedido", "consulta_precio", "consulta_stock"):
                     _cfg_ss = await deps["config"].get_all()
                     _modo_ss = (_cfg_ss.get("sin_stock_mode") or "preguntar").lower()

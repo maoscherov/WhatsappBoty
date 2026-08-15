@@ -723,3 +723,36 @@ def test_busqueda_ignora_palabras_de_formato(sku_svc):
     """'sha'/'shampoo' arrastran a otros shampoos de otra marca: se filtran."""
     r = sku_svc.buscar("sedal ceramidas sha")
     assert r and "sedal" in r[0]["nombre"].lower(), f"primero quedó: {r[0]['nombre']}"
+
+
+def test_lista_de_opciones_no_es_oferta():
+    """
+    Regresión (caso real, rubio ceniza): la respuesta con 3 opciones y sus 3
+    precios dejaba la PRIMERA como pendiente; "perfecto, rubio oscuro" (opción
+    2) confirmó la 1 y salió un link de $33.437 equivocado. Varios precios =
+    lista para elegir, no una oferta.
+    """
+    res = [
+        {"sku_id": "A", "nombre": "LOREAL RUBIO CLARO MEDIO", "precio": 33437.53},
+        {"sku_id": "B", "nombre": "KOLESTON RUBIO OSCURO", "precio": 9555.28},
+        {"sku_id": "C", "nombre": "SOFT COLOR RUBIO AVELLANA", "precio": 17240.93},
+    ]
+    lista = ("1. LOREAL RUBIO CLARO MEDIO por $33.437,53 "
+             "2. KOLESTON RUBIO OSCURO por $9.555,28 "
+             "3. SOFT COLOR RUBIO AVELLANA por $17.240,93")
+    assert len(ch.productos_con_precio(lista, res)) == 3
+    assert ch.producto_respaldado(lista, res) is None
+    # Con UN solo precio sí es una oferta concreta
+    uno = "Te ofrezco el KOLESTON RUBIO OSCURO por $9.555,28. ¿Te lo confirmo?"
+    assert ch.producto_respaldado(uno, res)["sku_id"] == "B"
+
+
+async def test_set_pending_limpia_espera_eleccion():
+    """Elegir un producto concreto levanta la marca de 'opciones sin elegir'."""
+    from app.services.session_service import SessionService
+    ss = SessionService("redis://127.0.0.1:1")
+    s = await ss.get("549")
+    s["_espera_eleccion"] = True
+    await ss.save("549", s)
+    await ss.set_pending("549", sku_id="B", sku_nombre="Koleston", precio=9555.28)
+    assert "_espera_eleccion" not in await ss.get("549")
