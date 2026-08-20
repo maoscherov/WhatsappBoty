@@ -348,6 +348,52 @@ async def bo_sku_import(file: UploadFile = File(...), _=Depends(_auth)):
         raise HTTPException(status_code=422, detail=f"Error procesando CSV: {e}")
 
 
+@router.post("/sku/import-pdf")
+async def bo_sku_import_pdf(files: list[UploadFile] = File(...), _=Depends(_auth)):
+    """
+    Reemplaza el catálogo a partir de los PDFs "Informe de existencias" del
+    sistema de la farmacia (uno o más: general, medicamentos, alimentos,
+    cosméticos — conviene subir TODOS juntos porque el catálogo se reemplaza
+    completo). Convierte a CSV, recarga el servicio y persiste en Redis.
+    """
+    from app.services.catalogo_pdf import convertir_a_csv
+
+    settings = get_settings()
+    pdfs = []
+    for f in files:
+        data = await f.read()
+        if data:
+            pdfs.append((data, f.filename or "sin_nombre.pdf"))
+    if not pdfs:
+        raise HTTPException(status_code=400, detail="Sin archivos")
+
+    try:
+        contenido, resumen = convertir_a_csv(pdfs)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Error leyendo PDF: {e}")
+    total = resumen.get("TOTAL (sin duplicados)", 0)
+    if total < 50:
+        # Un reporte real trae miles de productos: un total ínfimo delata un
+        # PDF con otro formato — mejor rebotar que pisar el catálogo bueno.
+        raise HTTPException(
+            status_code=422,
+            detail=f"Solo se reconocieron {total} productos — ¿es el 'Informe "
+                   f"de existencias' correcto? El catálogo NO se modificó. {resumen}")
+
+    csv_path = Path(settings.sku_csv_path)
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    contenido_bytes = contenido.encode("utf-8")
+    csv_path.write_bytes(contenido_bytes)
+    try:
+        svc = reload_sku_service(str(csv_path))
+        # Copia en Redis para sobrevivir deploys (fs efímero de Railway)
+        await get_blob_store(settings.redis_url).save("catalogo", contenido_bytes, ".csv")
+        return {"status": "ok", "total": svc.total, "resumen": resumen,
+                "csv_path": str(csv_path)}
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Error cargando catálogo: {e}")
+
+
 # ── Padrón de socios (personalización) ────────────────────────────────────────
 
 @router.get("/socios/info")

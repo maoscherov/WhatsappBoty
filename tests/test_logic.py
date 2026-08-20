@@ -796,6 +796,56 @@ def test_ultraflex_es_venta_libre():
     assert es_venta_libre("ULTRAFLEX COLAGENO POLVO x 300")
 
 
+# ── Conversión de PDFs de existencias → catálogo ──────────────────────────────
+class TestCatalogoPdf:
+    def test_num_formato_argentino(self):
+        from app.services.catalogo_pdf import _num
+        assert _num("20497,29") == 20497.29
+        assert _num("1.234,56") == 1234.56
+        assert _num("-2") == -2.0
+        assert _num("") == 0.0
+
+    def test_precio_unitario_desde_valorizacion(self):
+        # "Valor" es stock × precio unitario (Koleston real: 2 × $9555.28)
+        from app.services.catalogo_pdf import a_fila_catalogo
+        fila = a_fila_catalogo(
+            {"laboratorio": "Glam", "producto": "KOLESTON SING 60", "troquel": "0",
+             "barcode": "77911234", "stock": 2.0, "prom_vta": 0.5, "valor": 19110.56},
+            "General")
+        assert fila["precio_venta"] == "9555.28"
+        assert fila["cantidad_visible"] == "2"
+        assert fila["requiere_receta"] == "no"
+        assert fila["sku_id"] == "77911234"   # sin troquel → barcode
+
+    def test_stock_negativo_no_es_vendible(self):
+        from app.services.catalogo_pdf import a_fila_catalogo
+        fila = a_fila_catalogo(
+            {"laboratorio": "X", "producto": "COREGA TABS", "troquel": "123",
+             "barcode": "77900001", "stock": -2.0, "prom_vta": 0, "valor": -21308.22},
+            "Medicamentos")
+        assert fila["precio_venta"] == "10654.11"   # el unitario queda positivo
+        assert fila["cantidad_visible"] == "0"      # pero no hay para vender
+        assert fila["requiere_receta"] == "ambiguo"
+        assert fila["es_medicamento"] == "si"
+
+    def test_csv_generado_lo_carga_sku_service(self, tmp_path):
+        from app.services.catalogo_pdf import a_fila_catalogo, COLUMNAS_B
+        import csv as _csv
+        from app.services.sku_service import SKUService
+        fila = a_fila_catalogo(
+            {"laboratorio": "Bagó", "producto": "BAGO+CALMA COM x 30", "troquel": "9960248",
+             "barcode": "7790375269913", "stock": 1.0, "prom_vta": 0.0, "valor": 20497.29},
+            "Alimentos")
+        p = tmp_path / "cat.csv"
+        with open(p, "w", newline="", encoding="utf-8") as f:
+            w = _csv.DictWriter(f, fieldnames=COLUMNAS_B)
+            w.writeheader()
+            w.writerow(fila)
+        svc = SKUService(str(p))
+        r = svc.buscar("bago calma")
+        assert r and r[0]["precio"] == 20497.29 and r[0]["vendible"]
+
+
 def test_nombre_coincide_no_presenta_sustitutos():
     """
     Regresión (caso real): pidió "sedal cerámicas sha" y se le presentó un
