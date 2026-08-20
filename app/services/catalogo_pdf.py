@@ -3,7 +3,11 @@ Convierte los PDFs "Informe de existencias" del sistema de la farmacia
 (Zetti/similar) al CSV de catálogo formato B que consume SKUService.
 
 CLI: python -m scripts.catalogo_desde_pdf a.pdf [b.pdf ...] -o data/catalogo_pdf.csv
-Backoffice: POST /bo/sku/import-pdf (uno o más PDFs; reemplaza el catálogo).
+    (convierte a CSV nuevo, sin fusionar — para inspeccionar el resultado)
+Backoffice: POST /bo/sku/import-pdf (uno o más PDFs; FUSIONA con el catálogo
+    actual por código de barras — actualiza precio/stock de lo que aparece
+    en los PDF, deja el resto intacto, nunca toca el flag de receta de un
+    producto existente).
 
 Cada PDF trae la misma tabla: Laboratorio, Producto, Frac., Troquel,
 Código de barra, Stock, Unidades, ..., Prom. vta, Valor. La categoría se
@@ -167,6 +171,73 @@ def a_fila_catalogo(r: dict, categoria: str) -> dict:
         "requiere_receta": "ambiguo" if es_medicamento else "no",
         "clasificacion": "",
     }
+
+
+def fusionar_con_catalogo(catalogo_actual: list, pdfs: list[tuple[bytes | str, str]]) -> tuple[str, dict]:
+    """
+    Actualiza precio/stock de los productos que aparecen en los PDFs y deja
+    intacto todo lo demás del catálogo actual — nunca reemplaza la lista
+    completa. El cruce es por código de barras.
+
+    El campo `requiere_receta` de un producto YA EXISTENTE nunca se toca: lo
+    define la farmacia/el catálogo curado, no el reporte de stock. Solo a un
+    producto NUEVO (que no estaba en el catálogo) se le asigna receta con la
+    heurística por categoría (ambiguo en medicamentos, no en el resto).
+
+    `catalogo_actual`: lista de objetos SKU (SKUService.todos()).
+    Devuelve (csv_completo, resumen) — el CSV trae el catálogo COMPLETO
+    (existentes + actualizados + nuevos), listo para reemplazar el archivo.
+    """
+    por_barcode: dict[str, dict] = {}
+    for sku in catalogo_actual:
+        por_barcode[sku.barcode] = {
+            "sku_id": sku.sku_id, "barcode": sku.barcode,
+            "sku_nombre": sku.sku_nombre, "sku_nombre_original": sku.sku_nombre_original,
+            "marca": sku.marca, "laboratorio": sku.laboratorio, "categoria": sku.categoria,
+            "es_medicamento": "si" if sku.es_medicamento else "no",
+            "precio_venta": f"{sku.precio_venta:.2f}",
+            "stock_actual": "" if sku.stock_actual is None else f"{sku.stock_actual:g}",
+            "ventas_mes": "" if sku.ventas_mes is None else f"{sku.ventas_mes:.1f}",
+            "prom_semanal": "" if sku.prom_semanal is None else f"{sku.prom_semanal:.2f}",
+            "cantidad_visible": f"{sku.cantidad_visible}",
+            "tipo_producto": sku.tipo_producto, "pausado": str(sku.pausado),
+            "requiere_receta": sku.requiere_receta, "clasificacion": sku.clasificacion,
+        }
+
+    barcodes_originales = set(por_barcode.keys())
+    actualizados: set[str] = set()
+    nuevos = 0
+    resumen: dict[str, int] = {}
+    for origen, nombre in pdfs:
+        categoria, filas = parsear_pdf(origen, nombre)
+        resumen[f"{nombre} ({categoria})"] = len(filas)
+        for r in filas:
+            existente = por_barcode.get(r["barcode"])
+            if existente:
+                # Solo precio y stock — el resto (nombre, receta, categoría,
+                # clasificación) lo conserva el catálogo actual.
+                stock = r["stock"]
+                precio = round(r["valor"] / stock, 2) if stock else 0.0
+                existente["precio_venta"] = f"{precio:.2f}"
+                existente["stock_actual"] = f"{max(stock, 0):g}"
+                existente["cantidad_visible"] = f"{max(int(stock), 0)}"
+                existente["ventas_mes"] = f"{r['prom_vta'] * 4:.1f}"
+                existente["prom_semanal"] = f"{r['prom_vta']:.2f}"
+                actualizados.add(r["barcode"])
+            else:
+                por_barcode[r["barcode"]] = a_fila_catalogo(r, categoria)
+                nuevos += 1
+
+    buf = io.StringIO()
+    w = csv.DictWriter(buf, fieldnames=COLUMNAS_B, lineterminator="\n")
+    w.writeheader()
+    for fila in por_barcode.values():
+        w.writerow(fila)
+    resumen["Actualizados (precio/stock)"] = len(actualizados)
+    resumen["Nuevos (no estaban en el catálogo)"] = nuevos
+    resumen["Sin cambios (no vinieron en los PDF)"] = len(barcodes_originales - actualizados)
+    resumen["TOTAL catálogo resultante"] = len(por_barcode)
+    return buf.getvalue(), resumen
 
 
 def convertir_a_csv(pdfs: list[tuple[bytes | str, str]]) -> tuple[str, dict]:

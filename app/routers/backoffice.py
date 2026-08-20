@@ -351,12 +351,14 @@ async def bo_sku_import(file: UploadFile = File(...), _=Depends(_auth)):
 @router.post("/sku/import-pdf")
 async def bo_sku_import_pdf(files: list[UploadFile] = File(...), _=Depends(_auth)):
     """
-    Reemplaza el catálogo a partir de los PDFs "Informe de existencias" del
-    sistema de la farmacia (uno o más: general, medicamentos, alimentos,
-    cosméticos — conviene subir TODOS juntos porque el catálogo se reemplaza
-    completo). Convierte a CSV, recarga el servicio y persiste en Redis.
+    Actualiza precio y stock del catálogo a partir de los PDFs "Informe de
+    existencias" del sistema de la farmacia (uno o más: general,
+    medicamentos, alimentos, cosméticos). NO reemplaza el catálogo: fusiona
+    por código de barras — los productos que no vienen en los PDF quedan
+    intactos, y el flag de receta de un producto ya existente nunca se toca
+    (solo se calcula para productos nuevos que no estaban antes).
     """
-    from app.services.catalogo_pdf import convertir_a_csv
+    from app.services.catalogo_pdf import fusionar_con_catalogo
 
     settings = get_settings()
     pdfs = []
@@ -367,18 +369,21 @@ async def bo_sku_import_pdf(files: list[UploadFile] = File(...), _=Depends(_auth
     if not pdfs:
         raise HTTPException(status_code=400, detail="Sin archivos")
 
+    catalogo_actual = get_sku_service(settings.sku_csv_path).todos()
     try:
-        contenido, resumen = convertir_a_csv(pdfs)
+        contenido, resumen = fusionar_con_catalogo(catalogo_actual, pdfs)
     except Exception as e:
         raise HTTPException(status_code=422, detail=f"Error leyendo PDF: {e}")
-    total = resumen.get("TOTAL (sin duplicados)", 0)
-    if total < 50:
-        # Un reporte real trae miles de productos: un total ínfimo delata un
-        # PDF con otro formato — mejor rebotar que pisar el catálogo bueno.
+    actualizados = resumen.get("Actualizados (precio/stock)", 0)
+    nuevos = resumen.get("Nuevos (no estaban en el catálogo)", 0)
+    if actualizados + nuevos < 50:
+        # Un reporte real actualiza miles de productos: un total ínfimo
+        # delata un PDF con otro formato — mejor rebotar que tocar el catálogo.
         raise HTTPException(
             status_code=422,
-            detail=f"Solo se reconocieron {total} productos — ¿es el 'Informe "
-                   f"de existencias' correcto? El catálogo NO se modificó. {resumen}")
+            detail=f"Solo se reconocieron {actualizados + nuevos} productos — "
+                   f"¿es el 'Informe de existencias' correcto? El catálogo NO "
+                   f"se modificó. {resumen}")
 
     csv_path = Path(settings.sku_csv_path)
     csv_path.parent.mkdir(parents=True, exist_ok=True)

@@ -4,6 +4,7 @@ búsqueda de catálogo, receta desde categoría, matchers de entrega/humano.
 """
 
 import csv
+import io
 import os
 import tempfile
 
@@ -827,6 +828,60 @@ class TestCatalogoPdf:
         assert fila["cantidad_visible"] == "0"      # pero no hay para vender
         assert fila["requiere_receta"] == "ambiguo"
         assert fila["es_medicamento"] == "si"
+
+    def test_fusion_actualiza_precio_sin_tocar_receta(self):
+        """
+        Regresión (pedido 20/8): actualizar el catálogo desde los PDF no debe
+        reemplazar todo, y NUNCA debe borrar/cambiar el flag de receta de un
+        producto que ya existía.
+        """
+        from app.models.sku import SKU
+        from app.services.catalogo_pdf import fusionar_con_catalogo
+
+        actual = [
+            SKU(sku_id="9960248", barcode="7790375269913", sku_nombre="Bagó Calma",
+                sku_nombre_original="Bagó Calma", laboratorio="Bagó", categoria="Medicamentos",
+                es_medicamento=True, precio_venta=100.0, stock_actual=5, cantidad_visible=5,
+                requiere_receta="si", clasificacion="critico"),
+            SKU(sku_id="999", barcode="0000000000001", sku_nombre="Producto que no está en el PDF",
+                sku_nombre_original="X", precio_venta=50.0, stock_actual=3, cantidad_visible=3,
+                requiere_receta="no"),
+        ]
+        # PDF actualiza el primero (nuevo precio/stock) y trae un producto nuevo
+        pdf_bytes = None  # se simula parsear_pdf vía monkeypatch abajo
+        import app.services.catalogo_pdf as cp
+        filas_fake = [
+            {"laboratorio": "Bagó", "producto": "BAGO+CALMA COM x 30", "troquel": "9960248",
+             "barcode": "7790375269913", "stock": 2.0, "prom_vta": 0.0, "valor": 40997.0},
+            {"laboratorio": "X", "producto": "NUEVO PRODUCTO", "troquel": "",
+             "barcode": "9999999999999", "stock": 1.0, "prom_vta": 0.0, "valor": 500.0},
+        ]
+        orig = cp.parsear_pdf
+        cp.parsear_pdf = lambda origen, nombre="": ("Medicamentos", filas_fake)
+        try:
+            contenido, resumen = fusionar_con_catalogo(actual, [(b"fake", "medicamentos.pdf")])
+        finally:
+            cp.parsear_pdf = orig
+
+        assert resumen["Actualizados (precio/stock)"] == 1
+        assert resumen["Nuevos (no estaban en el catálogo)"] == 1
+        assert resumen["Sin cambios (no vinieron en los PDF)"] == 1
+        assert resumen["TOTAL catálogo resultante"] == 3
+
+        filas = list(csv.DictReader(io.StringIO(contenido)))
+        por_barcode = {f["barcode"]: f for f in filas}
+        # Precio/stock actualizados, receta INTACTA (seguía siendo "si")
+        actualizado = por_barcode["7790375269913"]
+        assert actualizado["precio_venta"] == "20498.50"
+        assert actualizado["requiere_receta"] == "si"
+        assert actualizado["stock_actual"] == "2"
+        # Producto que no vino en el PDF: sin cambios
+        sin_cambios = por_barcode["0000000000001"]
+        assert sin_cambios["precio_venta"] == "50.00"
+        assert sin_cambios["requiere_receta"] == "no"
+        # Producto nuevo: entra con su propio flag calculado
+        nuevo = por_barcode["9999999999999"]
+        assert nuevo["requiere_receta"] == "ambiguo"   # medicamento nuevo
 
     def test_csv_generado_lo_carga_sku_service(self, tmp_path):
         from app.services.catalogo_pdf import a_fila_catalogo, COLUMNAS_B

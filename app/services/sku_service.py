@@ -364,6 +364,10 @@ class SKUService:
     def total(self) -> int:
         return len(self._skus)
 
+    def todos(self) -> list[SKU]:
+        """Todos los SKU cargados (para fusiones/exportes, no para el flujo de búsqueda)."""
+        return list(self._skus)
+
 
 _instance: Optional[SKUService] = None
 
