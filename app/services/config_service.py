@@ -111,14 +111,12 @@ DEFAULTS: dict[str, str] = {
         "Como no tuvimos respuesta, damos por cerrada esta conversación 🙏 "
         "Cuando quieras retomarla, escribinos de nuevo y te ayudamos. ¡Gracias!"
     ),
-    # Cierre distinto para conversaciones con LINK DE PAGO enviado: el link
-    # vale 24hs, así que el cierre acompaña esa vigencia y el mensaje lo aclara.
+    # Cierre para conversaciones con LINK DE PAGO enviado: la sesión se
+    # cierra a las 24hs (vigencia del link) pero SIN avisar — el aviso de
+    # vencimiento caía a cualquier hora y molestaba (pedido de Mariano 20/8).
+    # Cargar un texto acá reactiva el aviso.
     "inactivity_minutes_pago": "1440",
-    "inactivity_close_message_pago": (
-        "Cerramos esta conversación por inactividad 🙏 Tu link de pago sigue "
-        "vigente — podés pagar cuando quieras dentro de las 24hs. "
-        "¡Cualquier duda escribinos!"
-    ),
+    "inactivity_close_message_pago": "",
     # Si nadie toma una conversación derivada en N minutos, vuelve al bot.
     # 0 = nunca (queda esperando a una persona, comportamiento por defecto).
     "auto_liberar_minutos": "0",

@@ -119,7 +119,9 @@ async def _cerrar_sesiones_inactivas():
             minutos = int(cfg.get("inactivity_minutes") or 15)
             minutos_pago = int(cfg.get("inactivity_minutes_pago") or 1440)
             mensaje = cfg.get("inactivity_close_message") or ""
-            mensaje_pago = cfg.get("inactivity_close_message_pago") or mensaje
+            # Vacío = cerrar SIN avisar (no cae al mensaje general: el aviso
+            # de vencimiento del link se sacó a pedido — 20/8).
+            mensaje_pago = cfg.get("inactivity_close_message_pago") or ""
             for phone, session in await session_svc.inactivas(minutos * 60, minutos_pago * 60):
                 con_link = session.get("estado") == "esperando_pago"
                 texto_cierre = mensaje_pago if con_link else mensaje
