@@ -42,7 +42,8 @@ from app.services.checkout_helper import (
     confirmar_pedido, resolver_entrega, capturar_direccion,
     match_retiro, match_envio, pide_humano, derivar_si_receta, afirma_envio,
     quiere_cambiar_direccion, extraer_direccion_de, contiene_link, pide_pago_manual,
-    necesita_receta, pide_foto, quitar_frases_de_espera,
+    necesita_receta, pide_foto, quitar_frases_de_espera, pide_receta_nube,
+    pregunta_descuento,
     producto_respaldado, productos_con_precio, parece_direccion,
 )
 
@@ -770,6 +771,47 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     "¡Dale! Te paso con alguien del equipo que te manda la foto "
                     "del producto 📷 En un momento te contactamos."
                 )
+                _ts = _time.perf_counter()
+                await deps["wa"].send_text(phone, respuesta)
+                _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
+                await deps["session"].add_message(phone, "user", texto)
+                await deps["session"].add_message(phone, "assistant", respuesta)
+                continue
+
+            # ── Recetas "en la nube" / electrónicas → derivar ────────────────
+            # El bot no accede al sistema de recetas. Prometer "un momento" y
+            # no volver dejó a una clienta esperando hasta el cierre (19/8).
+            if pide_receta_nube(texto):
+                _intencion = "receta_nube"
+                await deps["session"].set_estado(phone, "operador", motivo="receta_nube")
+                respuesta = (
+                    "¡Dale! Eso lo revisa alguien del equipo en el sistema de "
+                    "recetas 🩺 En un momento te contactamos."
+                )
+                _ts = _time.perf_counter()
+                await deps["wa"].send_text(phone, respuesta)
+                _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
+                await deps["session"].add_message(phone, "user", texto)
+                await deps["session"].add_message(phone, "assistant", respuesta)
+                continue
+
+            # ── Pregunta por descuentos → texto fijo, NUNCA redacta el modelo ─
+            # El modelo inventó "como socia tenés un descuento" con un precio
+            # inexistente (caso 29). La respuesta sale de la config; el
+            # descuento real —si está activo— se aplica solo al armar el link.
+            if pregunta_descuento(texto):
+                _intencion = "consulta_descuento"
+                _pct_desc = float(_cfg_pm.get("socio_discount_pct") or 0)
+                if _pct_desc > 0:
+                    respuesta = (_cfg_pm.get("socio_discount_info_message") or
+                                 "¡Sí! Los socios de la Mutual tienen {pct}% de descuento en "
+                                 "productos sin receta — se aplica solo en el link de pago 🙂"
+                                 ).replace("{pct}", f"{_pct_desc:g}")
+                else:
+                    respuesta = (_cfg_pm.get("socio_discount_off_message") or
+                                 "Por ahora te puedo ofrecer el precio de lista 🙂 El descuento "
+                                 "para socios lo estamos habilitando — cuando esté activo se "
+                                 "aplica automáticamente.")
                 _ts = _time.perf_counter()
                 await deps["wa"].send_text(phone, respuesta)
                 _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)

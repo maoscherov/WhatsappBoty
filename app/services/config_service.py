@@ -141,6 +141,18 @@ DEFAULTS: dict[str, str] = {
         "🎉 Por ser socio de la Mutual te aplicamos un {pct}% de descuento "
         "(precio de lista: ${antes})."
     ),
+    # Respuestas FIJAS cuando preguntan por descuentos (el modelo nunca redacta
+    # sobre descuentos: inventó uno con precio inexistente — caso 29, 19/8).
+    # info: descuento activo ({pct} se reemplaza). off: descuento apagado.
+    "socio_discount_info_message": (
+        "¡Sí! Los socios de la Mutual tienen {pct}% de descuento en productos "
+        "sin receta — se aplica solo en el link de pago 🙂"
+    ),
+    "socio_discount_off_message": (
+        "Por ahora te puedo ofrecer el precio de lista 🙂 El descuento para "
+        "socios lo estamos habilitando — cuando esté activo se aplica "
+        "automáticamente."
+    ),
     # Cada cuántos segundos el backoffice pollea /bo/derivadas para la alerta
     # sonora. Lo lee el frontend (Lovable) desde /bo/config.
     "derivadas_poll_seconds": "15",
