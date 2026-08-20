@@ -153,6 +153,11 @@ def producto_respaldado(respuesta: str, resultados: list[dict]) -> Optional[dict
 _PAGO_MANUAL = [
     r"\btransferencia\b", r"\btransferir\b", r"\btransfiero\b", r"\btransferis\b",
     r"\befectivo\b", r"\bcbu\b", r"\balias\b", r"\bmercado\s*pago\b",
+    # Casos 29 y 31: "lo pago en la sucursal cuando retiro" y "cuenta corriente"
+    # recibían link de pago igual. Son medios que coordina una persona.
+    r"\bcuenta\s+corriente\b",
+    r"\bpag\w+\b.{0,30}\b(sucursal|local|farmacia|caja|retir\w+|ah[ií]|all[aá])\b",
+    r"\b(retir\w+|sucursal)\b.{0,30}\bpag\w+",
 ]
 
 
@@ -167,12 +172,23 @@ def pide_pago_manual(t: str) -> bool:
 
 # Frases de espera que el modelo promete y nunca cumple ("ahora verifico...").
 # El prompt las prohíbe pero a veces se cuelan: se eliminan por oración.
+# El recorte arranca EN la palabra disparadora (no al inicio de la oración):
+# el modelo a veces pega la promesa a la oferta sin punto ("...por $1762.96
+# Ahora voy a buscar...") y borrar la oración entera se llevaba la oferta.
 _FRASE_ESPERA = re.compile(
-    r"(?:^|(?<=[.!?…]))\s*[^.!?…]*"
     r"\b(ahora|voy\s+a|dejame|d[eé]jame|en\s+un\s+momento|ya\s+te|luego\s+te|"
     r"despu[eé]s\s+te|un\s+segundito|aguardame|esperame)\b"
-    r"[^.!?…]*\b(verific\w+|chequ\w+|consulto|confirmo|busco|averig\w+|reviso|fijo)\w*"
+    r"[^.!?…]*\b(verific\w+|chequ\w+|consulto|confirmo|busc\w+|averig\w+|revis\w+|fijo)\w*"
     r"[^.!?…]*[.!?…]?",
+    re.IGNORECASE,
+)
+
+# Cortesías de espera SOLAS ("Un momento, por favor."): prometen algo que no
+# llega. Solo se elimina la oración compuesta únicamente por la cortesía —
+# "En un momento te contactamos" tiene verbo y sobrevive.
+_CORTESIA_ESPERA = re.compile(
+    r"(?:^|(?<=[.!?…]))\s*(un\s+moment(?:o|ito)|un\s+segund(?:o|ito)|"
+    r"aguard[aá]\w*|esper[aá](?:me|mos)?)\s*,?\s*(por\s+favor)?\s*[.!?…]",
     re.IGNORECASE,
 )
 
@@ -183,8 +199,12 @@ def quitar_frases_de_espera(texto: str) -> str:
     verificación que nunca llega (no hay segundo mensaje). Si el resultado
     queda vacío, se devuelve el original — mejor una promesa fea que silencio.
     """
-    limpio = _FRASE_ESPERA.sub(" ", texto or "").strip()
-    limpio = re.sub(r"\s{2,}", " ", limpio)
+    # El punto decimal de un precio ("$1762.96") NO es fin de oración: se
+    # protege antes de segmentar para no partir el número.
+    protegido = re.sub(r"(?<=\d)\.(?=\d)", "\x00", texto or "")
+    limpio = _FRASE_ESPERA.sub(" ", protegido)
+    limpio = _CORTESIA_ESPERA.sub(" ", limpio).strip()
+    limpio = re.sub(r"\s{2,}", " ", limpio).replace("\x00", ".")
     return limpio if limpio else (texto or "")
 
 
@@ -202,6 +222,33 @@ def pide_foto(t: str) -> bool:
     la manda), no el bot.
     """
     return any(re.search(p, t, re.IGNORECASE) for p in _PIDE_FOTO)
+
+
+_RECETA_NUBE = [
+    r"\breceta\w*\b.{0,40}\b(nube|sistema|cargad\w+|electr[oó]nic\w+)",
+    r"\b(nube|sistema)\b.{0,40}\breceta",
+]
+
+
+def pide_receta_nube(t: str) -> bool:
+    """
+    True si el cliente refiere a recetas "en la nube" / electrónicas / cargadas
+    en el sistema. El bot no accede a ese sistema: deriva SIEMPRE a una persona.
+    (Caso real 19/8: "un momento, por favor" y silencio hasta el cierre.)
+    """
+    return any(re.search(p, t, re.IGNORECASE) for p in _RECETA_NUBE)
+
+
+_DESCUENTO = [r"\bdescuent\w+", r"\bprecio\s+de\s+socio\b"]
+
+
+def pregunta_descuento(t: str) -> bool:
+    """
+    True si el mensaje menciona descuentos. La respuesta es SIEMPRE texto fijo
+    según la config — el modelo inventó un descuento de socia con un precio
+    inexistente (caso 29): nunca más redacta él sobre descuentos.
+    """
+    return any(re.search(p, t, re.IGNORECASE) for p in _DESCUENTO)
 
 
 _LINK_RE = re.compile(r"(https?://\S+|www\.\S+|\S+\.(?:pdf|jpg|jpeg|png)\b)", re.IGNORECASE)

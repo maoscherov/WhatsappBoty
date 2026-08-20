@@ -65,6 +65,8 @@ VENTA_LIBRE: set[str] = {
     "loratadina",
     # Confirmados por la farmacia (minuta 2026-07-31)
     "advance", "betacort", "betacor",
+    # Caso 30 (19/8, Belén): derivado "por receta" siendo venta libre
+    "ultraflex",
 }
 
 

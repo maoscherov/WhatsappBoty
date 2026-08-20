@@ -708,6 +708,94 @@ def test_quitar_frases_de_espera():
     assert ch.quitar_frases_de_espera("Ahora verifico eso.") != ""
 
 
+def test_quitar_frases_de_espera_buscar_y_momento():
+    """
+    Regresión (caso real, 19/8): "Ahora voy a buscar la disponibilidad de
+    Corega para vos" y "Un momento, por favor." se colaron — el filtro no
+    cubría la conjugación "buscar" ni la cortesía de espera sola.
+    """
+    r = ch.quitar_frases_de_espera(
+        "3. Estrella Premium en envase de 75 unidades por $1762.96 "
+        "Ahora voy a buscar la disponibilidad de Corega para vos.")
+    assert "buscar" not in r.lower()
+    assert "$1762.96" in r
+    r2 = ch.quitar_frases_de_espera("Un momento, por favor. El Corega sale $16,827.20.")
+    assert "momento" not in r2.lower()
+    assert "$16,827.20" in r2
+
+
+# ── Pago en sucursal / cuenta corriente → pago manual (deriva o avisa) ────────
+@pytest.mark.parametrize("txt", [
+    "lo pago en la sucursal cuando lo retiro",
+    "lo retiro y pago ahí",
+    "pago al retirar",
+    "si, lo voy a agregar a mi cuenta corriente",
+    "me lo anotás en cuenta corriente?",
+])
+def test_pago_en_sucursal_o_cuenta_corriente_es_pago_manual(txt):
+    """
+    Regresión (casos 29 y 31): "lo pago en la sucursal" y "cuenta corriente"
+    recibían link de pago igual. Son medios que maneja una persona.
+    """
+    assert ch.pide_pago_manual(txt) is True
+
+
+@pytest.mark.parametrize("txt", [
+    "te pago con tarjeta", "cómo lo pago?", "mandame el link de pago",
+    "lo retiro en la sucursal",
+])
+def test_pago_normal_no_es_manual(txt):
+    assert ch.pide_pago_manual(txt) is False
+
+
+# ── Recetas "en la nube" / electrónicas → derivar a una persona ───────────────
+@pytest.mark.parametrize("txt", [
+    "me dijo el doctor que ya estan las recetas en la nube, te podes fijar",
+    "tengo la receta electrónica",
+    "la receta ya está cargada en el sistema",
+    "fijate en la nube que están mis recetas",
+])
+def test_receta_en_nube_deriva(txt):
+    """
+    Regresión (caso real, 19/8): "recetas en la nube" recibió "Un momento,
+    por favor" y silencio hasta el cierre. El bot no accede al sistema de
+    recetas: deriva siempre.
+    """
+    assert ch.pide_receta_nube(txt) is True
+
+
+@pytest.mark.parametrize("txt", [
+    "necesito algo para la tos", "tenés ibuprofeno?", "te mando la receta por acá",
+])
+def test_no_receta_nube(txt):
+    assert ch.pide_receta_nube(txt) is False
+
+
+# ── Preguntas por descuento → respuesta fija, nunca inventar ──────────────────
+@pytest.mark.parametrize("txt", [
+    "tengo descuento de socio?", "hay descuentos?", "tengo precio de socio?",
+    "me hacés un descuentito?",
+])
+def test_pregunta_descuento(txt):
+    """
+    Regresión (caso 29): el modelo inventó "como socia tenés un descuento" con
+    un precio que no existe. Toda pregunta de descuento se responde con texto
+    fijo según la config.
+    """
+    assert ch.pregunta_descuento(txt) is True
+
+
+@pytest.mark.parametrize("txt", ["quiero un ibuprofeno", "cuánto sale el corega?"])
+def test_no_pregunta_descuento(txt):
+    assert ch.pregunta_descuento(txt) is False
+
+
+def test_ultraflex_es_venta_libre():
+    """Regresión (caso 30): Ultraflex derivado 'por receta' siendo venta libre."""
+    from app.services.sku_service import es_venta_libre
+    assert es_venta_libre("ULTRAFLEX COLAGENO POLVO x 300")
+
+
 def test_nombre_coincide_no_presenta_sustitutos():
     """
     Regresión (caso real): pidió "sedal cerámicas sha" y se le presentó un
