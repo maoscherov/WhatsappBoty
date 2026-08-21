@@ -797,6 +797,59 @@ def test_ultraflex_es_venta_libre():
     assert es_venta_libre("ULTRAFLEX COLAGENO POLVO x 300")
 
 
+# ── Abreviaturas de góndola y tipo de producto ────────────────────────────────
+class TestAbreviaturas:
+    def test_expande_siglas_de_gondola(self):
+        from app.services.catalogo_enriquecido import expandir_abreviaturas
+        assert "talco" in expandir_abreviaturas("REXONA EFFIC.TAL.ORIG TAL x 100").lower()
+        assert "jabon" in expandir_abreviaturas("DOVE ORIGINAL JAB x 90").lower()
+        assert "shampoo" in expandir_abreviaturas("SEDAL CERAMIDAS SHA x 340").lower()
+        assert "desodorante" in expandir_abreviaturas("REXONA ODORONO FEM DES CRE x 60").lower()
+        # el nombre original se conserva
+        assert "REXONA" in expandir_abreviaturas("REXONA EFFIC.TAL.ORIG TAL x 100")
+
+    def test_sin_abreviaturas_devuelve_igual(self):
+        from app.services.catalogo_enriquecido import expandir_abreviaturas
+        assert expandir_abreviaturas("IBUPIRAC 400") == "IBUPIRAC 400"
+
+    def test_detecta_tipo_pedido(self):
+        from app.services.catalogo_enriquecido import tipos_mencionados
+        assert tipos_mencionados("me mandás un talco rexona?") == {"talco"}
+        assert tipos_mencionados("jabon dove") == {"jabon"}
+        assert tipos_mencionados("quiero un ibuprofeno") == set()
+
+    def test_no_ofrece_otro_tipo_de_producto(self):
+        """
+        Regresión (caso real 21/8): pidió "talco rexona" y el bot ofreció un
+        REXONA ODORONO desodorante en crema como si fuera el talco. La marca
+        coincide pero el TIPO de producto no: no es lo pedido.
+        """
+        from app.services.sku_service import nombre_coincide
+        assert not nombre_coincide("talco rexona",
+                                   "Unilever REXONA ODORONO C/GLICERINA FEM DES CRE x 60")
+        assert nombre_coincide("talco rexona",
+                               "Unilever REXONA EFFIC.TAL.ORIG TAL x 100")
+        assert not nombre_coincide("jabon dove", "Unilever DOVE AP ROLL ON DES ENV x 55")
+        assert nombre_coincide("jabon dove", "Unilever DOVE ORIGINAL JAB x 90")
+
+    def test_busqueda_encuentra_el_tipo_pedido(self, tmp_path):
+        """El talco y el jabón existen con stock: el bot tiene que encontrarlos."""
+        from app.services.sku_service import SKUService
+        cat = tmp_path / "cat.csv"
+        cat.write_text(
+            "SKU,Nombre,Precio,Marca,Laboratorio,Codigo_Barras_1,Codigo_Barras_2,"
+            "Codigo_Barras_3,Codigo_Barras_4,Categoria,Es_Medicamento\n"
+            "1,Unilever REXONA ODORONO C/GLICERINA FEM DES CRE x 60,3440,,Unilever,111,,,,Perfumeria,false\n"
+            "2,Unilever REXONA EFFIC.TAL.ORIG TAL x 100,4061,,Unilever,222,,,,Perfumeria,false\n"
+            "3,Unilever DOVE AP ROLL ON DES ENV x 55,4268,,Unilever,333,,,,Perfumeria,false\n"
+            "4,Unilever DOVE ORIGINAL JAB x 90,2355,,Unilever,444,,,,Perfumeria,false\n",
+            encoding="utf-8",
+        )
+        svc = SKUService(str(cat))
+        assert svc.buscar("talco rexona")[0]["sku_id"] == "2"
+        assert svc.buscar("jabon dove")[0]["sku_id"] == "4"
+
+
 # ── Conversión de PDFs de existencias → catálogo ──────────────────────────────
 class TestCatalogoPdf:
     def test_num_formato_argentino(self):
@@ -906,10 +959,15 @@ def test_nombre_coincide_no_presenta_sustitutos():
     Regresión (caso real): pidió "sedal cerámicas sha" y se le presentó un
     CAPILATIS ORTIGA como si fuera lo pedido. Un resultado de otra marca se
     ofrece como "lo más parecido", nunca como el producto solicitado.
+
+    Otra marca → no coincide; y desde el caso del talco (21/8), otro TIPO de
+    producto tampoco: el acondicionador de la misma línea no es el shampoo
+    que pidieron, se ofrece como alternativa pero no como lo pedido.
     """
     from app.services.sku_service import nombre_coincide
-    assert nombre_coincide("sedal ceramicas sha", "Unilever SEDAL CERAMIDAS ACO x 340")
+    assert nombre_coincide("sedal ceramicas sha", "Unilever SEDAL CERAMIDAS SHA x 340")
     assert not nombre_coincide("sedal ceramicas sha", "Capilatis S.A CAPILATIS ORTIGA SHA X 410")
+    assert not nombre_coincide("sedal ceramicas sha", "Unilever SEDAL CERAMIDAS ACO x 340")
 
 
 def test_busqueda_ignora_palabras_de_formato(sku_svc):

@@ -23,6 +23,7 @@ from typing import Optional
 from rapidfuzz import fuzz, process
 
 from app.models.sku import SKU
+from app.services.catalogo_enriquecido import expandir_abreviaturas, tipos_mencionados
 
 logger = logging.getLogger(__name__)
 
@@ -84,14 +85,27 @@ def _tokens(texto: str) -> list[str]:
 
 def nombre_coincide(query: str, nombre: str) -> bool:
     """
-    True si el producto encontrado corresponde a lo que se pidió: algún término
-    distintivo de la consulta (4+ letras, con tolerancia a typos por prefijo)
-    aparece en el nombre. Evita presentar un sustituto de otra marca como si
-    fuera el producto pedido ("sedal..." → Capilatis).
+    True si el producto encontrado corresponde a lo que se pidió.
+
+    Dos condiciones:
+    1. Si la consulta nombra un TIPO de producto (talco, jabón, shampoo...),
+       el producto tiene que ser de ese tipo. La marca sola no alcanza: pedir
+       "talco rexona" y recibir un desodorante Rexona en crema es un sustituto
+       encubierto, no el producto pedido (caso real 21/8).
+    2. Algún término distintivo de la consulta (4+ letras, tolerante a typos
+       por prefijo) aparece en el nombre — evita presentar otra marca como si
+       fuera lo pedido ("sedal..." → Capilatis).
     """
-    n = (nombre or "").lower()
+    nombre_exp = expandir_abreviaturas(nombre or "").lower()
+
+    tipos_pedidos = tipos_mencionados(query)
+    if tipos_pedidos:
+        tipos_producto = tipos_mencionados(nombre_exp)
+        if not (tipos_pedidos & tipos_producto):
+            return False
+
     for tok in _tokens(query):
-        if len(tok) >= 4 and tok[:5] in n:
+        if len(tok) >= 4 and tok[:5] in nombre_exp:
             return True
     return False
 
@@ -156,9 +170,12 @@ class SKUService:
                 sku = self._parse_processed(row, has_imagen) if is_processed else self._parse_base(row, has_imagen)
                 if sku:
                     self._skus.append(sku)
-                    # Índice: nombre + marca + laboratorio (todo lower)
+                    # Índice: nombre CON las siglas de góndola expandidas
+                    # (TAL→talco, JAB→jabón) + marca + laboratorio. Sin la
+                    # expansión, "talco rexona" no encontraba el talco y el
+                    # bot ofrecía un desodorante en su lugar.
                     search_text = " ".join(filter(None, [
-                        sku.sku_nombre.lower(),
+                        expandir_abreviaturas(sku.sku_nombre).lower(),
                         sku.marca.lower(),
                         sku.laboratorio.lower(),
                     ]))
@@ -262,10 +279,15 @@ class SKUService:
         # y de presentación (gotas/crema/jarabe) que arrastran el match a otros
         # productos del mismo formato pero distinto principio.
         import re as _re
+        # OJO: acá van solo palabras de INTENCIÓN, nunca de tipo de producto.
+        # "jabon", "shampoo", "crema", "gotas" estuvieron en esta lista y eran
+        # el problema: "jabon dove" se limpiaba a "dove" y devolvía
+        # desodorantes. Ahora el índice contiene esas palabras (expandidas
+        # desde las siglas del catálogo), así que discriminan en vez de estorbar.
         _STOP = (
             r'\b(dame|quiero|necesito|ten[eé]s|tienen|hay|precio|cu[aá]nto|cuanto|sale|'
-            r'en|de|para|gotas|gota|comprimidos|comprimido|comp|jarabe|crema|pomada|'
-            r'sha|shampoo|shampu|champu|aco|acondicionador|jab|jabon|jab[oó]n|env|\d+)\b'
+            r'en|de|para|un|una|unos|unas|el|la|los|las|me|mand[aá]s|env[ií]as|'
+            r'env|\d+)\b'
         )
         clean_query = _re.sub(_STOP, '', query.lower())
         clean_query = _re.sub(r'\s+', ' ', clean_query).strip()
