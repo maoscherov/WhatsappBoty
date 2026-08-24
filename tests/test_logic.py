@@ -844,6 +844,12 @@ class TestEstiloHumano:
         assert r.startswith("Te paso")
         assert "algo más" not in r
 
+    def test_cierre_ritual_despues_de_emoji(self):
+        """El modelo cierra con emoji + pregunta ritual; el ancla tiene que verlo."""
+        r = self._h("El alias es AMICORREA 🙌 ¿Te gustaría proceder con la operación?")
+        assert "proceder" not in r.lower()
+        assert "AMICORREA" in r
+
     def test_apertura_sola_sobrevive(self):
         """Sin acumulación ritual la interjección es humana: sacarla deja al bot seco."""
         assert "Genial" in self._h("¡Genial! Te lo calculo.")
@@ -881,6 +887,33 @@ class TestEstiloHumano:
         assert "-15%" in r
         assert "Sin gastos de apertura" in r
         assert "\n- " not in r
+
+
+@pytest.mark.parametrize("txt", [
+    "sos un bot?", "¿sos un robot?", "hablo con una persona?",
+    "esto es automático?", "sos una máquina?", "estoy hablando con un humano?",
+    "sos real o sos una ia?",
+])
+def test_pregunta_si_es_bot(txt):
+    """Si preguntan derecho, se admite: no se niega ni se esquiva."""
+    from app.services.mutual_helper import pregunta_si_es_bot
+    assert pregunta_si_es_bot(txt) is True
+
+
+@pytest.mark.parametrize("txt", [
+    "quiero un préstamo", "me pasás el CVU?", "sos muy amable",
+    "necesito hablar con alguien del equipo",
+])
+def test_no_pregunta_si_es_bot(txt):
+    from app.services.mutual_helper import pregunta_si_es_bot
+    assert pregunta_si_es_bot(txt) is False
+
+
+def test_respuesta_de_identidad_admite_y_ofrece_humano():
+    from app.services.config_service import DEFAULTS
+    msg = DEFAULTS["mutual_bot_identidad_message"].lower()
+    assert "asistente" in msg          # lo admite
+    assert "equipo" in msg or "persona" in msg   # y ofrece humano
 
 
 class TestTextosSinRasgosDeIA:

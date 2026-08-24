@@ -63,7 +63,9 @@ _APERTURA = re.compile(
 # "avanzar" ni "continuar" — "¿querés avanzar con el préstamo?" es el próximo
 # paso del negocio, no un ritual.
 _CIERRE_RITUAL = re.compile(
-    r"(?:^|(?<=[.!?…\n]))\s*¿?\s*(?:"
+    # El ancla incluye emojis: el modelo escribe "…cuando quieras 🙌 ¿Te
+    # gustaría proceder?" y sin eso el cierre ritual se colaba.
+    r"(?:^|(?<=[.!?…\n\U0001F300-\U0001FAFF☀-➿]))\s*¿?\s*(?:"
     r"(?:te\s+gustar[ií]a|desea[sr]?|quer[eé]s)\s+proceder\s+con\s+(?:la|el)\s+\w+|"
     r"hay\s+algo\s+m[aá]s\s+en\s+(?:lo|el)\s+que\s+(?:pueda|puedo)\s+"
     r"(?:ayudarte|asistirte|colaborar)|"

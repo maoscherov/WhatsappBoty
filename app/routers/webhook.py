@@ -180,7 +180,8 @@ async def _flujo_mutual(deps, phone: str, session: dict, texto: str,
 
     Devuelve (respuesta, intencion). No genera links de pago ni usa catálogo.
     """
-    from app.services.mutual_helper import requiere_derivacion_financiera, mensaje_derivacion
+    from app.services.mutual_helper import (requiere_derivacion_financiera,
+                                            mensaje_derivacion, pregunta_si_es_bot)
 
     cfg = await deps["config"].get_all()
 
@@ -194,6 +195,13 @@ async def _flujo_mutual(deps, phone: str, session: dict, texto: str,
             return (cfg.get("mutual_derivar_oficial_message") or
                     "Dale, te paso con un oficial de créditos."
                     ), "derivado_prestamo"
+
+    # 0. "¿Sos un bot?": se responde con texto fijo. Librado al modelo, tiende a
+    # esquivar o a decir que es una persona; acá se admite y se ofrece humano.
+    if pregunta_si_es_bot(texto):
+        return (cfg.get("mutual_bot_identidad_message") or
+                "Sí, soy el asistente de Mutual AMI. Si preferís hablar con "
+                "alguien del equipo te paso, decime nomás."), "identidad_bot"
 
     # 1. Consultas de cuenta: derivan siempre, antes de llegar al modelo.
     motivo = requiere_derivacion_financiera(texto)

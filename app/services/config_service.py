@@ -72,6 +72,12 @@ DEFAULTS: dict[str, str] = {
     "mutual_amt_ofrecer_asesor": (
         "Si lo querés constituir, lo arma alguien del equipo."
     ),
+    # Si preguntan derecho si es un bot: se admite y se ofrece pasar con una
+    # persona. Nunca decir que es humano.
+    "mutual_bot_identidad_message": (
+        "Sí, soy el asistente de Mutual AMI. Si preferís hablar con alguien del "
+        "equipo te paso, decime nomás."
+    ),
     # Pasarela con la que se cobra: "payway" | "mercadopago". Vacío = usa la
     # variable de entorno del deploy. Se cambia desde el backoffice sin deploy.
     "payment_provider": "",
