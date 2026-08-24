@@ -35,6 +35,7 @@ from app.services.config_service import get_config_service
 from app.services.socio_service import get_socio_service
 from app.services.db import get_db
 from app.services.embeddings import get_embedding_service
+from app.services.estilo_humano import humanizar
 from app.services.rag_service import get_rag_service
 from app.services.message_store import get_message_store
 from app.services.metrics_store import get_metrics_store
@@ -268,7 +269,10 @@ async def _flujo_mutual(deps, phone: str, session: dict, texto: str,
     steps["claude_ms"] = int((_time.perf_counter() - _tc) * 1000)
 
     intencion = resultado.get("intencion", "desconocido")
-    respuesta = (resultado.get("respuesta") or "").strip() or (
+    # humanizar() sólo sobre el texto del MODELO, y acá: más abajo el simulador
+    # pisa `respuesta` con texto que arma el código, que usa viñetas y negritas
+    # a propósito y trae los importes calculados.
+    respuesta = humanizar((resultado.get("respuesta") or "").strip()) or (
         "Disculpá, no pude procesar tu consulta. ¿Me la repetís?")
 
     # Simulación de préstamo: los números los calcula el código, nunca el modelo.

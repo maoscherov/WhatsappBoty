@@ -797,6 +797,92 @@ def test_ultraflex_es_venta_libre():
     assert es_venta_libre("ULTRAFLEX COLAGENO POLVO x 300")
 
 
+# ── Estilo humano: sacar los rasgos que delatan que escribió una IA ───────────
+class TestEstiloHumano:
+    """
+    El bot escribía con la firma tipográfica del texto generado por IA:
+    negritas y viñetas en un chat de WhatsApp, un emoji ritual por mensaje,
+    apertura entusiasta en cada turno y cierre de call center.
+    """
+
+    def _h(self, t, **kw):
+        from app.services.estilo_humano import humanizar
+        return humanizar(t, **kw)
+
+    def test_saca_negritas_y_vinetas_conservando_saltos(self):
+        r = self._h("Te cuento las opciones:\n• *Préstamo personal*\n• *AMT*")
+        assert "*" not in r and "•" not in r
+        assert "Préstamo personal" in r and "AMT" in r
+        assert "\n" in r          # los saltos estructuran el mensaje
+
+    def test_guion_largo_se_vuelve_puntuacion(self):
+        r = self._h("El AMT — rinde más que la caja de ahorro — es a plazo fijo.")
+        assert "—" not in r
+        assert "rinde más que la caja de ahorro" in r
+
+    def test_importe_intacto_con_cierre_ritual(self):
+        r = self._h("La cuota estimada es de *$16.827,20*. ¿Te gustaría proceder con la compra?")
+        assert "$16.827,20" in r
+        assert "*" not in r and "proceder" not in r.lower()
+
+    def test_importe_con_punto_decimal_no_se_parte(self):
+        """El punto de $1762.96 no es fin de oración (bug real del filtro anterior)."""
+        r = self._h("Por $1762.96 a 30 días. ¡Espero que esto te sea útil! 🙂✨")
+        assert "$1762.96" in r
+        assert "espero" not in r.lower()
+
+    def test_rango_de_importes_no_se_toca(self):
+        r = self._h("Los montos van de $50.000 – $2.000.000.")
+        assert "$50.000" in r and "$2.000.000" in r
+
+    def test_nunca_devuelve_vacio(self):
+        """Si todo el mensaje era ritual, se devuelve el original: mejor feo que mudo."""
+        assert self._h("¡Perfecto! ¿Hay algo más en lo que pueda ayudarte? 😊").strip()
+
+    def test_saca_apertura_ritual_y_cierre_de_call_center(self):
+        r = self._h("¡Genial! Te paso los requisitos. ¿Hay algo más en lo que pueda ayudarte?")
+        assert r.startswith("Te paso")
+        assert "algo más" not in r
+
+    def test_apertura_sola_sobrevive(self):
+        """Sin acumulación ritual la interjección es humana: sacarla deja al bot seco."""
+        assert "Genial" in self._h("¡Genial! Te lo calculo.")
+
+    def test_no_confunde_adjetivo_con_interjeccion(self):
+        t = "Perfecto para tu caso: el AMT a 30 días rinde más."
+        assert self._h(t) == t
+
+    def test_saca_muletilla_y_recapitaliza(self):
+        r = self._h("Es importante destacar que la cuota social se paga por mes.")
+        assert "importante destacar" not in r
+        assert r.startswith("La cuota social")
+
+    def test_no_toca_frase_que_solo_se_parece_a_muletilla(self):
+        t = "Por otro lado del mostrador te atienden."
+        assert self._h(t) == t
+
+    def test_no_toca_el_rioplatense_legitimo(self):
+        """"Dale" lo usan los propios mensajes del equipo: no es un tic de IA."""
+        t = "Dale, te paso con un oficial de créditos 🙌"
+        assert self._h(t) == t
+
+    def test_deja_un_solo_emoji(self):
+        r = self._h("Te asocio 🙌 y después te aviso 😊✨👍")
+        assert "🙌" in r
+        assert "😊" not in r and "✨" not in r and "👍" not in r
+
+    def test_no_toca_las_preguntas_que_son_del_negocio(self):
+        """"¿Querés que te pase con un asesor?" es el próximo paso, no un ritual."""
+        t = "¿Querés que te pase con un asesor?"
+        assert self._h(t) == t
+
+    def test_porcentaje_negativo_no_es_vineta(self):
+        r = self._h("-15% en la cuota\n- Sin gastos de apertura")
+        assert "-15%" in r
+        assert "Sin gastos de apertura" in r
+        assert "\n- " not in r
+
+
 # ── Abreviaturas de góndola y tipo de producto ────────────────────────────────
 class TestAbreviaturas:
     def test_expande_siglas_de_gondola(self):
