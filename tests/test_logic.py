@@ -1113,6 +1113,78 @@ class TestCatalogoPdf:
         nuevo = por_barcode["9999999999999"]
         assert nuevo["requiere_receta"] == "ambiguo"   # medicamento nuevo
 
+    def test_normalizar_valor_receta(self):
+        from app.services.receta_excel import _normalizar
+        assert _normalizar("si") == "si"
+        assert _normalizar("Si") == "si"
+        assert _normalizar("no") == "no"
+        assert _normalizar("No aplica (no es medicamento)") == "no"
+        assert _normalizar("No encontrado en cruce") is None
+        assert _normalizar("ni") is None
+        assert _normalizar("") is None
+        assert _normalizar(None) is None
+
+    def test_parsear_excel_extrae_barcode_y_receta(self, tmp_path):
+        from openpyxl import Workbook
+        from app.services.receta_excel import parsear_excel
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Medicamentos"
+        headers = ["Descripcion", "Troquel", "Codigo de barra", "Stock actual",
+                   "Prom.", "Precio", "Fact.", "Valor", "Sem.", "Clasif.",
+                   "Rank1", "Rank2", "Pct", "ABC", "Prob",
+                   "Requiere Receta (cruce SKU)", "ValorOriginal", "Estado"]
+        ws.append(headers)
+        ws.append(["IBUPROFENO 600", None, "7790001", 10, 1, 100, 0, 0, 0, "",
+                   0, 0, 0, "", 0, "si", 0, "OK"])
+        ws.append(["ALGO SIN CRUCE", None, "7790002", 5, 1, 50, 0, 0, 0, "",
+                   0, 0, 0, "", 0, "No encontrado en cruce", 0, "OK"])
+        ws.append(["PLACEHOLDER", None, "1", 3, 1, 30, 0, 0, 0, "",
+                   0, 0, 0, "", 0, "si", 0, "OK"])   # barcode placeholder: se ignora
+        p = tmp_path / "excel.xlsx"
+        wb.save(p)
+
+        resultado = parsear_excel(p.read_bytes())
+        assert resultado["7790001"] == "si"
+        assert "7790002" not in resultado    # sin cruce: no se toca
+        assert "1" not in resultado          # placeholder: no es un barcode real
+
+    def test_fusion_no_pisa_la_whitelist_confirmada_por_la_farmacia(self):
+        """
+        Regresión (decisión 21/8): el Excel marcó "con receta" a OTC ya
+        confirmados por la farmacia el 31/7 (Ibupirac, Actron, Tafirol...) —
+        el cruce del Excel no documenta su método para ese campo. La
+        whitelist confirmada queda blindada: el Excel puede sumar info
+        nueva, pero no la pisa. Los conflictos se reportan para revisión.
+        """
+        from app.models.sku import SKU
+        from app.services.receta_excel import fusionar_receta
+
+        actual = [
+            SKU(sku_id="1", barcode="7790001", sku_nombre="Ibupirac 600",
+                sku_nombre_original="Ibupirac 600", precio_venta=100.0,
+                requiere_receta="no"),   # OTC confirmado por la farmacia
+            SKU(sku_id="2", barcode="7790002", sku_nombre="Producto sin cruce",
+                sku_nombre_original="X", precio_venta=50.0, requiere_receta="ambiguo"),
+            SKU(sku_id="3", barcode="7790003", sku_nombre="Producto nuevo con dato",
+                sku_nombre_original="Z", precio_venta=20.0, requiere_receta="ambiguo"),
+            SKU(sku_id="4", barcode="0000000000009", sku_nombre="No aparece en excel",
+                sku_nombre_original="Y", precio_venta=10.0, requiere_receta="no"),
+        ]
+        por_barcode_excel = {"7790001": "si", "7790003": "no"}
+
+        contenido, resumen = fusionar_receta(actual, por_barcode_excel)
+        filas = {f["barcode"]: f for f in csv.DictReader(io.StringIO(contenido))}
+
+        assert filas["7790001"]["requiere_receta"] == "no"     # whitelist blindada, NO se pisa
+        assert filas["7790003"]["requiere_receta"] == "no"     # sin conflicto: sí se actualiza
+        assert filas["7790002"]["requiere_receta"] == "ambiguo"  # sin cruce, intacto
+        assert filas["0000000000009"]["requiere_receta"] == "no"  # no está en el excel
+        assert resumen["Actualizados"] == 1
+        assert resumen["Conflictos con la whitelist (no aplicados)"] == 1
+        assert resumen["conflictos"][0]["barcode"] == "7790001"
+
     def test_csv_generado_lo_carga_sku_service(self, tmp_path):
         from app.services.catalogo_pdf import a_fila_catalogo, COLUMNAS_B
         import csv as _csv

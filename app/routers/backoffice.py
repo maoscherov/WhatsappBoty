@@ -399,6 +399,52 @@ async def bo_sku_import_pdf(files: list[UploadFile] = File(...), _=Depends(_auth
         raise HTTPException(status_code=422, detail=f"Error cargando catálogo: {e}")
 
 
+@router.post("/sku/import-receta")
+async def bo_sku_import_receta(file: UploadFile = File(...), _=Depends(_auth)):
+    """
+    Actualiza SOLO el flag de receta del catálogo desde el Excel "Base
+    Predictiva de Stock" (cruce por SKU individual). No toca nombre, precio
+    ni stock.
+
+    La whitelist de venta libre confirmada por la farmacia (minuta 31/7)
+    queda blindada: si el Excel dice "con receta" para un producto de esa
+    lista, NO se aplica — se reporta como conflicto para revisión de Belén
+    (decisión 21/8: el cruce de receta del Excel marcaba como "con receta"
+    OTC muy comunes — Ibupirac, Actron, Tafirol — sin documentar su método).
+    """
+    from app.services.receta_excel import parsear_excel, fusionar_receta
+
+    settings = get_settings()
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Archivo vacío")
+
+    try:
+        por_barcode = parsear_excel(data)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Error leyendo Excel: {e}")
+    if len(por_barcode) < 50:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Solo se reconocieron {len(por_barcode)} productos con cruce — "
+                   f"¿es el archivo correcto? El catálogo NO se modificó.")
+
+    catalogo_actual = get_sku_service(settings.sku_csv_path).todos()
+    contenido, resumen = fusionar_receta(catalogo_actual, por_barcode)
+
+    csv_path = Path(settings.sku_csv_path)
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    contenido_bytes = contenido.encode("utf-8")
+    csv_path.write_bytes(contenido_bytes)
+    try:
+        svc = reload_sku_service(str(csv_path))
+        await get_blob_store(settings.redis_url).save("catalogo", contenido_bytes, ".csv")
+        return {"status": "ok", "total": svc.total, "resumen": resumen,
+                "csv_path": str(csv_path)}
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Error cargando catálogo: {e}")
+
+
 # ── Padrón de socios (personalización) ────────────────────────────────────────
 
 @router.get("/socios/info")
