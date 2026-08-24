@@ -192,7 +192,7 @@ async def _flujo_mutual(deps, phone: str, session: dict, texto: str,
         if _es_afirmacion_pura(texto):
             await deps["session"].set_estado(phone, "operador", motivo="prestamo")
             return (cfg.get("mutual_derivar_oficial_message") or
-                    "Dale, te paso con un oficial de créditos 🙌 En un momento te contactan."
+                    "Dale, te paso con un oficial de créditos."
                     ), "derivado_prestamo"
 
     # 1. Consultas de cuenta: derivan siempre, antes de llegar al modelo.
@@ -223,8 +223,8 @@ async def _flujo_mutual(deps, phone: str, session: dict, texto: str,
         await deps["session"].set_estado(phone, "operador", motivo="conversacion_larga")
         logger.info(f"Derivación por conversación larga: {phone} turnos={turnos} min={minutos:.0f}")
         return (cfg.get("mutual_corte_message") or
-                "Para no hacerte perder más tiempo, te paso con alguien del equipo que "
-                "sigue con vos desde acá 🙌"), "derivado_conversacion_larga"
+                "Mejor te paso con alguien del equipo, que sigue con vos desde acá."
+                ), "derivado_conversacion_larga"
 
     # 3. Base de conocimiento como contexto (es la única fuente de verdad).
     # Umbral bajo a propósito: una pregunta corta ("me das el cvu?") da un
@@ -345,13 +345,15 @@ async def _flujo_mutual(deps, phone: str, session: dict, texto: str,
         await deps["session"].set_estado(phone, "operador", motivo="cliente_molesto")
         logger.info(f"Derivación por emoción negativa sostenida: {phone} ({negativos} seguidos)")
         return (cfg.get("mutual_escalada_message") or
-                "Perdón por las vueltas 🙏 Te paso con alguien del equipo para que te ayude "
-                "personalmente."), "derivado_cliente_molesto"
+                "Perdón por las vueltas. Te paso con alguien del equipo así lo vemos bien."
+                ), "derivado_cliente_molesto"
 
     # 6. Conversación larga: recordar que puede hablar con un asesor (spec 4.4).
     turno_aviso = int(cfg.get("mutual_turno_ofrecer_asesor") or 10)
     if turno_aviso and turnos >= turno_aviso and "asesor" not in respuesta.lower():
-        respuesta += "\n\nSi preferís, también te puedo pasar con un asesor 🙂"
+        # Sin emoji: se agrega DESPUÉS del filtro, así que sumaría uno más al
+        # que el mensaje ya pueda traer.
+        respuesta += "\n\nSi preferís te paso con un asesor."
 
     return respuesta, intencion
 

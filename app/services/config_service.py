@@ -38,12 +38,10 @@ DEFAULTS: dict[str, str] = {
     # preguntas cortas puntúan poco contra documentos largos y se perdía el dato.
     "mutual_kb_min_score": "0.05",
     "mutual_escalada_message": (
-        "Perdón por las vueltas 🙏 Te paso con alguien del equipo para que te "
-        "ayude personalmente."
+        "Perdón por las vueltas. Te paso con alguien del equipo así lo vemos bien."
     ),
     "mutual_corte_message": (
-        "Para no hacerte perder más tiempo, te paso con alguien del equipo que "
-        "sigue con vos desde acá 🙌"
+        "Mejor te paso con alguien del equipo, que sigue con vos desde acá."
     ),
     # Simulador de préstamos. Las tasas cambian seguido: se editan acá, sin deploy.
     "mutual_simulador_activo": "true",
@@ -59,10 +57,10 @@ DEFAULTS: dict[str, str] = {
     ),
     # La simulación es capital + interés; para avanzar se pasa con un oficial.
     "mutual_simulador_ofrecer_oficial": (
-        "Si querés avanzar, te paso con un oficial de créditos que lo ve con vos 🙂"
+        "Si querés avanzar lo ve un oficial de créditos con vos."
     ),
     "mutual_derivar_oficial_message": (
-        "Dale, te paso con un oficial de créditos 🙌 En un momento te contactan."
+        "Dale, te paso con un oficial de créditos."
     ),
     # Plazo fijo (AMT): interés simple por días exactos. El sellado queda
     # pendiente de dato, por eso el mensaje aclara que no está incluido.
@@ -72,7 +70,7 @@ DEFAULTS: dict[str, str] = {
     "mutual_amt_dias_min": "29",
     "mutual_amt_dias_max": "60",
     "mutual_amt_ofrecer_asesor": (
-        "Si querés constituirlo, te paso con alguien del equipo 🙂"
+        "Si lo querés constituir, lo arma alguien del equipo."
     ),
     # Pasarela con la que se cobra: "payway" | "mercadopago". Vacío = usa la
     # variable de entorno del deploy. Se cambia desde el backoffice sin deploy.

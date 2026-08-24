@@ -883,6 +883,64 @@ class TestEstiloHumano:
         assert "\n- " not in r
 
 
+class TestTextosSinRasgosDeIA:
+    """
+    Los textos que escribimos nosotros son los que más se repiten literal, y la
+    repetición idéntica es el tell más fuerte. Estos tests impiden que los
+    rasgos vuelvan a entrar por config o por un fallback.
+    """
+
+    def _sin_rasgos(self, t):
+        """Ni negritas, ni viñetas, ni guiones largos, ni más de un emoji."""
+        from app.services.estilo_humano import _EMOJI
+        import re as _re
+        assert "•" not in t, f"viñeta en: {t!r}"
+        assert "—" not in t and "→" not in t, f"guion largo en: {t!r}"
+        assert not _re.search(r"(?<![\w*])\*\S[^*\n]*\*", t), f"negrita en: {t!r}"
+        assert len(_EMOJI.findall(t)) <= 1, f"más de un emoji en: {t!r}"
+
+    def test_defaults_mutual_sin_rasgos(self):
+        from app.services.config_service import DEFAULTS
+        for clave, valor in DEFAULTS.items():
+            if clave.startswith("mutual_") and isinstance(valor, str) and len(valor) > 25:
+                self._sin_rasgos(valor)
+
+    def test_mensajes_compartidos_sin_rasgos(self):
+        from app.services.config_service import DEFAULTS
+        for clave in ("inactivity_close_message", "auto_liberar_message",
+                      "handoff_reminder_message"):
+            self._sin_rasgos(DEFAULTS[clave])
+
+    def test_simulaciones_sin_rasgos_pero_con_lo_obligatorio(self):
+        from app.services.mutual_helper import texto_simulacion, texto_amt
+        sim = {"monto": 1500000, "cuotas": 12, "linea": "preferencial", "tna": 55,
+               "cuota": 180000, "incluye_iva": False, "incluye_gastos": False}
+        t = texto_simulacion(sim)
+        self._sin_rasgos(t)
+        assert "estimativo" in t.lower() and "no incluye" in t.lower()
+
+        amt = {"monto": 100000, "dias": 30, "sellado_reducido": False,
+               "online": {"tna": 26, "interes": 2136, "total": 102136},
+               "presencial": {"tna": 23.5, "interes": 1931, "total": 101931}}
+        ta = texto_amt(amt)
+        self._sin_rasgos(ta)
+        assert "no incluye" in ta.lower() and "sellado" in ta.lower()
+
+    def test_derivacion_varia_su_redaccion(self):
+        """Seis veces la misma fórmula es lo que delata: se rota entre variantes."""
+        from app.services.mutual_helper import mensaje_derivacion
+        vistos = {mensaje_derivacion("saldo") for _ in range(60)}
+        assert len(vistos) > 1, "la derivación usa siempre el mismo texto"
+        for m in vistos:
+            self._sin_rasgos(m)
+            assert "saldo" in m.lower()
+
+    def test_derivacion_conserva_el_nombre(self):
+        from app.services.mutual_helper import mensaje_derivacion
+        for _ in range(20):
+            assert mensaje_derivacion("saldo", nombre="Claudia").startswith("Claudia,")
+
+
 # ── Abreviaturas de góndola y tipo de producto ────────────────────────────────
 class TestAbreviaturas:
     def test_expande_siglas_de_gondola(self):

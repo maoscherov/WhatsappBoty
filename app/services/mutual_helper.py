@@ -8,6 +8,7 @@ persona todo lo que toque cuentas o dinero.
 Ver docs/plan-cerca-mutual.md (fases 1 y 2).
 """
 
+import random
 import re
 from typing import Optional
 
@@ -150,17 +151,19 @@ def texto_amt(sim: dict, cfg: dict | None = None) -> str:
         return f"${v:,.0f}".replace(",", ".")
 
     on, pre = sim["online"], sim["presencial"]
-    extra = ("\nA 29 días el gasto de sellado se reduce a la mitad."
+    extra = ("\nA 29 días el sellado se cobra a la mitad."
              if sim["sellado_reducido"] else "")
     ofrecer = cfg.get("mutual_amt_ofrecer_asesor") or (
-        "Si querés constituirlo, te paso con alguien del equipo 🙂")
+        "Si lo querés constituir, lo arma alguien del equipo.")
 
-    return (f"Por {_p(sim['monto'])} a {sim['dias']} días:\n\n"
-            f"• *Online* ({on['tna']:g}% TNA): ganás {_p(on['interes'])} "
-            f"→ retirás {_p(on['total'])}\n"
-            f"• *En sucursal* ({pre['tna']:g}% TNA): ganás {_p(pre['interes'])} "
-            f"→ retirás {_p(pre['total'])}\n\n"
-            f"No incluye el gasto de sellado.{extra}\n\n{ofrecer}")
+    # Sin viñetas ni negritas: en un chat de WhatsApp el formato de documento
+    # es lo primero que delata que el texto no lo escribió una persona.
+    return (f"Por {_p(sim['monto'])} a {sim['dias']} días te queda así.\n\n"
+            f"Online ({on['tna']:g}% TNA): ganás {_p(on['interes'])} "
+            f"y retirás {_p(on['total'])}.\n"
+            f"En sucursal ({pre['tna']:g}% TNA): ganás {_p(pre['interes'])} "
+            f"y retirás {_p(pre['total'])}.\n\n"
+            f"No incluye el sellado.{extra}\n\n{ofrecer}")
 
 
 def texto_simulacion(sim: dict, cfg: dict | None = None) -> str:
@@ -190,10 +193,10 @@ def texto_simulacion(sim: dict, cfg: dict | None = None) -> str:
     # La simulación es sólo capital + interés: para avanzar hay que hablar con
     # un oficial, que evalúa el caso y da el detalle final.
     ofrecer = cfg.get("mutual_simulador_ofrecer_oficial") or (
-        "Si querés avanzar, te paso con un oficial de créditos que lo ve con vos 🙂"
+        "Si querés avanzar lo ve un oficial de créditos con vos."
     )
     return (f"Por {_p(sim['monto'])} en {sim['cuotas']} cuotas {linea_txt} ({sim['tna']:g}% TNA), "
-            f"la cuota estimada es de *{_p(sim['cuota'])}*.\n\n"
+            f"la cuota estimada es de {_p(sim['cuota'])}.\n\n"
             f"{aclaracion}{nota}\n\n{ofrecer}")
 
 # ── Consultas que SIEMPRE derivan (sección 2.9 de la especificación) ───────────
@@ -237,13 +240,33 @@ def requiere_derivacion_financiera(texto: str) -> Optional[str]:
     return None
 
 
+# Redacciones equivalentes del hand-off. Lo que delataba al bot no era una
+# frase fea: era leer seis veces la MISMA fórmula troquelada. {inicio} lleva el
+# nombre si lo tenemos, {detalle} el porqué.
+_VARIANTES_DERIVACION = [
+    "{inicio} paso con alguien del equipo {detalle}. Son datos de tu cuenta y "
+    "los maneja una persona.",
+    "{inicio} paso con alguien del equipo {detalle}, que eso lo ve una persona.",
+    "Eso lo ve una persona del equipo. {inicio} paso {detalle}.",
+    "{inicio} paso con el equipo {detalle}. Es información de tu cuenta, así que "
+    "la resuelve alguien de acá.",
+]
+
+
 def mensaje_derivacion(motivo: str, nombre: str = "") -> str:
-    """Mensaje de hand-off, explicando por qué pasa con una persona."""
+    """
+    Mensaje de hand-off, explicando por qué pasa con una persona.
+
+    Rota entre redacciones equivalentes: la repetición literal es lo que hace
+    que el bot suene automático.
+    """
     inicio = f"{nombre}, te" if nombre else "Te"
     detalle = _MOTIVO_TEXTO.get(motivo, "para ayudarte con eso")
-    return (f"{inicio} paso con alguien del equipo {detalle} 🙌 "
-            "Es información de tu cuenta, así que la maneja una persona. "
-            "¡En un momento te contactamos!")
+    plantilla = random.choice(_VARIANTES_DERIVACION)
+    if nombre and not plantilla.startswith("{inicio}"):
+        # Con nombre, el saludo va al principio o se pierde.
+        plantilla = _VARIANTES_DERIVACION[0]
+    return plantilla.format(inicio=inicio, detalle=detalle)
 
 
 # ── Prompt del vertical ────────────────────────────────────────────────────────
