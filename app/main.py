@@ -80,6 +80,20 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Postgres init falló: {e} — se usa solo Redis")
 
+        # Config: Postgres es la fuente de verdad, Redis el cache. Se lee acá
+        # para repoblar el cache si Redis se reinició y quedó vacío — si no,
+        # los valores editados desde el backoffice vuelven a los defaults.
+        try:
+            from app.services.config_service import get_config_service
+            _cfg_svc = get_config_service(settings.redis_url)
+            # Rescate: lo configurado antes de esta versión vive solo en Redis.
+            await _cfg_svc.sincronizar_durable()
+            cfg_actual = await _cfg_svc.get_all()
+            logger.info(f"Config cargada ({len(cfg_actual)} claves, "
+                        f"descuento socio: {cfg_actual.get('socio_discount_pct')}%)")
+        except Exception as e:
+            logger.warning(f"No se pudo hidratar la config: {e}")
+
     # Job periódico: cierre por inactividad, aviso de demora y devolución al bot
     # de las derivaciones sin atender. Arranca con cualquier proveedor de
     # WhatsApp configurado (con Kapso, WHATSAPP_TOKEN va vacío).

@@ -176,10 +176,37 @@ DEFAULT_HOURS = {
 
 
 class ConfigService:
+    """
+    Config editable desde el backoffice, con tres niveles:
+
+      Postgres  → fuente de verdad (durable)
+      Redis     → cache del camino caliente (get_all corre en cada mensaje)
+      memoria   → último recurso si los dos fallan
+
+    Antes Redis era la ÚNICA copia: al reiniciarse, los valores se perdían en
+    silencio y todo volvía a los defaults del código. Pasó con el descuento de
+    socios, que quedaba en 0 sin que nadie se enterara.
+    """
+
     def __init__(self, redis_url: str):
         self._redis = aioredis.from_url(redis_url, decode_responses=True)
         self._ok: Optional[bool] = None
         self._cache: dict[str, str] = {}   # fallback in-memory
+        self._db = None                    # se resuelve perezosamente
+
+    def _get_db(self):
+        """
+        La db se resuelve tarde y no en el constructor: el pool se crea en el
+        lifespan de main.py, después de instanciarse este servicio.
+        """
+        if self._db is None:
+            try:
+                from app.config import get_settings
+                from app.services.db import get_db
+                self._db = get_db(get_settings().database_url)
+            except Exception as e:
+                logger.warning(f"config: sin acceso a Postgres ({e})")
+        return self._db
 
     async def _usable(self) -> bool:
         if self._ok is None:
@@ -189,35 +216,101 @@ class ConfigService:
                 self._ok = False
         return bool(self._ok)
 
+    async def _leer_postgres(self) -> dict[str, str]:
+        db = self._get_db()
+        if not db or not db.available():
+            return {}
+        filas = await db.fetch("SELECT clave, valor FROM config")
+        return {f["clave"]: f["valor"] for f in filas}
+
+    async def _guardar_postgres(self, updates: dict[str, str]) -> bool:
+        db = self._get_db()
+        if not db or not db.available():
+            return False
+        for clave, valor in updates.items():
+            await db.execute(
+                "INSERT INTO config (clave, valor, updated_at) VALUES ($1, $2, now()) "
+                "ON CONFLICT (clave) DO UPDATE SET valor = $2, updated_at = now()",
+                clave, str(valor),
+            )
+        return True
+
     async def get_all(self) -> dict[str, str]:
+        # Camino caliente: Redis. Si trae datos, no se consulta Postgres.
         if await self._usable():
             try:
                 data = await self._redis.hgetall(CONFIG_KEY)
-                return {**DEFAULTS, **data}
+                if data:
+                    return {**DEFAULTS, **data}
             except Exception:
                 pass
+
+        # Redis vacío o caído: la verdad está en Postgres. Si había algo, se
+        # repuebla el cache para que la próxima lectura vuelva al camino rápido.
+        durable = await self._leer_postgres()
+        if durable:
+            try:
+                if await self._usable():
+                    await self._redis.hset(CONFIG_KEY, mapping=durable)
+                    logger.info(f"config: cache de Redis repoblado desde Postgres "
+                                f"({len(durable)} claves)")
+            except Exception:
+                pass
+            return {**DEFAULTS, **durable}
+
         return {**DEFAULTS, **self._cache}
+
+    async def sincronizar_durable(self) -> int:
+        """
+        Copia a Postgres lo que hoy está SOLO en Redis. Se corre al arrancar.
+
+        Al estrenar la persistencia, todo lo ya configurado desde el backoffice
+        vive únicamente en el cache; sin esta copia se perdería igual en el
+        primer reinicio de Redis. No pisa lo que Postgres ya tenga: la fuente
+        de verdad manda.
+        """
+        db = self._get_db()
+        if not db or not db.available():
+            return 0
+        if await self._leer_postgres():
+            return 0            # Postgres ya es la verdad, no se toca
+        if not await self._usable():
+            return 0
+        try:
+            data = await self._redis.hgetall(CONFIG_KEY)
+        except Exception:
+            return 0
+        if not data:
+            return 0
+        await self._guardar_postgres(data)
+        logger.info(f"config: {len(data)} claves copiadas de Redis a Postgres "
+                    f"(primera persistencia)")
+        return len(data)
 
     async def get(self, key: str) -> str:
         config = await self.get_all()
         return config.get(key, DEFAULTS.get(key, ""))
 
     async def set(self, key: str, value: str):
-        self._cache[key] = value
-        if await self._usable():
-            try:
-                await self._redis.hset(CONFIG_KEY, key, value)
-                return
-            except Exception:
-                pass
+        await self.set_many({key: value})
 
     async def set_many(self, updates: dict[str, str]):
         self._cache.update(updates)
+        # Primero lo durable: si Postgres falla, se avisa fuerte — sin eso el
+        # cambio se pierde en el próximo reinicio de Redis y nadie se entera.
+        persistido = await self._guardar_postgres(updates)
+        if not persistido:
+            logger.error(
+                "config: NO se pudo persistir en Postgres %s — el cambio vive "
+                "solo en Redis y se perderá si Redis se reinicia",
+                list(updates),
+            )
         if await self._usable():
             try:
                 await self._redis.hset(CONFIG_KEY, mapping=updates)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"config: no se pudo actualizar el cache de Redis: {e}")
+        return persistido
 
     # ── Horarios ──────────────────────────────────────────────────────────────
 

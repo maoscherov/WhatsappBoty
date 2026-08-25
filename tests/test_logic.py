@@ -797,6 +797,132 @@ def test_ultraflex_es_venta_libre():
     assert es_venta_libre("ULTRAFLEX COLAGENO POLVO x 300")
 
 
+class TestConfigPersistente:
+    """
+    Regresión (21/8): la config editable del backoffice vivía SOLO en Redis.
+    Si Redis se reinicia, los valores se pierden en silencio y todo vuelve a
+    los defaults del código — el descuento de socios quedaba en 0 sin aviso.
+    Postgres es la fuente de verdad; Redis, cache.
+    """
+
+    class _FakeDB:
+        """Postgres de mentira: guarda en un dict."""
+        def __init__(self, filas=None, disponible=True):
+            self.filas = dict(filas or {})
+            self._disponible = disponible
+            self.escrituras = 0
+
+        def available(self):
+            return self._disponible
+
+        async def execute(self, query, *args):
+            if not self._disponible:
+                return None
+            if "INSERT INTO config" in query:
+                self.filas[args[0]] = args[1]
+                self.escrituras += 1
+            return "OK"
+
+        async def fetch(self, query, *args):
+            if not self._disponible:
+                return []
+            return [{"clave": k, "valor": v} for k, v in self.filas.items()]
+
+    def _svc(self, db, redis_ok=True, redis_data=None):
+        from app.services.config_service import ConfigService
+        svc = ConfigService("redis://fake")
+        svc._ok = redis_ok
+        svc._db = db
+        # Redis de mentira: un dict que simula el hash
+        redis_data = {} if redis_data is None else redis_data
+
+        class _FakeRedis:
+            async def hgetall(self, key):
+                if not redis_ok:
+                    raise RuntimeError("redis caido")
+                return dict(redis_data)
+
+            async def hset(self, key, field=None, value=None, mapping=None):
+                if not redis_ok:
+                    raise RuntimeError("redis caido")
+                if mapping:
+                    redis_data.update(mapping)
+                else:
+                    redis_data[field] = value
+
+        svc._redis = _FakeRedis()
+        svc._redis_data = redis_data
+        return svc
+
+    async def test_set_persiste_en_postgres_ademas_de_redis(self):
+        db = self._FakeDB()
+        svc = self._svc(db)
+        await svc.set("socio_discount_pct", "15")
+        assert db.filas["socio_discount_pct"] == "15"      # durable
+        assert svc._redis_data["socio_discount_pct"] == "15"  # y en cache
+
+    async def test_redis_vacio_recupera_desde_postgres(self):
+        """El caso que motivó todo: Redis se reinició y quedó sin datos."""
+        db = self._FakeDB({"socio_discount_pct": "15"})
+        svc = self._svc(db, redis_data={})          # Redis vacío
+        cfg = await svc.get_all()
+        assert cfg["socio_discount_pct"] == "15"     # no se perdió
+        # y repobló el cache, para no volver a pegarle a Postgres
+        assert svc._redis_data["socio_discount_pct"] == "15"
+
+    async def test_redis_caido_lee_de_postgres(self):
+        db = self._FakeDB({"socio_discount_pct": "15"})
+        svc = self._svc(db, redis_ok=False)
+        cfg = await svc.get_all()
+        assert cfg["socio_discount_pct"] == "15"
+
+    async def test_redis_manda_cuando_tiene_datos(self):
+        """Con cache poblado no se consulta Postgres: es el camino caliente."""
+        db = self._FakeDB({"socio_discount_pct": "99"})
+        svc = self._svc(db, redis_data={"socio_discount_pct": "15"})
+        cfg = await svc.get_all()
+        assert cfg["socio_discount_pct"] == "15"
+
+    async def test_sin_nada_configurado_usa_defaults(self):
+        from app.services.config_service import DEFAULTS
+        svc = self._svc(self._FakeDB())
+        cfg = await svc.get_all()
+        assert cfg["socio_discount_pct"] == DEFAULTS["socio_discount_pct"]
+
+    async def test_sin_postgres_sigue_funcionando_con_redis(self):
+        """Degradación: sin Postgres el bot no se cae, solo pierde durabilidad."""
+        svc = self._svc(self._FakeDB(disponible=False))
+        await svc.set("socio_discount_pct", "15")
+        cfg = await svc.get_all()
+        assert cfg["socio_discount_pct"] == "15"
+
+    async def test_siembra_postgres_con_lo_que_ya_estaba_en_redis(self):
+        """
+        Al estrenar la persistencia, lo ya configurado vive SOLO en Redis (el
+        descuento en 15%). Si no se copia a Postgres, el próximo reinicio lo
+        pierde igual: la primera hidratación lo rescata.
+        """
+        db = self._FakeDB()                                   # Postgres vacío
+        svc = self._svc(db, redis_data={"socio_discount_pct": "15"})
+        copiadas = await svc.sincronizar_durable()
+        assert copiadas == 1
+        assert db.filas["socio_discount_pct"] == "15"
+
+    async def test_no_pisa_postgres_si_ya_tiene_datos(self):
+        """Postgres es la verdad: una vez que tiene datos, Redis no lo sobreescribe."""
+        db = self._FakeDB({"socio_discount_pct": "20"})
+        svc = self._svc(db, redis_data={"socio_discount_pct": "15"})
+        assert await svc.sincronizar_durable() == 0
+        assert db.filas["socio_discount_pct"] == "20"
+
+    async def test_set_many_persiste_todo(self):
+        db = self._FakeDB()
+        svc = self._svc(db)
+        await svc.set_many({"socio_discount_pct": "15", "pickup_minutes": "45"})
+        assert db.filas["socio_discount_pct"] == "15"
+        assert db.filas["pickup_minutes"] == "45"
+
+
 # ── Estilo humano: sacar los rasgos que delatan que escribió una IA ───────────
 class TestEstiloHumano:
     """
