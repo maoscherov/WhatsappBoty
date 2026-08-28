@@ -571,6 +571,7 @@ class ConfigUpdate(BaseModel):
     handoff_reminder_minutes: str | None = None  # aviso de demora post-derivación ("0" = off)
     handoff_reminder_message: str | None = None
     socio_discount_pct: str | None = None        # "0" = apagado, ej "15"
+    socio_discount_en_catalogo: str | None = None  # "true" = precio bonificado ya al ofrecer
     socio_discount_message: str | None = None    # admite {pct} y {antes}
     socio_discount_info_message: str | None = None   # respuesta fija con descuento activo ({pct})
     socio_discount_off_message: str | None = None    # respuesta fija con descuento apagado

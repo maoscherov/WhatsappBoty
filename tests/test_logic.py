@@ -657,6 +657,93 @@ async def test_link_de_pago_suma_el_carrito():
     assert "$1,600.00" in respuesta
 
 
+class TestDescuentoSocioEnCatalogo:
+    """
+    El socio ve el precio con descuento desde que se le ofrece el producto, no
+    recién en el link. Clave: el descuento se aplica UNA sola vez y arriba de
+    todo, para que el precio con descuento sea el único que circula — si no, la
+    regla "el precio que el bot dice es el que cobra" se rompe.
+    """
+
+    class _FakeSocios:
+        def __init__(self, es_socio=True):
+            self._es_socio = es_socio
+
+        def find_by_phone(self, phone):
+            return {"nombre": "Claudia"} if self._es_socio else None
+
+    CFG = {"socio_discount_pct": "15", "socio_discount_en_catalogo": "true",
+           "receta_mode": "conservador"}
+
+    def _res(self, precio=10000.0, receta="no"):
+        return [{"sku_id": "1", "nombre": "Actron 600", "precio": precio,
+                 "requiere_receta": receta, "vendible": True}]
+
+    def test_socio_ve_el_precio_con_descuento(self):
+        out, pct = ch.aplicar_descuento_socio(
+            self._res(), "549341", self.CFG, socio_svc=self._FakeSocios())
+        assert pct == 15
+        assert out[0]["precio"] == 8500.0
+        assert out[0]["precio_lista"] == 10000.0   # queda el original, para el mensaje
+
+    def test_no_socio_ve_precio_de_lista(self):
+        out, pct = ch.aplicar_descuento_socio(
+            self._res(), "549341", self.CFG, socio_svc=self._FakeSocios(es_socio=False))
+        assert pct == 0
+        assert out[0]["precio"] == 10000.0
+
+    def test_producto_con_receta_no_lleva_descuento(self):
+        """El descuento es para venta libre: los de receta derivan a una persona."""
+        out, _ = ch.aplicar_descuento_socio(
+            self._res(receta="si"), "549341", self.CFG, socio_svc=self._FakeSocios())
+        assert out[0]["precio"] == 10000.0
+
+    def test_descuento_en_cero_no_hace_nada(self):
+        cfg = {**self.CFG, "socio_discount_pct": "0"}
+        out, pct = ch.aplicar_descuento_socio(
+            self._res(), "549341", cfg, socio_svc=self._FakeSocios())
+        assert pct == 0 and out[0]["precio"] == 10000.0
+
+    def test_se_puede_apagar_desde_el_backoffice(self):
+        """Con la config en false vuelve al comportamiento viejo (solo en el link)."""
+        cfg = {**self.CFG, "socio_discount_en_catalogo": "false"}
+        out, pct = ch.aplicar_descuento_socio(
+            self._res(), "549341", cfg, socio_svc=self._FakeSocios())
+        assert pct == 0 and out[0]["precio"] == 10000.0
+
+    def test_no_muta_los_resultados_originales(self):
+        originales = self._res()
+        ch.aplicar_descuento_socio(originales, "549341", self.CFG,
+                                   socio_svc=self._FakeSocios())
+        assert originales[0]["precio"] == 10000.0
+
+    async def test_el_link_cobra_exactamente_lo_ofrecido(self):
+        """
+        El riesgo grande: si el descuento se aplicara también al armar el link,
+        se cobraría 15% menos de lo que el bot dijo. El precio pendiente ya
+        viene con descuento; el link lo respeta tal cual.
+        """
+        from app.services.session_service import SessionService
+        ss = SessionService("redis://127.0.0.1:1")
+        # precio YA con descuento, como queda tras la búsqueda
+        await ss.set_pending("549", sku_id="A1", sku_nombre="Actron",
+                             precio=8500.0, cantidad=1)
+
+        capturado = {}
+
+        class _FakePago:
+            async def crear_link(self, sku_id, nombre, precio, phone, cantidad=1):
+                capturado["precio"] = precio
+                return "https://pago/x", None
+
+        sesion = await ss.get("549")
+        respuesta, link = await ch.crear_link_y_responder(
+            _FakePago(), ss, "549", sesion, "retiro", None)
+        assert link
+        assert capturado["precio"] == 8500.0      # NO 7225 (doble descuento)
+        assert "$8,500.00" in respuesta
+
+
 # ── Un mensaje que arranca con "no" nunca confirma ─────────────────────────────
 @pytest.mark.parametrize("txt", ["no esta bien", "No, está bien", "no sé", "no  mejor otro"])
 def test_empieza_con_no(txt):

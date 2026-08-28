@@ -298,6 +298,57 @@ async def derivar_si_receta(sku_svc, session_svc, cfg: dict, phone: str, sku_id:
     return None
 
 
+def aplicar_descuento_socio(resultados: list[dict], phone: str, cfg: dict,
+                            socio_svc=None) -> tuple[list[dict], float]:
+    """
+    Devuelve (resultados_con_descuento, pct_aplicado) para un socio del padrón.
+
+    Se llama APENAS se buscan los productos, no al armar el link: así el precio
+    con descuento es el único que circula (lo ve el modelo, se matchea contra
+    él la regla del precio, se guarda en el pendiente y llega al pago). Aplicar
+    el descuento en dos lugares cobraría dos veces el mismo beneficio.
+
+    No toca los productos que requieren receta: ésos derivan a una persona y el
+    precio lo resuelve el mostrador. Devuelve copias — no muta el catálogo.
+
+    pct = 0 significa "no se aplicó nada" (no es socio, descuento apagado, o la
+    config `socio_discount_en_catalogo` está en false).
+    """
+    if not resultados:
+        return resultados, 0.0
+    if str(cfg.get("socio_discount_en_catalogo", "true")).lower() != "true":
+        return resultados, 0.0
+    try:
+        pct = float(cfg.get("socio_discount_pct") or 0)
+    except (TypeError, ValueError):
+        pct = 0.0
+    if pct <= 0:
+        return resultados, 0.0
+
+    try:
+        if socio_svc is None:
+            from app.config import get_settings as _gs
+            from app.services.socio_service import get_socio_service as _gss
+            socio_svc = _gss(_gs().socios_path)
+        if not socio_svc.find_by_phone(phone):
+            return resultados, 0.0
+    except Exception as e:
+        logger.warning(f"No se pudo evaluar el descuento de socio para {phone}: {e}")
+        return resultados, 0.0
+
+    modo = cfg.get("receta_mode", "conservador")
+    salida = []
+    for r in resultados:
+        item = dict(r)
+        if not requiere_derivacion(item.get("requiere_receta", "no"), modo):
+            lista = item.get("precio") or 0.0
+            if lista > 0:
+                item["precio_lista"] = lista
+                item["precio"] = round(lista * (1 - pct / 100), 2)
+        salida.append(item)
+    return salida, pct
+
+
 def texto_entrega(tipo: str, direccion: Optional[str]) -> str:
     """Línea que describe la entrega elegida, para el mensaje del link de pago."""
     if tipo == "envio":
@@ -334,8 +385,11 @@ async def crear_link_y_responder(
         sku_link = session["pending_sku_id"]
     total = precio_unitario * cantidad
 
-    # Descuento automático de socio (config socio_discount_pct, 0 = apagado).
-    # Solo llega acá mercadería sin receta (la receta deriva antes).
+    # Descuento de socio: acá NO se recalcula nada. El precio pendiente ya
+    # viene con el descuento aplicado desde la búsqueda (aplicar_descuento_socio),
+    # que es lo que el bot le dijo al cliente. Volver a aplicarlo cobraría dos
+    # veces el beneficio, por debajo del precio ofrecido. Sólo se agrega la
+    # línea que explica el beneficio en el mensaje del link.
     descuento_line = ""
     try:
         from app.config import get_settings as _gs
@@ -345,9 +399,9 @@ async def crear_link_y_responder(
         _cfg = await _gcs(_settings.redis_url).get_all()
         pct = float(_cfg.get("socio_discount_pct") or 0)
         if pct > 0 and _gss(_settings.socios_path).find_by_phone(phone):
-            antes = total
-            precio_unitario = round(precio_unitario * (1 - pct / 100), 2)
-            total = precio_unitario * cantidad
+            # Precio de lista reconstruido desde el total ya bonificado, sólo
+            # para mostrarlo en el mensaje.
+            antes = round(total / (1 - pct / 100), 2) if pct < 100 else total
             plantilla = _cfg.get("socio_discount_message") or ""
             descuento_line = plantilla.replace("{pct}", f"{pct:g}").replace("{antes}", f"{antes:,.2f}")
     except Exception as e:

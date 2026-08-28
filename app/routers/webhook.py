@@ -44,7 +44,7 @@ from app.services.checkout_helper import (
     match_retiro, match_envio, pide_humano, derivar_si_receta, afirma_envio,
     quiere_cambiar_direccion, extraer_direccion_de, contiene_link, pide_pago_manual,
     necesita_receta, pide_foto, quitar_frases_de_espera, pide_receta_nube,
-    pregunta_descuento,
+    pregunta_descuento, aplicar_descuento_socio,
     producto_respaldado, productos_con_precio, parece_direccion,
 )
 
@@ -665,6 +665,22 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
             _ctx_socio = deps["socios"].contexto_para_prompt(phone)
             _socio_data = deps["socios"].find_by_phone(phone)
             _nombre_socio = (_socio_data.get("nombre", "").split() or [""])[0] if _socio_data else ""
+            # Si el socio tiene descuento activo, los precios del catálogo YA
+            # vienen bonificados: el modelo tiene que saberlo para aclararlo al
+            # darlos, y para no volver a descontar por su cuenta.
+            if _ctx_socio:
+                _cfg_socio = await deps["config"].get_all()
+                _pct_cfg = float(_cfg_socio.get("socio_discount_pct") or 0)
+                _en_catalogo = str(
+                    _cfg_socio.get("socio_discount_en_catalogo", "true")).lower() == "true"
+                if _pct_cfg > 0 and _en_catalogo:
+                    _ctx_socio += (
+                        f" | IMPORTANTE: los precios que ves YA tienen aplicado el "
+                        f"{_pct_cfg:g}% de descuento de socio. Cuando digas un precio, "
+                        f"aclaralo en la misma frase (ej: \"sale $8.500, ya con tu "
+                        f"{_pct_cfg:g}% de socio\"). No vuelvas a descontar nada vos, "
+                        f"ni menciones el precio de lista."
+                    )
 
             # ── Control de horario de atención ──────────────────────────────
             hours = await deps["config"].get_hours()
@@ -1206,6 +1222,12 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                         _sku = deps["sku"].get_by_id(m["sku_id"])
                         if _sku:
                             resultados_sku.append(deps["sku"]._to_response(_sku))
+                # Descuento de socio ACÁ: así el precio bonificado es el único
+                # que circula (lo ve el modelo, se matchea con la regla del
+                # precio, queda en el pendiente y llega al link sin recalcular).
+                _cfg_desc = await deps["config"].get_all()
+                resultados_sku, _pct_socio = aplicar_descuento_socio(
+                    resultados_sku, phone, _cfg_desc)
                 _steps["sku_ms"] = int((_time.perf_counter() - _tsku) * 1000)
                 if not resultados_sku:
                     # Nos pidieron algo que no tenemos (ni por texto ni por
@@ -1359,6 +1381,9 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     _lineas_extra = []
                     for _ent2 in _extras:
                         _r2 = deps["sku"].buscar(_ent2)
+                        # Mismo descuento que en la búsqueda principal: estos
+                        # precios también los ve el cliente en el mensaje.
+                        _r2, _ = aplicar_descuento_socio(_r2, phone, _cfg_desc)
                         _top2 = next((r for r in _r2 if r.get("vendible")
                                       and r.get("requiere_receta") not in ("si", "ambiguo")), None)
                         if _top2 and nombre_coincide(_ent2, _top2["nombre"]):

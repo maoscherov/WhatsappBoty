@@ -139,6 +139,11 @@ DEFAULTS: dict[str, str] = {
     # activar cuando la farmacia valide el cruce del padrón. {pct} y {antes}
     # se reemplazan por el porcentaje y el precio sin descuento.
     "socio_discount_pct": "0",
+    # true  = el socio ve el precio ya bonificado desde que se le ofrece el
+    #         producto (y el link cobra ese mismo importe).
+    # false = vuelve al comportamiento viejo: precio de lista en la charla y
+    #         el descuento recién en el link de pago.
+    "socio_discount_en_catalogo": "true",
     "socio_discount_message": (
         "🎉 Por ser socio de la Mutual te aplicamos un {pct}% de descuento "
         "(precio de lista: ${antes})."
