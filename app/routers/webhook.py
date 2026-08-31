@@ -44,7 +44,7 @@ from app.services.checkout_helper import (
     match_retiro, match_envio, pide_humano, derivar_si_receta, afirma_envio,
     quiere_cambiar_direccion, extraer_direccion_de, contiene_link, pide_pago_manual,
     necesita_receta, pide_foto, quitar_frases_de_espera, pide_receta_nube,
-    pregunta_descuento, aplicar_descuento_socio,
+    pregunta_descuento, aplicar_descuento_socio, pide_todos,
     producto_respaldado, productos_con_precio, parece_direccion,
 )
 
@@ -970,6 +970,42 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     await deps["session"].add_message(phone, "assistant", respuesta)
                     continue
 
+                elif pide_todos(texto_lower) and session.get("extras_ofrecidos"):
+                    # "Mandame todos": suma los adicionales que se le mostraron.
+                    # Antes esto cobraba sólo el producto principal y el cliente
+                    # se quedaba esperando el resto (caso real 27/8).
+                    _intencion = "extras_sumados"
+                    _items = await deps["session"].sumar_extras(phone)
+                    _total_ex = sum(i["precio"] * i.get("cantidad", 1) for i in _items)
+                    _lista_ex = "\n".join(
+                        f"• {i['nombre']} — ${i['precio'] * i.get('cantidad', 1):,.2f}"
+                        for i in _items)
+                    respuesta = (f"¡Listo! Tu pedido queda así:\n{_lista_ex}\n\n"
+                                 f"Total: *${_total_ex:,.2f}* — ¿lo confirmamos?")
+                    _ts = _time.perf_counter()
+                    await deps["wa"].send_text(phone, respuesta)
+                    _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
+                    await deps["session"].add_message(phone, "user", texto)
+                    await deps["session"].add_message(phone, "assistant", respuesta)
+                    continue
+
+                elif _es_afirmacion_pura(texto_lower) and session.get("extras_ofrecidos") \
+                        and not session.get("_espera_eleccion"):
+                    # "Sí" pelado habiendo mostrado adicionales: no se sabe si
+                    # quiere sólo el principal o todo. Confirmar de menos deja
+                    # al cliente esperando productos que nadie preparó.
+                    _intencion = "extras_pendientes"
+                    _nombres_ex = ", ".join(e["nombre"] for e in session["extras_ofrecidos"])
+                    respuesta = (f"¿Te sumo también {_nombres_ex}, o querés solo "
+                                 f"{session.get('pending_sku_nombre')}? "
+                                 "Decime \"todos\" si va todo 🙂")
+                    _ts = _time.perf_counter()
+                    await deps["wa"].send_text(phone, respuesta)
+                    _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
+                    await deps["session"].add_message(phone, "user", texto)
+                    await deps["session"].add_message(phone, "assistant", respuesta)
+                    continue
+
                 elif session.get("_espera_eleccion") and _es_afirmacion_pura(texto_lower):
                     # Se mostraron varias opciones y contestó "sí" pelado: no se
                     # sabe cuál quiere — confirmar la primera fue el bug del
@@ -1379,6 +1415,7 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 if _extras:
                     from app.services.sku_service import nombre_coincide
                     _lineas_extra = []
+                    _extras_guardar = []   # los que existen de verdad: sumables
                     for _ent2 in _extras:
                         _r2 = deps["sku"].buscar(_ent2)
                         # Mismo descuento que en la búsqueda principal: estos
@@ -1389,6 +1426,10 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                         if _top2 and nombre_coincide(_ent2, _top2["nombre"]):
                             _lineas_extra.append(
                                 f"• {_ent2}: {_top2['nombre']} — ${_top2['precio']:,.2f}")
+                            _extras_guardar.append({
+                                "sku_id": _top2["sku_id"], "nombre": _top2["nombre"],
+                                "precio": _top2["precio"], "cantidad": 1,
+                            })
                         elif _top2:
                             # Hay algo parecido pero de OTRA marca/producto: se
                             # ofrece como similar, nunca como si fuera lo pedido.
@@ -1402,8 +1443,16 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                             await deps["metrics"].evento("busqueda_sin_resultado", phone=phone,
                                                          dato=" ".join(_ent2.lower().split())[:80])
                     respuesta = quitar_frases_de_espera(respuesta)
-                    respuesta += ("\n\nSobre lo demás que me pediste:\n" + "\n".join(_lineas_extra)
-                                  + "\n\nSi querés sumar alguno al pedido, decime cuál 🙂")
+                    # Se guardan para que el cliente pueda sumarlos después:
+                    # antes eran sólo texto y un "mandame todos" cobraba uno solo.
+                    if _extras_guardar:
+                        await deps["session"].guardar_extras(phone, _extras_guardar)
+                        _cierre_extra = ("\n\nSi querés te los sumo al pedido: decime "
+                                         "\"todos\" o cuál preferís 🙂")
+                    else:
+                        _cierre_extra = "\n\nSi querés sumar alguno al pedido, decime cuál 🙂"
+                    respuesta += ("\n\nSobre lo demás que me pediste:\n"
+                                  + "\n".join(_lineas_extra) + _cierre_extra)
 
                 # Pidió un producto y no hay nada que ofrecerle (no está en el
                 # catálogo o está sin stock): según config, ofrecer consultarlo

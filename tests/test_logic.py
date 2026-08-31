@@ -657,6 +657,90 @@ async def test_link_de_pago_suma_el_carrito():
     assert "$1,600.00" in respuesta
 
 
+class TestExtrasElegibles:
+    """
+    Regresión (caso real 27/8, María Belén): pidió 3 productos, el bot mostró
+    los 3 con precio, ella dijo "Si mándame todos" y el link salió por UNO.
+    Los productos del bloque "Sobre lo demás que me pediste" se mostraban pero
+    no existían para el sistema: eran texto, no productos elegibles.
+    """
+
+    @pytest.mark.parametrize("txt", [
+        "si mandame todos", "mandame todos", "los tres", "quiero todos",
+        "dale, todo", "ambos", "las dos", "todas",
+    ])
+    def test_pide_todos(self, txt):
+        assert ch.pide_todos(txt) is True
+
+    @pytest.mark.parametrize("txt", [
+        "no, todos no", "no quiero todos", "solo el gel", "el serum nada más",
+        "cuánto sale?",
+    ])
+    def test_no_pide_todos(self, txt):
+        assert ch.pide_todos(txt) is False
+
+    async def test_los_extras_quedan_guardados_con_su_precio(self):
+        from app.services.session_service import SessionService
+        ss = SessionService("redis://127.0.0.1:1")
+        extras = [
+            {"sku_id": "S1", "nombre": "Serum Eximia Hydra Mat x30ml", "precio": 59147.20},
+            {"sku_id": "T1", "nombre": "Toallas Antibacteriales Espadol x10u", "precio": 3960.45},
+        ]
+        await ss.guardar_extras("549", extras)
+        s = await ss.get("549")
+        assert len(s["extras_ofrecidos"]) == 2
+        assert s["extras_ofrecidos"][0]["precio"] == 59147.20
+
+    async def test_mandame_todos_suma_todo_y_el_link_cobra_la_suma(self):
+        """El caso exacto que falló: 3 productos pedidos, 3 productos cobrados."""
+        from app.services.session_service import SessionService
+        ss = SessionService("redis://127.0.0.1:1")
+        await ss.set_pending("549", sku_id="G1", sku_nombre="Eximia Aqua Gel",
+                             precio=51214.36, cantidad=1)
+        await ss.guardar_extras("549", [
+            {"sku_id": "S1", "nombre": "Serum Eximia", "precio": 59147.20},
+            {"sku_id": "T1", "nombre": "Toallas Espadol", "precio": 3960.45},
+        ])
+        items = await ss.sumar_extras("549")
+        assert len(items) == 3
+
+        capturado = {}
+
+        class _FakePago:
+            async def crear_link(self, sku_id, nombre, precio, phone, cantidad=1):
+                capturado["precio"] = precio
+                return "https://pago/x", None
+
+        sesion = await ss.get("549")
+        _, link = await ch.crear_link_y_responder(_FakePago(), ss, "549", sesion,
+                                                  "envio", "San Victor 945")
+        assert link
+        esperado = round(51214.36 + 59147.20 + 3960.45, 2)
+        assert round(capturado["precio"], 2) == esperado
+
+    async def test_sumar_extras_los_limpia_para_no_duplicar(self):
+        """Si no se limpian, un segundo "todos" los sumaría dos veces."""
+        from app.services.session_service import SessionService
+        ss = SessionService("redis://127.0.0.1:1")
+        await ss.set_pending("549", sku_id="G1", sku_nombre="Gel", precio=100.0)
+        await ss.guardar_extras("549", [{"sku_id": "S1", "nombre": "Serum", "precio": 200.0}])
+        await ss.sumar_extras("549")
+        assert (await ss.get("549")).get("extras_ofrecidos") == []
+        assert await ss.sumar_extras("549") == []          # no vuelve a sumar
+
+    async def test_los_extras_no_sobreviven_a_la_conversacion(self):
+        """Estado que sobrevive entre charlas: ya nos mordió varias veces."""
+        from app.services.session_service import SessionService
+        ss = SessionService("redis://127.0.0.1:1")
+        await ss.guardar_extras("549", [{"sku_id": "S1", "nombre": "Serum", "precio": 200.0}])
+        await ss.clear_pending("549")
+        assert not (await ss.get("549")).get("extras_ofrecidos")
+
+        await ss.guardar_extras("549", [{"sku_id": "S1", "nombre": "Serum", "precio": 200.0}])
+        await ss.liberar("549")
+        assert not (await ss.get("549")).get("extras_ofrecidos")
+
+
 class TestDescuentoSocioEnCatalogo:
     """
     El socio ve el precio con descuento desde que se le ofrece el producto, no

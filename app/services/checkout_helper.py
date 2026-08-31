@@ -224,6 +224,28 @@ def pide_foto(t: str) -> bool:
     return any(re.search(p, t, re.IGNORECASE) for p in _PIDE_FOTO)
 
 
+_TODOS = [
+    r"\b(todos|todas|todo)\b",
+    r"\blos\s+(dos|tres|cuatro)\b", r"\blas\s+(dos|tres|cuatro)\b",
+    r"\bambos\b", r"\bambas\b",
+]
+
+
+def pide_todos(t: str) -> bool:
+    """
+    True si el cliente quiere TODOS los productos ofrecidos ("mandame todos",
+    "los tres", "ambos").
+
+    Regresión (27/8): pidió tres productos, dijo "Si mándame todos" y el link
+    salió por uno. Un mensaje que arranca con "no" nunca cuenta como pedido de
+    todo — "no, todos no" es lo contrario.
+    """
+    texto = t or ""
+    if re.match(r"^\s*no\b", texto, re.IGNORECASE):
+        return False
+    return any(re.search(p, texto, re.IGNORECASE) for p in _TODOS)
+
+
 _RECETA_NUBE = [
     r"\breceta\w*\b.{0,40}\b(nube|sistema|cargad\w+|electr[oó]nic\w+)",
     r"\b(nube|sistema)\b.{0,40}\breceta",

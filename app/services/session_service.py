@@ -117,6 +117,43 @@ class SessionService:
         await self.save(phone, session)
         return items
 
+    async def guardar_extras(self, phone: str, extras: list[dict]):
+        """
+        Guarda los productos ADICIONALES que se le mostraron al cliente
+        ("Sobre lo demás que me pediste"), para que pueda sumarlos después.
+
+        Antes se mostraban con nombre y precio pero no se guardaban en ningún
+        lado: eran texto, no productos. Un "mandame todos" terminaba cobrando
+        sólo el producto principal (caso real 27/8).
+        """
+        session = await self.get(phone)
+        session["extras_ofrecidos"] = extras
+        await self.save(phone, session)
+
+    async def sumar_extras(self, phone: str) -> list[dict]:
+        """
+        Suma al pedido todos los adicionales ofrecidos y los limpia (si no, un
+        segundo "todos" los cobraría dos veces). Devuelve el carrito completo.
+        """
+        session = await self.get(phone)
+        extras = session.get("extras_ofrecidos") or []
+        if not extras:
+            return []
+        items = session.get("pending_items") or []
+        if not items and session.get("pending_sku_id"):
+            items = [{"sku_id": session["pending_sku_id"],
+                      "nombre": session["pending_sku_nombre"],
+                      "precio": session["pending_precio"],
+                      "cantidad": session.get("pending_cantidad", 1)}]
+        for e in extras:
+            items.append({"sku_id": e["sku_id"], "nombre": e["nombre"],
+                          "precio": e["precio"], "cantidad": e.get("cantidad", 1)})
+        session["pending_items"] = items
+        session["extras_ofrecidos"] = []
+        session["estado"] = "esperando_confirmacion"
+        await self.save(phone, session)
+        return items
+
     async def clear_pending(self, phone: str):
         session = await self.get(phone)
         session.update({
@@ -126,6 +163,7 @@ class SessionService:
             "pending_cantidad": 1,
             "pending_opciones": [],
             "pending_items": [],
+            "extras_ofrecidos": [],
             "estado": "idle",
             "tipo_entrega": None,
             "direccion_envio": None,
@@ -312,7 +350,8 @@ class SessionService:
         session = await self.get(phone)
         session["estado"] = "idle"
         for k in ("derivada_at", "derivada_motivo", "_handoff_avisado", "agente",
-                  "_conv_inicio", "_negativos", "derivacion_ofrecida"):
+                  "_conv_inicio", "_negativos", "derivacion_ofrecida",
+                  "extras_ofrecidos"):
             session.pop(k, None)
         await self.save(phone, session)
 
