@@ -728,6 +728,53 @@ class TestExtrasElegibles:
         assert (await ss.get("549")).get("extras_ofrecidos") == []
         assert await ss.sumar_extras("549") == []          # no vuelve a sumar
 
+    async def test_reseleccionar_el_mismo_producto_no_pisa_el_carrito(self):
+        """
+        Regresión (caso real 31/8, María Belén): dijo "Todos" (carrito de 3),
+        al confirmar el modelo re-eligió el MISMO producto principal y
+        set_pending arrancó el carrito de cero — el link cobró $51.214 en vez
+        de $104.855. Re-seleccionar el mismo SKU conserva el carrito.
+        """
+        from app.services.session_service import SessionService
+        ss = SessionService("redis://127.0.0.1:1")
+        await ss.set_pending("549", sku_id="G1", sku_nombre="Eximia Aqua Gel",
+                             precio=51214.36, cantidad=1)
+        await ss.guardar_extras("549", [
+            {"sku_id": "S1", "nombre": "Serum Eximia", "precio": 50275.12, "cantidad": 1},
+            {"sku_id": "T1", "nombre": "Toallas Espadol", "precio": 3366.38, "cantidad": 1},
+        ])
+        await ss.sumar_extras("549")
+        # El modelo re-selecciona el índice del MISMO producto principal
+        await ss.set_pending("549", sku_id="G1", sku_nombre="Eximia Aqua Gel",
+                             precio=51214.36, cantidad=1)
+        s = await ss.get("549")
+        assert len(s["pending_items"]) == 3            # el carrito sobrevive
+
+    async def test_elegir_otro_producto_si_resetea_el_carrito(self):
+        """La regla original sigue: un producto DISTINTO arranca de cero."""
+        from app.services.session_service import SessionService
+        ss = SessionService("redis://127.0.0.1:1")
+        await ss.set_pending("549", sku_id="G1", sku_nombre="Gel", precio=100.0)
+        await ss.agregar_item("549", "S1", "Serum", 200.0, 1)
+        await ss.set_pending("549", sku_id="X9", sku_nombre="Otro", precio=50.0)
+        s = await ss.get("549")
+        assert len(s["pending_items"]) == 1
+        assert s["pending_items"][0]["sku_id"] == "X9"
+
+    async def test_reseleccion_con_cantidad_nueva_actualiza_el_principal(self):
+        """"Sí, pero que sean 2" sobre el mismo producto: cambia la cantidad,
+        no pierde el resto del carrito."""
+        from app.services.session_service import SessionService
+        ss = SessionService("redis://127.0.0.1:1")
+        await ss.set_pending("549", sku_id="G1", sku_nombre="Gel", precio=100.0, cantidad=1)
+        await ss.agregar_item("549", "S1", "Serum", 200.0, 1)
+        await ss.set_pending("549", sku_id="G1", sku_nombre="Gel", precio=100.0, cantidad=2)
+        s = await ss.get("549")
+        assert len(s["pending_items"]) == 2
+        principal = next(i for i in s["pending_items"] if i["sku_id"] == "G1")
+        assert principal["cantidad"] == 2
+        assert s["pending_cantidad"] == 2
+
     async def test_los_extras_no_sobreviven_a_la_conversacion(self):
         """Estado que sobrevive entre charlas: ya nos mordió varias veces."""
         from app.services.session_service import SessionService
@@ -739,6 +786,31 @@ class TestExtrasElegibles:
         await ss.guardar_extras("549", [{"sku_id": "S1", "nombre": "Serum", "precio": 200.0}])
         await ss.liberar("549")
         assert not (await ss.get("549")).get("extras_ofrecidos")
+
+
+class TestTextoDeictico:
+    """
+    Regresión (caso real 31/8): mandó una FOTO de tres productos y el texto
+    "Necesito esos productos". El texto llegó primero, el bot preguntó
+    "¿podrías especificar?" y un segundo después la imagen respondió todo.
+    Si en el mismo lote hay imagen + texto que solo señala ("esos productos"),
+    el texto se descarta: la imagen ES el pedido.
+    """
+
+    @pytest.mark.parametrize("txt", [
+        "Necesito esos productos", "quiero estos", "esos", "eso",
+        "me mandás esos productos?", "los de la foto", "dame estas cosas",
+        "necesito los productos de la foto",
+    ])
+    def test_es_deictico(self, txt):
+        assert ch.texto_deictico(txt) is True
+
+    @pytest.mark.parametrize("txt", [
+        "necesito ibuprofeno", "quiero el serum eximia", "esos precios están bien?",
+        "hola", "cuánto sale el gel?", "necesito esos productos y también un tafirol",
+    ])
+    def test_no_es_deictico(self, txt):
+        assert ch.texto_deictico(txt) is False
 
 
 class TestDescuentoSocioEnCatalogo:

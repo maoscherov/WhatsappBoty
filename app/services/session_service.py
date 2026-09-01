@@ -81,15 +81,28 @@ class SessionService:
     async def set_pending(self, phone: str, sku_id: str, sku_nombre: str, precio: float,
                           cantidad: int = 1, opciones: list | None = None):
         session = await self.get(phone)
+        cant = max(1, int(cantidad))
+
+        # Un pending nuevo arranca el carrito de cero (reemplaza, no suma) —
+        # SALVO que sea el MISMO producto que ya era el principal: el modelo a
+        # veces re-selecciona el índice del producto vigente al confirmar, y
+        # resetear ahí pisó un carrito de 3 ítems y el link cobró uno solo
+        # (caso real 31/8: $51.214 en vez de $104.855).
+        items_previos = session.get("pending_items") or []
+        if sku_id == session.get("pending_sku_id") and len(items_previos) > 1:
+            items = [dict(i, cantidad=cant, precio=precio) if i.get("sku_id") == sku_id else i
+                     for i in items_previos]
+        else:
+            items = [{"sku_id": sku_id, "nombre": sku_nombre,
+                      "precio": precio, "cantidad": cant}]
+
         session.update({
             "pending_sku_id": sku_id,
             "pending_sku_nombre": sku_nombre,
             "pending_precio": precio,
-            "pending_cantidad": max(1, int(cantidad)),
+            "pending_cantidad": cant,
             "pending_opciones": opciones if opciones is not None else session.get("pending_opciones", []),
-            # Un pending nuevo arranca el carrito de cero (reemplaza, no suma)
-            "pending_items": [{"sku_id": sku_id, "nombre": sku_nombre,
-                               "precio": precio, "cantidad": max(1, int(cantidad))}],
+            "pending_items": items,
             "estado": "esperando_confirmacion",
         })
         # Elegir un producto concreto levanta la espera de elección de opciones

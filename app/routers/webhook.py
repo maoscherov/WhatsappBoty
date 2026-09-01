@@ -44,7 +44,7 @@ from app.services.checkout_helper import (
     match_retiro, match_envio, pide_humano, derivar_si_receta, afirma_envio,
     quiere_cambiar_direccion, extraer_direccion_de, contiene_link, pide_pago_manual,
     necesita_receta, pide_foto, quitar_frases_de_espera, pide_receta_nube,
-    pregunta_descuento, aplicar_descuento_socio, pide_todos,
+    pregunta_descuento, aplicar_descuento_socio, pide_todos, texto_deictico,
     producto_respaldado, productos_con_precio, parece_direccion,
 )
 
@@ -548,6 +548,20 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
     """
     _s = get_settings()
     deps = _deps(_s)
+
+    # Foto + texto que solo señala ("Necesito esos productos") en el mismo
+    # lote: el texto se descarta — la imagen ES el pedido. Procesarlos por
+    # separado hacía que el texto (que suele llegar primero) recibiera un
+    # "¿podrías especificar?" un segundo antes de que la imagen respondiera
+    # todo (caso real 31/8).
+    _phones_con_imagen = {m["from"] for m in messages if m.get("type") == "image"}
+    if _phones_con_imagen:
+        _descartados = [m for m in messages
+                        if m.get("type") == "text" and m["from"] in _phones_con_imagen
+                        and texto_deictico(m.get("text") or "")]
+        for _d in _descartados:
+            logger.info(f"Texto deíctico descartado (viene con imagen): {_d.get('text')!r}")
+        messages = [m for m in messages if m not in _descartados]
 
     for msg in messages:
         phone   = msg["from"]

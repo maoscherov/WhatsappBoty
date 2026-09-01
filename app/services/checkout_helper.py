@@ -224,6 +224,34 @@ def pide_foto(t: str) -> bool:
     return any(re.search(p, t, re.IGNORECASE) for p in _PIDE_FOTO)
 
 
+# Texto que solo SEÑALA ("necesito esos productos", "los de la foto") sin
+# nombrar nada. Solo, no dice qué quiere el cliente — la referencia es una
+# imagen. Palabras funcionales alrededor permitidas; cualquier sustantivo
+# concreto ("...y un tafirol") lo saca de esta categoría.
+_DEICTICO_RE = re.compile(
+    r"^\s*(?:hola[,!\s]*)?"
+    r"(?:necesito|quiero|dame|me\s+(?:das|mand[aá]s|env[ií][aá]s)|te\s+encargo)?\s*"
+    r"(?:esos?|estos?|esas?|estas?|eso|aquellos?)\s*"
+    r"(?:productos?|art[ií]culos?|cosas?|[ií]tems?)?\s*"
+    r"(?:de\s+la\s+foto|que\s+te\s+mand[eé])?\s*[?!.]*\s*$"
+    r"|^\s*(?:necesito\s+|quiero\s+|dame\s+)?los\s+(?:productos\s+)?de\s+la\s+foto\s*[?!.]*\s*$",
+    re.IGNORECASE,
+)
+
+
+def texto_deictico(t: str) -> bool:
+    """
+    True si el mensaje solo señala productos sin nombrarlos ("esos productos").
+
+    Caso real (31/8): la foto de los productos y este texto llegan como dos
+    mensajes; el texto suele llegar primero (la imagen tarda en subir) y el
+    bot preguntaba "¿podrías especificar?" un segundo antes de responder todo
+    con la imagen. Si el lote trae imagen + texto deíctico, el texto se
+    descarta: la imagen es el pedido.
+    """
+    return bool(_DEICTICO_RE.match(t or ""))
+
+
 _TODOS = [
     r"\b(todos|todas|todo)\b",
     r"\blos\s+(dos|tres|cuatro)\b", r"\blas\s+(dos|tres|cuatro)\b",
