@@ -364,7 +364,7 @@ class SessionService:
         session["estado"] = "idle"
         for k in ("derivada_at", "derivada_motivo", "_handoff_avisado", "agente",
                   "_conv_inicio", "_negativos", "derivacion_ofrecida",
-                  "extras_ofrecidos"):
+                  "extras_ofrecidos", "receta_info"):
             session.pop(k, None)
         await self.save(phone, session)
 

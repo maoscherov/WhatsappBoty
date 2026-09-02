@@ -180,6 +180,9 @@ async def bo_derivadas(_=Depends(_auth)):
             "agente": s.get("agente"),
             "pedidos_pendientes": pendientes.get(phone, 0),
             "ultimo_mensaje": (ultimo[:80] + "…") if ultimo and len(ultimo) > 80 else ultimo,
+            # OCR de la receta (si receta_ocr_enabled): paciente, medicamento,
+            # candidatos del catálogo y cruce con el padrón — todo para operar.
+            "receta_info": s.get("receta_info"),
         })
     derivadas.sort(key=lambda d: d.get("derivada_at") or 0, reverse=True)
     return {"count": len(derivadas), "derivadas": derivadas}
@@ -570,6 +573,7 @@ class ConfigUpdate(BaseModel):
     inactivity_close_message_pago: str | None = None
     handoff_reminder_minutes: str | None = None  # aviso de demora post-derivación ("0" = off)
     handoff_reminder_message: str | None = None
+    receta_ocr_enabled: str | None = None        # "true" = leer recetas al derivar
     socio_discount_pct: str | None = None        # "0" = apagado, ej "15"
     socio_discount_en_catalogo: str | None = None  # "true" = precio bonificado ya al ofrecer
     socio_discount_message: str | None = None    # admite {pct} y {antes}

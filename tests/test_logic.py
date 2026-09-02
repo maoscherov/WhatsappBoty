@@ -788,6 +788,105 @@ class TestExtrasElegibles:
         assert not (await ss.get("549")).get("extras_ofrecidos")
 
 
+class TestRecetaOcr:
+    """
+    OCR de recetas (activable con receta_ocr_enabled): al derivar una receta,
+    el operador ve en el backoffice paciente, medicamento, el candidato del
+    catálogo con precio/stock y si es socio — sin pedirle nada al cliente.
+    """
+
+    OCR = {
+        "paciente": "Silvia Beatriz Zamponi", "dni": "30561218",
+        "obra_social": "Prevención Salud", "nro_afiliado": "46381800011",
+        "plan": "A2", "droga": "etinilestradiol, drospirenona",
+        "producto_sugerido": "Yasminelle", "presentacion": "comp.rec.x 28",
+        "diagnostico": "Anticonceptivos orales", "nro_receta": "1369946",
+        "vigencia": "27/08/2026", "medico": "Dr. Pietrobon Diego F.",
+        "matricula": "MP 13.359",
+    }
+
+    def test_parse_receta_completa_y_con_campos_faltantes(self):
+        from app.services.image_service import _parse_receta
+        import json as _json
+        completo = _parse_receta(_json.dumps(self.OCR))
+        assert completo["dni"] == "30561218"
+        assert completo["producto_sugerido"] == "Yasminelle"
+        parcial = _parse_receta('{"droga": "ibuprofeno"}')   # manuscrita ilegible
+        assert parcial["droga"] == "ibuprofeno"
+        assert parcial["dni"] == ""                           # faltante → vacío
+        assert _parse_receta("no soy json") is None
+
+    def test_find_by_dni(self, tmp_path):
+        from app.services.socio_service import SocioService
+        p = tmp_path / "padron.csv"
+        p.write_text("APELLIDO,NOMBRE,DNI,SOCIO,CELULAR,DOMICILIO\n"
+                     "Zamponi,Silvia,30561218,4638,3415551234,San Victor 945\n",
+                     encoding="utf-8")
+        svc = SocioService(str(p))
+        assert svc.find_by_dni("30561218")["nombre"] == "Silvia"
+        assert svc.find_by_dni("30.561.218")["nombre"] == "Silvia"   # con puntos
+        assert svc.find_by_dni("99999999") is None
+        assert svc.find_by_dni("") is None
+
+    def test_armar_receta_info_cruza_catalogo_y_padron(self, tmp_path):
+        from app.services.receta_ocr import armar_receta_info
+        from app.services.socio_service import SocioService
+
+        class _FakeSku:
+            def buscar(self, q, top_n=3):
+                if "yasminelle" in q.lower():
+                    return [{"sku_id": "Y1", "nombre": "YASMINELLE COM x 28",
+                             "precio": 25000.0, "estado": "disponible",
+                             "requiere_receta": "si"}]
+                return []
+
+        p = tmp_path / "padron.csv"
+        p.write_text("APELLIDO,NOMBRE,DNI,SOCIO,CELULAR,DOMICILIO\n"
+                     "Zamponi,Silvia,30561218,4638,3415551234,San Victor 945\n",
+                     encoding="utf-8")
+        socios = SocioService(str(p))
+
+        info = armar_receta_info(self.OCR, _FakeSku(), socios, "5493415551234")
+        assert info["ocr"]["producto_sugerido"] == "Yasminelle"
+        assert info["candidatos_catalogo"][0]["sku_id"] == "Y1"
+        assert info["socio_por_dni"]["nombre"] == "Silvia Zamponi"
+        assert info["dni_coincide_padron"] is True
+
+    def test_armar_receta_info_busca_por_droga_si_no_hay_sugerido(self):
+        from app.services.receta_ocr import armar_receta_info
+
+        class _FakeSku:
+            def __init__(self):
+                self.queries = []
+
+            def buscar(self, q, top_n=3):
+                self.queries.append(q)
+                if "drospirenona" in q.lower():
+                    return [{"sku_id": "D1", "nombre": "DROSPIRENONA GEN",
+                             "precio": 1.0, "estado": "disponible",
+                             "requiere_receta": "si"}]
+                return []
+
+        class _SinPadron:
+            def find_by_phone(self, p): return None
+            def find_by_dni(self, d): return None
+
+        ocr = dict(self.OCR, producto_sugerido="")
+        info = armar_receta_info(ocr, _FakeSku(), _SinPadron(), "549341")
+        assert info["candidatos_catalogo"][0]["sku_id"] == "D1"
+        assert info["socio_por_dni"] is None
+        assert info["dni_coincide_padron"] is False
+
+    async def test_receta_info_se_limpia_al_liberar(self):
+        from app.services.session_service import SessionService
+        ss = SessionService("redis://127.0.0.1:1")
+        s = await ss.get("549")
+        s["receta_info"] = {"ocr": {"dni": "123"}}
+        await ss.save("549", s)
+        await ss.liberar("549")
+        assert "receta_info" not in await ss.get("549")
+
+
 class TestTextoDeictico:
     """
     Regresión (caso real 31/8): mandó una FOTO de tres productos y el texto

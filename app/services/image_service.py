@@ -36,6 +36,38 @@ _PROMPT = (
 )
 
 
+_CAMPOS_RECETA = ("paciente", "dni", "obra_social", "nro_afiliado", "plan",
+                  "droga", "producto_sugerido", "presentacion", "diagnostico",
+                  "nro_receta", "vigencia", "medico", "matricula")
+
+_PROMPT_RECETA = (
+    "Esta imagen es una receta médica argentina (impresa, electrónica o "
+    "manuscrita). Extraé los datos que se lean con claridad.\n"
+    "Respondé SOLO con un JSON (sin texto extra) con este esquema — dejá en "
+    "\"\" todo campo que no se lea o no figure, NUNCA inventes un dato:\n"
+    "{" + ", ".join(f'"{c}": ""' for c in _CAMPOS_RECETA) + "}\n\n"
+    "- paciente: nombre y apellido del paciente.\n"
+    "- dni: solo los dígitos, sin puntos.\n"
+    "- droga: el principio activo prescripto (puede haber más de uno, separados "
+    "por coma).\n"
+    "- producto_sugerido: la marca comercial si figura (ej: 'Yasminelle').\n"
+    "- presentacion: forma y cantidad (ej: 'comp.rec.x 28').\n"
+    "- vigencia: la fecha de inicio de vigencia o de confección."
+)
+
+
+def _parse_receta(raw: str) -> Optional[dict]:
+    """JSON del OCR → dict con TODAS las claves (vacías si faltan), o None."""
+    match = re.search(r"\{.*\}", raw or "", re.DOTALL)
+    if not match:
+        return None
+    try:
+        data = json.loads(match.group())
+    except json.JSONDecodeError:
+        return None
+    return {c: str(data.get(c) or "").strip() for c in _CAMPOS_RECETA}
+
+
 class ImageService:
     def __init__(self, anthropic_key: str, openai_key: str = "", provider: str = "anthropic"):
         self._provider = provider if provider in ("anthropic", "openai") else "anthropic"
@@ -115,6 +147,53 @@ class ImageService:
         """Compatibilidad: devuelve los medicamentos como texto, o None."""
         res = await self.analizar(image_bytes, media_type)
         return res["items"] or None
+
+    async def leer_receta(self, image_bytes: bytes,
+                          media_type: str = "image/jpeg") -> Optional[dict]:
+        """
+        OCR estructurado de una receta (activable con receta_ocr_enabled):
+        extrae paciente, DNI, medicamento, obra social, etc. para que el
+        operador tenga todo en el backoffice al recibir la derivación.
+
+        Best-effort: ante cualquier fallo devuelve None y la derivación sigue
+        como siempre. Estos datos van SOLO al backoffice, nunca al prompt del
+        modelo conversacional (misma política que el DNI del padrón).
+        """
+        b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
+        orden = [self._provider, "anthropic" if self._provider == "openai" else "openai"]
+        for prov in orden:
+            cliente = self._anthropic if prov == "anthropic" else self._openai
+            if not cliente:
+                continue
+            try:
+                if prov == "anthropic":
+                    r = await self._anthropic.messages.create(
+                        model=_VISION_MODELS["anthropic"], max_tokens=512,
+                        messages=[{"role": "user", "content": [
+                            {"type": "image", "source": {"type": "base64",
+                             "media_type": media_type, "data": b64}},
+                            {"type": "text", "text": _PROMPT_RECETA},
+                        ]}],
+                    )
+                    raw = r.content[0].text if getattr(r, "content", None) else ""
+                else:
+                    r = await self._openai.chat.completions.create(
+                        model=_VISION_MODELS["openai"], max_tokens=512,
+                        response_format={"type": "json_object"},
+                        messages=[{"role": "user", "content": [
+                            {"type": "text", "text": _PROMPT_RECETA},
+                            {"type": "image_url",
+                             "image_url": {"url": f"data:{media_type};base64,{b64}"}},
+                        ]}],
+                    )
+                    raw = r.choices[0].message.content or ""
+                parsed = _parse_receta(raw)
+                if parsed:
+                    return parsed
+            except Exception as e:
+                logger.warning(f"💥 OCR receta {prov} falló [{type(e).__name__}]: "
+                               f"{str(e)[:200]} — probando fallback")
+        return None
 
 
 _instance: Optional[ImageService] = None

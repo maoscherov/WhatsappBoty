@@ -138,6 +138,10 @@ DEFAULTS: dict[str, str] = {
     # Descuento automático de socio (compras sin receta). 0 = desactivado —
     # activar cuando la farmacia valide el cruce del padrón. {pct} y {antes}
     # se reemplazan por el porcentaje y el precio sin descuento.
+    # OCR de recetas: al derivar una receta por foto, leerla (visión) y dejar
+    # en el backoffice paciente, medicamento, candidato del catálogo y cruce
+    # con el padrón. Apagado hasta que la farmacia lo pruebe.
+    "receta_ocr_enabled": "false",
     "socio_discount_pct": "0",
     # true  = el socio ve el precio ya bonificado desde que se le ofrece el
     #         producto (y el link cobra ese mismo importe).

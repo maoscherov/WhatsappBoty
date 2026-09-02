@@ -47,6 +47,7 @@ class SocioService:
         # Índices por sufijo de teléfono
         self._por_tel_10: dict[str, dict] = {}
         self._por_tel_8: dict[str, dict] = {}
+        self._por_dni: dict[str, dict] = {}
         self._load()
 
     @property
@@ -88,6 +89,7 @@ class SocioService:
         self._socios = []
         self._por_tel_10.clear()
         self._por_tel_8.clear()
+        self._por_dni.clear()
 
         for _, row in df.iterrows():
             celular = _solo_digitos(row.get(colmap["celular"]))
@@ -105,6 +107,8 @@ class SocioService:
             self._socios.append(socio)
             self._por_tel_10[celular[-10:]] = socio
             self._por_tel_8[celular[-8:]] = socio
+            if socio["dni"]:
+                self._por_dni[socio["dni"]] = socio
 
         logger.info(f"Padrón de socios cargado: {self.total} socios desde {p}")
 
@@ -116,6 +120,16 @@ class SocioService:
         if len(digitos) >= 8 and digitos[-8:] in self._por_tel_8:
             return self._por_tel_8[digitos[-8:]]
         return None
+
+    def find_by_dni(self, dni: str) -> Optional[dict]:
+        """
+        Busca un socio por DNI (acepta con o sin puntos). Se usa para cruzar
+        la receta que llega por foto contra el padrón: la receta puede ser de
+        otra persona que el teléfono que la manda (una madre por su hija).
+        Estos datos van SOLO al backoffice, nunca al prompt.
+        """
+        digitos = _solo_digitos(dni)
+        return self._por_dni.get(digitos) if digitos else None
 
     def contexto_para_prompt(self, phone: str) -> Optional[str]:
         """

@@ -650,6 +650,27 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     _intencion = f"imagen_{img['tipo']}"
                     await deps["session"].set_estado(phone, "operador",
                                                      motivo="receta_foto" if img["tipo"] == "receta" else "credencial")
+
+                    # OCR de la receta (activable): el operador recibe en el
+                    # backoffice paciente, medicamento, candidato del catálogo
+                    # y cruce con el padrón. Best-effort: si falla, la
+                    # derivación sale igual. Estos datos NUNCA van al prompt.
+                    if img["tipo"] == "receta":
+                        try:
+                            _cfg_ocr = await deps["config"].get_all()
+                            if str(_cfg_ocr.get("receta_ocr_enabled", "false")).lower() == "true":
+                                _tocr = _time.perf_counter()
+                                _ocr = await deps["image"].leer_receta(image_bytes, mime)
+                                if _ocr:
+                                    from app.services.receta_ocr import armar_receta_info
+                                    _info = armar_receta_info(
+                                        _ocr, deps["sku"], deps["socios"], phone)
+                                    _sesion_ocr = await deps["session"].get(phone)
+                                    _sesion_ocr["receta_info"] = _info
+                                    await deps["session"].save(phone, _sesion_ocr)
+                                _steps["ocr_ms"] = int((_time.perf_counter() - _tocr) * 1000)
+                        except Exception as e:
+                            logger.warning(f"OCR de receta falló para {phone}: {e}")
                     que = "la receta" if img["tipo"] == "receta" else "la credencial"
                     respuesta = (
                         f"Recibí {que} 🙌. Para gestionarla te paso con alguien del equipo, "
