@@ -208,6 +208,35 @@ def quitar_frases_de_espera(texto: str) -> str:
     return limpio if limpio else (texto or "")
 
 
+# Anuncios de compra/confirmación que SOLO puede hacer el sistema (cuando arma
+# el carrito o genera el link). El modelo declaró "tu pedido queda confirmado
+# ... ¡gracias por tu compra!" arrastrando el contexto de una charla vieja
+# (caso real 1/9) — si estas frases vienen de él, se recorta la oración.
+_CONFIRMACION_FANTASMA = re.compile(
+    r"(?:^|(?<=[.!?…]))[^.!?…$]*"
+    r"\b(?:(?:pedido|compra)[^.!?…$]{0,30}confirmad\w+|"
+    r"queda(?:r[aá])?\s+confirmad\w+|"
+    r"gracias\s+por\s+tu\s+compra|"
+    r"compra\s+(?:realizada|exitosa)|"
+    r"te\s+esperamos\b[^.!?…$]{0,40}\bretirar\w*)"
+    r"[^.!?…$]*[.!?…]?",
+    re.IGNORECASE,
+)
+
+
+def quitar_confirmaciones_fantasma(texto: str) -> str:
+    """
+    Recorta oraciones donde el modelo anuncia una compra o confirmación que el
+    sistema no hizo. Las oraciones con importes nunca se tocan (el precio que
+    el bot dice es el que cobra), y si el resultado queda vacío se devuelve el
+    original — mejor un anuncio de más que un bot mudo.
+    """
+    protegido = re.sub(r"(?<=\d)\.(?=\d)", "\x00", texto or "")
+    limpio = _CONFIRMACION_FANTASMA.sub(" ", protegido)
+    limpio = re.sub(r"\s{2,}", " ", limpio).strip().replace("\x00", ".")
+    return limpio if limpio else (texto or "")
+
+
 _PIDE_FOTO = [
     r"\b(mand|pas|env[ií]|ten[eé]|hay|ver|mostr|sac)\w*\b.{0,25}\b(foto|fotos|imagen|im[aá]genes)\b",
     r"\b(foto|fotos|imagen|im[aá]genes)\b.{0,25}\b(mand|pas|env[ií]|ten[eé]|mostr)\w*\b",

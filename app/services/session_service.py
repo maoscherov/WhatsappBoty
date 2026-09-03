@@ -22,6 +22,21 @@ SESSION_TTL = 60 * 60 * 25     # red de seguridad — debe superar las 24hs del 
 INACTIVITY_CLOSE = 60 * 15     # inactividad que dispara el cierre con aviso
 MAX_HISTORY = 10
 
+def contexto_vencido(session: dict, minutos: int) -> bool:
+    """
+    True si la charla lleva demasiado tiempo parada y el próximo mensaje debe
+    arrancar de cero (caso real 1/9: la sesión con link pendiente vive 24hs,
+    María volvió al día siguiente y el modelo "confirmó" el pedido de ayer).
+
+    Las derivadas a operador NUNCA se reinician solas: las maneja el humano.
+    minutos=0 apaga el reinicio.
+    """
+    if not minutos or session.get("estado") == "operador":
+        return False
+    last = session.get("_last_activity")
+    return bool(last) and (time.time() - float(last)) >= minutos * 60
+
+
 _EMPTY_SESSION = lambda: {
     "history": [],
     "pending_sku_id": None,
@@ -365,6 +380,26 @@ class SessionService:
         for k in ("derivada_at", "derivada_motivo", "_handoff_avisado", "agente",
                   "_conv_inicio", "_negativos", "derivacion_ofrecida",
                   "extras_ofrecidos", "receta_info"):
+            session.pop(k, None)
+        await self.save(phone, session)
+
+    async def reiniciar_contexto(self, phone: str):
+        """
+        Arranca la charla de cero tras una pausa larga: historial vacío y sin
+        pedido pendiente. El link de pago ya enviado sigue siendo válido (el
+        pago entra por el webhook de MP, no depende de la sesión); lo único
+        que se corta es que la charla de ayer contamine la de hoy.
+        """
+        session = await self.get(phone)
+        session["history"] = []
+        session.update({
+            "pending_sku_id": None, "pending_sku_nombre": None,
+            "pending_precio": None, "pending_cantidad": 1,
+            "pending_opciones": [], "pending_items": [],
+            "estado": "idle", "tipo_entrega": None, "direccion_envio": None,
+        })
+        for k in ("_espera_eleccion", "extras_ofrecidos", "derivacion_ofrecida",
+                  "_conv_inicio", "_negativos", "receta_info"):
             session.pop(k, None)
         await self.save(phone, session)
 

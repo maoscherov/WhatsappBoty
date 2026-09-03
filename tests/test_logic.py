@@ -788,6 +788,77 @@ class TestExtrasElegibles:
         assert not (await ss.get("549")).get("extras_ofrecidos")
 
 
+class TestContextoFresco:
+    """
+    Regresión (caso real 1/9, María): volvió al día siguiente (~22hs después,
+    sesión viva por el link pendiente de 24hs) con un pedido nuevo, y el
+    modelo — con todo el historial de ayer — respondió "Tu pedido queda
+    confirmado para retirar en sucursal... ¡Gracias por tu compra!" sin que
+    exista tal pedido. Tras una pausa larga, la charla arranca de cero.
+    """
+
+    def test_contexto_vencido(self):
+        import time
+        from app.services.session_service import contexto_vencido
+        vieja = {"_last_activity": time.time() - 3 * 3600, "estado": "esperando_pago"}
+        assert contexto_vencido(vieja, minutos=120) is True
+        reciente = {"_last_activity": time.time() - 600, "estado": "esperando_pago"}
+        assert contexto_vencido(reciente, minutos=120) is False
+        # Derivadas a una persona NUNCA se reinician solas: las maneja el humano
+        operador = {"_last_activity": time.time() - 9 * 3600, "estado": "operador"}
+        assert contexto_vencido(operador, minutos=120) is False
+        assert contexto_vencido({}, minutos=120) is False       # sesión nueva
+        assert contexto_vencido(vieja, minutos=0) is False      # 0 = apagado
+
+    async def test_reiniciar_contexto_limpia_charla_y_pedido_viejo(self):
+        import time
+        from app.services.session_service import SessionService
+        ss = SessionService("redis://127.0.0.1:1")
+        await ss.set_pending("549", sku_id="G1", sku_nombre="Gel", precio=100.0)
+        s = await ss.get("549")
+        s["history"] = [{"role": "user", "content": "todos", "ts": time.time()}]
+        s["estado"] = "esperando_pago"
+        s["_espera_eleccion"] = True
+        await ss.save("549", s)
+
+        await ss.reiniciar_contexto("549")
+        s2 = await ss.get("549")
+        assert s2["history"] == []
+        assert s2["pending_sku_id"] is None
+        assert s2["estado"] == "idle"
+        assert "_espera_eleccion" not in s2
+
+
+class TestConfirmacionesFantasma:
+    """
+    El modelo declaró "pedido confirmado" y "gracias por tu compra" sin que el
+    sistema confirmara nada. Esos anuncios los hace SOLO el código (al armar
+    el carrito o generar el link); si vienen del modelo, se recortan.
+    """
+
+    def test_recorta_el_mensaje_real_conservando_el_precio(self):
+        r = ch.quitar_confirmaciones_fantasma(
+            "¡Perfecto, María! Tu pedido queda confirmado para retirar en sucursal. "
+            "El Eximia Hydra Legere Aqua Gel X50 Gr está a $51,214.36, ya con tu 15% "
+            "de descuento de socio. Te esperamos en la sucursal para retirarlo. "
+            "¡Gracias por tu compra! 😊")
+        assert "confirmado" not in r.lower()
+        assert "gracias por tu compra" not in r.lower()
+        assert "te esperamos" not in r.lower()
+        assert "$51,214.36" in r          # la oferta real sobrevive intacta
+
+    def test_no_toca_la_pregunta_de_confirmacion(self):
+        t = "Total: $1,600.00 — ¿lo confirmamos?"
+        assert ch.quitar_confirmaciones_fantasma(t) == t
+
+    def test_no_borra_oraciones_con_importe(self):
+        t = "Tu compra confirmada es de $500.00 en total."
+        assert "$500.00" in ch.quitar_confirmaciones_fantasma(t)
+
+    def test_nunca_devuelve_vacio(self):
+        assert ch.quitar_confirmaciones_fantasma("¡Gracias por tu compra!").strip()
+
+
 class TestRecetaOcr:
     """
     OCR de recetas (activable con receta_ocr_enabled): al derivar una receta,

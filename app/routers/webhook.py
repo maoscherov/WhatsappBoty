@@ -37,6 +37,7 @@ from app.services.db import get_db
 from app.services.embeddings import get_embedding_service
 from app.services.estilo_humano import humanizar
 from app.services.rag_service import get_rag_service
+from app.services.session_service import contexto_vencido
 from app.services.message_store import get_message_store
 from app.services.metrics_store import get_metrics_store
 from app.services.checkout_helper import (
@@ -45,6 +46,7 @@ from app.services.checkout_helper import (
     quiere_cambiar_direccion, extraer_direccion_de, contiene_link, pide_pago_manual,
     necesita_receta, pide_foto, quitar_frases_de_espera, pide_receta_nube,
     pregunta_descuento, aplicar_descuento_socio, pide_todos, texto_deictico,
+    quitar_confirmaciones_fantasma,
     producto_respaldado, productos_con_precio, parece_direccion,
 )
 
@@ -695,6 +697,16 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
 
             session = await deps["session"].get(phone)
 
+            # Pausa larga = charla nueva. La sesión con link pendiente vive
+            # 24hs y María volvió al día siguiente: el modelo, con el historial
+            # de ayer, le "confirmó" un pedido inexistente (caso real 1/9).
+            _cfg_ctx = await deps["config"].get_all()
+            _min_ctx = int(_cfg_ctx.get("contexto_reinicio_minutos") or 120)
+            if contexto_vencido(session, _min_ctx):
+                logger.info(f"Contexto reiniciado por pausa larga: {phone}")
+                await deps["session"].reiniciar_contexto(phone)
+                session = await deps["session"].get(phone)
+
             # Personalización: si el número está en el padrón de socios,
             # Claude recibe nombre y N° de socio para saludar por nombre.
             _ctx_socio = deps["socios"].contexto_para_prompt(phone)
@@ -1246,7 +1258,8 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
             intencion = intent_result.get("intencion", "desconocido")
             _intencion = intencion
             entidad = intent_result.get("entidad_producto")
-            respuesta = quitar_frases_de_espera(intent_result.get("respuesta", ""))
+            respuesta = quitar_confirmaciones_fantasma(
+                quitar_frases_de_espera(intent_result.get("respuesta", "")))
 
             # Base de conocimiento (RAG): preguntas generales sin producto →
             # responder con la info de la farmacia si hay algo relevante.
@@ -1322,7 +1335,8 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 _intencion = intencion
                 entidad = intent_result.get("entidad_producto")
                 cantidad = max(1, int(intent_result.get("cantidad") or 1))
-                respuesta = quitar_frases_de_espera(intent_result.get("respuesta", ""))
+                respuesta = quitar_confirmaciones_fantasma(
+                quitar_frases_de_espera(intent_result.get("respuesta", "")))
 
                 # El modelo detectó que pide una foto (frases que el matcher no
                 # cubre): misma regla, lo atiende una persona.
@@ -1526,7 +1540,8 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
 
                 sku_index = intent_result.get("sku_seleccionado_index")
                 cantidad_nueva = intent_result.get("cantidad")
-                respuesta = quitar_frases_de_espera(intent_result.get("respuesta", ""))
+                respuesta = quitar_confirmaciones_fantasma(
+                quitar_frases_de_espera(intent_result.get("respuesta", "")))
 
                 if sku_index is not None and pending_opciones:
                     try:

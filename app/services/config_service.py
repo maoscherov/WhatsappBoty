@@ -138,6 +138,11 @@ DEFAULTS: dict[str, str] = {
     # Descuento automático de socio (compras sin receta). 0 = desactivado —
     # activar cuando la farmacia valide el cruce del padrón. {pct} y {antes}
     # se reemplazan por el porcentaje y el precio sin descuento.
+    # Tras esta pausa sin mensajes, la próxima charla arranca de cero (historial
+    # y pedido pendiente limpios). El link de pago ya enviado sigue válido.
+    # 0 = nunca reiniciar. Evita que la charla de ayer contamine la de hoy
+    # mientras la sesión sigue viva por la ventana de 24hs del link.
+    "contexto_reinicio_minutos": "120",
     # OCR de recetas: al derivar una receta por foto, leerla (visión) y dejar
     # en el backoffice paciente, medicamento, candidato del catálogo y cruce
     # con el padrón. Apagado hasta que la farmacia lo pruebe.

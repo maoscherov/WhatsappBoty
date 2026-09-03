@@ -574,6 +574,7 @@ class ConfigUpdate(BaseModel):
     handoff_reminder_minutes: str | None = None  # aviso de demora post-derivación ("0" = off)
     handoff_reminder_message: str | None = None
     receta_ocr_enabled: str | None = None        # "true" = leer recetas al derivar
+    contexto_reinicio_minutos: str | None = None  # pausa que arranca charla nueva ("0" = nunca)
     socio_discount_pct: str | None = None        # "0" = apagado, ej "15"
     socio_discount_en_catalogo: str | None = None  # "true" = precio bonificado ya al ofrecer
     socio_discount_message: str | None = None    # admite {pct} y {antes}
