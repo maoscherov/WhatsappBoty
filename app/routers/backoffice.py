@@ -21,6 +21,7 @@ from app.services.whatsapp_service import get_whatsapp_service
 from app.services.socio_service import get_socio_service, reload_socio_service
 from app.services.blob_store import get_blob_store
 from app.services.db import get_db
+from app.services.metrics_store import get_metrics_store
 from app.services.embeddings import get_embedding_service
 from app.services.rag_service import get_rag_service
 from app.services.message_store import get_message_store

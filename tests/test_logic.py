@@ -808,6 +808,20 @@ class TestTablero:
         assert variacion_pct(50, 0) is None     # sin base de comparación
         assert variacion_pct(None, 100) is None
 
+    def test_endpoint_tablero_responde_200(self):
+        """
+        Regresión (4/9): /bo/tablero devolvió 500 en producción por un import
+        faltante que ningún test unitario ejercitaba. El smoke por HTTP
+        atraviesa el router de verdad.
+        """
+        from fastapi.testclient import TestClient
+        from app.main import app
+        r = TestClient(app).get("/bo/tablero?mes=2026-09")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["vertical"] in ("farmacia", "mutual")
+        assert "panorama" in body
+
     async def test_tablero_sin_db_devuelve_estructura_con_sin_dato(self):
         """Sin Postgres el endpoint no explota: devuelve la estructura con
         badges sin_dato, para que la página siempre renderice."""
