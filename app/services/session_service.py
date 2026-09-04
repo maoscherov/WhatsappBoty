@@ -213,6 +213,17 @@ class SessionService:
             session["derivada_at"] = time.time()
             session["derivada_motivo"] = motivo
             session.pop("_handoff_avisado", None)
+            # Evento para el tablero (derivaciones por motivo). Best-effort:
+            # centralizado acá porque hay ~10 puntos que derivan y el motivo
+            # solo vivía en la sesión, que muere a las 24hs.
+            try:
+                from app.config import get_settings as _gs
+                from app.services.db import get_db as _gdb
+                from app.services.metrics_store import get_metrics_store as _gms
+                await _gms(_gdb(_gs().database_url)).evento(
+                    "derivacion", phone=phone, dato=(motivo or "sin_motivo")[:80])
+            except Exception as e:
+                logger.debug(f"evento derivacion: {e}")
         session["estado"] = estado
         await self.save(phone, session)
 
@@ -379,7 +390,7 @@ class SessionService:
         session["estado"] = "idle"
         for k in ("derivada_at", "derivada_motivo", "_handoff_avisado", "agente",
                   "_conv_inicio", "_negativos", "derivacion_ofrecida",
-                  "extras_ofrecidos", "receta_info"):
+                  "extras_ofrecidos", "receta_info", "atendida_at"):
             session.pop(k, None)
         await self.save(phone, session)
 

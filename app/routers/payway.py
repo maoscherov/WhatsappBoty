@@ -199,11 +199,14 @@ async def payway_charge(body: ChargeIn):
         try:
             from app.services.db import get_db
             from app.services.metrics_store import get_metrics_store
+            from app.services.socio_service import get_socio_service
+            _es_socio = bool(get_socio_service(settings.socios_path)
+                             .find_by_phone(pending.get("phone") or ""))
             await get_metrics_store(get_db(settings.database_url)).evento(
                 "pago_aprobado", phone=pending.get("phone"),
                 dato=(data.get("card_brand") or "").strip() or None,
                 monto=float(pending["total"]), ref=str(data.get("id")),
-                extra={"metodo": metodo, "bin": body.bin},
+                extra={"metodo": metodo, "bin": body.bin, "socio": _es_socio},
             )
         except Exception as e:
             logger.debug(f"evento pago_aprobado: {e}")

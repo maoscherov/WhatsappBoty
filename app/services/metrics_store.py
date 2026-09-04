@@ -378,6 +378,227 @@ class MetricsStore:
             logger.warning(f"metrics.embudo: {e}")
             return None
 
+    # ── Tablero CERCA (/bo/tablero) ───────────────────────────────────────────
+
+    async def _kpis_mes(self, ini: str, fin: str) -> dict:
+        """Números base de un mes calendario: conversaciones, pagos, montos."""
+        rows = await self._db.fetch("""
+            SELECT
+              (SELECT COUNT(DISTINCT phone) FROM interacciones
+                WHERE created_at >= $1::date AND created_at < $2::date)     AS conversaciones,
+              (SELECT COUNT(*) FROM eventos WHERE tipo = 'pago_aprobado'
+                AND created_at >= $1::date AND created_at < $2::date)       AS pagos,
+              (SELECT COALESCE(SUM(monto), 0) FROM eventos WHERE tipo = 'pago_aprobado'
+                AND created_at >= $1::date AND created_at < $2::date)       AS monto,
+              (SELECT COUNT(*) FROM eventos WHERE tipo = 'fuera_horario'
+                AND created_at >= $1::date AND created_at < $2::date)       AS fuera_horario,
+              (SELECT COUNT(*) FROM eventos WHERE tipo = 'derivacion'
+                AND created_at >= $1::date AND created_at < $2::date)       AS derivaciones
+        """, ini, fin)
+        return dict(rows[0]) if rows else {}
+
+    async def tablero(self, vertical: str, mes: str) -> dict:
+        """
+        Todas las secciones del tablero CERCA para un mes calendario, con
+        comparativa contra el mes anterior y badge por métrica. Sin Postgres
+        devuelve la estructura completa con badges sin_dato: la página del
+        backoffice siempre renderiza.
+        """
+        ini, fin, ini_ant = _rango_mes(mes)
+        base = {"vertical": vertical, "mes": mes}
+
+        if not self._db.available():
+            return self._tablero_vacio(base)
+
+        try:
+            act = await self._kpis_mes(ini, fin)
+            ant = await self._kpis_mes(ini_ant, ini)
+
+            conv, conv_ant = act.get("conversaciones") or 0, ant.get("conversaciones") or 0
+            pagos, pagos_ant = act.get("pagos") or 0, ant.get("pagos") or 0
+            monto, monto_ant = float(act.get("monto") or 0), float(ant.get("monto") or 0)
+
+            # Derivaciones por motivo (ambos verticales las usan)
+            derivaciones = [
+                {"motivo": r["dato"] or "sin_motivo", "cantidad": r["n"]}
+                for r in await self._db.fetch("""
+                    SELECT dato, COUNT(*) AS n FROM eventos
+                    WHERE tipo = 'derivacion' AND created_at >= $1::date
+                      AND created_at < $2::date
+                    GROUP BY dato ORDER BY n DESC LIMIT 15
+                """, ini, fin)
+            ]
+
+            if vertical == "mutual":
+                kc = await self.kpis_conversacionales(days=31) or {}
+                intencion = [
+                    {"intencion": r["intencion"] or "desconocido", "cantidad": r["n"]}
+                    for r in await self._db.fetch("""
+                        SELECT intencion, COUNT(*) AS n FROM interacciones
+                        WHERE created_at >= $1::date AND created_at < $2::date
+                        GROUP BY intencion ORDER BY n DESC LIMIT 12
+                    """, ini, fin)
+                ]
+                sentimiento = [
+                    {"sentimiento": r["dato"] or "neutro", "cantidad": r["n"]}
+                    for r in await self._db.fetch("""
+                        SELECT dato, COUNT(*) AS n FROM eventos
+                        WHERE tipo = 'sentimiento' AND created_at >= $1::date
+                          AND created_at < $2::date
+                        GROUP BY dato ORDER BY n DESC
+                    """, ini, fin)
+                ]
+                extremas = await self._db.fetch("""
+                    WITH conv AS (
+                        SELECT phone, date_trunc('day', created_at) AS dia,
+                               COUNT(*) AS interacciones,
+                               EXTRACT(EPOCH FROM MAX(created_at) - MIN(created_at))/60 AS minutos
+                        FROM interacciones
+                        WHERE created_at >= $1::date AND created_at < $2::date
+                        GROUP BY phone, dia)
+                    SELECT COUNT(*) FILTER (WHERE interacciones > 30 OR minutos > 90) AS extremas,
+                           COUNT(*) AS total
+                    FROM conv
+                """, ini, fin)
+                ex = dict(extremas[0]) if extremas else {}
+                extremas_pct = (round(ex["extremas"] / ex["total"] * 100, 1)
+                                if ex.get("total") else None)
+                rec = await self._db.fetch("""
+                    WITH mes AS (SELECT DISTINCT phone FROM interacciones
+                                 WHERE created_at >= $1::date AND created_at < $2::date)
+                    SELECT COUNT(*) FILTER (WHERE EXISTS (
+                             SELECT 1 FROM interacciones i2
+                             WHERE i2.phone = mes.phone AND i2.created_at < $1::date)) AS recurrentes,
+                           COUNT(*) AS total
+                    FROM mes
+                """, ini, fin)
+                rc = dict(rec[0]) if rec else {}
+                recurrentes_pct = (round((rc.get("recurrentes") or 0) / rc["total"] * 100, 1)
+                                   if rc.get("total") else None)
+                return {**base,
+                        "panorama": {
+                            "conversaciones": _kpi(conv, conv_ant, "medido"),
+                            "duracion_media_min": _kpi(kc.get("minutos_promedio"),
+                                                       badge="medido"),
+                            "interacciones_promedio": _kpi(kc.get("interacciones_promedio"),
+                                                           badge="medido"),
+                            "recurrentes_pct": _kpi(recurrentes_pct, badge="medido"),
+                            "extremas_pct": _kpi(extremas_pct, badge="medido"),
+                        },
+                        "distribucion": {"intencion": intencion, "sentimiento": sentimiento},
+                        "derivaciones": derivaciones,
+                        "propuestos": ["prioridad", "canal", "fcr", "ab_testing"]}
+
+            # ── Farmacia ──────────────────────────────────────────────────────
+            fh_tipos: dict[str, int] = {}
+            for r in await self._db.fetch("""
+                SELECT dato, COUNT(*) AS n FROM eventos
+                WHERE tipo = 'fuera_horario' AND created_at >= $1::date
+                  AND created_at < $2::date GROUP BY dato
+            """, ini, fin):
+                t = clasificar_fuera_horario(r["dato"] or "")
+                fh_tipos[t] = fh_tipos.get(t, 0) + r["n"]
+
+            socios = await self._db.fetch("""
+                SELECT COUNT(*) FILTER (WHERE (extra->>'socio')::boolean) AS socios,
+                       COUNT(*) AS total
+                FROM eventos WHERE tipo = 'pago_aprobado'
+                  AND created_at >= $1::date AND created_at < $2::date
+            """, ini, fin)
+            so = dict(socios[0]) if socios else {}
+            socios_pct = (round((so.get("socios") or 0) / so["total"] * 100, 1)
+                          if so.get("total") else None)
+
+            sla = await self._db.fetch("""
+                SELECT COUNT(*) FILTER (WHERE monto <= 900) AS dentro, COUNT(*) AS total,
+                       ROUND(AVG(monto) / 60.0, 1) AS promedio_min
+                FROM eventos WHERE tipo = 'derivacion_atendida'
+                  AND created_at >= $1::date AND created_at < $2::date
+            """, ini, fin)
+            sl = dict(sla[0]) if sla else {}
+            sla_pct = (round(sl["dentro"] / sl["total"] * 100, 1) if sl.get("total") else None)
+
+            top_monto = [
+                {"producto": r["dato"], "monto": float(r["m"] or 0), "pagos": r["n"]}
+                for r in await self._db.fetch("""
+                    SELECT dato, SUM(monto) AS m, COUNT(*) AS n FROM eventos
+                    WHERE tipo = 'producto_ofrecido' AND created_at >= $1::date
+                      AND created_at < $2::date AND dato IS NOT NULL
+                    GROUP BY dato ORDER BY m DESC NULLS LAST LIMIT 5
+                """, ini, fin)
+            ]
+            mas_nombrados = [
+                {"producto": r["dato"], "veces": r["n"]}
+                for r in await self._db.fetch("""
+                    SELECT dato, COUNT(*) AS n FROM eventos
+                    WHERE tipo = 'producto_ofrecido' AND created_at >= $1::date
+                      AND created_at < $2::date AND dato IS NOT NULL
+                    GROUP BY dato ORDER BY n DESC LIMIT 5
+                """, ini, fin)
+            ]
+
+            emb = await self.embudo(days=31)
+            fh = act.get("fuera_horario") or 0
+
+            return {**base,
+                    "panorama": {
+                        "conversaciones": _kpi(conv, conv_ant, "medido"),
+                        "conversion_venta": _kpi(
+                            round(pagos / conv * 100, 1) if conv else None,
+                            round(pagos_ant / conv_ant * 100, 1) if conv_ant else None,
+                            "medido"),
+                        "monto_vendido": _kpi(round(monto, 2), round(monto_ant, 2), "medido"),
+                        "ticket_promedio": _kpi(
+                            round(monto / pagos, 2) if pagos else None,
+                            round(monto_ant / pagos_ant, 2) if pagos_ant else None,
+                            "medido"),
+                        "fuera_horario_pct": _kpi(
+                            round(fh / (conv + fh) * 100, 1) if (conv + fh) else None,
+                            badge="medido"),
+                        "sla_receta": _kpi(sla_pct, badge="medido", meta_pct=100,
+                                           meta_min=15,
+                                           demora_promedio_min=sl.get("promedio_min")),
+                    },
+                    "embudo": emb,
+                    "producto": {"mas_nombrados": mas_nombrados, "top_monto": top_monto},
+                    "recetas_horario_socios": {
+                        "fuera_horario_tipos": fh_tipos,
+                        "socios_pct": socios_pct,
+                        "derivaciones_sla_pct": sla_pct,
+                    },
+                    "pagos": {"por_pasarela": await self.pagos_por_marca(days=31),
+                              "bot_vs_derivado": (await self.kpis_conversacionales(days=31)
+                                                  or {}).get("fcr_pct")},
+                    "derivaciones": derivaciones,
+                    "propuestos": ["nps_csat", "emocionalidad"]}
+        except Exception as e:
+            logger.warning(f"metrics.tablero: {e}")
+            return self._tablero_vacio(base)
+
+    @staticmethod
+    def _tablero_vacio(base: dict) -> dict:
+        """La estructura completa con badges sin_dato: la página siempre renderiza."""
+        if base.get("vertical") == "mutual":
+            return {**base,
+                    "panorama": {k: _kpi() for k in
+                                 ("conversaciones", "duracion_media_min",
+                                  "interacciones_promedio", "recurrentes_pct",
+                                  "extremas_pct")},
+                    "distribucion": {"intencion": [], "sentimiento": []},
+                    "derivaciones": [],
+                    "propuestos": ["prioridad", "canal", "fcr", "ab_testing"]}
+        return {**base,
+                "panorama": {k: _kpi() for k in
+                             ("conversaciones", "conversion_venta", "monto_vendido",
+                              "ticket_promedio", "fuera_horario_pct", "sla_receta")},
+                "embudo": None,
+                "producto": {"mas_nombrados": [], "top_monto": []},
+                "recetas_horario_socios": {"fuera_horario_tipos": {}, "socios_pct": None,
+                                           "derivaciones_sla_pct": None},
+                "pagos": {"por_pasarela": [], "bot_vs_derivado": None},
+                "derivaciones": [],
+                "propuestos": ["nps_csat", "emocionalidad"]}
+
     async def conversaciones(self, days: int = 30, q: str = "", limit: int = 50) -> list[dict]:
         """
         Conversaciones históricas desde Postgres (tabla messages): una fila por
@@ -414,6 +635,50 @@ class MetricsStore:
         except Exception as e:
             logger.warning(f"metrics.conversaciones: {e}")
             return []
+
+
+def clasificar_fuera_horario(dato: str) -> str:
+    """
+    '<weekday>:<hour>' del evento fuera_horario → tipo de cierre del tablero.
+    finde (sáb/dom) > mediodía (12-16 hs) > nocturno (resto). 'otro' si el
+    dato no parsea.
+    """
+    try:
+        dia, hora = (int(x) for x in (dato or "").split(":"))
+    except (ValueError, TypeError):
+        return "otro"
+    if dia >= 5:
+        return "finde"
+    if 12 <= hora <= 16:
+        return "mediodia"
+    return "nocturno"
+
+
+def variacion_pct(actual, anterior) -> Optional[float]:
+    """% de variación vs. el período anterior; None si no hay base."""
+    if actual is None or not anterior:
+        return None
+    return round((actual - anterior) / anterior * 100, 1)
+
+
+def _rango_mes(mes: str) -> tuple[str, str, str]:
+    """'YYYY-MM' → (inicio_mes, inicio_mes_siguiente, inicio_mes_anterior)."""
+    from datetime import date
+    anio, m = (int(x) for x in mes.split("-"))
+    ini = date(anio, m, 1)
+    sig = date(anio + 1, 1, 1) if m == 12 else date(anio, m + 1, 1)
+    ant = date(anio - 1, 12, 1) if m == 1 else date(anio, m - 1, 1)
+    return ini.isoformat(), sig.isoformat(), ant.isoformat()
+
+
+# Estructura del tablero cuando no hay datos: la página siempre renderiza,
+# con el badge "sin_dato" (mismo criterio del diseño: medido/propuesto/sin dato).
+def _kpi(valor=None, anterior=None, badge="sin_dato", **extra) -> dict:
+    d = {"valor": valor, "anterior": anterior,
+         "variacion_pct": variacion_pct(valor, anterior),
+         "badge": badge if valor is not None else "sin_dato"}
+    d.update(extra)
+    return d
 
 
 _instance: Optional[MetricsStore] = None

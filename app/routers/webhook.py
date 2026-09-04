@@ -18,6 +18,7 @@ Flujo por mensaje:
 import logging
 import time as _time
 from datetime import datetime, timezone as _tz
+from app.services.config_service import TZ_ARG as _TZ_LOCAL
 from fastapi import APIRouter, Request, Query, HTTPException
 
 from app.config import get_settings
@@ -732,6 +733,12 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
             # ── Control de horario de atención ──────────────────────────────
             hours = await deps["config"].get_hours()
             if not deps["config"].is_open_now(hours):
+                # Tablero: conversaciones fuera de horario, con día y hora para
+                # clasificar el tipo de cierre (mediodía/nocturno/finde).
+                _ahora_lt = datetime.now(_TZ_LOCAL)
+                await deps["metrics"].evento(
+                    "fuera_horario", phone=phone,
+                    dato=f"{_ahora_lt.weekday()}:{_ahora_lt.hour}")
                 # Solo avisar una vez cada 10 mins para no spamear
                 last_closed = session.get("_last_closed_msg", "")
                 now_str = _time.strftime("%Y-%m-%dT%H:%M", _time.gmtime())[:15]  # cada 15min

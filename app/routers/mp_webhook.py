@@ -150,10 +150,13 @@ async def procesar_pago(payment_id: str) -> dict:
     try:
         from app.services.db import get_db
         from app.services.metrics_store import get_metrics_store
+        from app.services.socio_service import get_socio_service
+        _es_socio = bool(get_socio_service(settings.socios_path).find_by_phone(phone or ""))
         await get_metrics_store(get_db(settings.database_url)).evento(
             "pago_aprobado", phone=phone,
             dato=(payment.get("payment_method_id") or "mercadopago"),
-            monto=total, ref=str(payment_id), extra={"pasarela": "mercadopago"},
+            monto=total, ref=str(payment_id),
+            extra={"pasarela": "mercadopago", "socio": _es_socio},
         )
     except Exception as e:
         logger.debug(f"evento pago_aprobado (MP): {e}")

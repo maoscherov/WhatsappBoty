@@ -788,6 +788,44 @@ class TestExtrasElegibles:
         assert not (await ss.get("549")).get("extras_ofrecidos")
 
 
+class TestTablero:
+    """Agregador del tablero CERCA (/bo/tablero)."""
+
+    def test_clasificar_fuera_horario(self):
+        from app.services.metrics_store import clasificar_fuera_horario
+        assert clasificar_fuera_horario("2:13") == "mediodia"   # martes 13hs
+        assert clasificar_fuera_horario("4:22") == "nocturno"   # viernes 22hs
+        assert clasificar_fuera_horario("1:7") == "nocturno"    # madrugada
+        assert clasificar_fuera_horario("5:11") == "finde"      # sábado
+        assert clasificar_fuera_horario("6:15") == "finde"      # domingo
+        assert clasificar_fuera_horario("basura") == "otro"
+        assert clasificar_fuera_horario("") == "otro"
+
+    def test_variacion_pct(self):
+        from app.services.metrics_store import variacion_pct
+        assert variacion_pct(110, 100) == 10.0
+        assert variacion_pct(90, 100) == -10.0
+        assert variacion_pct(50, 0) is None     # sin base de comparación
+        assert variacion_pct(None, 100) is None
+
+    async def test_tablero_sin_db_devuelve_estructura_con_sin_dato(self):
+        """Sin Postgres el endpoint no explota: devuelve la estructura con
+        badges sin_dato, para que la página siempre renderice."""
+        from app.services.metrics_store import MetricsStore
+
+        class _SinDB:
+            def available(self): return False
+            async def fetch(self, *a): return []
+
+        t = await MetricsStore(_SinDB()).tablero("farmacia", "2026-09")
+        assert t["vertical"] == "farmacia"
+        assert "panorama" in t and "producto" in t and "pagos" in t
+        assert t["panorama"]["conversaciones"]["badge"] == "sin_dato"
+
+        tm = await MetricsStore(_SinDB()).tablero("mutual", "2026-09")
+        assert "distribucion" in tm and "derivaciones" in tm
+
+
 class TestContextoFresco:
     """
     Regresión (caso real 1/9, María): volvió al día siguiente (~22hs después,

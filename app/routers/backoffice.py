@@ -448,6 +448,23 @@ async def bo_sku_import_receta(file: UploadFile = File(...), _=Depends(_auth)):
         raise HTTPException(status_code=422, detail=f"Error cargando catálogo: {e}")
 
 
+@router.get("/tablero")
+async def bo_tablero(mes: str = Query(None, pattern=r"^\d{4}-\d{2}$"),
+                     _=Depends(_auth)):
+    """
+    Tablero CERCA: todas las secciones del tablero de indicadores por vertical
+    (diseño "Tableros CERCA"), con comparativa vs. mes anterior y badge por
+    métrica (medido / propuesto / sin_dato). El vertical sale del entorno
+    (VERTICAL=farmacia|mutual): cada backoffice sirve el suyo.
+    """
+    from datetime import datetime as _dt
+    settings = get_settings()
+    mes = mes or _dt.now().strftime("%Y-%m")
+    vertical = (getattr(settings, "vertical", "") or "farmacia").lower()
+    metrics = get_metrics_store(get_db(settings.database_url))
+    return await metrics.tablero(vertical, mes)
+
+
 # ── Padrón de socios (personalización) ────────────────────────────────────────
 
 @router.get("/socios/info")
@@ -701,6 +718,21 @@ async def bo_take(phone: str, agente: str = Query(...), _=Depends(_auth)):
     session_svc = get_session_service(settings.redis_url)
     session = await session_svc.get(phone)
     session["agente"] = agente.strip()
+    # SLA de atención: cuánto tardó una persona en tomar la derivación (el
+    # tablero mide "derivaciones dentro del SLA de 15 min").
+    _derivada = session.get("derivada_at")
+    if _derivada and not session.get("atendida_at"):
+        import time as _t
+        session["atendida_at"] = _t.time()
+        try:
+            demora = int(session["atendida_at"] - float(_derivada))
+            await get_metrics_store(get_db(settings.database_url)).evento(
+                "derivacion_atendida", phone=phone,
+                dato=(session.get("derivada_motivo") or "")[:80],
+                monto=demora, ref=agente.strip()[:40],
+            )
+        except Exception as e:
+            logger.debug(f"evento derivacion_atendida: {e}")
     await session_svc.save(phone, session)
     return {"status": "ok", "phone": phone, "agente": agente.strip()}
 
