@@ -1036,16 +1036,17 @@ class TestCotizacionReceta:
         assert c["pct_socio_aplicado"] == 0     # no es socio: no se aplica
         assert "socio" not in c["desglose"].lower()
 
-    def test_solo_socio(self):
+    def test_solo_socio_presume_precio_con_cobertura(self):
+        """Sin % OS cargado, el precio del operador ya es el de obra social."""
         c = self._c(10000.0, pct_os=0, es_socio=True, pct_socio=15)
         assert c["precio_final"] == 8500.0
-        assert "obra social" not in c["desglose"].lower()
+        assert c["desglose"].startswith("Sale por obra social")
         assert "socio" in c["desglose"].lower()
 
     def test_sin_descuentos(self):
         c = self._c(9990.5)
         assert c["precio_final"] == 9990.5
-        assert "$9,990.50" in c["desglose"]
+        assert c["desglose"] == "Sale por obra social $9,990.50."
         assert "descuento" not in c["desglose"].lower()
 
     def test_socio_sin_descuento_configurado_no_aplica(self):

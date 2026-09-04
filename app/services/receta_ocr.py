@@ -47,10 +47,12 @@ def cotizar_receta(precio_base: float, pct_os: float = 0,
         desglose = (f"Sale {lista} y tu obra social te reconoce el {pct_os:g}%: "
                     f"te queda en {final}.")
     elif pct_socio_aplicado:
-        desglose = (f"Sale {lista} y por ser socio tenés un {pct_socio_aplicado:g}% "
-                    f"de descuento: te queda en {final}.")
+        # Sin % de OS cargado, el precio que puso el operador ya se presume
+        # con la cobertura aplicada (pedido 5/9): se dice explícitamente.
+        desglose = (f"Sale por obra social {lista} y por ser socio tenés un "
+                    f"{pct_socio_aplicado:g}% de descuento: te queda en {final}.")
     else:
-        desglose = f"El precio es {final}."
+        desglose = f"Sale por obra social {final}."
 
     return {"precio_lista": round(float(precio_base), 2), "pct_os": pct_os,
             "pct_socio_aplicado": pct_socio_aplicado,
