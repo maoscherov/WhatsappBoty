@@ -245,6 +245,12 @@ async def dashboard_ui():
     return FileResponse(STATIC_DIR / "dashboard.html")
 
 
+@app.get("/tablero")
+async def tablero_ui():
+    """Tablero CERCA: indicadores por vertical (diseño 'Tableros CERCA')."""
+    return FileResponse(STATIC_DIR / "tablero.html")
+
+
 @app.get("/health")
 async def health():
     import os

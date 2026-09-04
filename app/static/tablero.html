@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tablero CERCA</title>
+<style>
+  :root{
+    --bg:#f7f7fb; --card:#fff; --ink:#111827; --muted:#6b7280; --line:#e5e7eb;
+    --violeta:#6d5ce7; --verde:#16a34a; --rojo:#dc2626; --ambar:#d97706;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--ink);padding:28px 20px 60px}
+  .wrap{max-width:1180px;margin:0 auto}
+  h1{font-size:1.7rem}
+  .sub{color:var(--muted);margin:2px 0 18px}
+  .topbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:18px}
+  .topbar input{padding:8px 10px;border:1px solid var(--line);border-radius:8px;font-size:.9rem}
+  .pill{background:var(--card);border:1px solid var(--line);border-radius:999px;padding:6px 14px;font-size:.85rem}
+  .seccion{color:var(--violeta);font-weight:700;font-size:.8rem;letter-spacing:.08em;margin:26px 0 10px;text-transform:uppercase}
+  .seccion small{color:var(--muted);font-weight:400;text-transform:none;letter-spacing:0;margin-left:8px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(215px,1fr));gap:14px}
+  .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px}
+  .kpi-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+  .kpi-nombre{font-size:.85rem;color:var(--ink);font-weight:600}
+  .badge{font-size:.66rem;padding:2px 8px;border-radius:999px;border:1px solid var(--line);color:var(--muted);white-space:nowrap}
+  .badge.medido{background:#efeafd;color:var(--violeta);border-color:#ded5fb}
+  .badge.propuesto{background:#eff6ff;color:#2563eb;border-color:#dbeafe}
+  .badge.sin_dato{background:#f9fafb}
+  .kpi-valor{font-size:1.7rem;font-weight:800}
+  .kpi-var{font-size:.78rem;margin-top:4px;color:var(--muted)}
+  .kpi-var .up{color:var(--verde);font-weight:700}
+  .kpi-var .down{color:var(--rojo);font-weight:700}
+  .kpi-extra{font-size:.74rem;color:var(--muted);margin-top:4px}
+  .titulo-card{font-weight:700;font-size:.95rem;margin-bottom:12px}
+  .fila-barra{display:grid;grid-template-columns:minmax(120px,1fr) 3fr auto;gap:10px;align-items:center;margin:7px 0;font-size:.84rem}
+  .barra{background:#eef0f4;border-radius:6px;height:12px;overflow:hidden}
+  .barra > div{height:100%;border-radius:6px;background:var(--violeta)}
+  .barra.verde > div{background:var(--verde)} .barra.rosa > div{background:#db2777}
+  .embudo-paso{margin:8px auto;text-align:center;color:#fff;border-radius:8px;padding:8px 6px;font-weight:700}
+  .embudo-paso small{display:block;font-weight:400;font-size:.72rem;opacity:.9}
+  .vacio{color:var(--muted);font-size:.85rem;padding:8px 0}
+  .nota{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--violeta);border-radius:10px;padding:12px 16px;font-size:.85rem;color:var(--muted);margin-bottom:6px}
+  .error{color:var(--rojo);padding:12px 0}
+  @media (max-width:640px){ .fila-barra{grid-template-columns:90px 1fr auto} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Tablero CERCA</h1>
+  <div class="sub" id="sub">Indicadores clave — cargando…</div>
+
+  <div class="topbar">
+    <input id="key" type="password" placeholder="Clave backoffice" style="width:170px">
+    <input id="mes" type="month">
+    <span class="pill" id="pill-vertical">—</span>
+  </div>
+
+  <div class="nota">Las métricas <b>medidas</b> se calculan de los datos reales del bot; las
+  <b>propuestas</b> todavía no se instrumentaron (mismo criterio que el diseño del tablero).
+  Los eventos nuevos (derivaciones, fuera de horario, socios, SLA) acumulan desde su deploy:
+  los primeros meses pueden verse parciales.</div>
+
+  <div id="contenido"></div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const keyInput = $('#key'), mesInput = $('#mes');
+keyInput.value = localStorage.getItem('bo_key') || '';
+mesInput.value = new Date().toISOString().slice(0, 7);
+keyInput.addEventListener('change', () => { localStorage.setItem('bo_key', keyInput.value.trim()); cargar(); });
+mesInput.addEventListener('change', cargar);
+
+const NOMBRES = {
+  conversaciones: 'Conversaciones', conversion_venta: 'Conversión a venta',
+  monto_vendido: 'Monto vendido', ticket_promedio: 'Ticket promedio',
+  fuera_horario_pct: 'Fuera de horario', sla_receta: 'Derivaciones en SLA (15 min)',
+  duracion_media_min: 'Duración media', interacciones_promedio: 'Interacciones promedio',
+  recurrentes_pct: 'Conversaciones recurrentes', extremas_pct: 'Conversaciones extremas',
+};
+const FORMATO = {
+  monto_vendido: v => '$' + Number(v).toLocaleString('es-AR'),
+  ticket_promedio: v => '$' + Number(v).toLocaleString('es-AR'),
+  conversion_venta: v => v + '%', fuera_horario_pct: v => v + '%',
+  sla_receta: v => v + '%', recurrentes_pct: v => v + '%', extremas_pct: v => v + '%',
+  duracion_media_min: v => v + ' min',
+};
+
+function kpiCard(clave, k) {
+  const fmt = FORMATO[clave] || (v => Number(v).toLocaleString('es-AR'));
+  const valor = (k.valor === null || k.valor === undefined) ? '—' : fmt(k.valor);
+  let variacion = '';
+  if (k.variacion_pct !== null && k.variacion_pct !== undefined) {
+    const cls = k.variacion_pct >= 0 ? 'up' : 'down';
+    const flecha = k.variacion_pct >= 0 ? '↑' : '↓';
+    variacion = `<div class="kpi-var"><span class="${cls}">${flecha}${Math.abs(k.variacion_pct)}%</span> vs. mes anterior</div>`;
+  }
+  const extra = k.demora_promedio_min ? `<div class="kpi-extra">demora promedio ${k.demora_promedio_min} min · meta 100% en ${k.meta_min} min</div>` : '';
+  return `<div class="card">
+    <div class="kpi-top"><span class="kpi-nombre">${NOMBRES[clave] || clave}</span>
+      <span class="badge ${k.badge}">${(k.badge || '').replace('_', ' ')}</span></div>
+    <div class="kpi-valor">${valor}</div>${variacion}${extra}</div>`;
+}
+
+function barras(titulo, filas, colorCls, fmtVal) {
+  if (!filas || !filas.length) return `<div class="card"><div class="titulo-card">${titulo}</div><div class="vacio">Sin datos todavía</div></div>`;
+  const max = Math.max(...filas.map(f => f.v)) || 1;
+  const html = filas.map(f => `
+    <div class="fila-barra"><span title="${f.label}">${f.label.length > 34 ? f.label.slice(0, 33) + '…' : f.label}</span>
+      <div class="barra ${colorCls || ''}"><div style="width:${Math.round(f.v / max * 100)}%"></div></div>
+      <b>${fmtVal ? fmtVal(f.v) : f.v}</b></div>`).join('');
+  return `<div class="card"><div class="titulo-card">${titulo}</div>${html}</div>`;
+}
+
+function embudoCard(e) {
+  if (!e || !e.etapas) return `<div class="card"><div class="titulo-card">Embudo de compra</div><div class="vacio">Sin datos todavía</div></div>`;
+  const pasos = e.etapas, max = (pasos[0] && pasos[0].cantidad) || 1;
+  const azules = ['#60a5fa', '#3b82f6', '#2563eb', '#1e40af'];
+  const html = pasos.map((p, i) => `
+    <div class="embudo-paso" style="background:${azules[i % 4]};width:${Math.max(35, Math.round((p.cantidad || 0) / max * 100))}%">
+      ${(p.cantidad || 0).toLocaleString('es-AR')}<small>${p.etapa}${p.pct !== null && i > 0 ? ' · ' + p.pct + '%' : ''}</small></div>`).join('');
+  const links = e.links ? `<div class="kpi-extra">Links abandonados: ${e.links.abandonados}
+    (${e.links.pct_abandono ?? '—'}%) · $${Math.round(e.links.monto_abandonado).toLocaleString('es-AR')} sin cobrar</div>` : '';
+  return `<div class="card"><div class="titulo-card">Embudo de compra</div>${html}${links}</div>`;
+}
+
+function propuestos(lista) {
+  const nombres = {nps_csat: 'NPS / CSAT', emocionalidad: 'Emocionalidad (farmacia)',
+                   prioridad: 'Prioridad', canal: 'Canal', fcr: 'FCR', ab_testing: 'Pruebas A/B'};
+  return `<div class="grid">${(lista || []).map(p => `<div class="card">
+      <div class="kpi-top"><span class="kpi-nombre">${nombres[p] || p}</span>
+      <span class="badge propuesto">propuesto</span></div>
+      <div class="vacio">Sin instrumentar todavía</div></div>`).join('')}</div>`;
+}
+
+async function cargar() {
+  const cont = $('#contenido');
+  const k = keyInput.value.trim();
+  if (!k) { cont.innerHTML = '<div class="vacio">Ingresá la clave del backoffice para cargar el tablero.</div>'; return; }
+  cont.innerHTML = '<div class="vacio">Cargando…</div>';
+  try {
+    const r = await fetch(`/bo/tablero?mes=${mesInput.value}&key=${encodeURIComponent(k)}`);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const t = await r.json();
+    $('#sub').textContent = `Indicadores clave · ${t.mes}`;
+    $('#pill-vertical').textContent = t.vertical === 'mutual' ? '🏛 Mutual AMI' : '💊 Farmacia';
+
+    let html = `<div class="seccion">1. Panorama general</div><div class="grid">` +
+      Object.entries(t.panorama).map(([c, k]) => kpiCard(c, k)).join('') + `</div>`;
+
+    if (t.vertical === 'mutual') {
+      html += `<div class="seccion">2. Distribución de la conversación</div><div class="grid2">` +
+        barras('Intención', (t.distribucion.intencion || []).map(x => ({label: x.intencion, v: x.cantidad}))) +
+        barras('Emocionalidad', (t.distribucion.sentimiento || []).map(x => ({label: x.sentimiento, v: x.cantidad})), 'verde') +
+        `</div>`;
+      html += `<div class="seccion">3. Derivación obligatoria a operador</div><div class="grid2">` +
+        barras('Derivaciones por motivo', (t.derivaciones || []).map(x => ({label: x.motivo, v: x.cantidad}))) + `</div>`;
+      html += `<div class="seccion">4. KPIs propuestos</div>` + propuestos(t.propuestos);
+    } else {
+      html += `<div class="seccion">2. Producto<small>qué se pide y qué se vende</small></div><div class="grid2">` +
+        barras('Más ofrecidos en conversación', (t.producto.mas_nombrados || []).map(x => ({label: x.producto, v: x.veces}))) +
+        barras('Top por monto ofrecido', (t.producto.top_monto || []).map(x => ({label: x.producto, v: x.monto})), 'rosa',
+               v => '$' + Math.round(v).toLocaleString('es-AR')) + `</div>`;
+      html += `<div class="seccion">3. Recetas, horario y derivaciones</div><div class="grid2">` +
+        embudoCard(t.embudo) +
+        barras('Fuera de horario, por tipo de cierre',
+               Object.entries(t.recetas_horario_socios.fuera_horario_tipos || {}).map(([l, v]) => ({label: l, v})), '') +
+        barras('Derivaciones por motivo', (t.derivaciones || []).map(x => ({label: x.motivo, v: x.cantidad}))) +
+        `<div class="card"><div class="titulo-card">Socios en los pagos</div>` +
+        (t.recetas_horario_socios.socios_pct !== null
+          ? `<div class="kpi-valor">${t.recetas_horario_socios.socios_pct}%</div><div class="kpi-extra">de los pagos son de socios del padrón</div>`
+          : `<div class="vacio">Sin pagos con marca de socio todavía</div>`) + `</div></div>`;
+      html += `<div class="seccion">4. Propuestos</div>` + propuestos(t.propuestos);
+    }
+    cont.innerHTML = html;
+  } catch (e) {
+    cont.innerHTML = `<div class="error">No se pudo cargar el tablero (${e.message}). ¿Clave correcta?</div>`;
+  }
+}
+cargar();
+</script>
+</body>
+</html>
