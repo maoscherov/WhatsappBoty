@@ -788,6 +788,72 @@ class TestExtrasElegibles:
         assert not (await ss.get("549")).get("extras_ofrecidos")
 
 
+class TestCotizacionReceta:
+    """
+    Cotización de recetas desde el backoffice: el operador carga precio y %
+    de obra social; si el cliente es socio se combina el 15% (primero OS,
+    después socio sobre el resultado — decisión 4/9). El desglose lo arma el
+    código para que los números nunca estén mal escritos.
+    """
+
+    def _c(self, *a, **kw):
+        from app.services.receta_ocr import cotizar_receta
+        return cotizar_receta(*a, **kw)
+
+    def test_ambos_descuentos_en_orden_os_primero(self):
+        c = self._c(25000.0, pct_os=40, es_socio=True, pct_socio=15)
+        # 25000 − 40% = 15000; 15000 − 15% = 12750
+        assert c["precio_final"] == 12750.0
+        assert c["precio_lista"] == 25000.0
+        assert "obra social" in c["desglose"] and "40%" in c["desglose"]
+        assert "15%" in c["desglose"] and "socio" in c["desglose"]
+        assert "$12,750.00" in c["desglose"]
+
+    def test_solo_obra_social(self):
+        c = self._c(10000.0, pct_os=50, es_socio=False, pct_socio=15)
+        assert c["precio_final"] == 5000.0
+        assert c["pct_socio_aplicado"] == 0     # no es socio: no se aplica
+        assert "socio" not in c["desglose"].lower()
+
+    def test_solo_socio(self):
+        c = self._c(10000.0, pct_os=0, es_socio=True, pct_socio=15)
+        assert c["precio_final"] == 8500.0
+        assert "obra social" not in c["desglose"].lower()
+        assert "socio" in c["desglose"].lower()
+
+    def test_sin_descuentos(self):
+        c = self._c(9990.5)
+        assert c["precio_final"] == 9990.5
+        assert "$9,990.50" in c["desglose"]
+        assert "descuento" not in c["desglose"].lower()
+
+    def test_socio_sin_descuento_configurado_no_aplica(self):
+        c = self._c(10000.0, pct_os=10, es_socio=True, pct_socio=0)
+        assert c["precio_final"] == 9000.0
+        assert c["pct_socio_aplicado"] == 0
+
+    def test_redondeo_a_dos_decimales(self):
+        c = self._c(9999.99, pct_os=33.33)
+        assert c["precio_final"] == round(9999.99 * (1 - 0.3333), 2)
+
+    def test_endpoint_paylink_receta_responde(self):
+        """Smoke HTTP: atraviesa el router con pct_os y plantilla receta (los
+        imports y el cálculo corren aunque el proveedor de pago no responda)."""
+        from fastapi.testclient import TestClient
+        from app.main import app
+        r = TestClient(app).post("/bo/paylink", json={
+            "phone": "549341", "detalle": "Yasminelle x28", "monto": 25000,
+            "pct_os": 40, "plantilla": "receta", "enviar": False,
+        })
+        assert r.status_code == 200
+        body = r.json()
+        if body.get("ok"):                       # con proveedor de pago activo
+            assert body["cotizacion"]["precio_final"] == 15000.0
+            assert "obra social" in body["mensaje"]
+        else:                                    # sin credenciales de pago
+            assert "error" in body
+
+
 class TestTablero:
     """Agregador del tablero CERCA (/bo/tablero)."""
 

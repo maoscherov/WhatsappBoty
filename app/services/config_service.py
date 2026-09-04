@@ -143,6 +143,10 @@ DEFAULTS: dict[str, str] = {
     # 0 = nunca reiniciar. Evita que la charla de ayer contamine la de hoy
     # mientras la sesión sigue viva por la ventana de 24hs del link.
     "contexto_reinicio_minutos": "120",
+    # Cabecera del mensaje de cotización de receta que envía el operador
+    # desde el backoffice ({producto} se reemplaza). El desglose de precios y
+    # descuentos lo arma el código: los números nunca se redactan a mano.
+    "receta_cotizacion_intro": "¡Buenas noticias! Tenemos stock de {producto} 👍",
     # OCR de recetas: al derivar una receta por foto, leerla (visión) y dejar
     # en el backoffice paciente, medicamento, candidato del catálogo y cruce
     # con el padrón. Apagado hasta que la farmacia lo pruebe.

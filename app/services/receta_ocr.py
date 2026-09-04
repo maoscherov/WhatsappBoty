@@ -16,6 +16,47 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def cotizar_receta(precio_base: float, pct_os: float = 0,
+                   es_socio: bool = False, pct_socio: float = 0) -> dict:
+    """
+    Cotización de una receta desde el backoffice: precio que carga el
+    operador, menos el % que reconoce la obra social, menos el % de socio si
+    el teléfono está en el padrón (en ese orden — decisión 4/9).
+
+    Devuelve precio_lista/precio_final y el `desglose` ya redactado: el texto
+    con los números lo arma el código, nunca una persona ni el modelo, para
+    que el importe del mensaje sea siempre el que se cobra.
+    """
+    pct_os = max(0.0, float(pct_os or 0))
+    pct_socio_aplicado = max(0.0, float(pct_socio or 0)) if es_socio else 0.0
+
+    precio = float(precio_base)
+    if pct_os:
+        precio = precio * (1 - pct_os / 100)
+    if pct_socio_aplicado:
+        precio = precio * (1 - pct_socio_aplicado / 100)
+    precio_final = round(precio, 2)
+
+    lista = f"${precio_base:,.2f}"
+    final = f"${precio_final:,.2f}"
+    if pct_os and pct_socio_aplicado:
+        desglose = (f"Sale {lista}, tu obra social te reconoce el {pct_os:g}% y por "
+                    f"ser socio tenés un {pct_socio_aplicado:g}% adicional: te queda "
+                    f"en {final}.")
+    elif pct_os:
+        desglose = (f"Sale {lista} y tu obra social te reconoce el {pct_os:g}%: "
+                    f"te queda en {final}.")
+    elif pct_socio_aplicado:
+        desglose = (f"Sale {lista} y por ser socio tenés un {pct_socio_aplicado:g}% "
+                    f"de descuento: te queda en {final}.")
+    else:
+        desglose = f"El precio es {final}."
+
+    return {"precio_lista": round(float(precio_base), 2), "pct_os": pct_os,
+            "pct_socio_aplicado": pct_socio_aplicado,
+            "precio_final": precio_final, "desglose": desglose}
+
+
 def armar_receta_info(ocr: dict, sku_svc, socio_svc, phone: str) -> dict:
     """
     Devuelve el paquete completo para el operador:

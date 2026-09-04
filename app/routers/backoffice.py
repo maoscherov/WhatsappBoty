@@ -592,6 +592,7 @@ class ConfigUpdate(BaseModel):
     handoff_reminder_minutes: str | None = None  # aviso de demora post-derivación ("0" = off)
     handoff_reminder_message: str | None = None
     receta_ocr_enabled: str | None = None        # "true" = leer recetas al derivar
+    receta_cotizacion_intro: str | None = None   # cabecera del mensaje de cotización ({producto})
     contexto_reinicio_minutos: str | None = None  # pausa que arranca charla nueva ("0" = nunca)
     socio_discount_pct: str | None = None        # "0" = apagado, ej "15"
     socio_discount_en_catalogo: str | None = None  # "true" = precio bonificado ya al ofrecer
@@ -651,6 +652,12 @@ class PaylinkIn(BaseModel):
     cantidad: int = 1
     enviar: bool = False          # True → se lo manda por WhatsApp al cliente
     mensaje: str | None = None    # texto opcional para acompañar el link
+    # Cotización de recetas (flujo del operador en Lovable): % que reconoce la
+    # obra social; si el teléfono es socio se combina el descuento de socio
+    # (primero OS, después socio). plantilla="receta" arma el mensaje
+    # prearmado "tenemos stock disponible..." con el desglose.
+    pct_os: float | None = None
+    plantilla: str | None = None  # "receta" → mensaje prearmado de cotización
 
 
 @router.post("/paylink")
@@ -680,11 +687,28 @@ async def bo_paylink(body: PaylinkIn, _=Depends(_auth)):
         sku_id = "MANUAL"
     if precio <= 0:
         raise HTTPException(status_code=400, detail="El monto debe ser mayor a 0")
+
+    _cfg = await get_config_service(settings.redis_url).get_all()
+
+    # Cotización de receta: precio − % obra social − % socio (en ese orden).
+    # El desglose redactado viaja en la respuesta y en el mensaje al cliente.
+    cotizacion = None
+    if body.pct_os is not None or body.plantilla == "receta":
+        _es_socio = bool(get_socio_service(settings.socios_path).find_by_phone(body.phone))
+        try:
+            _pct_socio = float(_cfg.get("socio_discount_pct") or 0)
+        except (TypeError, ValueError):
+            _pct_socio = 0.0
+        from app.services.receta_ocr import cotizar_receta
+        cotizacion = cotizar_receta(precio, pct_os=body.pct_os or 0,
+                                    es_socio=_es_socio, pct_socio=_pct_socio)
+        precio = cotizacion["precio_final"]
+
     total = round(precio * cantidad, 2)
 
     # Generar el link con el proveedor activo (el mismo que usa el bot)
     from app.routers.webhook import payment_svc_para
-    payment_svc = payment_svc_para(await get_config_service(settings.redis_url).get_all(), settings)
+    payment_svc = payment_svc_para(_cfg, settings)
     link, err = await payment_svc.crear_link(
         sku_id=sku_id, nombre=nombre, precio=precio, phone=body.phone, cantidad=cantidad,
     )
@@ -694,10 +718,19 @@ async def bo_paylink(body: PaylinkIn, _=Depends(_auth)):
     # Envío opcional por WhatsApp + registro en el historial de la conversación
     enviado = False
     nombre_cant = nombre + (f" x{cantidad}" if cantidad > 1 else "")
-    mensaje = body.mensaje or (
-        f"Acá te mando el link de pago para {nombre_cant} (${total:,.2f}):\n\n{link}\n\n"
-        "El link tiene vigencia de 24hs. ¡Cualquier cosa me avisás!"
-    )
+    if body.plantilla == "receta" and cotizacion:
+        intro = (_cfg.get("receta_cotizacion_intro") or
+                 "¡Buenas noticias! Tenemos stock de {producto} 👍").replace(
+                     "{producto}", nombre_cant)
+        mensaje = body.mensaje or (
+            f"{intro} {cotizacion['desglose']}\n\nTe paso el link de pago:\n{link}\n\n"
+            "El link tiene vigencia de 24hs. ¡Cualquier cosa me avisás!"
+        )
+    else:
+        mensaje = body.mensaje or (
+            f"Acá te mando el link de pago para {nombre_cant} (${total:,.2f}):\n\n{link}\n\n"
+            "El link tiene vigencia de 24hs. ¡Cualquier cosa me avisás!"
+        )
     if body.enviar:
         wa = get_whatsapp_service(settings.whatsapp_token, settings.whatsapp_phone_number_id)
         enviado = await wa.send_text(body.phone, mensaje)
@@ -705,7 +738,7 @@ async def bo_paylink(body: PaylinkIn, _=Depends(_auth)):
             await get_session_service(settings.redis_url).add_message(body.phone, "assistant", mensaje)
 
     return {"ok": True, "link": link, "detalle": nombre_cant, "total": total,
-            "enviado": enviado, "mensaje": mensaje}
+            "enviado": enviado, "mensaje": mensaje, "cotizacion": cotizacion}
 
 
 @router.post("/session/{phone}/take")
