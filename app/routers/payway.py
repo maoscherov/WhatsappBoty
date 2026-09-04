@@ -192,6 +192,15 @@ async def payway_charge(body: ChargeIn):
 
     estado = data.get("status")   # "approved" | "rejected" | ...
     if estado == "approved":
+        # Candado idempotente (mismo criterio que MP, caso real 5/9): un
+        # reintento/doble submit del mismo pago no crea otra orden ni manda
+        # otro "¡Pago confirmado!".
+        from app.services.session_service import get_session_service as _gss_lock
+        _lock = get_settings()
+        _clave_pago = f"pago:payway:{data.get('id') or body.pid}"
+        if not await _gss_lock(_lock.redis_url).adquirir_unico(_clave_pago, ttl=48 * 3600):
+            logger.info(f"Pago Payway {data.get('id')} ya procesado — duplicado ignorado")
+            return {"status": "approved", "duplicado": True, "id": data.get("id")}
         pending["estado"] = "aprobado"
         pending["payway_id"] = data.get("id")
         await _redis().setex(f"payway:pending:{body.pid}", _PENDING_TTL, json.dumps(pending))

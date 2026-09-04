@@ -390,6 +390,37 @@ class SessionService:
                 out.append(phone)
         return out
 
+    async def adquirir_unico(self, clave: str, ttl: int) -> bool:
+        """
+        Candado idempotente genérico (SET NX + TTL): True si esta llamada lo
+        adquirió, False si ya estaba tomado. Se usa para no procesar dos veces
+        la misma notificación de pago (MP reintenta webhooks: caso real 5/9,
+        un pago → dos órdenes y dos "¡Pago confirmado!").
+
+        Con Redis caído cae a memoria (instancia única): mejor un candado
+        local que ninguno.
+        """
+        if await self._use_redis():
+            try:
+                creado = await self._redis.set(f"unico:{clave}", "1", ex=ttl, nx=True)
+                return creado is not None
+            except Exception:
+                pass
+        marca = f"unico:{clave}"
+        if marca in self._processed_ids:
+            return False
+        self._processed_ids.add(marca)
+        return True
+
+    async def liberar_unico(self, clave: str):
+        """Libera el candado (para que un reintento complete un proceso fallido)."""
+        if await self._use_redis():
+            try:
+                await self._redis.delete(f"unico:{clave}")
+            except Exception:
+                pass
+        self._processed_ids.discard(f"unico:{clave}")
+
     async def cierre_ya_avisado(self, phone: str, ttl: int = 3 * 3600) -> bool:
         """
         True si ya se le mandó el aviso de cierre hace poco (y lo marca si no).

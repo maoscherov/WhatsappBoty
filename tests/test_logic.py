@@ -788,6 +788,93 @@ class TestExtrasElegibles:
         assert not (await ss.get("549")).get("extras_ofrecidos")
 
 
+class TestPagoIdempotente:
+    """
+    Regresión (5/9): Mercado Pago reintenta la notificación del mismo pago y
+    cada reintento creaba OTRA orden y OTRO "¡Pago confirmado!" (caso real:
+    un link, dos códigos de pedido). Candado por payment_id: la segunda
+    notificación se ignora; un fallo a mitad de camino libera el candado para
+    que el reintento complete la venta.
+    """
+
+    async def test_adquirir_unico_bloquea_la_segunda_vez(self):
+        from app.services.session_service import SessionService
+        ss = SessionService("redis://127.0.0.1:1")
+        assert await ss.adquirir_unico("pago:mp:111", ttl=60) is True
+        assert await ss.adquirir_unico("pago:mp:111", ttl=60) is False   # duplicado
+        assert await ss.adquirir_unico("pago:mp:222", ttl=60) is True    # otro id pasa
+        await ss.liberar_unico("pago:mp:111")
+        assert await ss.adquirir_unico("pago:mp:111", ttl=60) is True    # liberado
+
+    async def test_notificacion_duplicada_crea_una_sola_orden(self, monkeypatch):
+        import app.routers.mp_webhook as mpw
+        from app.services.session_service import get_session_service
+
+        class _FakePaySvc:
+            async def get_payment_info(self, pid):
+                return {"status": "approved",
+                        "external_reference": "5490000000099_SKU9",
+                        "transaction_amount": 6250.0,
+                        "payment_method_id": "visa",
+                        "additional_info": {"items": [
+                            {"title": "Lidil Cort + envío", "quantity": 1}]}}
+
+        ordenes = []
+
+        class _FakeOrders:
+            async def create(self, **kw):
+                ordenes.append(kw)
+                return {"order_id": f"ORD-{len(ordenes)}", "pickup_code": "123456"}
+
+        enviados = []
+
+        class _FakeWa:
+            async def send_text(self, phone, msg):
+                enviados.append(msg)
+                return True
+
+        monkeypatch.setattr(mpw, "get_payment_service", lambda *a, **k: _FakePaySvc())
+        monkeypatch.setattr(mpw, "get_order_service", lambda *a: _FakeOrders())
+        monkeypatch.setattr(mpw, "get_whatsapp_service", lambda *a: _FakeWa())
+
+        r1 = await mpw.procesar_pago("PAGO-DUP-1")
+        r2 = await mpw.procesar_pago("PAGO-DUP-1")     # el retry de MP
+        assert r1["status"] == "ok"
+        assert r2["status"] == "duplicado"
+        assert len(ordenes) == 1                        # UNA orden
+        assert len(enviados) == 1                       # UN "¡Pago confirmado!"
+
+    async def test_fallo_intermedio_libera_el_candado(self, monkeypatch):
+        import app.routers.mp_webhook as mpw
+
+        class _FakePaySvc:
+            async def get_payment_info(self, pid):
+                return {"status": "approved", "external_reference": "5490000000088_S1",
+                        "transaction_amount": 100.0, "additional_info": {}}
+
+        intentos = {"n": 0}
+
+        class _OrdersFallanUnaVez:
+            async def create(self, **kw):
+                intentos["n"] += 1
+                if intentos["n"] == 1:
+                    raise RuntimeError("redis parpadeó")
+                return {"order_id": "ORD-OK", "pickup_code": "654321"}
+
+        class _FakeWa:
+            async def send_text(self, phone, msg): return True
+
+        monkeypatch.setattr(mpw, "get_payment_service", lambda *a, **k: _FakePaySvc())
+        monkeypatch.setattr(mpw, "get_order_service", lambda *a: _OrdersFallanUnaVez())
+        monkeypatch.setattr(mpw, "get_whatsapp_service", lambda *a: _FakeWa())
+
+        r1 = await mpw.procesar_pago("PAGO-FALLA-1")
+        assert r1["status"] == "error"                  # falló, no explotó
+        r2 = await mpw.procesar_pago("PAGO-FALLA-1")    # el retry recupera
+        assert r2["status"] == "ok"
+        assert intentos["n"] == 2
+
+
 class TestCotizacionSinLink:
     """
     La cotización de receta es una OFERTA: el link recién va cuando el

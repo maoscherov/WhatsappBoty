@@ -120,6 +120,25 @@ async def procesar_pago(payment_id: str) -> dict:
     if status != "approved":
         return {"status": "ignored", "payment_status": status}
 
+    # Candado idempotente: MP reintenta la notificación del mismo pago y cada
+    # reintento creaba OTRA orden y otro "¡Pago confirmado!" (caso real 5/9).
+    # Si el procesamiento falla a mitad de camino, el candado se libera para
+    # que el reintento (o /bo/mp/reprocesar) complete la venta.
+    session_lock = get_session_service(settings.redis_url)
+    if not await session_lock.adquirir_unico(f"pago:mp:{payment_id}", ttl=48 * 3600):
+        logger.info(f"Pago {payment_id} ya procesado — notificación duplicada ignorada")
+        return {"status": "duplicado", "payment_id": payment_id}
+
+    try:
+        return await _cerrar_venta(settings, payment, payment_id, external_ref)
+    except Exception as e:
+        logger.error(f"Fallo procesando el pago {payment_id}: {e} — candado liberado")
+        await session_lock.liberar_unico(f"pago:mp:{payment_id}")
+        return {"status": "error", "detail": str(e)[:200]}
+
+
+async def _cerrar_venta(settings, payment: dict, payment_id: str, external_ref: str) -> dict:
+    """Crea la orden, avisa por WhatsApp y actualiza la sesión (pago aprobado)."""
     # external_reference = "{phone}_{sku_id}"
     phone = external_ref.split("_")[0] if "_" in external_ref else external_ref
     sku_id = external_ref.split("_", 1)[1] if "_" in external_ref else ""
