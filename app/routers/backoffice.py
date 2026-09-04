@@ -591,6 +591,7 @@ class ConfigUpdate(BaseModel):
     inactivity_close_message_pago: str | None = None
     handoff_reminder_minutes: str | None = None  # aviso de demora post-derivación ("0" = off)
     handoff_reminder_message: str | None = None
+    envio_costo: str | None = None               # costo del envío a domicilio ("0" = gratis)
     receta_ocr_enabled: str | None = None        # "true" = leer recetas al derivar
     receta_cotizacion_intro: str | None = None   # cabecera del mensaje de cotización ({producto})
     contexto_reinicio_minutos: str | None = None  # pausa que arranca charla nueva ("0" = nunca)

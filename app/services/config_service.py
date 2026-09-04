@@ -143,6 +143,10 @@ DEFAULTS: dict[str, str] = {
     # 0 = nunca reiniciar. Evita que la charla de ayer contamine la de hoy
     # mientras la sesión sigue viva por la ventana de 24hs del link.
     "contexto_reinicio_minutos": "120",
+    # Costo del envío a domicilio en pesos. "0" = gratis (comportamiento
+    # histórico). Con costo, se muestra al preguntar la entrega y se suma al
+    # total del link (requerimiento de la farmacia, 4/9: $2000).
+    "envio_costo": "0",
     # Cabecera del mensaje de cotización de receta que envía el operador
     # desde el backoffice ({producto} se reemplaza). El desglose de precios y
     # descuentos lo arma el código: los números nunca se redactan a mano.

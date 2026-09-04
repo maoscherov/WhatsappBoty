@@ -47,7 +47,7 @@ from app.services.checkout_helper import (
     quiere_cambiar_direccion, extraer_direccion_de, contiene_link, pide_pago_manual,
     necesita_receta, pide_foto, quitar_frases_de_espera, pide_receta_nube,
     pregunta_descuento, aplicar_descuento_socio, pide_todos, texto_deictico,
-    quitar_confirmaciones_fantasma,
+    quitar_confirmaciones_fantasma, pregunta_entrega, costo_envio_de,
     producto_respaldado, productos_con_precio, parece_direccion,
 )
 
@@ -938,13 +938,17 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                         # se vuelve a ofrecer la elección, en lugar de repetir la
                         # pregunta ignorando lo que preguntó.
                         _intencion = "consulta_en_entrega"
+                        _cfg_ent = await deps["config"].get_all()
+                        _costo_e = costo_envio_de(_cfg_ent)
                         respuesta = await _responder_consulta_en_flujo(
                             deps, phone, session, texto, _ctx_socio,
                             "El cliente ya confirmó este pedido y está eligiendo cómo recibirlo. "
                             "Respondé su consulta con los datos del pedido y terminá preguntándole "
-                            "si prefiere *retiro en sucursal* o *envío a domicilio*. "
-                            "No generes links de pago ni cambies el producto.",
-                            "¿Preferís *retiro en sucursal* o *envío a domicilio*? 🙂",
+                            "si prefiere *retiro en sucursal* o *envío a domicilio*"
+                            + (f" (el envío cuesta ${_costo_e:,.0f} y se suma al total)"
+                               if _costo_e else "") +
+                            ". No generes links de pago ni cambies el producto.",
+                            pregunta_entrega(_cfg_ent, saludo=False),
                         )
                     else:
                         respuesta, _intencion = await resolver_entrega(

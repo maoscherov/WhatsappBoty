@@ -788,6 +788,58 @@ class TestExtrasElegibles:
         assert not (await ss.get("549")).get("extras_ofrecidos")
 
 
+class TestCostoEnvio:
+    """
+    Costo de envío a domicilio (config envio_costo, "0" = gratis). Se suma al
+    total del link y se avisa ANTES de elegir la entrega: nada de sorpresas
+    en el precio.
+    """
+
+    class _FakePago:
+        def __init__(self): self.capturado = {}
+        async def crear_link(self, sku_id, nombre, precio, phone, cantidad=1):
+            self.capturado.update(nombre=nombre, precio=precio, cantidad=cantidad)
+            return "https://pago/x", None
+
+    async def _con_costo(self, costo, tipo_entrega):
+        from app.services.session_service import SessionService
+        from app.services.config_service import get_config_service
+        cfg_svc = get_config_service("redis://127.0.0.1:1")
+        await cfg_svc.set("envio_costo", str(costo))
+        try:
+            ss = SessionService("redis://127.0.0.1:1")
+            await ss.set_pending("549", sku_id="A1", sku_nombre="Actron", precio=1000.0)
+            pago = self._FakePago()
+            sesion = await ss.get("549")
+            respuesta, link = await ch.crear_link_y_responder(
+                pago, ss, "549", sesion, tipo_entrega, "San Victor 945")
+            return respuesta, pago.capturado
+        finally:
+            await cfg_svc.set("envio_costo", "0")
+
+    async def test_envio_suma_el_costo_y_lo_desglosa(self):
+        respuesta, cap = await self._con_costo(2000, "envio")
+        assert cap["precio"] * cap.get("cantidad", 1) == 3000.0
+        assert "envío" in cap["nombre"].lower()
+        assert "$3,000.00" in respuesta            # el total del mensaje lo incluye
+        assert "2,000" in respuesta                # y el desglose lo aclara
+
+    async def test_retiro_no_suma_nada(self):
+        respuesta, cap = await self._con_costo(2000, "retiro")
+        assert cap["precio"] * cap.get("cantidad", 1) == 1000.0
+
+    async def test_costo_cero_es_el_comportamiento_de_siempre(self):
+        respuesta, cap = await self._con_costo(0, "envio")
+        assert cap["precio"] * cap.get("cantidad", 1) == 1000.0
+        assert "2,000" not in respuesta
+
+    def test_pregunta_de_entrega_muestra_el_costo(self):
+        t = ch.pregunta_entrega({"envio_costo": "2000"})
+        assert "envío a domicilio" in t and "+$2,000" in t
+        t0 = ch.pregunta_entrega({"envio_costo": "0"})
+        assert "+$" not in t0
+
+
 class TestCotizacionReceta:
     """
     Cotización de recetas desde el backoffice: el operador carga precio y %

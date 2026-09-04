@@ -428,11 +428,34 @@ def aplicar_descuento_socio(resultados: list[dict], phone: str, cfg: dict,
     return salida, pct
 
 
-def texto_entrega(tipo: str, direccion: Optional[str]) -> str:
+def costo_envio_de(cfg: dict) -> float:
+    """Costo del envío a domicilio (config envio_costo, 0 = gratis)."""
+    try:
+        return max(0.0, float(cfg.get("envio_costo") or 0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def pregunta_entrega(cfg: dict, extra: str = "", saludo: bool = True) -> str:
+    """
+    La pregunta retiro/envío, con el costo del envío A LA VISTA si existe:
+    el cliente lo ve antes de elegir, nunca como sorpresa en el link.
+    """
+    costo = costo_envio_de(cfg)
+    envio_txt = (f"*envío a domicilio* (+${costo:,.0f})" if costo > 0
+                 else "*envío a domicilio*")
+    if saludo:
+        return f"¡Genial! ¿Cómo preferís recibirlo: *retiro en sucursal* o {envio_txt}?{extra}"
+    return f"¿Preferís *retiro en sucursal* o {envio_txt}? 🙂{extra}"
+
+
+def texto_entrega(tipo: str, direccion: Optional[str], costo_envio: float = 0) -> str:
     """Línea que describe la entrega elegida, para el mensaje del link de pago."""
     if tipo == "envio":
         dir_txt = f" a *{direccion}*" if direccion else ""
-        return f"🚚 Te lo enviamos a domicilio{dir_txt}."
+        costo_txt = (f" Incluye el envío (${costo_envio:,.2f})."
+                     if costo_envio > 0 else "")
+        return f"🚚 Te lo enviamos a domicilio{dir_txt}.{costo_txt}"
     return "🏪 Lo retirás en la sucursal (te enviamos el código al confirmar el pago)."
 
 
@@ -464,6 +487,27 @@ async def crear_link_y_responder(
         sku_link = session["pending_sku_id"]
     total = precio_unitario * cantidad
 
+    # Config (best-effort): descuento de socio para la línea informativa y
+    # costo de envío para sumarlo al total.
+    _cfg: dict = {}
+    try:
+        from app.config import get_settings as _gs
+        from app.services.config_service import get_config_service as _gcs
+        _settings = _gs()
+        _cfg = await _gcs(_settings.redis_url).get_all()
+    except Exception as e:
+        logger.warning(f"No se pudo leer la config para el link de {phone}: {e}")
+
+    # Costo de envío: se suma al total y el link sale como ítem único con el
+    # envío incluido. El cliente ya lo vio al elegir la entrega
+    # (pregunta_entrega) y el mensaje lo desglosa igual.
+    _costo_envio = costo_envio_de(_cfg) if tipo_entrega == "envio" else 0.0
+    total_productos = total          # sin envío: base del desglose de socio
+    if _costo_envio > 0:
+        total = round(total + _costo_envio, 2)
+        nombre_link = f"{nombre_link} + envío"
+        precio_unitario, cantidad = total, 1
+
     # Descuento de socio: acá NO se recalcula nada. El precio pendiente ya
     # viene con el descuento aplicado desde la búsqueda (aplicar_descuento_socio),
     # que es lo que el bot le dijo al cliente. Volver a aplicarlo cobraría dos
@@ -471,16 +515,13 @@ async def crear_link_y_responder(
     # línea que explica el beneficio en el mensaje del link.
     descuento_line = ""
     try:
-        from app.config import get_settings as _gs
-        from app.services.config_service import get_config_service as _gcs
         from app.services.socio_service import get_socio_service as _gss
-        _settings = _gs()
-        _cfg = await _gcs(_settings.redis_url).get_all()
         pct = float(_cfg.get("socio_discount_pct") or 0)
         if pct > 0 and _gss(_settings.socios_path).find_by_phone(phone):
             # Precio de lista reconstruido desde el total ya bonificado, sólo
             # para mostrarlo en el mensaje.
-            antes = round(total / (1 - pct / 100), 2) if pct < 100 else total
+            antes = (round(total_productos / (1 - pct / 100), 2)
+                     if pct < 100 else total_productos)
             plantilla = _cfg.get("socio_discount_message") or ""
             descuento_line = plantilla.replace("{pct}", f"{pct:g}").replace("{antes}", f"{antes:,.2f}")
     except Exception as e:
@@ -523,7 +564,7 @@ async def crear_link_y_responder(
         )
     else:
         nombre_con_cant = session["pending_sku_nombre"] + (f" x{cantidad}" if cantidad > 1 else "")
-    entrega_line = texto_entrega(tipo_entrega, direccion)
+    entrega_line = texto_entrega(tipo_entrega, direccion, _costo_envio)
     descuento_bloque = f"{descuento_line}\n" if descuento_line else ""
     respuesta = (
         f"Perfecto! Acá te mando el link de pago para "
@@ -576,10 +617,7 @@ async def confirmar_pedido(
             extra = f" Si querés envío, te lo mandamos a *{socio['domicilio']}* (o decime otra dirección)."
         else:
             extra = ""
-        return (
-            f"¡Genial! ¿Cómo preferís recibirlo: *retiro en sucursal* o *envío a domicilio*?{extra}",
-            "esperando_entrega",
-        )
+        return (pregunta_entrega(cfg, extra), "esperando_entrega")
 
     # 3. Sin envío → link directo con retiro
     respuesta, _ = await crear_link_y_responder(payment_svc, session_svc, phone, session, "retiro", None)
@@ -611,8 +649,15 @@ async def resolver_entrega(
             "esperando_direccion",
         )
 
-    # Ambiguo o mencionó ambas → volver a preguntar
-    return ("¿Preferís *retiro en sucursal* o *envío a domicilio*? 🙂", "esperando_entrega")
+    # Ambiguo o mencionó ambas → volver a preguntar (con el costo a la vista)
+    _cfg_e: dict = {}
+    try:
+        from app.config import get_settings as _gs
+        from app.services.config_service import get_config_service as _gcs
+        _cfg_e = await _gcs(_gs().redis_url).get_all()
+    except Exception:
+        pass
+    return (pregunta_entrega(_cfg_e, saludo=False), "esperando_entrega")
 
 
 async def capturar_direccion(
