@@ -151,6 +151,17 @@ DEFAULTS: dict[str, str] = {
     # desde el backoffice ({producto} se reemplaza). El desglose de precios y
     # descuentos lo arma el código: los números nunca se redactan a mano.
     "receta_cotizacion_intro": "¡Buenas noticias! Tenemos stock de {producto} 👍",
+    # Cierre de la cotización SIN link (modo cotizar): invita a confirmar; el
+    # bot manda el link cuando el cliente dice que sí.
+    "receta_cotizacion_cierre": (
+        "¿Querés que avancemos? Decime *sí* y te mando el link de pago 🙂"
+    ),
+    # Respuesta del bot al recibir una foto de receta (configurable — pedido
+    # 4/9: promete la validación en ~10 min, coherente con el SLA de 15).
+    "receta_recibida_message": (
+        "Recibimos tu receta 🙌 Validamos la información y volvemos con vos "
+        "dentro de los próximos 10 minutos."
+    ),
     # OCR de recetas: al derivar una receta por foto, leerla (visión) y dejar
     # en el backoffice paciente, medicamento, candidato del catálogo y cruce
     # con el padrón. Apagado hasta que la farmacia lo pruebe.

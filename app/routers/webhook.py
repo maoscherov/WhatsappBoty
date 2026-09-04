@@ -674,11 +674,19 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                                 _steps["ocr_ms"] = int((_time.perf_counter() - _tocr) * 1000)
                         except Exception as e:
                             logger.warning(f"OCR de receta falló para {phone}: {e}")
-                    que = "la receta" if img["tipo"] == "receta" else "la credencial"
-                    respuesta = (
-                        f"Recibí {que} 🙌. Para gestionarla te paso con alguien del equipo, "
-                        "que la revisa y te ayuda. ¡En un momento te contactamos!"
-                    )
+                    if img["tipo"] == "receta":
+                        # Configurable (receta_recibida_message): promete la
+                        # validación en ~10 min, en línea con el SLA de 15.
+                        _cfg_rr = await deps["config"].get_all()
+                        respuesta = _cfg_rr.get("receta_recibida_message") or (
+                            "Recibimos tu receta 🙌 Validamos la información y "
+                            "volvemos con vos dentro de los próximos 10 minutos."
+                        )
+                    else:
+                        respuesta = (
+                            "Recibí la credencial 🙌. Para gestionarla te paso con alguien "
+                            "del equipo, que la revisa y te ayuda. ¡En un momento te contactamos!"
+                        )
                     _ts = _time.perf_counter()
                     await deps["wa"].send_text(phone, respuesta)
                     _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)

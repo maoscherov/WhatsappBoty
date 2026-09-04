@@ -788,6 +788,126 @@ class TestExtrasElegibles:
         assert not (await ss.get("549")).get("extras_ofrecidos")
 
 
+class TestCotizacionSinLink:
+    """
+    La cotización de receta es una OFERTA: el link recién va cuando el
+    cliente confirma. El operador "envía y delega" (el bot maneja el sí) o
+    "envía y sigue atendiendo" (queda en modo operador con el pedido armado).
+    """
+
+    async def _sesion_derivada(self, ss, phone="549"):
+        await ss.set_estado(phone, "operador", motivo="receta_foto")
+        return await ss.get(phone)
+
+    async def test_delegar_deja_al_bot_con_el_pedido_armado(self):
+        from app.services.session_service import SessionService
+        ss = SessionService("redis://127.0.0.1:1")
+        await self._sesion_derivada(ss)
+        await ss.armar_cotizacion("549", sku_id="Y1", sku_nombre="Yasminelle",
+                                  precio=33422.99, delegar=True)
+        s = await ss.get("549")
+        assert s["estado"] == "esperando_confirmacion"     # el bot retoma
+        assert s["pending_precio"] == 33422.99
+        assert s["receta_validada"] is True                # el operador ya vio la receta
+        assert "derivada_at" not in s                      # sale de la cola de derivadas
+
+    async def test_seguir_atendiendo_queda_en_operador(self):
+        from app.services.session_service import SessionService
+        ss = SessionService("redis://127.0.0.1:1")
+        await self._sesion_derivada(ss)
+        await ss.armar_cotizacion("549", sku_id="Y1", sku_nombre="Yasminelle",
+                                  precio=33422.99, delegar=False)
+        s = await ss.get("549")
+        assert s["estado"] == "operador"                   # el bot sigue mudo
+        assert s["pending_precio"] == 33422.99
+        assert s["receta_validada"] is True
+
+    async def test_confirmar_no_rederiva_por_receta_y_cobra_lo_cotizado(self):
+        """El candado: sin receta_validada este producto volvería al operador
+        en loop; con la marca, el sí sigue derecho a entrega y link."""
+        from app.services.session_service import SessionService
+
+        class _SkuConReceta:
+            def get_by_id(self, sku_id):
+                from app.models.sku import SKU
+                return SKU(sku_id="Y1", barcode="1", sku_nombre="Yasminelle",
+                           sku_nombre_original="Yasminelle", precio_venta=46824.03,
+                           requiere_receta="si")
+
+        class _FakePago:
+            def __init__(self): self.capturado = {}
+            async def crear_link(self, sku_id, nombre, precio, phone, cantidad=1):
+                self.capturado.update(precio=precio, cantidad=cantidad)
+                return "https://pago/x", None
+
+        class _SinPadron:
+            def find_by_phone(self, p): return None
+
+        ss = SessionService("redis://127.0.0.1:1")
+        await self._sesion_derivada(ss)
+        await ss.armar_cotizacion("549", sku_id="Y1", sku_nombre="Yasminelle",
+                                  precio=33422.99, delegar=True)
+        pago = _FakePago()
+        sesion = await ss.get("549")
+        respuesta, intencion = await ch.confirmar_pedido(
+            _SkuConReceta(), pago, ss, _SinPadron(),
+            {"receta_mode": "conservador", "envio_enabled": "true"},
+            "549", sesion, entrega="retiro")
+        assert intencion != "derivado_receta"              # NO volvió al operador
+        assert pago.capturado["precio"] * pago.capturado.get("cantidad", 1) == 33422.99
+
+    async def test_un_pedido_nuevo_distinto_pierde_el_candado(self):
+        """La marca vale para ESE producto cotizado: si después elige otro
+        producto con receta, deriva normalmente."""
+        from app.services.session_service import SessionService
+        ss = SessionService("redis://127.0.0.1:1")
+        await ss.armar_cotizacion("549", sku_id="Y1", sku_nombre="Yasminelle",
+                                  precio=100.0, delegar=True)
+        await ss.set_pending("549", sku_id="OTRO", sku_nombre="Otro remedio",
+                             precio=50.0)
+        assert not (await ss.get("549")).get("receta_validada")
+
+    async def test_reseleccion_del_mismo_producto_conserva_el_candado(self):
+        from app.services.session_service import SessionService
+        ss = SessionService("redis://127.0.0.1:1")
+        await ss.armar_cotizacion("549", sku_id="Y1", sku_nombre="Yasminelle",
+                                  precio=100.0, delegar=True)
+        await ss.set_pending("549", sku_id="Y1", sku_nombre="Yasminelle", precio=100.0)
+        assert (await ss.get("549")).get("receta_validada") is True
+
+    async def test_cancelar_limpia_el_candado(self):
+        from app.services.session_service import SessionService
+        ss = SessionService("redis://127.0.0.1:1")
+        await ss.armar_cotizacion("549", sku_id="Y1", sku_nombre="Y", precio=1.0,
+                                  delegar=True)
+        await ss.clear_pending("549")
+        assert not (await ss.get("549")).get("receta_validada")
+
+    def test_endpoint_modo_cotizar_sin_link(self):
+        from fastapi.testclient import TestClient
+        from app.main import app
+        r = TestClient(app).post("/bo/paylink", json={
+            "phone": "5490000000001", "detalle": "Yasminelle", "monto": 1000,
+            "pct_os": 10, "plantilla": "receta", "modo": "cotizar",
+            "delegar": True, "enviar": False,
+        })
+        assert r.status_code == 200
+        body = r.json()
+        assert body["ok"] is True
+        assert "http" not in body["mensaje"]               # SIN link
+        assert "900" in body["mensaje"]                    # el precio cotizado sí
+        assert body.get("link") is None
+
+    def test_endpoint_modo_cotizar_rechaza_placeholder_link(self):
+        from fastapi.testclient import TestClient
+        from app.main import app
+        r = TestClient(app).post("/bo/paylink", json={
+            "phone": "549", "detalle": "X", "monto": 100, "modo": "cotizar",
+            "mensaje": "Pagá acá {link}", "enviar": False,
+        })
+        assert r.status_code == 400
+
+
 class TestCostoEnvio:
     """
     Costo de envío a domicilio (config envio_costo, "0" = gratis). Se suma al

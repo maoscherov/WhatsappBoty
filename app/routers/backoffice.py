@@ -594,6 +594,8 @@ class ConfigUpdate(BaseModel):
     envio_costo: str | None = None               # costo del envío a domicilio ("0" = gratis)
     receta_ocr_enabled: str | None = None        # "true" = leer recetas al derivar
     receta_cotizacion_intro: str | None = None   # cabecera del mensaje de cotización ({producto})
+    receta_cotizacion_cierre: str | None = None  # invitación a confirmar (modo cotizar, sin link)
+    receta_recibida_message: str | None = None   # respuesta del bot al recibir una receta
     contexto_reinicio_minutos: str | None = None  # pausa que arranca charla nueva ("0" = nunca)
     socio_discount_pct: str | None = None        # "0" = apagado, ej "15"
     socio_discount_en_catalogo: str | None = None  # "true" = precio bonificado ya al ofrecer
@@ -659,6 +661,11 @@ class PaylinkIn(BaseModel):
     # prearmado "tenemos stock disponible..." con el desglose.
     pct_os: float | None = None
     plantilla: str | None = None  # "receta" → mensaje prearmado de cotización
+    # modo="cotizar": la oferta va SIN link — el pedido queda armado y el bot
+    # manda el link cuando el cliente confirma. delegar=True devuelve la
+    # conversación al bot; False la deja en modo operador con el pedido listo.
+    modo: str | None = None
+    delegar: bool = True
 
 
 @router.post("/paylink")
@@ -706,6 +713,42 @@ async def bo_paylink(body: PaylinkIn, _=Depends(_auth)):
         precio = cotizacion["precio_final"]
 
     total = round(precio * cantidad, 2)
+
+    # ── Modo COTIZAR: oferta sin link — el bot lo manda cuando el cliente
+    # confirma (flujo normal: sí → entrega → link por este precio). ─────────
+    if body.modo == "cotizar":
+        if body.mensaje and "{link}" in body.mensaje:
+            raise HTTPException(
+                status_code=400,
+                detail="En modo cotización el mensaje no lleva link: el bot lo "
+                       "manda cuando el cliente confirma.")
+        if body.sku_id is None:
+            # Sin SKU el "sí" posterior no tiene producto que confirmar.
+            sku_id = "MANUAL"
+        cierre = (_cfg.get("receta_cotizacion_cierre") or
+                  "¿Querés que avancemos? Decime *sí* y te mando el link de pago 🙂")
+        if body.mensaje:
+            mensaje = body.mensaje
+        else:
+            intro = (_cfg.get("receta_cotizacion_intro") or
+                     "¡Buenas noticias! Tenemos stock de {producto} 👍").replace(
+                         "{producto}", nombre)
+            cuerpo = cotizacion["desglose"] if cotizacion else f"El precio es ${total:,.2f}."
+            mensaje = f"{intro} {cuerpo}\n\n{cierre}"
+
+        session_svc = get_session_service(settings.redis_url)
+        await session_svc.armar_cotizacion(body.phone, sku_id=sku_id,
+                                           sku_nombre=nombre, precio=total,
+                                           delegar=body.delegar)
+        enviado = False
+        if body.enviar:
+            wa = get_whatsapp_service(settings.whatsapp_token, settings.whatsapp_phone_number_id)
+            enviado = await wa.send_text(body.phone, mensaje)
+            if enviado:
+                await session_svc.add_message(body.phone, "assistant", mensaje)
+        return {"ok": True, "link": None, "detalle": nombre, "total": total,
+                "enviado": enviado, "mensaje": mensaje, "cotizacion": cotizacion,
+                "modo": "cotizar", "delegado": body.delegar}
 
     # Generar el link con el proveedor activo (el mismo que usa el bot)
     from app.routers.webhook import payment_svc_para

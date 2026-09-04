@@ -110,6 +110,11 @@ class SessionService:
         else:
             items = [{"sku_id": sku_id, "nombre": sku_nombre,
                       "precio": precio, "cantidad": cant}]
+        # El candado de "receta ya validada por el operador" vale para EL
+        # producto cotizado: elegir otro producto lo pierde (si el nuevo
+        # lleva receta, deriva normalmente).
+        if sku_id != session.get("pending_sku_id"):
+            session.pop("receta_validada", None)
 
         session.update({
             "pending_sku_id": sku_id,
@@ -144,6 +149,41 @@ class SessionService:
         session["estado"] = "esperando_confirmacion"
         await self.save(phone, session)
         return items
+
+    async def armar_cotizacion(self, phone: str, sku_id: str, sku_nombre: str,
+                               precio: float, delegar: bool = True):
+        """
+        Deja armado el pedido que el OPERADOR cotizó (receta ya vista por él):
+        el cliente recibe la oferta sin link, y su "sí" sigue el flujo normal
+        de confirmación → entrega → link por este precio.
+
+        `receta_validada` es el candado: sin él, confirmar un producto con
+        receta re-derivaría al operador en loop. Vale SOLO para este producto
+        (set_pending lo limpia si después elige otro).
+
+        delegar=True devuelve la conversación al bot (sale de la cola de
+        derivadas); delegar=False la deja en modo operador con el pedido listo.
+        """
+        session = await self.get(phone)
+        session.update({
+            "pending_sku_id": sku_id,
+            "pending_sku_nombre": sku_nombre,
+            "pending_precio": precio,
+            "pending_cantidad": 1,
+            "pending_opciones": [],
+            "pending_items": [{"sku_id": sku_id, "nombre": sku_nombre,
+                               "precio": precio, "cantidad": 1}],
+            "receta_validada": True,
+        })
+        session.pop("_espera_eleccion", None)
+        if delegar:
+            session["estado"] = "esperando_confirmacion"
+            for k in ("derivada_at", "derivada_motivo", "_handoff_avisado",
+                      "agente", "atendida_at"):
+                session.pop(k, None)
+        else:
+            session["estado"] = "operador"
+        await self.save(phone, session)
 
     async def guardar_extras(self, phone: str, extras: list[dict]):
         """
@@ -196,6 +236,7 @@ class SessionService:
             "tipo_entrega": None,
             "direccion_envio": None,
         })
+        session.pop("receta_validada", None)
         await self.save(phone, session)
 
     async def set_entrega(self, phone: str, tipo: str, direccion: str | None = None):
@@ -410,7 +451,7 @@ class SessionService:
             "estado": "idle", "tipo_entrega": None, "direccion_envio": None,
         })
         for k in ("_espera_eleccion", "extras_ofrecidos", "derivacion_ofrecida",
-                  "_conv_inicio", "_negativos", "receta_info"):
+                  "_conv_inicio", "_negativos", "receta_info", "receta_validada"):
             session.pop(k, None)
         await self.save(phone, session)
 
