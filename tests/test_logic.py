@@ -1402,6 +1402,82 @@ class TestRecetaOcr:
         assert info["socio_por_dni"] is None
         assert info["dni_coincide_padron"] is False
 
+    def test_armar_receta_info_varios_medicamentos(self):
+        """Receta con 2 medicamentos: candidatos por CADA uno, no la cadena
+        entera junta (que devolvía matches malos)."""
+        from app.services.receta_ocr import armar_receta_info
+
+        class _FakeSku:
+            def __init__(self):
+                self.queries = []
+
+            def buscar(self, q, top_n=3):
+                self.queries.append(q)
+                if q == "Ibupirac 600":
+                    return [{"sku_id": "I1", "nombre": "IBUPIRAC 600 COM x 30",
+                             "precio": 5000.0, "estado": "disponible",
+                             "requiere_receta": "no"}]
+                if q == "omeprazol":
+                    return [{"sku_id": "O1", "nombre": "OMEPRAZOL GEN 20",
+                             "precio": 3000.0, "estado": "disponible",
+                             "requiere_receta": "si"}]
+                return []
+
+        class _SinPadron:
+            def find_by_phone(self, p): return None
+            def find_by_dni(self, d): return None
+
+        sku = _FakeSku()
+        ocr = dict(self.OCR, producto_sugerido="Ibupirac 600, Losec",
+                   droga="ibuprofeno, omeprazol")
+        info = armar_receta_info(ocr, sku, _SinPadron(), "549341")
+        ids = [c["sku_id"] for c in info["candidatos_catalogo"]]
+        assert ids == ["I1", "O1"]           # un candidato por medicamento
+        # el 2° salió por la droga (la marca "Losec" no matcheó) y cada
+        # candidato dice qué consulta lo trajo
+        assert info["candidatos_catalogo"][0]["consulta"] == "Ibupirac 600"
+        assert info["candidatos_catalogo"][1]["consulta"] == "omeprazol"
+        # nunca se buscó la cadena entera junta
+        assert "Ibupirac 600, Losec" not in sku.queries
+
+
+class TestPersonalizarNombre:
+    """{nombre} en los mensajes fijos de recepción de receta/credencial:
+    con socio en el padrón se saluda por nombre; sin socio el saludo
+    desaparece sin dejar '¡Hola !'."""
+
+    def test_reemplaza_con_nombre(self):
+        from app.services.checkout_helper import personalizar_nombre
+        t = "¡Hola {nombre}! Recibimos tu receta 🙌"
+        assert personalizar_nombre(t, "María") == "¡Hola María! Recibimos tu receta 🙌"
+
+    def test_sin_nombre_elimina_el_saludo(self):
+        from app.services.checkout_helper import personalizar_nombre
+        t = "¡Hola {nombre}! Recibimos tu receta 🙌 Volvemos en 10 minutos."
+        assert personalizar_nombre(t, "") == "Recibimos tu receta 🙌 Volvemos en 10 minutos."
+
+    def test_sin_nombre_variantes_de_saludo(self):
+        from app.services.checkout_helper import personalizar_nombre
+        assert personalizar_nombre("Hola {nombre}, recibimos tu receta.", "") == \
+            "recibimos tu receta."
+        # placeholder suelto (config sin saludo): se limpia sin romper nada
+        assert personalizar_nombre("Gracias {nombre} por tu receta.", "") == \
+            "Gracias por tu receta."
+
+    def test_texto_sin_placeholder_sale_intacto(self):
+        from app.services.checkout_helper import personalizar_nombre
+        t = "Recibimos tu receta 🙌 Volvemos en 10 minutos."
+        assert personalizar_nombre(t, "María") == t
+        assert personalizar_nombre(t, "") == t
+
+    def test_nunca_devuelve_vacio(self):
+        from app.services.checkout_helper import personalizar_nombre
+        assert personalizar_nombre("¡Hola {nombre}!", "") != ""
+
+    def test_default_de_config_trae_placeholder(self):
+        from app.services.config_service import DEFAULTS
+        assert "{nombre}" in DEFAULTS["receta_recibida_message"]
+
     async def test_receta_info_se_limpia_al_liberar(self):
         from app.services.session_service import SessionService
         ss = SessionService("redis://127.0.0.1:1")

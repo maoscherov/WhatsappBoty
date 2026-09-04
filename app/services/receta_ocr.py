@@ -59,33 +59,50 @@ def cotizar_receta(precio_base: float, pct_os: float = 0,
             "precio_final": precio_final, "desglose": desglose}
 
 
+def _partir(valor: str) -> list[str]:
+    """'Ibuprofeno 600, Omeprazol 20' → ['Ibuprofeno 600', 'Omeprazol 20']."""
+    return [p.strip() for p in (valor or "").split(",") if p.strip()]
+
+
 def armar_receta_info(ocr: dict, sku_svc, socio_svc, phone: str) -> dict:
     """
     Devuelve el paquete completo para el operador:
       ocr                 → los campos leídos de la receta
-      candidatos_catalogo → top 3 del catálogo (por producto sugerido, o por
-                            droga si no hay marca)
+      candidatos_catalogo → top 3 del catálogo POR CADA medicamento de la
+                            receta (por marca sugerida, o por droga si no hay
+                            marca); cada candidato trae en `consulta` el
+                            medicamento que lo trajo
       socio_por_dni       → socio del padrón con el DNI de la RECETA (puede
                             ser otra persona que quien escribe)
       socio_por_telefono  → socio del padrón con el teléfono que la mandó
       dni_coincide_padron → True si el DNI de la receta está en el padrón
+
+    Una receta puede traer varios medicamentos separados por coma: buscar la
+    cadena entera junta devolvía candidatos malos, así que se busca cada uno
+    por separado (marca y droga apareadas por posición).
     """
+    productos = _partir(ocr.get("producto_sugerido"))
+    drogas = _partir(ocr.get("droga"))
     candidatos: list[dict] = []
-    for consulta in (ocr.get("producto_sugerido"), ocr.get("droga")):
-        if not consulta:
-            continue
-        try:
-            resultados = sku_svc.buscar(consulta, top_n=3)
-        except Exception as e:
-            logger.warning(f"receta_ocr: búsqueda de {consulta!r} falló: {e}")
-            resultados = []
-        if resultados:
-            candidatos = [{
-                "sku_id": r.get("sku_id"), "nombre": r.get("nombre"),
-                "precio": r.get("precio"), "estado": r.get("estado"),
-                "requiere_receta": r.get("requiere_receta"),
-            } for r in resultados]
-            break
+    for i in range(max(len(productos), len(drogas))):
+        consultas = (productos[i] if i < len(productos) else "",
+                     drogas[i] if i < len(drogas) else "")
+        for consulta in consultas:
+            if not consulta:
+                continue
+            try:
+                resultados = sku_svc.buscar(consulta, top_n=3)
+            except Exception as e:
+                logger.warning(f"receta_ocr: búsqueda de {consulta!r} falló: {e}")
+                resultados = []
+            if resultados:
+                candidatos.extend({
+                    "sku_id": r.get("sku_id"), "nombre": r.get("nombre"),
+                    "precio": r.get("precio"), "estado": r.get("estado"),
+                    "requiere_receta": r.get("requiere_receta"),
+                    "consulta": consulta,
+                } for r in resultados)
+                break
 
     socio_dni = None
     socio_tel = None

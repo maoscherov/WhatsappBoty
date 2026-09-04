@@ -237,6 +237,24 @@ def quitar_confirmaciones_fantasma(texto: str) -> str:
     return limpio if limpio else (texto or "")
 
 
+def personalizar_nombre(texto: str, nombre: str = "") -> str:
+    """
+    Resuelve el placeholder {nombre} en los mensajes fijos (recepción de
+    receta/credencial): con nombre lo reemplaza; sin nombre elimina el saludo
+    que lo contiene ("¡Hola {nombre}! ...") para que no quede "¡Hola !". Si el
+    texto no trae placeholder, sale intacto — las configs viejas siguen
+    funcionando igual.
+    """
+    if "{nombre}" not in (texto or ""):
+        return texto or ""
+    if nombre:
+        return texto.replace("{nombre}", nombre)
+    limpio = re.sub(r"¡?\s*hola,?\s*\{nombre\}\s*[!,.]?\s*", "", texto, flags=re.IGNORECASE)
+    limpio = limpio.replace("{nombre}", "").strip()
+    limpio = re.sub(r"\s{2,}", " ", limpio)
+    return limpio or texto.replace("{nombre}", "").strip()
+
+
 _PIDE_FOTO = [
     r"\b(mand|pas|env[ií]|ten[eé]|hay|ver|mostr|sac)\w*\b.{0,25}\b(foto|fotos|imagen|im[aá]genes)\b",
     r"\b(foto|fotos|imagen|im[aá]genes)\b.{0,25}\b(mand|pas|env[ií]|ten[eé]|mostr)\w*\b",

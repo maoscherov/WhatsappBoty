@@ -158,9 +158,11 @@ DEFAULTS: dict[str, str] = {
     ),
     # Respuesta del bot al recibir una foto de receta (configurable — pedido
     # 4/9: promete la validación en ~10 min, coherente con el SLA de 15).
+    # {nombre} se reemplaza por el nombre del socio si el teléfono está en el
+    # padrón; si no, el saludo que lo contiene se elimina completo.
     "receta_recibida_message": (
-        "Recibimos tu receta 🙌 Validamos la información y volvemos con vos "
-        "dentro de los próximos 10 minutos."
+        "¡Hola {nombre}! Recibimos tu receta 🙌 Validamos la información y "
+        "volvemos con vos dentro de los próximos 10 minutos."
     ),
     # OCR de recetas: al derivar una receta por foto, leerla (visión) y dejar
     # en el backoffice paciente, medicamento, candidato del catálogo y cruce

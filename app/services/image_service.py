@@ -27,7 +27,9 @@ _PROMPT = (
     "Analizá esta imagen enviada a una farmacia por WhatsApp y clasificala.\n"
     "Respondé SOLO con un JSON (sin texto extra) con este esquema:\n"
     '{"tipo": "receta|credencial|producto|otro", "items": "nombres separados por coma o vacío"}\n\n'
-    "- receta: es una receta o prescripción médica (manuscrita o impresa, con indicaciones).\n"
+    "- receta: es una receta o prescripción médica: manuscrita, impresa, o una "
+    "captura de pantalla de una receta electrónica (app o portal de una obra "
+    "social/prepaga con medicamentos recetados).\n"
     "- credencial: es una credencial/carnet de obra social o prepaga (PAMI, IOMA, etc.).\n"
     "- producto: es la foto de un medicamento o producto de salud. Poné su nombre en items.\n"
     "- otro: cualquier otra cosa que no encaje.\n"
@@ -50,7 +52,9 @@ _PROMPT_RECETA = (
     "- dni: solo los dígitos, sin puntos.\n"
     "- droga: el principio activo prescripto (puede haber más de uno, separados "
     "por coma).\n"
-    "- producto_sugerido: la marca comercial si figura (ej: 'Yasminelle').\n"
+    "- producto_sugerido: la marca comercial si figura (ej: 'Yasminelle'); si "
+    "hay varios medicamentos, todas las marcas separadas por coma, en el mismo "
+    "orden que las drogas.\n"
     "- presentacion: forma y cantidad (ej: 'comp.rec.x 28').\n"
     "- vigencia: la fecha de inicio de vigencia o de confección."
 )
