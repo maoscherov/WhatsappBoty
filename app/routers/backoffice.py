@@ -732,6 +732,12 @@ async def bo_paylink(body: PaylinkIn, _=Depends(_auth)):
             f"Acá te mando el link de pago para {nombre_cant} (${total:,.2f}):\n\n{link}\n\n"
             "El link tiene vigencia de 24hs. ¡Cualquier cosa me avisás!"
         )
+    # Mensaje editado por el operador: el {link} lo inserta el backend con el
+    # link fresco de ESTE envío — un texto editado nunca queda apuntando a un
+    # link viejo que cobra otro importe.
+    if "{link}" in mensaje:
+        mensaje = mensaje.replace("{link}", link)
+
     if body.enviar:
         wa = get_whatsapp_service(settings.whatsapp_token, settings.whatsapp_phone_number_id)
         enviado = await wa.send_text(body.phone, mensaje)

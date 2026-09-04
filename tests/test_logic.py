@@ -888,6 +888,33 @@ class TestCotizacionReceta:
         c = self._c(9999.99, pct_os=33.33)
         assert c["precio_final"] == round(9999.99 * (1 - 0.3333), 2)
 
+    def test_mensaje_editado_con_placeholder_link(self, monkeypatch):
+        """
+        El operador puede editar el texto de la cotización; el {link} lo
+        inserta el backend con el link FRESCO del momento del envío — así el
+        texto editado nunca queda con un link que cobra un importe viejo.
+        """
+        from fastapi.testclient import TestClient
+        import app.routers.webhook as wh
+        from app.main import app
+
+        class _FakePago:
+            async def crear_link(self, sku_id, nombre, precio, phone, cantidad=1):
+                return "https://pago/FRESCO", None
+
+        monkeypatch.setattr(wh, "payment_svc_para", lambda cfg, s: _FakePago())
+        r = TestClient(app).post("/bo/paylink", json={
+            "phone": "549341", "detalle": "Yasminelle", "monto": 1000,
+            "pct_os": 10, "plantilla": "receta", "enviar": False,
+            "mensaje": "Hola! Tu remedio sale $900. Pagá acá: {link} — gracias!",
+        })
+        assert r.status_code == 200
+        body = r.json()
+        assert body["ok"] is True
+        assert "https://pago/FRESCO" in body["mensaje"]
+        assert "{link}" not in body["mensaje"]
+        assert body["mensaje"].startswith("Hola! Tu remedio")   # el texto editado manda
+
     def test_endpoint_paylink_receta_responde(self):
         """Smoke HTTP: atraviesa el router con pct_os y plantilla receta (los
         imports y el cálculo corren aunque el proveedor de pago no responda)."""
