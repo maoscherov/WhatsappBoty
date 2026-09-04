@@ -736,12 +736,15 @@ async def bo_paylink(body: PaylinkIn, _=Depends(_auth)):
             cuerpo = cotizacion["desglose"] if cotizacion else f"El precio es ${total:,.2f}."
             mensaje = f"{intro} {cuerpo}\n\n{cierre}"
 
-        session_svc = get_session_service(settings.redis_url)
-        await session_svc.armar_cotizacion(body.phone, sku_id=sku_id,
-                                           sku_nombre=nombre, precio=total,
-                                           delegar=body.delegar)
+        # El pedido se arma SOLO al enviar de verdad: la previsualización no
+        # muta nada — armar en el preview sacaba la conversación del modo
+        # operador y la tarjeta "desaparecía" de la cola (bug real, 5/9).
         enviado = False
         if body.enviar:
+            session_svc = get_session_service(settings.redis_url)
+            await session_svc.armar_cotizacion(body.phone, sku_id=sku_id,
+                                               sku_nombre=nombre, precio=total,
+                                               delegar=body.delegar)
             wa = get_whatsapp_service(settings.whatsapp_token, settings.whatsapp_phone_number_id)
             enviado = await wa.send_text(body.phone, mensaje)
             if enviado:

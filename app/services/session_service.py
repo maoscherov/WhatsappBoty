@@ -361,7 +361,13 @@ class SessionService:
                 await self.save(phone, session)   # estampa _last_activity
                 continue
             umbral = threshold_secs
-            if session.get("estado") == "esperando_pago" and threshold_pago_secs:
+            # Ventana larga: link de pago vigente, o cotización de receta
+            # enviada por el operador esperando el "sí" del cliente — cerrarla
+            # a los 15 min borraría el pedido cotizado (bug real, 5/9).
+            if threshold_pago_secs and (
+                session.get("estado") == "esperando_pago"
+                or (session.get("receta_validada") and session.get("pending_sku_id"))
+            ):
                 umbral = threshold_pago_secs
             if now - float(last) >= umbral:
                 out.append((phone, session))

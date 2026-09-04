@@ -883,6 +883,55 @@ class TestCotizacionSinLink:
         await ss.clear_pending("549")
         assert not (await ss.get("549")).get("receta_validada")
 
+    def test_el_preview_no_toca_la_sesion(self):
+        """
+        Regresión (5/9): el preview (enviar:false) armaba el pedido y sacaba
+        la conversación del modo operador — la tarjeta de la receta
+        "desaparecía" de la cola de derivadas sin que el operador enviara
+        nada. Previsualizar no muta NADA; solo el envío real arma el pedido.
+        """
+        import asyncio
+        from fastapi.testclient import TestClient
+        from app.services.session_service import get_session_service
+        from app.main import app
+
+        # El MISMO singleton que usa el endpoint: si no, el test no muerde.
+        ss = get_session_service("redis://127.0.0.1:1")
+        asyncio.run(ss.set_estado("5490000000077", "operador", motivo="receta_foto"))
+
+        r = TestClient(app).post("/bo/paylink", json={
+            "phone": "5490000000077", "detalle": "Yasminelle", "monto": 1000,
+            "modo": "cotizar", "delegar": True, "enviar": False,
+        })
+        assert r.status_code == 200 and r.json()["ok"] is True
+
+        s = asyncio.run(ss.get("5490000000077"))
+        assert s["estado"] == "operador"                   # sigue derivada
+        assert not s.get("receta_validada")
+        assert not s.get("pending_sku_id")
+
+    async def test_cotizacion_vigente_usa_la_ventana_larga_de_cierre(self):
+        """
+        Regresión (5/9): la cotización delegada quedaba en esperando_confirmacion
+        y el cierre de 15 min la borraba — el "sí" del cliente a la media hora
+        no encontraba pedido. Con cotización vigente aplica la ventana larga.
+        """
+        import time
+        from app.services.session_service import SessionService
+        ss = SessionService("redis://127.0.0.1:1")
+        await ss.armar_cotizacion("549", sku_id="Y1", sku_nombre="Y",
+                                  precio=100.0, delegar=True)
+        s = await ss.get("549")
+        s["_last_activity"] = time.time() - 30 * 60        # 30 min inactiva
+        await ss.save("549", s)
+        s2 = await ss.get("549")
+        s2["_last_activity"] = time.time() - 30 * 60
+        # save() pisa _last_activity con ahora; lo forzamos guardando directo
+        ss._memory["549"] = s2
+
+        viejas = await ss.inactivas(15 * 60, 1440 * 60)
+        assert all(p != "549" for p, _ in viejas)          # NO se cierra a los 15
+
     def test_endpoint_modo_cotizar_sin_link(self):
         from fastapi.testclient import TestClient
         from app.main import app
