@@ -1,0 +1,48 @@
+[package]
+name = "remedia-agent"
+version = "0.1.0"
+edition = "2021"
+description = "Conector de catálogo ObServer Gestión → Remedia (servicio de Windows)"
+
+[lib]
+name = "remedia_agent"
+path = "src/lib.rs"
+
+[[bin]]
+name = "agent"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "signal", "net"] }
+tokio-util = "0.7"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+futures-util = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+blake3 = "1"
+rust_decimal = { version = "1", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-appender = "0.2"
+clap = { version = "4", features = ["derive"] }
+async-trait = "0.1"
+thiserror = "1"
+anyhow = "1"
+toml = "0.8"
+chrono = { version = "0.4", features = ["serde", "clock"] }
+http = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows-service = "0.7"
+
+[dev-dependencies]
+wiremock = "0.6"
+tempfile = "3"
+
+[profile.release]
+lto = true
+panic = "abort"
+codegen-units = 1
+strip = true
