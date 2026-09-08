@@ -73,7 +73,7 @@ remedia-agent/
 **Interfaces:**
 - Produces: `Config { branch_id: String, remedia_url: String, token: String, heartbeat_interval_secs: u64, erp: ErpConfig, log: LogConfig }`, `ErpConfig { kind: String, base_url: String, sync_interval_secs: u64, max_concurrency: usize, request_timeout_secs: u64, daily_id_scan: bool, id_scan_max: i64 }`, `LogConfig { dir: PathBuf }`. `Config::load(path: &Path) -> anyhow::Result<Config>`, `Config::from_toml(s: &str) -> anyhow::Result<Config>`, `Config::default_data_dir() -> PathBuf` (`C:\ProgramData\RemediaAgent`), `Config::write(&self, path) -> anyhow::Result<()>`. `logging::init(dir: Option<&Path>, to_stdout: bool) -> anyhow::Result<WorkerGuard>`.
 
-- [ ] **Step 1: Cargo.toml**
+- [x] **Step 1: Cargo.toml**
 
 ```toml
 [package]
@@ -121,7 +121,7 @@ codegen-units = 1
 strip = true
 ```
 
-- [ ] **Step 2: Test de config (unit en `config.rs`)**
+- [x] **Step 2: Test de config (unit en `config.rs`)**
 
 ```rust
 #[cfg(test)]
@@ -157,13 +157,13 @@ dir = "C:\\ProgramData\\RemediaAgent\\logs"
 }
 ```
 
-- [ ] **Step 3: Implementar `config.rs`** con `#[derive(Serialize, Deserialize)]` y `#[serde(default = "...")]` para cada default (900, 4, 30, false, 100_300, 300; `log.dir` default `<data_dir>\logs`).
+- [x] **Step 3: Implementar `config.rs`** con `#[derive(Serialize, Deserialize)]` y `#[serde(default = "...")]` para cada default (900, 4, 30, false, 100_300, 300; `log.dir` default `<data_dir>\logs`).
 
-- [ ] **Step 4: Implementar `logging.rs`**: `tracing_subscriber::registry()` con `EnvFilter` (`RUST_LOG`, default `info`), capa fmt a stdout si `to_stdout`, capa fmt a `RollingFileAppender::builder().rotation(Rotation::DAILY).max_log_files(7).filename_prefix("agent").filename_suffix("log").build(dir)` si `dir` es `Some`. Devuelve el `WorkerGuard`.
+- [x] **Step 4: Implementar `logging.rs`**: `tracing_subscriber::registry()` con `EnvFilter` (`RUST_LOG`, default `info`), capa fmt a stdout si `to_stdout`, capa fmt a `RollingFileAppender::builder().rotation(Rotation::DAILY).max_log_files(7).filename_prefix("agent").filename_suffix("log").build(dir)` si `dir` es `Some`. Devuelve el `WorkerGuard`.
 
-- [ ] **Step 5: `main.rs` mínimo** con clap: enum `Cmd { Install{token, erp, branch, data_dir}, Uninstall, Run{config}, SyncNow{config}, Status{config} }`, todos imprimen "no implementado" por ahora salvo que compile. `mod config; mod logging; mod erp; mod catalog; mod remedia;`.
+- [x] **Step 5: `main.rs` mínimo** con clap: enum `Cmd { Install{token, erp, branch, data_dir}, Uninstall, Run{config}, SyncNow{config}, Status{config} }`, todos imprimen "no implementado" por ahora salvo que compile. `mod config; mod logging; mod erp; mod catalog; mod remedia;`.
 
-- [ ] **Step 6: `cargo test` pasa, `cargo build` compila. Commit** `remedia-agent: scaffold, config y logging`.
+- [x] **Step 6: `cargo test` pasa, `cargo build` compila. Commit** `remedia-agent: scaffold, config y logging`.
 
 ---
 
@@ -207,7 +207,7 @@ dir = "C:\\ProgramData\\RemediaAgent\\logs"
   impl CatalogItem { pub fn from_dto(dto: &ProductoDTO) -> CatalogItem; pub fn compute_hash(&self) -> String; }
   ```
 
-- [ ] **Step 1: Tests unitarios en `item.rs`**
+- [x] **Step 1: Tests unitarios en `item.rs`**
 
 ```rust
 #[cfg(test)]
@@ -258,9 +258,9 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Implementar.** `normalize_name` = `s.split_whitespace().collect::<Vec<_>>().join(" ")`. `from_dto`: barcodes `sort_unstable(); dedup()`, filtrar vacíos; `price = if precio.is_zero() {None} else {Some(precio.round_dp(2))}`; `stock = stock_sucursal.round() as i32`; `active = !baja`; luego `hash = compute_hash()`. `compute_hash`: serializar con `serde_json` una tupla/struct `HashInput<'a>` con todos los campos menos `hash` en orden fijo, `blake3::hash(bytes).to_hex()`.
+- [x] **Step 2: Implementar.** `normalize_name` = `s.split_whitespace().collect::<Vec<_>>().join(" ")`. `from_dto`: barcodes `sort_unstable(); dedup()`, filtrar vacíos; `price = if precio.is_zero() {None} else {Some(precio.round_dp(2))}`; `stock = stock_sucursal.round() as i32`; `active = !baja`; luego `hash = compute_hash()`. `compute_hash`: serializar con `serde_json` una tupla/struct `HashInput<'a>` con todos los campos menos `hash` en orden fijo, `blake3::hash(bytes).to_hex()`.
 
-- [ ] **Step 3: `cargo test` pasa. Commit** `remedia-agent: ProductoDTO y CatalogItem con hash blake3`.
+- [x] **Step 3: `cargo test` pasa. Commit** `remedia-agent: ProductoDTO y CatalogItem con hash blake3`.
 
 ---
 
@@ -286,9 +286,9 @@ mod tests {
   ```
   `tests/common/mod.rs`: `pub async fn mock_erp(fixture: &str, cantidad_lotes: u32) -> MockServer` (monta `GET /api/productos/lote/1` → fixture; `lote/{n>cantidad}` → 400 JSON `{"Message":"El numeroLote=N no genera un conjunto de productos"}`), `pub fn lote1() -> LoteResponse`.
 
-- [ ] **Step 1: Fixture `lote1.json`** con `cantidadLotes: 1` y ~12 productos: id 7454 (el de la spec), uno sin CB, uno con 3 CB, dos con el mismo CB `7790000000001` y `visiblesMismoCB: 2`, uno con `precio: 0`, uno de Perfumería con `troquel: 0` y `nombresDrogas: ""`, uno con `esVisibleEnVenta: false`, uno con `stockSucursal: 12`, todos con las 5 ofertas LaPos/GetNet.
+- [x] **Step 1: Fixture `lote1.json`** con `cantidadLotes: 1` y ~12 productos: id 7454 (el de la spec), uno sin CB, uno con 3 CB, dos con el mismo CB `7790000000001` y `visiblesMismoCB: 2`, uno con `precio: 0`, uno de Perfumería con `troquel: 0` y `nombresDrogas: ""`, uno con `esVisibleEnVenta: false`, uno con `stockSucursal: 12`, todos con las 5 ofertas LaPos/GetNet.
 
-- [ ] **Step 2: Tests de integración `observer_adapter.rs`**
+- [x] **Step 2: Tests de integración `observer_adapter.rs`**
 
 ```rust
 mod common;
@@ -318,9 +318,9 @@ use wiremock::{Mock, ResponseTemplate, matchers::{method, path, body_json}};
 ```
 Exportar la lib: agregar `remedia-agent/src/lib.rs` con `pub mod config; pub mod erp; pub mod catalog; pub mod remedia; pub mod logging;` y hacer que `main.rs` use `remedia_agent::*`.
 
-- [ ] **Step 3: Implementar `observer.rs`.** Cliente reqwest con `default_headers(Accept: application/json)`, `timeout`. Helper `classify(resp) -> Result<Response, ErpError>`: 401 → NotAuthorized; error de conexión/timeout → Unreachable. `fetch_all`: `n=1`, primer lote define `total`; loop `for n in 1..=total` GET `lote/{n}`; 400 corta (`warn!`), otros ≥400 → `Http`. `lookup_by_barcodes`: POST JSON; 404 → `Ok(vec![])`. `lookup_by_id`: GET; 404 → `Ok(None)`. `build_adapter`: `kind == "observer"` → ObserverAdapter; otro → `bail!`.
+- [x] **Step 3: Implementar `observer.rs`.** Cliente reqwest con `default_headers(Accept: application/json)`, `timeout`. Helper `classify(resp) -> Result<Response, ErpError>`: 401 → NotAuthorized; error de conexión/timeout → Unreachable. `fetch_all`: `n=1`, primer lote define `total`; loop `for n in 1..=total` GET `lote/{n}`; 400 corta (`warn!`), otros ≥400 → `Http`. `lookup_by_barcodes`: POST JSON; 404 → `Ok(vec![])`. `lookup_by_id`: GET; 404 → `Ok(None)`. `build_adapter`: `kind == "observer"` → ObserverAdapter; otro → `bail!`.
 
-- [ ] **Step 4: `cargo test` pasa. Commit** `remedia-agent: adapter ObServer Gestión con tests contra mock HTTP`.
+- [x] **Step 4: `cargo test` pasa. Commit** `remedia-agent: adapter ObServer Gestión con tests contra mock HTTP`.
 
 ---
 
@@ -353,16 +353,16 @@ Exportar la lib: agregar `remedia-agent/src/lib.rs` con `pub mod config; pub mod
   ```
   Claves de meta usadas: `last_sync_ok_at`, `last_full_manifest_at`, `last_heartbeat_at`, `erp_status`, `erp_version`, `catalog_count`.
 
-- [ ] **Step 1: Tests** — `upsert_then_known_hashes`, `enqueue_due_and_backoff` (encolar, `due_pending(now)` lo devuelve, `mark_failed(id, now+30)` → no due en `now`, sí en `now+30`, attempts=1), `meta_roundtrip`, `open_creates_file_and_reopens` (tempdir).
+- [x] **Step 1: Tests** — `upsert_then_known_hashes`, `enqueue_due_and_backoff` (encolar, `due_pending(now)` lo devuelve, `mark_failed(id, now+30)` → no due en `now`, sí en `now+30`, attempts=1), `meta_roundtrip`, `open_creates_file_and_reopens` (tempdir).
 
-- [ ] **Step 2: Implementar** con `PRAGMA journal_mode=WAL`, schema:
+- [x] **Step 2: Implementar** con `PRAGMA journal_mode=WAL`, schema:
 ```sql
 CREATE TABLE IF NOT EXISTS items(external_id TEXT PRIMARY KEY, hash TEXT NOT NULL, updated_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS pending(id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, payload TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, next_try_at INTEGER NOT NULL, created_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 ```
 
-- [ ] **Step 3: `cargo test` pasa. Commit** `remedia-agent: estado local SQLite (items, cola pendiente, meta)`.
+- [x] **Step 3: `cargo test` pasa. Commit** `remedia-agent: estado local SQLite (items, cola pendiente, meta)`.
 
 ---
 
@@ -392,11 +392,11 @@ CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
   pub fn now_rfc3339() -> String; // chrono::Local::now().to_rfc3339_opts(Secs, false)
   ```
 
-- [ ] **Step 1: Test** en `tests/remedia_client.rs`: wiremock con `header("authorization", "Bearer tok")` + `path("/v1/sync/catalog")` → 200 `{"received":1,"upserted":1,"unchanged":0}`; 500 → `Err(Http(500,_))`; `ws_url()` de `https://api.remedia.ar` = `wss://api.remedia.ar/v1/agent/ws`.
+- [x] **Step 1: Test** en `tests/remedia_client.rs`: wiremock con `header("authorization", "Bearer tok")` + `path("/v1/sync/catalog")` → 200 `{"received":1,"upserted":1,"unchanged":0}`; 500 → `Err(Http(500,_))`; `ws_url()` de `https://api.remedia.ar` = `wss://api.remedia.ar/v1/agent/ws`.
 
-- [ ] **Step 2: Implementar.** `Http` cuando `!status.is_success()`, cuerpo truncado a 300 chars.
+- [x] **Step 2: Implementar.** `Http` cuando `!status.is_success()`, cuerpo truncado a 300 chars.
 
-- [ ] **Step 3: `cargo test` pasa. Commit** `remedia-agent: cliente HTTP de Remedia (catalog, full-manifest, heartbeat)`.
+- [x] **Step 3: `cargo test` pasa. Commit** `remedia-agent: cliente HTTP de Remedia (catalog, full-manifest, heartbeat)`.
 
 ---
 
@@ -432,7 +432,7 @@ CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
   `flush_pending`: por cada `due_pending(now)`: deserializar `CatalogBatch`, `push_catalog`; 2xx → `upsert_hashes` + `remove_pending`; error → `mark_failed(id, now + backoff_secs(attempts+1))`; si `kind == "manifest"` lo mismo con `full_manifest`.
   `full_manifest`: entries desde `known_hashes()`; respuesta `resend` → `fetch_all` fresco, filtrar esos ids, `push_catalog` en lotes (misma lógica de cola); `set_meta(last_full_manifest_at)`.
 
-- [ ] **Step 1: Tests `sync_flow.rs`** (mock ERP de `common` + mock Remedia con wiremock; `State::open` en tempdir; `Config::from_toml` apuntando a ambos mocks):
+- [x] **Step 1: Tests `sync_flow.rs`** (mock ERP de `common` + mock Remedia con wiremock; `State::open` en tempdir; `Config::from_toml` apuntando a ambos mocks):
 
 ```rust
 #[tokio::test] async fn first_run_sends_everything_second_run_sends_nothing() {
@@ -459,9 +459,9 @@ CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 ```
 `common::mock_erp_with(f: impl FnOnce(&mut LoteResponse))` para mutar el fixture antes de montarlo.
 
-- [ ] **Step 2: Implementar `sync.rs`** según el comportamiento de arriba. `send_heartbeat` arma `Heartbeat` desde meta (`erp_status` default `"inalcanzable"` si nunca corrió), `agent_version = env!("CARGO_PKG_VERSION")`, `erp_version = erp.version().await`, `pending_batches = pending_count()`.
+- [x] **Step 2: Implementar `sync.rs`** según el comportamiento de arriba. `send_heartbeat` arma `Heartbeat` desde meta (`erp_status` default `"inalcanzable"` si nunca corrió), `agent_version = env!("CARGO_PKG_VERSION")`, `erp_version = erp.version().await`, `pending_batches = pending_count()`.
 
-- [ ] **Step 3: `cargo test` pasa. Commit** `remedia-agent: motor de sync con delta, cola con backoff, full-manifest y heartbeat`.
+- [x] **Step 3: `cargo test` pasa. Commit** `remedia-agent: motor de sync con delta, cola con backoff, full-manifest y heartbeat`.
 
 ---
 
@@ -482,11 +482,11 @@ CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
   ```
   `run_ws`: loop hasta `shutdown`: conectar con `tokio_tungstenite::connect_async` a un `Request` con header `Authorization: Bearer`; enviar `Hello`; `select!` entre mensajes entrantes, `interval(30s)` → enviar `Ping` (JSON `{"op":"ping"}`) y cerrar si no llegó `pong` en 2 intervalos, y `shutdown`. Reconexión con backoff 5 s → 5 min. `Lookup` → `handle_lookup` con `timeout` 3 s por request al ERP; `missing` = barcodes/ids sin resultado (ids como string).
 
-- [ ] **Step 1: Test `ws_lookup.rs`**: levantar `TcpListener` + `tokio_tungstenite::accept_hdr_async` verificando header Authorization; el test envía `{"op":"lookup","req_id":"abc","barcodes":["7795336085205"],"ids":[999999]}` y espera un `lookup_result` con 1 item (`external_id == "7454"`) y `missing == ["999999"]` (ERP mock de `common` con `POST codigosBarras` y `GET /api/productos/999999` → 404). Segundo test: enviar `{"op":"sync_now"}` y verificar que `sync_now_rx.recv()` recibe. Cancelar el token al final.
+- [x] **Step 1: Test `ws_lookup.rs`**: levantar `TcpListener` + `tokio_tungstenite::accept_hdr_async` verificando header Authorization; el test envía `{"op":"lookup","req_id":"abc","barcodes":["7795336085205"],"ids":[999999]}` y espera un `lookup_result` con 1 item (`external_id == "7454"`) y `missing == ["999999"]` (ERP mock de `common` con `POST codigosBarras` y `GET /api/productos/999999` → 404). Segundo test: enviar `{"op":"sync_now"}` y verificar que `sync_now_rx.recv()` recibe. Cancelar el token al final.
 
-- [ ] **Step 2: Implementar.**
+- [x] **Step 2: Implementar.**
 
-- [ ] **Step 3: `cargo test` pasa. Commit** `remedia-agent: websocket saliente con lookup en vivo y sync_now`.
+- [x] **Step 3: `cargo test` pasa. Commit** `remedia-agent: websocket saliente con lookup en vivo y sync_now`.
 
 ---
 
@@ -507,13 +507,13 @@ CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
   ```
   CLI final: `install --token T --erp URL --branch B [--remedia URL] [--data-dir D]` escribe `agent.toml` (`Config::write`), llama `service::install`. `uninstall`. `run [--data-dir D]` (foreground, logs a stdout + archivo, Ctrl+C cancela). `service --data-dir D` (oculto; lo invoca el SCM). `sync-now [--data-dir D]` (un `run_once` + `flush_pending`, imprime `SyncReport`). `status [--data-dir D]` imprime meta + `count_items` + `pending_count`.
 
-- [ ] **Step 1: Test** unit en `service.rs`: `fn should_run_full_manifest(last: Option<&str>, now: DateTime<Local>) -> bool` (None → true; hace 25 h → true; hace 1 h → false).
+- [x] **Step 1: Test** unit en `service.rs`: `fn should_run_full_manifest(last: Option<&str>, now: DateTime<Local>) -> bool` (None → true; hace 25 h → true; hace 1 h → false).
 
-- [ ] **Step 2: Implementar `service.rs` y `main.rs`.** `cargo build --release` produce `target/release/agent.exe`. Probar manualmente `agent.exe run --data-dir <tmp>` con un `agent.toml` apuntando a un ERP inexistente: debe loguear `inalcanzable` y seguir vivo; Ctrl+C sale limpio.
+- [x] **Step 2: Implementar `service.rs` y `main.rs`.** `cargo build --release` produce `target/release/agent.exe`. Probar manualmente `agent.exe run --data-dir <tmp>` con un `agent.toml` apuntando a un ERP inexistente: debe loguear `inalcanzable` y seguir vivo; Ctrl+C sale limpio.
 
-- [ ] **Step 3: README** con instalación (`agent.exe install ...`), operación (`status`, `sync-now`, logs), variables de `agent.toml`, y estado del punto pendiente del lote.
+- [x] **Step 3: README** con instalación (`agent.exe install ...`), operación (`status`, `sync-now`, logs), variables de `agent.toml`, y estado del punto pendiente del lote.
 
-- [ ] **Step 4: `cargo test` + `cargo build --release` pasan. Commit** `remedia-agent: run loop, servicio de Windows y CLI`.
+- [x] **Step 4: `cargo test` + `cargo build --release` pasan. Commit** `remedia-agent: run loop, servicio de Windows y CLI`.
 
 ---
 

@@ -14,6 +14,7 @@ pub const META_ERP_STATUS: &str = "erp_status";
 pub const META_ERP_VERSION: &str = "erp_version";
 pub const META_CATALOG_COUNT: &str = "catalog_count";
 pub const META_LAST_SYNC_ERROR: &str = "last_sync_error";
+pub const META_LAST_ID_SCAN: &str = "last_id_scan_at";
 
 pub const KIND_CATALOG: &str = "catalog";
 pub const KIND_MANIFEST: &str = "manifest";

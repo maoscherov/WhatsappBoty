@@ -211,7 +211,7 @@ async fn full_manifest_resends_mismatched_and_prunes_missing() {
     assert_eq!(m["items"].as_array().unwrap().len(), common::lote1().productos.len());
     assert!(m["items"][0].get("name").is_none(), "el manifiesto no lleva payload completo");
 
-    assert!(e.state.known_hashes().unwrap().get("424242").is_none(), "se poda lo que ya no está");
+    assert!(!e.state.known_hashes().unwrap().contains_key("424242"), "se poda lo que ya no está");
     assert!(e.state.get_meta(META_LAST_FULL_MANIFEST).unwrap().is_some());
 }
 

@@ -77,10 +77,9 @@ impl SyncEngine {
     /// Igual que `run_once`, uniendo `extra` (p. ej. el barrido diario por ID)
     /// a los productos del lote. El lote tiene prioridad ante el mismo `idProducto`.
     pub async fn run_once_with(&self, extra: Vec<ProductoDTO>) -> anyhow::Result<SyncReport> {
-        let mut report = SyncReport::default();
-
         // Primero lo que quedó pendiente: mantiene el orden de los envíos.
-        report.flushed_batches = self.flush_pending().await?;
+        let flushed_batches = self.flush_pending().await?;
+        let mut report = SyncReport { flushed_batches, ..Default::default() };
 
         let dtos = match self.erp.fetch_all().await {
             Ok(v) => {

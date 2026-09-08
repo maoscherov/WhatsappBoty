@@ -177,7 +177,7 @@ async fn connect_and_serve(
         branch_id: cfg.branch_id.clone(),
         agent_version: crate::AGENT_VERSION.to_string(),
     };
-    tx.send(Message::Text(serde_json::to_string(&hello)?.into())).await?;
+    tx.send(Message::Text(serde_json::to_string(&hello)?)).await?;
 
     let mut ping = tokio::time::interval(PING_INTERVAL);
     ping.tick().await; // el primer tick es inmediato
@@ -194,7 +194,7 @@ async fn connect_and_serve(
                     anyhow::bail!("sin pong en {:?}", PING_INTERVAL * 2);
                 }
                 awaiting_pong += 1;
-                tx.send(Message::Text(serde_json::to_string(&Outbound::Ping)?.into())).await?;
+                tx.send(Message::Text(serde_json::to_string(&Outbound::Ping)?)).await?;
             }
             msg = rx.next() => {
                 let Some(msg) = msg else { return Ok(()) };
@@ -210,7 +210,7 @@ async fn connect_and_serve(
                         match inbound {
                             Inbound::Pong => { awaiting_pong = 0; }
                             Inbound::Ping => {
-                                tx.send(Message::Text(serde_json::to_string(&Outbound::Pong)?.into())).await?;
+                                tx.send(Message::Text(serde_json::to_string(&Outbound::Pong)?)).await?;
                             }
                             Inbound::SyncNow => {
                                 info!("sync_now recibido por websocket");
@@ -222,7 +222,7 @@ async fn connect_and_serve(
                                     erp.as_ref(), barcodes, ids, LOOKUP_TIMEOUT, cfg.erp.max_concurrency,
                                 ).await;
                                 let out = Outbound::LookupResult { req_id, items, missing };
-                                tx.send(Message::Text(serde_json::to_string(&out)?.into())).await?;
+                                tx.send(Message::Text(serde_json::to_string(&out)?)).await?;
                             }
                         }
                     }

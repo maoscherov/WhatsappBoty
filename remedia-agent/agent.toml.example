@@ -1,0 +1,16 @@
+branch_id = "farmacia-xxx"
+remedia_url = "https://api.remedia.ar"
+token = "REEMPLAZAR"
+heartbeat_interval_secs = 300
+
+[erp]
+kind = "observer"
+base_url = "http://192.168.1.156:60064"
+sync_interval_secs = 900
+max_concurrency = 4
+request_timeout_secs = 30
+daily_id_scan = false
+id_scan_max = 100300
+
+[log]
+dir = "C:\\ProgramData\\RemediaAgent\\logs"
