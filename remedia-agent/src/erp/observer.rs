@@ -1,7 +1,7 @@
 //! Adapter para ObServer Gestión (`ServiciosGestion.exe`, Web API self-hosted en `:60064`).
 
 use super::model::{LoteResponse, ProductoDTO};
-use super::{ErpAdapter, ErpError, FetchResult};
+use super::{ErpAdapter, ErpError, FetchResult, Probe};
 use async_trait::async_trait;
 use reqwest::{header, Client, Response, StatusCode};
 use std::time::Duration;
@@ -96,6 +96,13 @@ impl ErpAdapter for ObserverAdapter {
             }
         }
         Ok(FetchResult { productos: out, lotes })
+    }
+
+    async fn probe(&self) -> Result<Probe, ErpError> {
+        match self.fetch_lote(1).await? {
+            Some(l) => Ok(Probe { productos: l.productos.len(), cantidad_lotes: l.cantidad_lotes }),
+            None => Ok(Probe::default()),
+        }
     }
 
     async fn lookup_by_barcodes(&self, barcodes: &[String]) -> Result<Vec<ProductoDTO>, ErpError> {

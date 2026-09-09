@@ -39,10 +39,22 @@ pub struct FetchResult {
     pub lotes: u32,
 }
 
+/// Resultado de `probe`: una lectura mínima para verificar que el ERP responde.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Probe {
+    pub productos: usize,
+    pub cantidad_lotes: u32,
+}
+
 #[async_trait]
 pub trait ErpAdapter: Send + Sync {
     /// Catálogo completo (sync por lotes).
     async fn fetch_all(&self) -> Result<FetchResult, ErpError>;
+    /// Prueba de conexión barata (un solo lote). Default: `fetch_all`.
+    async fn probe(&self) -> Result<Probe, ErpError> {
+        let r = self.fetch_all().await?;
+        Ok(Probe { productos: r.productos.len(), cantidad_lotes: r.lotes })
+    }
     /// Lookup en vivo por lista de códigos de barras (hasta ~20 por llamada).
     async fn lookup_by_barcodes(&self, barcodes: &[String]) -> Result<Vec<ProductoDTO>, ErpError>;
     /// Lookup en vivo por `idProducto`. `None` si no existe.

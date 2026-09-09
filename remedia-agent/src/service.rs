@@ -10,13 +10,12 @@ use crate::config::{Config, CONFIG_FILE, STATE_FILE};
 use crate::erp::build_adapter;
 use crate::metrics::Metrics;
 use crate::remedia::client::now_rfc3339;
-use crate::remedia::ws::run_ws;
 use crate::remedia::RemediaClient;
+use crate::runtime::Runtime;
 use chrono::{DateTime, Local};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
@@ -55,7 +54,8 @@ pub fn build_engine(data_dir: &Path) -> anyhow::Result<Arc<SyncEngine>> {
 
 /// Loop principal. Termina cuando `shutdown` se cancela.
 pub async fn run_agent(data_dir: PathBuf, shutdown: CancellationToken) -> anyhow::Result<()> {
-    let engine = build_engine(&data_dir)?;
+    let (rt, mut sync_rx) = Runtime::build(&data_dir, shutdown.clone())?;
+    let engine = Arc::clone(&rt.engine);
     let cfg = Arc::clone(&engine.cfg);
     info!(
         version = crate::AGENT_VERSION,
@@ -66,18 +66,18 @@ pub async fn run_agent(data_dir: PathBuf, shutdown: CancellationToken) -> anyhow
         "agente iniciado"
     );
 
-    let (sync_tx, mut sync_rx) = mpsc::channel::<()>(1);
     let mut tasks = tokio::task::JoinSet::new();
+    rt.start_ws();
 
-    tasks.spawn(run_ws(
-        engine.remedia().ws_url(),
-        cfg.token.clone(),
-        engine.erp(),
-        sync_tx,
-        Arc::clone(&cfg),
-        Arc::clone(&engine.metrics),
-        shutdown.clone(),
-    ));
+    {
+        let rt = Arc::clone(&rt);
+        let shutdown = shutdown.clone();
+        tasks.spawn(async move {
+            if let Err(e) = crate::ipc::server::serve(rt, shutdown).await {
+                error!(error = %e, "el pipe IPC (tray) no pudo iniciarse; el tray no va a funcionar");
+            }
+        });
+    }
 
     {
         let engine = Arc::clone(&engine);
@@ -131,6 +131,7 @@ pub async fn run_agent(data_dir: PathBuf, shutdown: CancellationToken) -> anyhow
 
     info!("deteniendo agente");
     shutdown.cancel();
+    rt.stop_ws().await;
     while tasks.join_next().await.is_some() {}
     Ok(())
 }

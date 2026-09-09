@@ -6,9 +6,11 @@
 pub mod catalog;
 pub mod config;
 pub mod erp;
+pub mod ipc;
 pub mod logging;
 pub mod metrics;
 pub mod remedia;
+pub mod runtime;
 pub mod service;
 
 pub const AGENT_VERSION: &str = env!("CARGO_PKG_VERSION");
