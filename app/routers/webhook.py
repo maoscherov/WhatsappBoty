@@ -649,11 +649,13 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 img = await deps["image"].analizar(image_bytes, mime)
                 _steps["vision_ms"] = int((_time.perf_counter() - _ti) * 1000)
 
-                # Receta o credencial → derivar a una persona (nunca vender automático)
-                if img["tipo"] in ("receta", "credencial"):
+                # Receta, credencial o comprobante → derivar a una persona
+                # (nunca vender automático; un pago solo lo confirma un humano)
+                if img["tipo"] in ("receta", "credencial", "comprobante"):
                     _intencion = f"imagen_{img['tipo']}"
-                    await deps["session"].set_estado(phone, "operador",
-                                                     motivo="receta_foto" if img["tipo"] == "receta" else "credencial")
+                    _motivo_img = {"receta": "receta_foto", "credencial": "credencial",
+                                   "comprobante": "comprobante"}[img["tipo"]]
+                    await deps["session"].set_estado(phone, "operador", motivo=_motivo_img)
 
                     # OCR de la receta (activable): el operador recibe en el
                     # backoffice paciente, medicamento, candidato del catálogo
@@ -689,6 +691,14 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                             "información y volvemos con vos dentro de los próximos "
                             "10 minutos."
                         )
+                    elif img["tipo"] == "comprobante":
+                        # Acuse de recibo (minuta 79, acción 8): el bot NUNCA
+                        # da el pago por confirmado — lo verifica una persona.
+                        _cfg_cp = await deps["config"].get_all()
+                        respuesta = _cfg_cp.get("comprobante_recibido_message") or (
+                            "¡Listo {nombre}! Recibimos tu comprobante 🙌 Lo "
+                            "verificamos y te confirmamos en un rato."
+                        )
                     else:
                         respuesta = (
                             "¡Hola {nombre}! Recibí la credencial 🙌. Para gestionarla te paso "
@@ -706,7 +716,24 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
 
                 texto = img["items"]
                 if not texto.strip():
-                    await deps["wa"].send_text(phone, "No pude identificar el producto en la imagen. ¿Me lo escribís?")
+                    # Imagen no reconocida ("otro", o producto sin nombre):
+                    # derivar a una persona en vez de trabarse pidiendo que lo
+                    # escriba (minuta 79, acción 8).
+                    _intencion = "imagen_no_reconocida"
+                    await deps["session"].set_estado(phone, "operador",
+                                                     motivo="imagen_no_reconocida")
+                    _socio_inr = deps["socios"].find_by_phone(phone)
+                    _nombre_inr = (_socio_inr.get("nombre", "").split() or [""])[0] if _socio_inr else ""
+                    _cfg_inr = await deps["config"].get_all()
+                    respuesta = personalizar_nombre(
+                        _cfg_inr.get("imagen_no_reconocida_message") or (
+                            "¡Hola {nombre}! Recibí tu imagen 🙌 Te paso con "
+                            "alguien del equipo que la mira y te ayuda."
+                        ), _nombre_inr)
+                    await deps["wa"].send_text(phone, respuesta)
+                    if not _img_ref:
+                        await deps["session"].add_message(phone, "user", "[imagen recibida]")
+                    await deps["session"].add_message(phone, "assistant", respuesta)
                     continue
 
             if not texto.strip():

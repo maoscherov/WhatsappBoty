@@ -87,6 +87,31 @@ DEFAULTS: dict[str, str] = {
     #   "derivar"   → deriva directo a una persona.
     #   "nunca"     → sólo avisa que no está (comportamiento anterior).
     "sin_stock_mode": "preguntar",
+    # Aviso de "pedido preparado" según tipo de entrega (minuta 79, acción 1).
+    # Placeholders: {producto} {total} {codigo} {direccion} {horario}.
+    "pedido_listo_retiro_message": (
+        "🎉 *¡Tu pedido está listo para retirar!*\n\n"
+        "*{producto}* — ${total}\n"
+        "🔑 *Código de retiro: {codigo}*{horario}\n\n"
+        "Presentá este código y te lo entregamos. ¡Te esperamos! 💊"
+    ),
+    "pedido_listo_envio_message": (
+        "🎉 *¡Tu pedido está listo!*\n\n"
+        "*{producto}* — ${total}\n"
+        "🚚 Sale para *{direccion}*. Te avisamos cuando esté en camino. 💊"
+    ),
+    # Imagen de un comprobante de pago (transferencia/billetera): se acusa
+    # recibo y se deriva a una persona que lo verifique. {nombre} = socio.
+    "comprobante_recibido_message": (
+        "¡Listo {nombre}! Recibimos tu comprobante 🙌 Lo verificamos y "
+        "te confirmamos en un rato."
+    ),
+    # Imagen que el clasificador no reconoce: derivar en vez de trabarse
+    # (minuta 79, acción 8).
+    "imagen_no_reconocida_message": (
+        "¡Hola {nombre}! Recibí tu imagen 🙌 Te paso con alguien del equipo "
+        "que la mira y te ayuda."
+    ),
     # Venta frenada por el chequeo de stock EN VIVO contra el ERP (justo antes
     # de generar el link de pago). {producto} se reemplaza por el nombre.
     "live_sin_stock_message": (

@@ -99,6 +99,42 @@ async def takeover_order(order_id: str, body: TakeoverIn, _=Depends(_auth)):
     return order
 
 
+def armar_mensaje_pedido_listo(order: dict, cfg: dict, pickup_text: str = "") -> str:
+    """
+    Mensaje de "pedido preparado" según el TIPO DE ENTREGA (minuta 79, acción 1):
+    hasta ahora siempre decía "pasá a retirarlo", aunque fuera envío a domicilio.
+
+    Plantillas configurables (pedido_listo_retiro_message /
+    pedido_listo_envio_message) con placeholders {producto}, {total}, {codigo},
+    {direccion} y {horario}.
+    """
+    nombre = order.get("sku_nombre") or "tu pedido"
+    cantidad = int(order.get("cantidad") or 1)
+    producto = nombre + (f" x{cantidad}" if cantidad > 1 else "")
+    horario = f"\n{pickup_text}" if pickup_text else ""
+
+    if (order.get("tipo_entrega") or "retiro") == "envio":
+        plantilla = cfg.get("pedido_listo_envio_message") or (
+            "🎉 *¡Tu pedido está listo!*\n\n"
+            "*{producto}* — ${total}\n"
+            "🚚 Sale para *{direccion}*. Te avisamos cuando esté en camino. 💊"
+        )
+    else:
+        plantilla = cfg.get("pedido_listo_retiro_message") or (
+            "🎉 *¡Tu pedido está listo para retirar!*\n\n"
+            "*{producto}* — ${total}\n"
+            "🔑 *Código de retiro: {codigo}*{horario}\n\n"
+            "Presentá este código y te lo entregamos. ¡Te esperamos! 💊"
+        )
+
+    return (plantilla
+            .replace("{producto}", producto)
+            .replace("{total}", f"{float(order.get('total') or 0):,.2f}")
+            .replace("{codigo}", str(order.get("pickup_code") or ""))
+            .replace("{direccion}", order.get("direccion_envio") or "tu domicilio")
+            .replace("{horario}", horario))
+
+
 @router.patch("/{order_id}/preparado")
 async def mark_preparado(order_id: str, request: Request, _=Depends(_auth)):
     settings = get_settings()
@@ -109,7 +145,8 @@ async def mark_preparado(order_id: str, request: Request, _=Depends(_auth)):
     if not order:
         raise HTTPException(status_code=404, detail="Pedido no encontrado")
 
-    # Enviar confirmación de pedido listo con código y horario de retiro
+    # Aviso de pedido listo: con código y horario si es retiro, con la
+    # dirección si es envío a domicilio.
     wa = get_whatsapp_service(settings.whatsapp_token, settings.whatsapp_phone_number_id)
     cfg_svc = get_config_service(settings.redis_url)
     cfg = await cfg_svc.get_all()
@@ -117,21 +154,10 @@ async def mark_preparado(order_id: str, request: Request, _=Depends(_auth)):
     pickup_minutes = int(cfg.get("pickup_minutes") or settings.pickup_minutes)
     pickup_text = cfg_svc.get_pickup_text(hours, pickup_minutes)
 
-    code = order["pickup_code"]
-    nombre = order["sku_nombre"]
-    cantidad = order["cantidad"]
-    total = order["total"]
-    nombre_con_cant = nombre + (f" x{cantidad}" if cantidad > 1 else "")
-    pickup_line = f"\n{pickup_text}" if pickup_text else ""
-
-    msg = (
-        f"🎉 *¡Tu pedido está listo para retirar!*\n\n"
-        f"*{nombre_con_cant}* — ${total:,.2f}\n"
-        f"🔑 *Código de retiro: {code}*{pickup_line}\n\n"
-        f"Presentá este código y te lo entregamos. ¡Te esperamos! 💊"
-    )
+    msg = armar_mensaje_pedido_listo(order, cfg, pickup_text)
     sent = await wa.send_text(order["phone"], msg, simulate_typing=False)
-    logger.info(f"Código {code} enviado a {order['phone']}: {sent}")
+    logger.info(f"Aviso de pedido listo ({order.get('tipo_entrega') or 'retiro'}) "
+                f"enviado a {order['phone']}: {sent}")
 
     return order
 

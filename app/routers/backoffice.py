@@ -629,6 +629,10 @@ class ConfigUpdate(BaseModel):
     receta_cotizacion_intro: str | None = None   # cabecera del mensaje de cotización ({producto})
     receta_cotizacion_cierre: str | None = None  # invitación a confirmar (modo cotizar, sin link)
     receta_recibida_message: str | None = None   # respuesta del bot al recibir una receta
+    comprobante_recibido_message: str | None = None   # acuse al recibir un comprobante de pago
+    imagen_no_reconocida_message: str | None = None   # imagen que el bot no reconoce → deriva
+    pedido_listo_retiro_message: str | None = None    # aviso "preparado" para retiro
+    pedido_listo_envio_message: str | None = None     # aviso "preparado" para envío a domicilio
     contexto_reinicio_minutos: str | None = None  # pausa que arranca charla nueva ("0" = nunca)
     socio_discount_pct: str | None = None        # "0" = apagado, ej "15"
     socio_discount_en_catalogo: str | None = None  # "true" = precio bonificado ya al ofrecer

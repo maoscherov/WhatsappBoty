@@ -26,11 +26,13 @@ _VISION_MODELS = {"anthropic": "claude-haiku-4-5-20251001", "openai": "gpt-4o"}
 _PROMPT = (
     "Analizá esta imagen enviada a una farmacia por WhatsApp y clasificala.\n"
     "Respondé SOLO con un JSON (sin texto extra) con este esquema:\n"
-    '{"tipo": "receta|credencial|producto|otro", "items": "nombres separados por coma o vacío"}\n\n'
+    '{"tipo": "receta|credencial|comprobante|producto|otro", "items": "nombres separados por coma o vacío"}\n\n'
     "- receta: es una receta o prescripción médica: manuscrita, impresa, o una "
     "captura de pantalla de una receta electrónica (app o portal de una obra "
     "social/prepaga con medicamentos recetados).\n"
     "- credencial: es una credencial/carnet de obra social o prepaga (PAMI, IOMA, etc.).\n"
+    "- comprobante: es un comprobante de pago — transferencia bancaria, captura "
+    "de una billetera virtual (Mercado Pago, etc.) o ticket/recibo de pago.\n"
     "- producto: es la foto de un medicamento o producto de salud. Poné su nombre en items.\n"
     "- otro: cualquier otra cosa que no encaje.\n"
     "En items va SOLO cuando hay productos identificables (ej: 'Ibuprofeno 600, Omeprazol 20mg'); "
@@ -141,7 +143,7 @@ class ImageService:
         except json.JSONDecodeError:
             return None
         tipo = str(data.get("tipo", "otro")).lower().strip()
-        if tipo not in ("receta", "credencial", "producto", "otro"):
+        if tipo not in ("receta", "credencial", "comprobante", "producto", "otro"):
             tipo = "otro"
         return {"tipo": tipo, "items": str(data.get("items", "")).strip()}
 

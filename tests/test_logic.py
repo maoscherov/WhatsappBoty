@@ -1537,6 +1537,83 @@ class TestPersonalizarNombre:
         from app.services.config_service import DEFAULTS
         assert "{nombre}" in DEFAULTS["receta_recibida_message"]
 
+
+class TestPedidoListoPorEntrega:
+    """Minuta 79 acción 1: el aviso de 'pedido preparado' decía siempre 'pasá
+    a retirarlo', aunque el pedido fuera envío a domicilio."""
+
+    ORDER = {"sku_nombre": "Ibupirac 600", "cantidad": 2, "total": 10500.0,
+             "pickup_code": "445566", "tipo_entrega": "retiro",
+             "direccion_envio": None}
+
+    def test_retiro_con_codigo_y_horario(self):
+        from app.routers.orders_api import armar_mensaje_pedido_listo
+        msg = armar_mensaje_pedido_listo(self.ORDER, {}, "Podés pasar hasta las 20.")
+        assert "retirar" in msg
+        assert "445566" in msg
+        assert "Ibupirac 600 x2" in msg
+        assert "10,500.00" in msg
+        assert "Podés pasar hasta las 20." in msg
+        assert "domicilio" not in msg
+
+    def test_envio_sin_codigo_con_direccion(self):
+        from app.routers.orders_api import armar_mensaje_pedido_listo
+        order = dict(self.ORDER, tipo_entrega="envio",
+                     direccion_envio="San Martín 1520, Carcarañá")
+        msg = armar_mensaje_pedido_listo(order, {}, "Podés pasar hasta las 20.")
+        assert "San Martín 1520, Carcarañá" in msg
+        assert "retirar" not in msg
+        assert "445566" not in msg                 # sin código de retiro
+        assert "Podés pasar hasta las 20." not in msg   # sin horario de retiro
+
+    def test_envio_sin_direccion_cae_a_domicilio(self):
+        from app.routers.orders_api import armar_mensaje_pedido_listo
+        order = dict(self.ORDER, tipo_entrega="envio", direccion_envio=None)
+        msg = armar_mensaje_pedido_listo(order, {})
+        assert "tu domicilio" in msg
+
+    def test_plantillas_configurables(self):
+        from app.routers.orders_api import armar_mensaje_pedido_listo
+        cfg = {"pedido_listo_retiro_message": "Retirá {producto} con {codigo}.",
+               "pedido_listo_envio_message": "Va {producto} a {direccion}."}
+        assert armar_mensaje_pedido_listo(self.ORDER, cfg) == \
+            "Retirá Ibupirac 600 x2 con 445566."
+        order = dict(self.ORDER, tipo_entrega="envio", direccion_envio="Bv. Oroño 100")
+        assert armar_mensaje_pedido_listo(order, cfg) == \
+            "Va Ibupirac 600 x2 a Bv. Oroño 100."
+
+    def test_defaults_de_config_consistentes(self):
+        from app.services.config_service import DEFAULTS
+        assert "{codigo}" in DEFAULTS["pedido_listo_retiro_message"]
+        assert "{direccion}" in DEFAULTS["pedido_listo_envio_message"]
+        assert "{codigo}" not in DEFAULTS["pedido_listo_envio_message"]
+
+
+class TestComprobanteImagen:
+    """Minuta 79 acción 8: comprobante de pago por foto → acuse + derivación;
+    imagen no reconocida → derivación (antes se trababa pidiendo texto)."""
+
+    def test_clasificador_acepta_comprobante(self):
+        from app.services.image_service import ImageService
+        parsed = ImageService._parse('{"tipo": "comprobante", "items": ""}')
+        assert parsed["tipo"] == "comprobante"
+
+    def test_prompt_describe_comprobante(self):
+        from app.services.image_service import _PROMPT
+        assert "comprobante" in _PROMPT
+        assert "transferencia" in _PROMPT
+
+    def test_tipo_desconocido_cae_a_otro(self):
+        from app.services.image_service import ImageService
+        assert ImageService._parse('{"tipo": "factura", "items": ""}')["tipo"] == "otro"
+
+    def test_defaults_de_config(self):
+        from app.services.config_service import DEFAULTS
+        assert "{nombre}" in DEFAULTS["comprobante_recibido_message"]
+        assert "{nombre}" in DEFAULTS["imagen_no_reconocida_message"]
+        # el acuse jamás afirma que el pago está confirmado
+        assert "confirmado" not in DEFAULTS["comprobante_recibido_message"].lower()
+
     async def test_receta_info_se_limpia_al_liberar(self):
         from app.services.session_service import SessionService
         ss = SessionService("redis://127.0.0.1:1")
