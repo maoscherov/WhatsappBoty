@@ -65,6 +65,7 @@ class OrderService:
         mp_payment_id: str,
         tipo_entrega: str = "retiro",
         direccion_envio: Optional[str] = None,
+        pago: str = "online",
     ) -> dict:
         order_id = self._gen_order_id()
         now = datetime.now(timezone.utc).isoformat()
@@ -76,6 +77,10 @@ class OrderService:
             "cantidad":       int(cantidad),
             "total":          round(float(total), 2),
             "mp_payment_id":  mp_payment_id,
+            # "online" (MP/Payway) | "cuenta_corriente" — minuta 79, punto 6.
+            "pago":           pago or "online",
+            "cc_cargado_at":  None,   # cuándo la farmacia registró el saldo
+            "cc_cargado_por": None,
             "estado":         "pendiente",
             "tipo_entrega":   tipo_entrega,       # "retiro" | "envio"
             "direccion_envio": direccion_envio,
@@ -105,6 +110,9 @@ class OrderService:
         antes de esta versión, para que la API siempre los devuelva."""
         for f in TRACE_FIELDS:
             order.setdefault(f, None)
+        order.setdefault("pago", "online")
+        order.setdefault("cc_cargado_at", None)
+        order.setdefault("cc_cargado_por", None)
         return order
 
     async def _save(self, order: dict) -> None:
@@ -207,6 +215,18 @@ class OrderService:
         # El pickup_code ya fue generado al crear el pedido — no se regenera
         order["preparado_por"] = agente or order.get("preparado_por")
         order["preparado_at"]  = _now_epoch()
+        self._asignar_si_libre(order, agente)
+        await self._save(order)
+        return order
+
+    async def mark_cc_cargado(self, order_id: str, agente: Optional[str] = None) -> Optional[dict]:
+        """La farmacia registró el saldo del pedido en su sistema contable.
+        Independiente del ciclo pendiente→preparado→retirado."""
+        order = await self.get(order_id)
+        if not order:
+            return None
+        order["cc_cargado_at"]  = _now_epoch()
+        order["cc_cargado_por"] = agente or order.get("cc_cargado_por")
         self._asignar_si_libre(order, agente)
         await self._save(order)
         return order

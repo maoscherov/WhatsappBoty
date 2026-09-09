@@ -481,6 +481,37 @@ async def bo_sku_import_receta(file: UploadFile = File(...), _=Depends(_auth)):
         raise HTTPException(status_code=422, detail=f"Error cargando catálogo: {e}")
 
 
+@router.post("/cc/excepciones")
+async def bo_cc_excepciones(file: UploadFile = File(...), _=Depends(_auth)):
+    """
+    Sube la lista de socios que NO pueden pagar con cuenta corriente (minuta
+    79: la manda la farmacia sobre su base de clientes). Acepta CSV con DNI
+    y/o N° de socio en cualquier columna — se toman los grupos de 4+ dígitos.
+    Reemplaza la lista anterior; persiste en Redis (blob).
+    """
+    from app.services.cc_service import get_cc_service
+    settings = get_settings()
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Archivo vacío")
+    cantidad = await get_cc_service(settings.redis_url).cargar(data)
+    if cantidad == 0:
+        raise HTTPException(
+            status_code=422,
+            detail="No se reconoció ningún DNI/N° de socio en el archivo — "
+                   "la lista anterior fue reemplazada por una vacía.")
+    return {"status": "ok", "excepciones": cantidad}
+
+
+@router.get("/cc/excepciones")
+async def bo_cc_excepciones_info(_=Depends(_auth)):
+    """Cantidad de excepciones cargadas (0 = todos los socios habilitados)."""
+    from app.services.cc_service import get_cc_service
+    settings = get_settings()
+    exc = await get_cc_service(settings.redis_url).excepciones()
+    return {"excepciones": len(exc)}
+
+
 @router.get("/tablero")
 async def bo_tablero(mes: str = Query(None, pattern=r"^\d{4}-\d{2}$"),
                      _=Depends(_auth)):
@@ -611,6 +642,8 @@ class ConfigUpdate(BaseModel):
     sin_stock_mode: str | None = None            # "preguntar" | "derivar" | "nunca"
     sin_stock_ofrecer_message: str | None = None
     live_sin_stock_message: str | None = None    # freno por stock en vivo (ERP)
+    cc_enabled: str | None = None                # "true"/"false" — pago con cuenta corriente
+    cc_tope_monto: str | None = None             # tope por pedido, "0" = sin tope
     sin_stock_derivar_message: str | None = None
     derivar_pago_manual: str | None = None       # compat: "false" = solo_tarjeta
     pago_manual_mode: str | None = None          # "derivar" | "solo_tarjeta"

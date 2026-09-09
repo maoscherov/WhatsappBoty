@@ -1589,6 +1589,167 @@ class TestPedidoListoPorEntrega:
         assert "{codigo}" not in DEFAULTS["pedido_listo_envio_message"]
 
 
+class TestCuentaCorriente:
+    """Minuta 79 punto 6: socio activo → cuenta corriente habilitada por
+    default, sin derivar. Excepciones por lista de la farmacia; tope opcional.
+    El checkout es igual al del link pero sin pago online."""
+
+    def _padron(self, tmp_path):
+        from app.services.socio_service import SocioService
+        p = tmp_path / "padron.csv"
+        p.write_text("APELLIDO,NOMBRE,DNI,SOCIO,CELULAR,DOMICILIO\n"
+                     "Muff,Claudia,20111222,4001,3415550001,Mitre 100\n",
+                     encoding="utf-8")
+        return SocioService(str(p))
+
+    def test_matcher(self):
+        from app.services.checkout_helper import pide_cuenta_corriente
+        assert pide_cuenta_corriente("lo pago con cuenta corriente")
+        assert pide_cuenta_corriente("cargalo a mi cuenta")
+        assert pide_cuenta_corriente("me lo sumás a la cuenta?")
+        assert pide_cuenta_corriente("ponelo en cta cte")
+        assert not pide_cuenta_corriente("cuánto sale el ibupirac")
+        assert not pide_cuenta_corriente("te cuento que necesito algo")
+
+    async def test_socio_habilitado_por_default(self, tmp_path):
+        from app.services.checkout_helper import habilitado_cc
+        socios = self._padron(tmp_path)
+        socio = await habilitado_cc("5493415550001", {}, socios, 5000)
+        assert socio and socio["nombre"] == "Claudia"
+
+    async def test_no_socio_no_habilitado(self, tmp_path):
+        from app.services.checkout_helper import habilitado_cc
+        assert await habilitado_cc("5490000000000", {}, self._padron(tmp_path)) is None
+
+    async def test_apagado_por_config(self, tmp_path):
+        from app.services.checkout_helper import habilitado_cc
+        assert await habilitado_cc("5493415550001", {"cc_enabled": "false"},
+                                   self._padron(tmp_path)) is None
+
+    async def test_tope_de_monto(self, tmp_path):
+        from app.services.checkout_helper import habilitado_cc
+        socios = self._padron(tmp_path)
+        cfg = {"cc_tope_monto": "5000"}
+        assert await habilitado_cc("5493415550001", cfg, socios, 6000) is None
+        assert await habilitado_cc("5493415550001", cfg, socios, 4000) is not None
+        # tope 0 = sin tope
+        assert await habilitado_cc("5493415550001", {"cc_tope_monto": "0"},
+                                   socios, 999999) is not None
+
+    async def test_excepcion_de_la_farmacia(self, tmp_path, monkeypatch):
+        from app.services.checkout_helper import habilitado_cc
+        import app.services.cc_service as ccmod
+
+        class _FakeCC:
+            async def es_excepcion(self, socio):
+                return socio.get("dni") == "20111222"
+
+        monkeypatch.setattr(ccmod, "_instance", _FakeCC())
+        assert await habilitado_cc("5493415550001", {}, self._padron(tmp_path)) is None
+
+    def test_parsear_lista_de_excepciones(self):
+        from app.services.cc_service import _parsear
+        data = ("DNI;NOMBRE;SOCIO\n20.111.222;Muff Claudia;4001\n"
+                "33444555;Otro;\ncualquier cosa\n").encode("utf-8")
+        numeros = _parsear(data)
+        assert "20" not in numeros            # grupos cortos no entran
+        assert "111" not in numeros
+        assert "33444555" in numeros and "4001" in numeros
+
+    async def test_es_excepcion_por_dni_y_nro_socio(self):
+        from app.services.cc_service import CCService
+        svc = CCService("redis://127.0.0.1:1")
+        svc._excepciones = {"20111222", "4001"}
+        assert await svc.es_excepcion({"dni": "20.111.222", "nro_socio": ""})
+        assert await svc.es_excepcion({"dni": "", "nro_socio": "4001"})
+        assert not await svc.es_excepcion({"dni": "99888777", "nro_socio": "9"})
+        svc._excepciones = set()
+        assert not await svc.es_excepcion({"dni": "20111222"})   # lista vacía = todos ok
+
+    async def test_cerrar_venta_cc_crea_pedido_sin_link(self, monkeypatch):
+        from app.services.checkout_helper import _cerrar_venta_cc
+        from app.services.session_service import SessionService
+        import app.services.order_service as omod
+
+        creados = []
+
+        class _FakeOrders:
+            async def create(self, **kw):
+                creados.append(kw)
+                return {"order_id": "ORD-CC-1", "pickup_code": "778899"}
+
+        monkeypatch.setattr(omod, "_instance", _FakeOrders())
+        ss = SessionService("redis://127.0.0.1:1")
+        s = await ss.get("549CC1")
+        s.update({"pending_sku_id": "77", "pending_sku_nombre": "Ibupirac 600",
+                  "pending_precio": 5000.0, "pending_cantidad": 2,
+                  "pago_metodo": "cuenta_corriente"})
+        await ss.save("549CC1", s)
+
+        msg = await _cerrar_venta_cc(ss, "549CC1", s, "retiro", None, total=10000.0)
+        assert creados[0]["pago"] == "cuenta_corriente"
+        assert creados[0]["total"] == 10000.0
+        assert "cuenta corriente" in msg
+        assert "778899" in msg                     # código de retiro
+        assert "http" not in msg                   # SIN link de pago
+        despues = await ss.get("549CC1")
+        assert despues["estado"] == "pedido_confirmado"
+        assert not despues.get("pago_metodo")      # el medio es por pedido
+
+    async def test_cerrar_venta_cc_envio_con_direccion(self, monkeypatch):
+        from app.services.checkout_helper import _cerrar_venta_cc
+        from app.services.session_service import SessionService
+        import app.services.order_service as omod
+
+        class _FakeOrders:
+            async def create(self, **kw):
+                return {"order_id": "ORD-CC-2", "pickup_code": "112233"}
+
+        monkeypatch.setattr(omod, "_instance", _FakeOrders())
+        ss = SessionService("redis://127.0.0.1:1")
+        s = {"pending_sku_id": "77", "pending_sku_nombre": "Ibupirac 600",
+             "pending_precio": 5000.0, "pending_cantidad": 1}
+        msg = await _cerrar_venta_cc(ss, "549CC2", s, "envio", "Mitre 100",
+                                     total=7000.0, costo_envio=2000.0)
+        assert "Mitre 100" in msg
+        assert "envío" in msg                      # desglosa el costo de envío
+        assert "retiro" not in msg.lower()
+
+    def test_pedido_viejo_sin_campo_pago_es_online(self):
+        from app.services.order_service import OrderService
+        o = OrderService._with_trace_defaults({"order_id": "X"})
+        assert o["pago"] == "online"
+        assert o["cc_cargado_at"] is None
+
+    async def test_mark_cc_cargado(self):
+        from app.services.order_service import OrderService
+
+        class _FakeRedis:
+            def __init__(self): self.kv = {}; self.idx = []
+            async def setex(self, k, ttl, v): self.kv[k] = v
+            async def zadd(self, key, mapping): self.idx.extend(mapping.keys())
+            async def zrevrange(self, key, a, b): return list(reversed(self.idx))[a:b + 1]
+            async def mget(self, keys): return [self.kv.get(k) for k in keys]
+            async def get(self, k): return self.kv.get(k)
+
+        svc = OrderService("redis://127.0.0.1:1")
+        svc._redis = _FakeRedis()
+        order = await svc.create(phone="549", sku_id="1", sku_nombre="A",
+                                 cantidad=1, total=100.0, mp_payment_id="",
+                                 pago="cuenta_corriente")
+        marcado = await svc.mark_cc_cargado(order["order_id"], agente="Belén")
+        assert marcado["cc_cargado_at"] and marcado["cc_cargado_por"] == "Belén"
+        assert marcado["estado"] == "pendiente"    # el ciclo de entrega no cambia
+
+    def test_export_csv_responde(self):
+        from fastapi.testclient import TestClient
+        from app.main import app
+        r = TestClient(app).get("/orders/api/export.csv?pago=cuenta_corriente")
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("text/csv")
+        assert r.text.splitlines()[0].startswith("fecha,pedido,telefono")
+
+
 class TestComprobanteImagen:
     """Minuta 79 acción 8: comprobante de pago por foto → acuse + derivación;
     imagen no reconocida → derivación (antes se trababa pidiendo texto)."""

@@ -49,7 +49,7 @@ from app.services.checkout_helper import (
     pregunta_descuento, aplicar_descuento_socio, pide_todos, texto_deictico,
     quitar_confirmaciones_fantasma, pregunta_entrega, costo_envio_de,
     producto_respaldado, productos_con_precio, parece_direccion,
-    personalizar_nombre,
+    personalizar_nombre, pide_cuenta_corriente, habilitado_cc,
 )
 
 logger = logging.getLogger(__name__)
@@ -863,6 +863,37 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
             _pm_mode = _cfg_pm.get("pago_manual_mode") or "derivar"
             if str(_cfg_pm.get("derivar_pago_manual", "true")).lower() == "false":
                 _pm_mode = "solo_tarjeta"
+
+            # ── Cuenta corriente (minuta 79): socio activo → habilitada sin
+            # derivar. No-socios, excepciones o tope superado caen a los
+            # bloques de pago manual de abajo (una persona lo coordina).
+            if pide_cuenta_corriente(texto):
+                _items_cc = session.get("pending_items") or []
+                if _items_cc:
+                    _monto_cc = sum(i["precio"] * i.get("cantidad", 1) for i in _items_cc)
+                else:
+                    _monto_cc = float(session.get("pending_precio") or 0) * \
+                        int(session.get("pending_cantidad") or 1)
+                _socio_cc = await habilitado_cc(phone, _cfg_pm, deps["socios"], _monto_cc)
+                if _socio_cc:
+                    _intencion = "cuenta_corriente"
+                    _s_cc = await deps["session"].get(phone)
+                    _s_cc["pago_metodo"] = "cuenta_corriente"
+                    await deps["session"].save(phone, _s_cc)
+                    if session.get("pending_sku_id") or _items_cc:
+                        await deps["session"].set_estado(phone, "esperando_entrega")
+                        respuesta = ("¡Dale! Te lo cargamos a tu cuenta corriente 🙌 " +
+                                     pregunta_entrega(_cfg_pm, saludo=False))
+                    else:
+                        respuesta = ("¡Dale! Cuando armemos tu pedido lo cargamos a tu "
+                                     "cuenta corriente 🙌 Contame qué necesitás.")
+                    _ts = _time.perf_counter()
+                    await deps["wa"].send_text(phone, respuesta)
+                    _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
+                    await deps["session"].add_message(phone, "user", texto)
+                    await deps["session"].add_message(phone, "assistant", respuesta)
+                    continue
+
             if pide_pago_manual(texto) and _pm_mode == "solo_tarjeta":
                 _intencion = "pago_solo_tarjeta"
                 respuesta = _cfg_pm.get("pago_solo_tarjeta_message") or (

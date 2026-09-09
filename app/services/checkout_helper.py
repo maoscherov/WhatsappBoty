@@ -170,6 +170,56 @@ def pide_pago_manual(t: str) -> bool:
     return any(re.search(p, t, re.IGNORECASE) for p in _PAGO_MANUAL)
 
 
+_CUENTA_CORRIENTE = [
+    r"\bcuenta\s+corriente\b",
+    r"\bcta\.?\s*(cte\.?|corriente)\b",
+    r"\b(carg[aá]\w*|anot[aá]\w*|sum[aá]\w*)\b.{0,30}\b(mi\s+)?cuenta\b",
+    r"\ba\s+la\s+cuenta\b",
+]
+
+
+def pide_cuenta_corriente(t: str) -> bool:
+    """
+    True si el cliente pide pagar con cuenta corriente. Minuta 79: los socios
+    activos la tienen habilitada por default — este medio ya NO deriva
+    (pide_pago_manual sigue matcheando "cuenta corriente" como red de
+    seguridad para no-socios y excepciones, que sí van a una persona).
+    """
+    return any(re.search(p, t, re.IGNORECASE) for p in _CUENTA_CORRIENTE)
+
+
+async def habilitado_cc(phone: str, cfg: dict, socio_svc, monto: float = 0.0) -> Optional[dict]:
+    """
+    El socio del padrón si puede pagar con cuenta corriente, o None.
+    None si: la función está apagada (cc_enabled), el teléfono no es socio,
+    figura en la lista de excepciones de la farmacia, o supera el tope
+    (cc_tope_monto, 0 = sin tope).
+    """
+    if str(cfg.get("cc_enabled", "true")).lower() != "true":
+        return None
+    try:
+        socio = socio_svc.find_by_phone(phone) if socio_svc else None
+    except Exception:
+        socio = None
+    if not socio:
+        return None
+    try:
+        from app.config import get_settings as _gs
+        from app.services.cc_service import get_cc_service
+        if await get_cc_service(_gs().redis_url).es_excepcion(socio):
+            return None
+    except Exception as e:
+        logger.warning(f"CC: no se pudo chequear la excepción de {phone}: {e}")
+        return None   # ante la duda, que lo coordine una persona
+    try:
+        tope = float(cfg.get("cc_tope_monto") or 0)
+    except (TypeError, ValueError):
+        tope = 0.0
+    if tope > 0 and monto > tope:
+        return None
+    return socio
+
+
 # Frases de espera que el modelo promete y nunca cumple ("ahora verifico...").
 # El prompt las prohíbe pero a veces se cuelan: se eliminan por oración.
 # El recorte arranca EN la palabra disparadora (no al inicio de la oración):
@@ -576,6 +626,80 @@ async def _chequear_stock_vivo(session: dict, phone: str, session_svc,
     return None, precio_erp_distinto
 
 
+async def _cerrar_venta_cc(session_svc, phone: str, session: dict,
+                           tipo_entrega: str, direccion: Optional[str],
+                           total: float, costo_envio: float = 0.0) -> str:
+    """
+    Cierra una venta con CUENTA CORRIENTE: crea el pedido (pago="cuenta_corriente",
+    entra al backoffice como cualquier pedido pagado, con código de retiro) y
+    devuelve el mensaje de confirmación. El bot no maneja saldos: solo registra;
+    el asiento contable lo marca la farmacia (cc-cargado).
+    """
+    from app.config import get_settings as _gs
+    from app.services.order_service import get_order_service
+    settings = _gs()
+
+    items = session.get("pending_items") or []
+    if len(items) > 1:
+        sku_id = "MULTI"
+        nombre = " + ".join(
+            i["nombre"] + (f" x{i.get('cantidad', 1)}" if i.get("cantidad", 1) > 1 else "")
+            for i in items)
+        cantidad = 1
+    else:
+        sku_id = session.get("pending_sku_id") or ""
+        cantidad = int(session.get("pending_cantidad") or 1)
+        nombre = (session.get("pending_sku_nombre") or "tu pedido") + \
+                 (f" x{cantidad}" if cantidad > 1 else "")
+
+    order = await get_order_service(settings.redis_url).create(
+        phone=phone, sku_id=sku_id,
+        sku_nombre=nombre, cantidad=cantidad, total=total,
+        mp_payment_id="", tipo_entrega=tipo_entrega,
+        direccion_envio=direccion, pago="cuenta_corriente",
+    )
+    logger.info(f"Pedido con cuenta corriente: {order['order_id']} phone={phone} "
+                f"total=${total:,.2f}")
+
+    # Embudo/tablero: mismo evento que un pago, con el medio identificado.
+    try:
+        from app.services.db import get_db as _gdb
+        from app.services.metrics_store import get_metrics_store as _gmet
+        await _gmet(_gdb(settings.database_url)).evento(
+            "pago_aprobado", phone=phone, dato="cuenta_corriente",
+            monto=total, ref=order["order_id"],
+            extra={"pasarela": "cuenta_corriente", "socio": True},
+        )
+    except Exception as e:
+        logger.debug(f"evento pago_aprobado (CC): {e}")
+
+    await session_svc.set_entrega(phone, tipo_entrega, direccion)
+    await session_svc.set_estado(phone, "pedido_confirmado")
+    # El medio elegido es POR PEDIDO: si mañana compra otra cosa, se le vuelve
+    # a mandar link salvo que pida cuenta corriente de nuevo.
+    _s_fin = await session_svc.get(phone)
+    if _s_fin.pop("pago_metodo", None):
+        await session_svc.save(phone, _s_fin)
+
+    code = order.get("pickup_code", "")
+    envio_line = f" (incluye ${costo_envio:,.0f} de envío)" if costo_envio > 0 else ""
+    if tipo_entrega == "envio":
+        dir_txt = f" a *{direccion}*" if direccion else " a tu domicilio"
+        return (
+            f"✅ *¡Listo! Quedó cargado a tu cuenta corriente* 🙌\n\n"
+            f"*{nombre}* — ${total:,.2f}{envio_line}\n"
+            f"🚚 Te lo enviamos{dir_txt}. Nos comunicamos para coordinar la entrega.\n"
+            f"📋 Código de pedido: *{code}*\n\n"
+            f"¡Muchas gracias! 💊"
+        )
+    return (
+        f"✅ *¡Listo! Quedó cargado a tu cuenta corriente* 🙌\n\n"
+        f"*{nombre}* — ${total:,.2f}\n"
+        f"🔑 *Tu código de retiro es: {code}*\n\n"
+        f"Presentalo al retirar. ¡Muchas gracias! 💊"
+    )
+
+
 async def crear_link_y_responder(
     payment_svc,
     session_svc,
@@ -657,6 +781,15 @@ async def crear_link_y_responder(
             return _msg_freno, None
     except Exception as e:
         logger.warning(f"Chequeo de stock en vivo falló para {phone}: {e} — se sigue")
+
+    # Cuenta corriente (minuta 79): mismo checkout que el link, pero sin pago
+    # online — el pedido entra directo al backoffice y la farmacia registra el
+    # saldo en su sistema contable (estado cc_cargado, aparte).
+    if session.get("pago_metodo") == "cuenta_corriente":
+        respuesta_cc = await _cerrar_venta_cc(
+            session_svc, phone, session, tipo_entrega, direccion,
+            total=total, costo_envio=_costo_envio)
+        return respuesta_cc, None
 
     link, err = await payment_svc.crear_link(
         sku_id=sku_link,

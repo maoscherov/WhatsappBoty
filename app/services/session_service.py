@@ -237,6 +237,7 @@ class SessionService:
             "direccion_envio": None,
         })
         session.pop("receta_validada", None)
+        session.pop("pago_metodo", None)
         await self.save(phone, session)
 
     async def set_entrega(self, phone: str, tipo: str, direccion: str | None = None):
@@ -468,7 +469,7 @@ class SessionService:
         session["estado"] = "idle"
         for k in ("derivada_at", "derivada_motivo", "_handoff_avisado", "agente",
                   "_conv_inicio", "_negativos", "derivacion_ofrecida",
-                  "extras_ofrecidos", "receta_info", "atendida_at"):
+                  "extras_ofrecidos", "receta_info", "atendida_at", "pago_metodo"):
             session.pop(k, None)
         await self.save(phone, session)
 
@@ -488,7 +489,8 @@ class SessionService:
             "estado": "idle", "tipo_entrega": None, "direccion_envio": None,
         })
         for k in ("_espera_eleccion", "extras_ofrecidos", "derivacion_ofrecida",
-                  "_conv_inicio", "_negativos", "receta_info", "receta_validada"):
+                  "_conv_inicio", "_negativos", "receta_info", "receta_validada",
+                  "pago_metodo"):
             session.pop(k, None)
         await self.save(phone, session)
 

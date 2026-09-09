@@ -68,6 +68,45 @@ async def list_orders(_=Depends(_auth), estado: str = Query(None)):
     return orders
 
 
+@router.get("/export.csv")
+async def export_orders(_=Depends(_auth), pago: str = Query(None),
+                        estado: str = Query(None)):
+    """
+    Export CSV de pedidos para conciliación (minuta 79: pedidos con cuenta
+    corriente). Filtros opcionales: ?pago=cuenta_corriente y/o ?estado=.
+    Declarado ANTES de /{order_id} para que la ruta no lo capture.
+    """
+    import csv as _csv
+    import io
+    from fastapi.responses import PlainTextResponse
+
+    settings = get_settings()
+    orders = await get_order_service(settings.redis_url).list_all()
+    if pago:
+        orders = [o for o in orders if (o.get("pago") or "online") == pago]
+    if estado:
+        orders = [o for o in orders if o.get("estado") == estado]
+
+    buf = io.StringIO()
+    w = _csv.writer(buf, lineterminator="\n")
+    w.writerow(["fecha", "pedido", "telefono", "producto", "cantidad", "total",
+                "pago", "entrega", "direccion", "estado", "codigo",
+                "cc_cargado", "cc_cargado_por", "agente"])
+    for o in orders:
+        w.writerow([
+            o.get("created_at", ""), o.get("order_id", ""), o.get("phone", ""),
+            o.get("sku_nombre", ""), o.get("cantidad", 1), o.get("total", 0),
+            o.get("pago") or "online", o.get("tipo_entrega", ""),
+            o.get("direccion_envio") or "", o.get("estado", ""),
+            o.get("pickup_code", ""),
+            "si" if o.get("cc_cargado_at") else "no",
+            o.get("cc_cargado_por") or "", o.get("agente") or "",
+        ])
+    return PlainTextResponse(
+        buf.getvalue(), media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=pedidos.csv"})
+
+
 @router.get("/{order_id}")
 async def get_order(order_id: str, _=Depends(_auth)):
     settings = get_settings()
@@ -173,3 +212,18 @@ async def mark_retirado(order_id: str, request: Request, _=Depends(_auth)):
         raise HTTPException(status_code=404, detail="Pedido no encontrado")
 
     return order
+
+
+@router.patch("/{order_id}/cc-cargado")
+async def mark_cc_cargado(order_id: str, request: Request, _=Depends(_auth)):
+    """La farmacia registró el saldo en su sistema contable (minuta 79)."""
+    settings = get_settings()
+    svc = get_order_service(settings.redis_url)
+
+    agente = await _agente_del_body(request)
+    order = await svc.mark_cc_cargado(order_id, agente=agente)
+    if not order:
+        raise HTTPException(status_code=404, detail="Pedido no encontrado")
+    logger.info(f"Pedido {order_id} marcado como cargado en cta. cte. por {agente or '?'}")
+    return order
+

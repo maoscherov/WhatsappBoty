@@ -87,6 +87,11 @@ DEFAULTS: dict[str, str] = {
     #   "derivar"   → deriva directo a una persona.
     #   "nunca"     → sólo avisa que no está (comportamiento anterior).
     "sin_stock_mode": "preguntar",
+    # Pago con cuenta corriente (minuta 79): habilitado por default para todo
+    # socio del padrón, salvo la lista de excepciones de la farmacia
+    # (/bo/cc/excepciones). Tope 0 = sin tope.
+    "cc_enabled": "true",
+    "cc_tope_monto": "0",
     # Aviso de "pedido preparado" según tipo de entrega (minuta 79, acción 1).
     # Placeholders: {producto} {total} {codigo} {direccion} {horario}.
     "pedido_listo_retiro_message": (
