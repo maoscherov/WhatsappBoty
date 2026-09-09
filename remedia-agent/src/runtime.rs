@@ -361,6 +361,8 @@ pub fn remedia_error_text(e: &crate::remedia::RemediaError) -> String {
         Unreachable(_) => "No se pudo conectar con Remedia. Revisá la conexión a internet y la dirección.".into(),
         Http(401, _) | Http(403, _) => "Remedia rechazó el token (no es válido o pertenece a otra sucursal).".into(),
         Http(404, _) => "Remedia respondió 404: esa dirección no es la de la API. Tiene que ser solo el servidor, por ejemplo https://cerca.remedia.ar".into(),
+        Http(422, body) => format!("Remedia rechazó los datos (422): {}", body.chars().take(160).collect::<String>()),
+        Http(503, _) => "Remedia está sin base de datos en este momento (503). Reintentá en unos minutos.".into(),
         Http(code, _) => format!("Remedia respondió con error HTTP {code}."),
         Decode(d) => format!("Remedia respondió algo que no se entiende: {d}"),
     }

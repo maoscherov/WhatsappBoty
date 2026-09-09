@@ -148,6 +148,14 @@ fn install(data_dir: &std::path::Path, token: String, erp: String, branch: Strin
     cfg.write(&cfg_path)?;
     println!("Config escrita en {}", cfg_path.display());
 
+    // Si ya estaba instalado, esto es una actualización: hay que soltar el exe
+    // (servicio y trays lo tienen abierto) antes de reemplazarlo.
+    win::quit_trays();
+    let existed = win::stop_if_running().context("deteniendo el servicio existente (¿consola como administrador?)")?;
+    if existed {
+        println!("Servicio {} ya instalado: se actualiza.", service::SERVICE_NAME);
+    }
+
     // El servicio apunta a una copia del exe dentro del directorio de datos,
     // así no depende de dónde se descargó el instalador.
     let current = std::env::current_exe()?;
@@ -158,7 +166,11 @@ fn install(data_dir: &std::path::Path, token: String, erp: String, branch: Strin
     }
 
     win::install(data_dir, &target).context("registrando el servicio (¿consola como administrador?)")?;
-    println!("Servicio {} registrado e iniciado (v{AGENT_VERSION}).", service::SERVICE_NAME);
+    println!(
+        "Servicio {} {} e iniciado (v{AGENT_VERSION}).",
+        service::SERVICE_NAME,
+        if existed { "actualizado" } else { "registrado" }
+    );
     println!("Logs en {}", cfg.log.dir.display());
     match win::register_tray_autostart(&target) {
         Ok(()) => {

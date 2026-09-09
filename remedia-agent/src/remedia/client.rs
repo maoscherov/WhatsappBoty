@@ -57,6 +57,8 @@ pub struct FullManifestResponse {
 pub struct Heartbeat {
     pub branch_id: String,
     pub agent_version: String,
+    /// Se omite hasta conocerla: el servidor la toma como vacía.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub erp_version: Option<String>,
     /// `ok | no_autorizado | inalcanzable | error`
     pub erp_status: String,

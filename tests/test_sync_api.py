@@ -223,6 +223,19 @@ class TestHeartbeat:
         assert row["catalog_count"] == 54235
         assert estado_derivado(dict(row)) == "ok"
 
+    async def test_acepta_erp_version_null(self, client, db, branch_token):
+        """El agente manda erp_version: null hasta conocerla (contrato §2)."""
+        r = await client.post("/v1/sync/heartbeat", json={
+            "branch_id": BRANCH, "agent_version": "0.2.0", "erp_version": None,
+            "erp_status": "inalcanzable", "last_sync_ok_at": None,
+            "catalog_count": 0, "pending_batches": 0,
+            "metrics": {"erp_fetch_ms": None, "ws_connected": False},
+        }, headers=_auth(branch_token))
+        assert r.status_code == 204, r.text
+        row = await db.fetchrow("SELECT erp_version, erp_status FROM branches WHERE branch_id = $1", BRANCH)
+        assert row["erp_version"] in ("", None)
+        assert row["erp_status"] == "inalcanzable"
+
     async def test_estados_derivados(self, client, db, branch_token):
         assert estado_derivado({"last_heartbeat_at": None}) == "sin_agente"
         await client.post("/v1/sync/heartbeat", json={

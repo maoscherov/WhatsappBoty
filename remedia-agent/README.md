@@ -37,6 +37,10 @@ Otros comandos:
 
 Todos aceptan `--data-dir D` para usar otro directorio (útil en desarrollo).
 
+**Actualizar** = volver a correr `agent.exe install ...` con el exe nuevo: detiene
+el servicio, cierra los trays, reemplaza el binario, actualiza la configuración
+del servicio y lo reinicia. Config y `state.sqlite` se conservan.
+
 ## Icono de bandeja
 
 Pensado para que lo mire el personal de la farmacia. El color dice todo sin abrir el menú:

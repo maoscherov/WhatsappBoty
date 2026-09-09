@@ -91,7 +91,7 @@ async def sync_heartbeat(body: HeartbeatIn, branch: Branch = Depends(require_bra
         await get_branch_store(get_db(get_settings().database_url)).heartbeat(
             branch.branch_id,
             agent_version=body.agent_version,
-            erp_version=body.erp_version,
+            erp_version=body.erp_version or "",
             erp_status=body.erp_status,
             last_sync_ok_at=body.last_sync_ok_at or "",
             catalog_count=body.catalog_count,

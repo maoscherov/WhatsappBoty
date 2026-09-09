@@ -260,7 +260,43 @@ pub mod win {
         let _ = handle.set_service_status(status(ServiceState::Stopped, code));
     }
 
-    /// Registra el servicio (arranque automático, cuenta NetworkService) y lo inicia.
+    /// Detiene el servicio si existe y está corriendo (para poder reemplazar el
+    /// exe). Devuelve `true` si el servicio existía.
+    pub fn stop_if_running() -> anyhow::Result<bool> {
+        let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
+        let service = match manager.open_service(SERVICE_NAME, ServiceAccess::QUERY_STATUS | ServiceAccess::STOP) {
+            Ok(s) => s,
+            Err(windows_service::Error::Winapi(e)) if e.raw_os_error() == Some(ERROR_SERVICE_DOES_NOT_EXIST) => {
+                return Ok(false)
+            }
+            Err(e) => return Err(e.into()),
+        };
+        stop_and_wait(&service)?;
+        Ok(true)
+    }
+
+    const ERROR_SERVICE_DOES_NOT_EXIST: i32 = 1060;
+    const ERROR_SERVICE_EXISTS: i32 = 1073;
+
+    fn stop_and_wait(service: &windows_service::service::Service) -> anyhow::Result<()> {
+        if service.query_status()?.current_state == ServiceState::Stopped {
+            return Ok(());
+        }
+        let _ = service.stop();
+        for _ in 0..30 {
+            if service.query_status()?.current_state == ServiceState::Stopped {
+                // Un instante más: el SCM libera el exe después de reportar Stopped.
+                std::thread::sleep(Duration::from_millis(500));
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        anyhow::bail!("el servicio no se detuvo a tiempo")
+    }
+
+    /// Registra el servicio (arranque automático, cuenta NetworkService) y lo
+    /// inicia. Si ya existe, actualiza su configuración y lo reinicia: el
+    /// mismo comando sirve para instalar y para actualizar.
     pub fn install(data_dir: &Path, exe: &Path) -> anyhow::Result<()> {
         grant_data_dir(data_dir);
         let manager = ServiceManager::local_computer(
@@ -283,7 +319,17 @@ pub mod win {
             account_name: Some(OsString::from(SERVICE_ACCOUNT)),
             account_password: None,
         };
-        let service = manager.create_service(&info, ServiceAccess::CHANGE_CONFIG | ServiceAccess::START)?;
+        let access = ServiceAccess::CHANGE_CONFIG | ServiceAccess::START | ServiceAccess::STOP | ServiceAccess::QUERY_STATUS;
+        let service = match manager.create_service(&info, access) {
+            Ok(s) => s,
+            Err(windows_service::Error::Winapi(e)) if e.raw_os_error() == Some(ERROR_SERVICE_EXISTS) => {
+                let s = manager.open_service(SERVICE_NAME, access)?;
+                stop_and_wait(&s)?;
+                s.change_config(&info)?;
+                s
+            }
+            Err(e) => return Err(e.into()),
+        };
         service.set_description(SERVICE_DESCRIPTION)?;
         service.start::<&str>(&[])?;
         Ok(())
@@ -389,6 +435,9 @@ pub mod win {
     }
     pub fn uninstall() -> anyhow::Result<()> {
         anyhow::bail!("uninstall solo existe en Windows")
+    }
+    pub fn stop_if_running() -> anyhow::Result<bool> {
+        Ok(false)
     }
     pub fn register_tray_autostart(_exe: &Path) -> anyhow::Result<()> {
         anyhow::bail!("solo Windows")

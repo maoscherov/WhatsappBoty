@@ -56,7 +56,7 @@ class ManifestIn(BaseModel):
 class HeartbeatIn(BaseModel):
     branch_id: str
     agent_version: str = ""
-    erp_version: str = ""
+    erp_version: Optional[str] = None               # el agente manda null hasta conocerla
     erp_status: str = "ok"                          # ok | no_autorizado | inalcanzable | error
     last_sync_ok_at: Optional[str] = None
     catalog_count: Optional[int] = None
