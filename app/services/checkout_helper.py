@@ -481,6 +481,101 @@ def texto_entrega(tipo: str, direccion: Optional[str], costo_envio: float = 0) -
     return "🏪 Lo retirás en la sucursal (te enviamos el código al confirmar el pago)."
 
 
+async def _chequear_stock_vivo(session: dict, phone: str, session_svc,
+                               cfg: dict) -> tuple[Optional[str], Optional[float]]:
+    """
+    Consulta el stock REAL al agente de la sucursal antes de generar el link.
+
+    Devuelve (mensaje_freno, precio_erp):
+      - mensaje_freno: texto para el cliente si NO hay stock (la venta se
+        frena, clear_pending; con sin_stock_mode=derivar pasa a operador).
+        None = seguir al link.
+      - precio_erp: precio del ERP si difiere del cotizado (solo informativo:
+        SIEMPRE se cobra el precio que el bot dijo — D6).
+
+    Best-effort por diseño: sin agente conectado, timeout o cualquier error →
+    (None, None) y se cobra con el dato cacheado de 15 minutos.
+    """
+    from app.config import get_settings as _gs
+    settings = _gs()
+    if settings.live_stock_check != "stock" or not settings.default_branch_id:
+        return None, None
+    from app.services.agent_registry import get_agent_registry
+    registry = get_agent_registry()
+    branch = settings.default_branch_id
+    if not registry.connected(branch):
+        return None, None
+
+    items = session.get("pending_items") or []
+    if not items and session.get("pending_sku_id"):
+        items = [{"sku_id": session["pending_sku_id"],
+                  "nombre": session.get("pending_sku_nombre") or "",
+                  "precio": session.get("pending_precio") or 0,
+                  "cantidad": session.get("pending_cantidad", 1)}]
+    if not items:
+        return None, None
+
+    res = await registry.lookup(branch, ids=[str(i["sku_id"]) for i in items],
+                                timeout=settings.live_lookup_timeout_s)
+    if res is None:
+        logger.warning(f"Stock en vivo: sin respuesta del agente para {phone} — "
+                       "se cobra con el dato cacheado")
+        return None, None
+
+    vivos = {str(it.get("external_id")): it for it in res.items}
+    missing = {str(m) for m in res.missing}
+    precio_erp_distinto = None
+
+    from app.services.sku_service import get_sku_service
+    from app.services.catalog_store import get_catalog_store
+    from app.services.db import get_db
+    sku_svc = get_sku_service(settings.sku_csv_path)
+    store = get_catalog_store(get_db(settings.database_url))
+
+    for pedido in items:
+        sid = str(pedido["sku_id"])
+        vivo = vivos.get(sid)
+        stock_vivo = None
+        if vivo is not None:
+            stock_vivo = int(vivo.get("stock") or 0)
+            # Refrescar el cache (memoria + Postgres) con lo que dijo el ERP.
+            try:
+                sku_mem = sku_svc.get_by_id(sid)
+                if sku_mem:
+                    sku_mem.stock_actual = float(stock_vivo)
+                    sku_mem.cantidad_visible = max(stock_vivo, 0)
+                precio_raw = vivo.get("price")
+                await store.update_stock(branch, sid, stock_vivo,
+                                         price=precio_raw)
+                if precio_raw is not None:
+                    precio_vivo = float(precio_raw)
+                    cotizado = float(pedido.get("precio") or 0)
+                    if cotizado and abs(precio_vivo - cotizado) >= 0.01:
+                        precio_erp_distinto = precio_vivo
+                        logger.warning(
+                            f"Precio ERP distinto para {sid}: cotizado "
+                            f"${cotizado:,.2f}, ERP ${precio_vivo:,.2f} — "
+                            "se cobra el cotizado")
+            except Exception as e:
+                logger.debug(f"No se pudo refrescar cache de {sid}: {e}")
+        elif sid in missing:
+            stock_vivo = 0   # el ERP ya no lo conoce → tratar como sin stock
+
+        if stock_vivo is not None and stock_vivo < int(pedido.get("cantidad", 1)):
+            nombre = pedido.get("nombre") or "ese producto"
+            plantilla = cfg.get("live_sin_stock_message") or (
+                "Justo me fijé y no nos queda stock de {producto}. "
+                "¿Querés que lo consultemos con el equipo?")
+            await session_svc.clear_pending(phone)
+            if (cfg.get("sin_stock_mode") or "preguntar") == "derivar":
+                await session_svc.set_estado(phone, "operador", motivo="sin_stock_vivo")
+            logger.info(f"Venta frenada por stock en vivo: {sid} stock={stock_vivo} "
+                        f"pedido={pedido.get('cantidad', 1)} phone={phone}")
+            return plantilla.replace("{producto}", nombre), None
+
+    return None, precio_erp_distinto
+
+
 async def crear_link_y_responder(
     payment_svc,
     session_svc,
@@ -549,6 +644,20 @@ async def crear_link_y_responder(
     except Exception as e:
         logger.warning(f"No se pudo evaluar descuento de socio para {phone}: {e}")
 
+    # Chequeo de stock EN VIVO contra el ERP de la sucursal (si el agente está
+    # conectado): mejor frenar acá que cobrar algo que ya no está. Todo el
+    # bloque es best-effort — sin agente, timeout o error se cobra con el dato
+    # cacheado (frenar la venta porque el agente se cayó es peor que vender
+    # con stock de 15 minutos). El PRECIO nunca se recotiza acá: se cobra el
+    # que el bot dijo; si el ERP devuelve otro, se loguea.
+    _precio_erp = None
+    try:
+        _msg_freno, _precio_erp = await _chequear_stock_vivo(session, phone, session_svc, _cfg)
+        if _msg_freno:
+            return _msg_freno, None
+    except Exception as e:
+        logger.warning(f"Chequeo de stock en vivo falló para {phone}: {e} — se sigue")
+
     link, err = await payment_svc.crear_link(
         sku_id=sku_link,
         nombre=nombre_link,
@@ -571,10 +680,13 @@ async def crear_link_y_responder(
         from app.config import get_settings as _gs2
         from app.services.db import get_db as _gdb
         from app.services.metrics_store import get_metrics_store as _gms
+        _extra_evt = {"producto": nombre_link, "cantidad": cantidad}
+        if _precio_erp is not None:
+            _extra_evt["precio_erp"] = _precio_erp   # difiere del cotizado (D6)
         await _gms(_gdb(_gs2().database_url)).evento(
             "link_enviado", phone=phone, monto=total,
             ref=link.rsplit("/", 1)[-1][:64],
-            extra={"producto": nombre_link, "cantidad": cantidad},
+            extra=_extra_evt,
         )
     except Exception as e:
         logger.debug(f"evento link_enviado: {e}")

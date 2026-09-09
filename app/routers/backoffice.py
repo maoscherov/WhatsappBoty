@@ -433,6 +433,38 @@ async def bo_sku_import_receta(file: UploadFile = File(...), _=Depends(_auth)):
             detail=f"Solo se reconocieron {len(por_barcode)} productos con cruce — "
                    f"¿es el archivo correcto? El catálogo NO se modificó.")
 
+    # Sucursal con catálogo ERP: el sync pisa catalog_items entero, así que el
+    # flag del Excel va a catalog_extras como OVERRIDE por producto (sobrevive
+    # a los syncs). La whitelist de venta libre queda blindada igual que en el
+    # camino CSV: los "si" sobre OTC confirmados se reportan, no se aplican.
+    if settings.default_branch_id:
+        from app.services.catalog_store import get_catalog_store
+        from app.services.catalog_refresher import get_catalog_refresher
+        from app.services.sku_service import es_venta_libre
+        db = get_db(settings.database_url)
+        store = get_catalog_store(db)
+        if await store.count_items(settings.default_branch_id) > 0:
+            svc_actual = get_sku_service(settings.sku_csv_path)
+            aplicados, conflictos, cambiados = 0, [], set()
+            for sku in svc_actual.todos():
+                nueva = por_barcode.get(sku.barcode)
+                if nueva is None or nueva == sku.requiere_receta:
+                    continue
+                if nueva == "si" and es_venta_libre(sku.sku_nombre):
+                    conflictos.append({"barcode": sku.barcode, "nombre": sku.sku_nombre,
+                                       "antes": sku.requiere_receta, "excel": nueva,
+                                       "aplicado": False})
+                    continue
+                await store.set_extras(settings.default_branch_id, sku.sku_id,
+                                       requiere_receta_override=nueva)
+                cambiados.add(sku.sku_id)
+                aplicados += 1
+            if cambiados:
+                get_catalog_refresher().schedule(settings.default_branch_id, cambiados)
+            return {"status": "ok", "modo": "erp_overrides", "total": svc_actual.total,
+                    "resumen": {"actualizados": aplicados,
+                                "conflictos_whitelist": conflictos}}
+
     catalogo_actual = get_sku_service(settings.sku_csv_path).todos()
     contenido, resumen = fusionar_receta(catalogo_actual, por_barcode)
 
@@ -578,6 +610,7 @@ class ConfigUpdate(BaseModel):
     payment_provider: str | None = None          # "payway" | "mercadopago"
     sin_stock_mode: str | None = None            # "preguntar" | "derivar" | "nunca"
     sin_stock_ofrecer_message: str | None = None
+    live_sin_stock_message: str | None = None    # freno por stock en vivo (ERP)
     sin_stock_derivar_message: str | None = None
     derivar_pago_manual: str | None = None       # compat: "false" = solo_tarjeta
     pago_manual_mode: str | None = None          # "derivar" | "solo_tarjeta"

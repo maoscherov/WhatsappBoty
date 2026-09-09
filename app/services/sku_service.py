@@ -153,7 +153,47 @@ class SKUService:
         self._skus: list[SKU] = []
         # Índice multi-campo para búsqueda: "nombre marca laboratorio"
         self._search_index: list[str] = []
-        self._load(csv_path)
+        # Todos los CB de cada producto (el ERP trae varios por ítem). El CSV
+        # solo aporta el principal; con catálogo ERP se indexan todos.
+        self._by_barcode: dict[str, SKU] = {}
+        if csv_path:
+            self._load(csv_path)
+        self._build_df()
+
+    def _indexar(self, sku: SKU, texto_extra: str = "", barcodes: Optional[list[str]] = None):
+        """Suma un SKU al catálogo en memoria y a los índices de búsqueda."""
+        self._skus.append(sku)
+        # Índice: nombre CON las siglas de góndola expandidas (TAL→talco,
+        # JAB→jabón) + marca + laboratorio. Sin la expansión, "talco rexona"
+        # no encontraba el talco y el bot ofrecía un desodorante en su lugar.
+        search_text = " ".join(filter(None, [
+            expandir_abreviaturas(sku.sku_nombre).lower(),
+            sku.marca.lower(),
+            sku.laboratorio.lower(),
+            texto_extra.lower(),
+        ]))
+        self._search_index.append(search_text)
+        for cb in (barcodes if barcodes is not None else [sku.barcode]):
+            cb = (cb or "").strip()
+            if not cb:
+                continue
+            actual = self._by_barcode.get(cb)
+            # CB compartido entre productos: gana el que tiene stock, después
+            # el visible (no pausado).
+            if actual is None or (actual.sin_stock and not sku.sin_stock) \
+                    or (actual.pausado and not sku.pausado):
+                self._by_barcode[cb] = sku
+
+    def _build_df(self):
+        # Frecuencia de cada token en el catálogo: permite distinguir palabras
+        # distintivas ("framintrol", en 2 productos) de genéricas de marketing
+        # ("power", en decenas) al ordenar los resultados.
+        from collections import Counter
+        df: Counter = Counter()
+        for texto in self._search_index:
+            for tok in set(_tokens(texto)):
+                df[tok] += 1
+        self._token_df = df
 
     def _load(self, csv_path: str):
         path = Path(csv_path)
@@ -169,29 +209,61 @@ class SKUService:
             for row in reader:
                 sku = self._parse_processed(row, has_imagen) if is_processed else self._parse_base(row, has_imagen)
                 if sku:
-                    self._skus.append(sku)
-                    # Índice: nombre CON las siglas de góndola expandidas
-                    # (TAL→talco, JAB→jabón) + marca + laboratorio. Sin la
-                    # expansión, "talco rexona" no encontraba el talco y el
-                    # bot ofrecía un desodorante en su lugar.
-                    search_text = " ".join(filter(None, [
-                        expandir_abreviaturas(sku.sku_nombre).lower(),
-                        sku.marca.lower(),
-                        sku.laboratorio.lower(),
-                    ]))
-                    self._search_index.append(search_text)
-
-        # Frecuencia de cada token en el catálogo: permite distinguir palabras
-        # distintivas ("framintrol", en 2 productos) de genéricas de marketing
-        # ("power", en decenas) al ordenar los resultados.
-        from collections import Counter
-        df: Counter = Counter()
-        for texto in self._search_index:
-            for tok in set(_tokens(texto)):
-                df[tok] += 1
-        self._token_df = df
+                    self._indexar(sku)
 
         logger.info(f"SKUService: {len(self._skus)} productos cargados desde {csv_path}")
+
+    @classmethod
+    def from_rows(cls, rows: list[dict], extras: Optional[dict[str, dict]] = None) -> "SKUService":
+        """
+        Catálogo desde Postgres (catalog_items ⋈ catalog_extras) en vez del CSV.
+
+        Se cargan TODAS las filas: las inactivas (el manifiesto las desactivó)
+        y las no visibles entran como `pausado` — así get_by_id sigue
+        encontrando el pendiente viejo de un cliente, y el chequeo en vivo al
+        cobrar lo frena. La búsqueda igual las saltea (buscar filtra pausados).
+        """
+        extras = extras or {}
+        svc = cls("")
+        for row in rows:
+            ex = extras.get(row["external_id"], {})
+            barcodes = list(row.get("barcodes") or [])
+            requiere = (ex.get("requiere_receta_override")
+                        or row.get("requiere_receta") or "no")
+            categoria = row.get("category") or ""
+            stock = int(row.get("stock") or 0)
+            precio = float(row["price"]) if row.get("price") is not None else 0.0
+            sku = SKU(
+                sku_id=str(row["external_id"]),
+                barcode=barcodes[0] if barcodes else "",
+                sku_nombre=row.get("name") or "",
+                sku_nombre_original=row.get("name") or "",
+                marca=row.get("brand") or "",
+                # El ERP no distingue marca de laboratorio: brand va en ambos.
+                laboratorio=row.get("brand") or "",
+                categoria=categoria,
+                es_medicamento=categoria.strip().lower().startswith("medicamento"),
+                precio_venta=precio,
+                stock_actual=float(stock),
+                cantidad_visible=max(stock, 0),
+                pausado=(not row.get("active", True)) or (not row.get("visible", True))
+                        or bool(ex.get("pausado_manual")),
+                requiere_receta=requiere if requiere in ("si", "ambiguo", "no") else "no",
+                imagen_url=ex.get("imagen_url") or None,
+                ventas_mes=ex.get("ventas_mes"),
+                prom_semanal=ex.get("prom_semanal"),
+                clasificacion=(ex.get("clasificacion") or "").strip().lower(),
+                tipo_producto=ex.get("tipo_producto") or "regular",
+            )
+            # rubro/subrubro/droga entran al índice de búsqueda, no al modelo.
+            texto_extra = " ".join(filter(None, [
+                row.get("drug") or "", row.get("rubro") or "",
+                row.get("subrubro") or "",
+            ]))
+            svc._indexar(sku, texto_extra=texto_extra, barcodes=barcodes)
+        svc._build_df()
+        logger.info(f"SKUService: {len(svc._skus)} productos cargados desde Postgres (ERP)")
+        return svc
 
     @staticmethod
     def _parse_base(row: dict, has_imagen: bool = False) -> Optional[SKU]:
@@ -356,6 +428,9 @@ class SKUService:
         return None
 
     def get_by_barcode(self, barcode: str) -> Optional[SKU]:
+        hit = self._by_barcode.get((barcode or "").strip())
+        if hit:
+            return hit
         for sku in self._skus:
             if sku.barcode == barcode:
                 return sku
@@ -406,4 +481,11 @@ def reload_sku_service(csv_path: str) -> SKUService:
     global _instance
     _instance = SKUService(csv_path)
     logger.info(f"Catálogo recargado: {_instance.total} SKUs")
+    return _instance
+
+
+def set_sku_service(svc: SKUService) -> SKUService:
+    """Swap atómico del singleton (recarga desde Postgres/ERP)."""
+    global _instance
+    _instance = svc
     return _instance

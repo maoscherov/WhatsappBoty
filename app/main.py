@@ -9,7 +9,8 @@ from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
-from app.routers import webhook, simulate, backoffice, mp_webhook, orders_api, media, payway
+from app.routers import (webhook, simulate, backoffice, mp_webhook, orders_api,
+                         media, payway, sync_api, agent_ws, backoffice_branches)
 from app.services.sku_service import get_sku_service
 from app.services.session_service import get_session_service
 from app.services.blob_store import get_blob_store
@@ -93,6 +94,25 @@ async def lifespan(app: FastAPI):
                         f"descuento socio: {cfg_actual.get('socio_discount_pct')}%)")
         except Exception as e:
             logger.warning(f"No se pudo hidratar la config: {e}")
+
+        # Catálogo ERP: si la sucursal por defecto tiene filas sincronizadas
+        # por el agente, gana Postgres sobre el CSV (que queda de fallback
+        # para clientes sin ERP — el blob de Redis no se toca).
+        if settings.default_branch_id:
+            try:
+                from app.services.catalog_refresher import get_catalog_refresher
+                from app.services.catalog_store import get_catalog_store
+                _n = await get_catalog_store(get_db(settings.database_url)) \
+                    .count_items(settings.default_branch_id)
+                if _n > 0:
+                    _refresher = get_catalog_refresher()
+                    _refresher._branch_id = settings.default_branch_id
+                    await _refresher.recargar()
+                else:
+                    logger.info(f"Sucursal {settings.default_branch_id} sin catálogo "
+                                "ERP todavía — se usa el CSV")
+            except Exception as e:
+                logger.warning(f"No se pudo cargar el catálogo ERP: {e} — se usa el CSV")
 
     # Job periódico: cierre por inactividad, aviso de demora y devolución al bot
     # de las derivaciones sin atender. Arranca con cualquier proveedor de
@@ -224,6 +244,9 @@ app.include_router(mp_webhook.router)
 app.include_router(orders_api.router)
 app.include_router(media.router)
 app.include_router(payway.router)
+app.include_router(sync_api.router)
+app.include_router(agent_ws.router)
+app.include_router(backoffice_branches.router)
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 

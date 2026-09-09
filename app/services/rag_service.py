@@ -59,6 +59,29 @@ class RagService:
         logger.info(f"RAG: catálogo indexado, {total} productos")
         return total
 
+    async def reindex_ids(self, sku_svc, changed_ids: set[str], batch: int = 256) -> int:
+        """
+        Reindexado INCREMENTAL: embebe solo los sku_id cambiados por un sync
+        del ERP. Un delta de 3 productos no puede re-embeber 54k
+        (reindex_catalogo es total). Los ids que ya no están en el catálogo se
+        borran del índice.
+        """
+        if not self.enabled() or not changed_ids:
+            return 0
+        presentes = []
+        ausentes = []
+        for sid in changed_ids:
+            sku = sku_svc.get_by_id(str(sid))
+            if sku:
+                presentes.append(sku_svc._to_response(sku))
+            else:
+                ausentes.append(str(sid))
+        for sid in ausentes:
+            await self._db.execute("DELETE FROM sku_embeddings WHERE sku_id = $1", sid)
+        total = await self.reindex_catalogo(presentes, batch=batch) if presentes else 0
+        logger.info(f"RAG incremental: {total} reindexados, {len(ausentes)} borrados")
+        return total
+
     async def count_indexed(self) -> int:
         rows = await self._db.fetch("SELECT count(*) AS n FROM sku_embeddings")
         return rows[0]["n"] if rows else 0

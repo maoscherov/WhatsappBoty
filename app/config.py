@@ -57,6 +57,11 @@ class Settings(BaseSettings):
     image_server_api_key: str = ""            # clave para subir imágenes
     images_base_url: str = ""                 # ej: https://tuapp.railway.app/media
 
+    # Sync de catálogo desde el ERP de la sucursal (remedia-agent)
+    default_branch_id: str = ""      # sucursal cuyo catálogo usa el bot; vacío = solo CSV
+    live_stock_check: str = "stock"  # off | stock — consulta al agente antes del link de pago
+    live_lookup_timeout_s: float = 5.0
+
     # Mercurio ERP (SOAP) — vacíos hasta tener WSDL y credenciales
     mercurio_wsdl_url: str = ""
     mercurio_user: str = ""

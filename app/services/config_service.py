@@ -87,6 +87,12 @@ DEFAULTS: dict[str, str] = {
     #   "derivar"   → deriva directo a una persona.
     #   "nunca"     → sólo avisa que no está (comportamiento anterior).
     "sin_stock_mode": "preguntar",
+    # Venta frenada por el chequeo de stock EN VIVO contra el ERP (justo antes
+    # de generar el link de pago). {producto} se reemplaza por el nombre.
+    "live_sin_stock_message": (
+        "Justo me fijé y no nos queda stock de {producto}. "
+        "¿Querés que lo consultemos con el equipo?"
+    ),
     "sin_stock_ofrecer_message": (
         "No me figura disponible en este momento 🙏 ¿Querés que lo consulte "
         "con el equipo para conseguírtelo o encargarlo?"

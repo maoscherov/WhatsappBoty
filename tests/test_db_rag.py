@@ -32,8 +32,16 @@ async def test_schema_existe(db):
 
 
 async def test_alembic_version(db):
+    """La DB de test está en el head real de Alembic (no un número fijo)."""
+    from pathlib import Path
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+    root = Path(__file__).resolve().parent.parent
+    cfg = Config(str(root / "alembic.ini"))
+    cfg.set_main_option("script_location", str(root / "migrations"))
+    head = ScriptDirectory.from_config(cfg).get_current_head()
     rows = await db.fetch("SELECT version_num FROM alembic_version")
-    assert rows and rows[0]["version_num"] == "0003"
+    assert rows and rows[0]["version_num"] == head
 
 
 async def test_eventos_registro(db):

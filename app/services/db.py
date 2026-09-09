@@ -13,6 +13,7 @@ Tablas (ver migración 0001):
 """
 
 import logging
+from contextlib import asynccontextmanager
 from typing import Optional
 
 import asyncpg
@@ -82,6 +83,41 @@ class Database:
         except Exception as e:
             logger.error(f"DB fetch error: {e}")
             return []
+
+    # ── Variantes que PROPAGAN errores (endpoints de sync del catálogo) ──────
+    # `execute`/`fetch` tragan errores porque el bot degrada a Redis; el agente
+    # de sucursal en cambio REINTENTA ante un no-2xx: responder 200 sobre un
+    # write fallido desincronizaría la sucursal hasta el próximo manifiesto.
+
+    def _require_pool(self) -> "asyncpg.Pool":
+        if not self.available():
+            raise RuntimeError("Postgres no disponible")
+        return self._pool
+
+    @asynccontextmanager
+    async def transaction(self):
+        """Conexión dentro de una transacción. Lanza si Postgres no está."""
+        pool = self._require_pool()
+        async with pool.acquire() as con:
+            async with con.transaction():
+                yield con
+
+    async def executemany(self, query: str, args_list: list) -> None:
+        """executemany que LANZA ante error (no traga)."""
+        pool = self._require_pool()
+        async with pool.acquire() as con:
+            await con.executemany(query, args_list)
+
+    async def fetchrow(self, query: str, *args):
+        """Una fila o None. Best-effort como fetch()."""
+        if not self.available():
+            return None
+        try:
+            async with self._pool.acquire() as con:
+                return await con.fetchrow(query, *args)
+        except Exception as e:
+            logger.error(f"DB fetchrow error: {e}")
+            return None
 
     async def close(self):
         if self._pool:
