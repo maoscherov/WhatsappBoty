@@ -31,7 +31,8 @@ enum Cmd {
         /// Identificador de la sucursal, p. ej. farmacia-xxx
         #[arg(long)]
         branch: String,
-        #[arg(long, default_value = "https://api.remedia.ar")]
+        /// Base de la API de Remedia, solo el servidor (sin /bo/...)
+        #[arg(long, default_value = "https://cerca.remedia.ar")]
         remedia: String,
         /// Directorio de datos (agent.toml, state.sqlite, logs). Default: C:\ProgramData\RemediaAgent
         #[arg(long)]
@@ -118,6 +119,13 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn install(data_dir: &std::path::Path, token: String, erp: String, branch: String, remedia: String) -> anyhow::Result<()> {
+    for (what, u) in [("--remedia", &remedia), ("--erp", &erp)] {
+        if let Err(e) = remedia_agent::runtime::validate_url(u) {
+            anyhow::bail!("{what}: {e}");
+        }
+    }
+    let remedia = remedia.trim_end_matches('/').to_string();
+    let erp = erp.trim_end_matches('/').to_string();
     let cfg = Config {
         branch_id: branch,
         remedia_url: remedia,

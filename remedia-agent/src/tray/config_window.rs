@@ -20,13 +20,17 @@ pub struct ConfigWindow {
     _handler: RefCell<Option<nwg::EventHandler>>,
 }
 
-const CONFIRM: &str = "Vas a cambiar la configuración del agente.\n\nSi un dato es incorrecto, la farmacia deja de sincronizar con Remedia. Este cambio normalmente lo indica soporte.\n\n¿Continuar?";
+const HINT: &str = "Las direcciones son solo el servidor (sin /bo/... ni /api/...).\r\nProbá antes de guardar. Si el ERP está apagado, igual se puede guardar.";
+
+const CONFIRM: &str ="Vas a cambiar la configuración del agente.\n\nSi un dato es incorrecto, la farmacia deja de sincronizar con Remedia. Este cambio normalmente lo indica soporte.\n\n¿Continuar?";
 
 impl ConfigWindow {
     pub fn build(app: &Rc<App>, icon: &nwg::Icon) -> Result<ConfigWindow, nwg::NwgError> {
         let mut window = nwg::Window::default();
+        // Medidas holgadas: con escala de pantalla al 125 % los textos crecen
+        // pero las posiciones no.
         nwg::Window::builder()
-            .size((520, 250))
+            .size((640, 330))
             .position((300, 300))
             .title("Remedia Agent — Configuración")
             .icon(Some(icon))
@@ -36,22 +40,32 @@ impl ConfigWindow {
         let mut labels = Vec::new();
         let mut label = |text: &str, y: i32| -> Result<(), nwg::NwgError> {
             let mut l = nwg::Label::default();
-            nwg::Label::builder().text(text).position((16, y)).size((150, 22)).parent(&window).build(&mut l)?;
+            nwg::Label::builder().text(text).position((16, y)).size((200, 26)).parent(&window).build(&mut l)?;
             labels.push(l);
             Ok(())
         };
-        label("Dirección de Remedia", 18)?;
-        label("Dirección del ERP", 56)?;
-        label("Token de la sucursal", 94)?;
+        label("Dirección de Remedia", 20)?;
+        label("Dirección del ERP", 62)?;
+        label("Token de la sucursal", 104)?;
 
         let mut remedia_url = nwg::TextInput::default();
-        nwg::TextInput::builder().position((170, 15)).size((330, 24)).parent(&window).build(&mut remedia_url)?;
+        nwg::TextInput::builder()
+            .position((220, 16))
+            .size((400, 28))
+            .placeholder_text(Some("https://cerca.remedia.ar (solo el servidor)"))
+            .parent(&window)
+            .build(&mut remedia_url)?;
         let mut erp_url = nwg::TextInput::default();
-        nwg::TextInput::builder().position((170, 53)).size((330, 24)).parent(&window).build(&mut erp_url)?;
+        nwg::TextInput::builder()
+            .position((220, 58))
+            .size((400, 28))
+            .placeholder_text(Some("http://192.168.1.156:60064"))
+            .parent(&window)
+            .build(&mut erp_url)?;
         let mut token = nwg::TextInput::default();
         nwg::TextInput::builder()
-            .position((170, 91))
-            .size((330, 24))
+            .position((220, 100))
+            .size((400, 28))
             .password(Some('•'))
             .placeholder_text(Some("vacío = no cambiar"))
             .parent(&window)
@@ -59,18 +73,18 @@ impl ConfigWindow {
 
         let mut status = nwg::Label::default();
         nwg::Label::builder()
-            .text("Probá antes de guardar. Si el ERP está apagado, igual se puede guardar.")
-            .position((16, 130))
-            .size((484, 44))
+            .text(HINT)
+            .position((16, 146))
+            .size((604, 110))
             .parent(&window)
             .build(&mut status)?;
 
         let mut test_btn = nwg::Button::default();
-        nwg::Button::builder().text("Probar").position((170, 190)).size((100, 32)).parent(&window).build(&mut test_btn)?;
+        nwg::Button::builder().text("Probar").position((260, 270)).size((110, 36)).parent(&window).build(&mut test_btn)?;
         let mut save_btn = nwg::Button::default();
-        nwg::Button::builder().text("Guardar").position((280, 190)).size((100, 32)).parent(&window).build(&mut save_btn)?;
+        nwg::Button::builder().text("Guardar").position((385, 270)).size((110, 36)).parent(&window).build(&mut save_btn)?;
         let mut cancel_btn = nwg::Button::default();
-        nwg::Button::builder().text("Cancelar").position((390, 190)).size((100, 32)).parent(&window).build(&mut cancel_btn)?;
+        nwg::Button::builder().text("Cancelar").position((510, 270)).size((110, 36)).parent(&window).build(&mut cancel_btn)?;
 
         let win = ConfigWindow {
             window,
@@ -149,7 +163,7 @@ impl ConfigWindow {
         self.remedia_url.set_text(&report.remedia_url);
         self.erp_url.set_text(&report.erp_url);
         self.token.set_text("");
-        self.status.set_text("Probá antes de guardar. Si el ERP está apagado, igual se puede guardar.");
+        self.status.set_text(HINT);
         self.set_busy(false);
         self.window.set_visible(true);
         self.window.set_focus();

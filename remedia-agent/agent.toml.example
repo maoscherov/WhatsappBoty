@@ -1,5 +1,5 @@
 branch_id = "farmacia-xxx"
-remedia_url = "https://api.remedia.ar"
+remedia_url = "https://cerca.remedia.ar"
 token = "REEMPLAZAR"
 heartbeat_interval_secs = 300
 

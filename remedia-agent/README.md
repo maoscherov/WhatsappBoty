@@ -71,7 +71,7 @@ El tray habla con el servicio por el named pipe local `\\.\pipe\RemediaAgent`
 
 ```toml
 branch_id = "farmacia-xxx"
-remedia_url = "https://api.remedia.ar"
+remedia_url = "https://cerca.remedia.ar"
 token = "..."
 heartbeat_interval_secs = 300   # opcional
 
@@ -153,6 +153,9 @@ el mismo id).
 ## Lado servidor
 
 Los endpoints `/v1/sync/catalog`, `/v1/sync/full-manifest`,
-`/v1/sync/heartbeat` y `/v1/agent/ws` **todavía no existen** en la API de
-Remedia (`app/`). El contrato está en la spec y en
+`/v1/sync/heartbeat` y `/v1/agent/ws` viven en `app/routers/sync_api.py` y
+`app/routers/agent_ws.py`; el alta de sucursales y tokens en
+`app/routers/backoffice_branches.py`. Spec:
+[`2026-09-08-remedia-sync-server-design.md`](../docs/superpowers/specs/2026-09-08-remedia-sync-server-design.md).
+El contrato del lado agente está en
 [`src/remedia/client.rs`](src/remedia/client.rs) / [`src/remedia/ws.rs`](src/remedia/ws.rs).

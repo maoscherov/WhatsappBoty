@@ -321,14 +321,25 @@ async fn probe_erp(adapter: &dyn ErpAdapter) -> Response {
     }
 }
 
+/// Acepta solo la base del servidor (`https://host[:puerto]`). Una ruta como
+/// `/bo/branches` es un error típico: el agente agrega `/v1/sync/...` solo.
 pub fn validate_url(u: &str) -> Result<(), String> {
-    let parsed = reqwest::Url::parse(u).map_err(|_| format!("URL inválida: {u}"))?;
+    let parsed = reqwest::Url::parse(u).map_err(|_| format!("Dirección inválida: {u}"))?;
     match parsed.scheme() {
         "http" | "https" => {}
-        s => return Err(format!("La URL tiene que empezar con http:// o https:// (no {s}://)")),
+        s => return Err(format!("La dirección tiene que empezar con http:// o https:// (no {s}://)")),
     }
-    if parsed.host_str().is_none() {
-        return Err(format!("La URL no tiene host: {u}"));
+    let Some(host) = parsed.host_str() else {
+        return Err(format!("La dirección no tiene servidor: {u}"));
+    };
+    let has_path = !matches!(parsed.path(), "" | "/");
+    if has_path || parsed.query().is_some() || parsed.fragment().is_some() {
+        let port = parsed.port().map(|p| format!(":{p}")).unwrap_or_default();
+        return Err(format!(
+            "Poné solo el servidor, sin ruta: {}://{host}{port} (no {})",
+            parsed.scheme(),
+            parsed.path()
+        ));
     }
     Ok(())
 }
@@ -349,6 +360,7 @@ pub fn remedia_error_text(e: &crate::remedia::RemediaError) -> String {
     match e {
         Unreachable(_) => "No se pudo conectar con Remedia. Revisá la conexión a internet y la dirección.".into(),
         Http(401, _) | Http(403, _) => "Remedia rechazó el token (no es válido o pertenece a otra sucursal).".into(),
+        Http(404, _) => "Remedia respondió 404: esa dirección no es la de la API. Tiene que ser solo el servidor, por ejemplo https://cerca.remedia.ar".into(),
         Http(code, _) => format!("Remedia respondió con error HTTP {code}."),
         Decode(d) => format!("Remedia respondió algo que no se entiende: {d}"),
     }
@@ -365,5 +377,11 @@ mod tests {
         assert!(validate_url("192.168.1.156:60064").is_err());
         assert!(validate_url("ftp://x").is_err());
         assert!(validate_url("").is_err());
+        let e = validate_url("https://cerca.remedia.ar/bo/branches").unwrap_err();
+        assert!(e.contains("https://cerca.remedia.ar"), "{e}");
+        assert!(e.contains("/bo/branches"), "{e}");
+        let e = validate_url("http://192.168.1.156:60064/api/productos").unwrap_err();
+        assert!(e.contains("http://192.168.1.156:60064"), "{e}");
+        assert!(validate_url("https://x.ar/?a=1").is_err());
     }
 }
