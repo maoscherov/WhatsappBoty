@@ -822,6 +822,7 @@ class TestPagoIdempotente:
         ordenes = []
 
         class _FakeOrders:
+            async def find_by_payment(self, pid): return None
             async def create(self, **kw):
                 ordenes.append(kw)
                 return {"order_id": f"ORD-{len(ordenes)}", "pickup_code": "123456"}
@@ -855,6 +856,7 @@ class TestPagoIdempotente:
         intentos = {"n": 0}
 
         class _OrdersFallanUnaVez:
+            async def find_by_payment(self, pid): return None
             async def create(self, **kw):
                 intentos["n"] += 1
                 if intentos["n"] == 1:
@@ -873,6 +875,63 @@ class TestPagoIdempotente:
         r2 = await mpw.procesar_pago("PAGO-FALLA-1")    # el retry recupera
         assert r2["status"] == "ok"
         assert intentos["n"] == 2
+
+    async def test_reintento_tardio_no_recrea_la_orden(self, monkeypatch):
+        """Regresión (6/9): MP renotificó un pago del 1/9 CINCO días después.
+        El candado no existía para ese pago (o ya venció): la defensa durable
+        es el pedido mismo — si ya hay orden para ese payment_id, se ignora."""
+        import app.routers.mp_webhook as mpw
+
+        class _FakePaySvc:
+            async def get_payment_info(self, pid):
+                return {"status": "approved", "external_reference": "5490000000077_G1",
+                        "transaction_amount": 5731.7, "additional_info": {}}
+
+        creadas = []
+
+        class _OrdersConPedidoViejo:
+            async def find_by_payment(self, pid):
+                return {"order_id": "ORD-VIEJA", "mp_payment_id": pid,
+                        "pickup_code": "111111"}
+            async def create(self, **kw):
+                creadas.append(kw)
+                return {"order_id": "ORD-NUEVA", "pickup_code": "222222"}
+
+        enviados = []
+
+        class _FakeWa:
+            async def send_text(self, phone, msg):
+                enviados.append(msg)
+                return True
+
+        monkeypatch.setattr(mpw, "get_payment_service", lambda *a, **k: _FakePaySvc())
+        monkeypatch.setattr(mpw, "get_order_service", lambda *a: _OrdersConPedidoViejo())
+        monkeypatch.setattr(mpw, "get_whatsapp_service", lambda *a: _FakeWa())
+
+        r = await mpw.procesar_pago("PAGO-TARDIO-1")   # candado libre, pero hay orden
+        assert r["status"] == "duplicado"
+        assert r["order_id"] == "ORD-VIEJA"
+        assert creadas == []                            # NINGUNA orden nueva
+        assert enviados == []                           # NINGÚN "¡Pago confirmado!"
+
+    async def test_find_by_payment_encuentra_el_pedido(self):
+        from app.services.order_service import OrderService
+
+        class _FakeRedis:
+            def __init__(self): self.kv = {}; self.idx = []
+            async def setex(self, k, ttl, v): self.kv[k] = v
+            async def zadd(self, key, mapping): self.idx.extend(mapping.keys())
+            async def zrevrange(self, key, a, b): return list(reversed(self.idx))[a:b + 1]
+            async def mget(self, keys): return [self.kv.get(k) for k in keys]
+
+        svc = OrderService("redis://127.0.0.1:1")
+        svc._redis = _FakeRedis()
+        await svc.create(phone="549", sku_id="G1", sku_nombre="Gum Advanced",
+                         cantidad=1, total=5731.7, mp_payment_id="PAGO-123")
+        hallado = await svc.find_by_payment("PAGO-123")
+        assert hallado and hallado["sku_nombre"] == "Gum Advanced"
+        assert await svc.find_by_payment("PAGO-999") is None
+        assert await svc.find_by_payment("") is None
 
 
 class TestCotizacionSinLink:

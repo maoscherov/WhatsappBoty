@@ -120,12 +120,23 @@ async def procesar_pago(payment_id: str) -> dict:
     if status != "approved":
         return {"status": "ignored", "payment_status": status}
 
-    # Candado idempotente: MP reintenta la notificación del mismo pago y cada
-    # reintento creaba OTRA orden y otro "¡Pago confirmado!" (caso real 5/9).
+    # Defensa durable: si este pago ya tiene un pedido creado, la notificación
+    # es un reintento — MP reinsiste durante DÍAS y el candado no alcanza
+    # (caso real 6/9: pago del 1/9, anterior al candado, renotificado el 6/9
+    # → segunda orden y segunda confirmación). No depende de ningún TTL corto.
+    order_previo = await get_order_service(settings.redis_url).find_by_payment(payment_id)
+    if order_previo:
+        logger.info(f"Pago {payment_id} ya tiene pedido {order_previo['order_id']} — "
+                    f"reintento ignorado")
+        return {"status": "duplicado", "payment_id": payment_id,
+                "order_id": order_previo["order_id"]}
+
+    # Candado idempotente: frena reintentos concurrentes/rápidos del mismo pago
+    # (caso real 5/9). 30 días — MP reintenta mucho más allá de 48hs.
     # Si el procesamiento falla a mitad de camino, el candado se libera para
     # que el reintento (o /bo/mp/reprocesar) complete la venta.
     session_lock = get_session_service(settings.redis_url)
-    if not await session_lock.adquirir_unico(f"pago:mp:{payment_id}", ttl=48 * 3600):
+    if not await session_lock.adquirir_unico(f"pago:mp:{payment_id}", ttl=30 * 24 * 3600):
         logger.info(f"Pago {payment_id} ya procesado — notificación duplicada ignorada")
         return {"status": "duplicado", "payment_id": payment_id}
 
@@ -229,5 +240,14 @@ async def _cerrar_venta(settings, payment: dict, payment_id: str, external_ref: 
     session_svc = get_session_service(settings.redis_url)
     await session_svc.set_estado(phone, "pedido_confirmado")
     await session_svc.add_message(phone, "assistant", mensaje)
+
+    # Historial permanente: las confirmaciones de pago no pasan por el webhook
+    # de WhatsApp, así que hay que persistirlas acá (best-effort, no-op sin DB).
+    try:
+        from app.services.db import get_db
+        from app.services.message_store import get_message_store
+        await get_message_store(get_db(settings.database_url)).save(phone, "assistant", mensaje)
+    except Exception as e:
+        logger.debug(f"messages (MP): {e}")
 
     return {"status": "ok", "phone": phone, "product": nombre_producto, "order_id": order["order_id"]}

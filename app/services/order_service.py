@@ -121,6 +121,32 @@ class OrderService:
         except Exception:
             return None
 
+    async def find_by_payment(self, payment_id: str) -> Optional[dict]:
+        """
+        Pedido ya creado para este pago, si existe. Es la defensa durable de
+        idempotencia: MP reintenta la notificación del mismo pago durante DÍAS
+        (caso real 6/9: pago del 1/9 renotificado 5 días después), más que la
+        vida de cualquier candado. Mientras el pedido viva en Redis (7 días),
+        el reintento se reconoce y no se vuelve a cerrar la venta.
+        """
+        pid = str(payment_id or "").strip()
+        if not pid:
+            return None
+        try:
+            ids = await self._redis.zrevrange(ORDERS_IDX, 0, 499)
+            if not ids:
+                return None
+            raws = await self._redis.mget([self._key(oid) for oid in ids])
+            for raw in raws:
+                if not raw:
+                    continue
+                o = json.loads(raw)
+                if str(o.get("mp_payment_id") or "") == pid:
+                    return self._with_trace_defaults(o)
+        except Exception as e:
+            logger.error(f"OrderService.find_by_payment error: {e}")
+        return None
+
     async def list_all(self, limit: int = 300) -> list[dict]:
         """Devuelve pedidos ordenados del más reciente al más antiguo."""
         try:

@@ -192,13 +192,23 @@ async def payway_charge(body: ChargeIn):
 
     estado = data.get("status")   # "approved" | "rejected" | ...
     if estado == "approved":
-        # Candado idempotente (mismo criterio que MP, caso real 5/9): un
-        # reintento/doble submit del mismo pago no crea otra orden ni manda
-        # otro "¡Pago confirmado!".
+        # Defensa durable (mismo criterio que MP, caso real 6/9): si este pago
+        # ya tiene pedido creado, es un reintento — no se cierra la venta otra vez.
+        _order_previo = await get_order_service(settings.redis_url).find_by_payment(
+            str(data.get("id") or ""))
+        if _order_previo:
+            logger.info(f"Pago Payway {data.get('id')} ya tiene pedido "
+                        f"{_order_previo['order_id']} — reintento ignorado")
+            return {"status": "approved", "duplicado": True, "id": data.get("id"),
+                    "order_id": _order_previo["order_id"]}
+
+        # Candado idempotente (caso real 5/9): un reintento/doble submit del
+        # mismo pago no crea otra orden ni manda otro "¡Pago confirmado!".
+        # 30 días, mismo criterio que MP.
         from app.services.session_service import get_session_service as _gss_lock
         _lock = get_settings()
         _clave_pago = f"pago:payway:{data.get('id') or body.pid}"
-        if not await _gss_lock(_lock.redis_url).adquirir_unico(_clave_pago, ttl=48 * 3600):
+        if not await _gss_lock(_lock.redis_url).adquirir_unico(_clave_pago, ttl=30 * 24 * 3600):
             logger.info(f"Pago Payway {data.get('id')} ya procesado — duplicado ignorado")
             return {"status": "approved", "duplicado": True, "id": data.get("id")}
         pending["estado"] = "aprobado"
@@ -271,6 +281,14 @@ async def payway_charge(body: ChargeIn):
             await wa.send_text(phone, mensaje)
             await session_svc.set_estado(phone, "pedido_confirmado")
             await session_svc.add_message(phone, "assistant", mensaje)
+            # Historial permanente (las confirmaciones no pasan por el webhook
+            # de WhatsApp — best-effort, no-op sin DB).
+            try:
+                from app.services.db import get_db as _gdb
+                from app.services.message_store import get_message_store as _gms
+                await _gms(_gdb(settings.database_url)).save(phone, "assistant", mensaje)
+            except Exception as e:
+                logger.debug(f"messages (Payway): {e}")
         except Exception as e:
             logger.error(f"Post-pago Payway: {e}")
         return {"status": "approved"}
