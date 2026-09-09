@@ -119,7 +119,7 @@ async fn set_config_applies_new_remedia_and_token_hot() {
     // El heartbeat siguiente va al Remedia nuevo con el token nuevo.
     rt.engine.send_heartbeat().await.unwrap();
     let reqs = rem2.received_requests().await.unwrap();
-    let hb = reqs.iter().filter(|r| r.url.path() == "/v1/sync/heartbeat").last().unwrap();
+    let hb = reqs.iter().rev().find(|r| r.url.path() == "/v1/sync/heartbeat").unwrap();
     assert_eq!(hb.headers.get("authorization").unwrap().to_str().unwrap(), "Bearer nuevo");
 }
 

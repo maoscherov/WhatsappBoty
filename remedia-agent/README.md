@@ -22,16 +22,50 @@ Esto:
 3. Registra el servicio `RemediaAgent` (arranque automático, cuenta
    `NT AUTHORITY\NetworkService`, con permisos sobre el directorio de datos) y lo inicia.
 
+4. Registra el **icono de bandeja** (`agent.exe tray`) para que arranque al iniciar
+   sesión cualquier usuario de la PC, y lo abre en la sesión actual.
+
 Otros comandos:
 
 | Comando | Qué hace |
 |---|---|
-| `agent.exe status` | Estado local: ERP ok/no_autorizado/inalcanzable, ítems, pendientes, último sync y heartbeat. |
+| `agent.exe status` | Estado vivo por el pipe si el servicio corre (con latencias); si no, el último estado guardado. |
 | `agent.exe sync-now` | Un ciclo de sync (pendientes + delta) en primer plano y termina. |
 | `agent.exe run` | Corre el agente en foreground con logs en consola (Ctrl+C para salir). |
-| `agent.exe uninstall` | Detiene y elimina el servicio. No borra `C:\ProgramData\RemediaAgent`. |
+| `agent.exe tray` | Abre el icono de bandeja a mano (normalmente arranca solo). |
+| `agent.exe uninstall` | Cierra los trays, quita el autoarranque, detiene y elimina el servicio. No borra `C:\ProgramData\RemediaAgent`. |
 
 Todos aceptan `--data-dir D` para usar otro directorio (útil en desarrollo).
+
+## Icono de bandeja
+
+Pensado para que lo mire el personal de la farmacia. El color dice todo sin abrir el menú:
+
+| Color | Significa |
+|---|---|
+| Verde | ERP ok, conectado con Remedia, sin pendientes, sincronizado hace menos de 1 h. |
+| Amarillo | Hay lotes sin enviar, el websocket está caído o hace más de 1 h que no sincroniza. |
+| Rojo | El ERP no responde o no autoriza, o Remedia rechaza el token. |
+| Gris | El servicio no está corriendo. |
+
+Clic derecho muestra el estado (ERP, Remedia, último sync, pendientes, último
+error) y estas acciones:
+
+- **Sincronizar ahora**: adelanta el ciclo.
+- **Probar conexión con el ERP**: lee el lote 1 y muestra los ms.
+- **Ver detalle…**: todas las latencias (lectura completa del ERP, por lote,
+  envío a Remedia, ciclo completo, consulta en vivo, heartbeat), versiones,
+  reconexiones, rutas. Botón "Copiar" para pegarlo en un mensaje a soporte.
+- **Configuración…**: cambiar la dirección de Remedia, la del ERP o el token,
+  **sin permisos de administrador**. "Probar" verifica cada uno y muestra ms.
+  "Guardar" pide confirmación; un token o dirección de Remedia inválidos se
+  rechazan sin guardar; un ERP apagado se guarda con aviso. El servicio aplica
+  el cambio en caliente (no hace falta reiniciar nada).
+- **Abrir carpeta de logs**.
+- **Salir del icono**: cierra solo el tray; el servicio sigue.
+
+El tray habla con el servicio por el named pipe local `\\.\pipe\RemediaAgent`
+(no es una conexión de red). Solo hay una instancia por sesión.
 
 ## `agent.toml`
 
@@ -67,7 +101,8 @@ dir = "C:\\ProgramData\\RemediaAgent\\logs"   # rotación diaria, 7 archivos
   ausente y devuelve los ids a reenviar. Se poda del estado local lo que ya no
   está en el ERP.
 - **Heartbeat (cada 5 min):** `POST /v1/sync/heartbeat` con `erp_status`
-  (`ok | no_autorizado | inalcanzable | error`), conteo del catálogo y lotes pendientes.
+  (`ok | no_autorizado | inalcanzable | error`), conteo del catálogo, lotes
+  pendientes y un objeto `metrics` con las latencias (Remedia puede ignorarlo).
 - **Websocket saliente** a `wss://<remedia>/v1/agent/ws` (Bearer en el
   handshake): `lookup` por CB o id (timeout 3 s por request al ERP),
   `sync_now`, ping/pong cada 30 s, reconexión con backoff 5 s → 5 min.

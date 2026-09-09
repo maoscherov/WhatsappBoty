@@ -309,6 +309,58 @@ pub mod win {
         Ok(())
     }
 
+    // ---- tray -------------------------------------------------------------
+
+    const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+    const RUN_VALUE: &str = "RemediaAgentTray";
+
+    /// El tray arranca al iniciar sesión, para todos los usuarios de la PC (HKLM).
+    pub fn register_tray_autostart(exe: &Path) -> anyhow::Result<()> {
+        use winreg::enums::HKEY_LOCAL_MACHINE;
+        use winreg::RegKey;
+        let (key, _) = RegKey::predef(HKEY_LOCAL_MACHINE).create_subkey(RUN_KEY)?;
+        key.set_value(RUN_VALUE, &format!("\"{}\" tray", exe.display()))?;
+        Ok(())
+    }
+
+    pub fn unregister_tray_autostart() -> anyhow::Result<()> {
+        use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_SET_VALUE};
+        use winreg::RegKey;
+        match RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey_with_flags(RUN_KEY, KEY_SET_VALUE) {
+            Ok(key) => match key.delete_value(RUN_VALUE) {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(e.into()),
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Lanza el tray para la sesión actual (sin esperar al próximo inicio de sesión).
+    pub fn launch_tray(exe: &Path) {
+        if let Err(e) = std::process::Command::new(exe).arg("tray").spawn() {
+            warn!(error = %e, "no se pudo lanzar el tray");
+        }
+    }
+
+    /// Señala el evento con nombre que los trays abiertos miran cada 5 s.
+    pub fn quit_trays() {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{OpenEventW, ResetEvent, SetEvent, EVENT_MODIFY_STATE};
+        let name: Vec<u16> = crate::tray::QUIT_EVENT.encode_utf16().chain(std::iter::once(0)).collect();
+        let h = unsafe { OpenEventW(EVENT_MODIFY_STATE, 0, name.as_ptr()) };
+        if h.is_null() {
+            return; // no hay ningún tray abierto
+        }
+        unsafe {
+            SetEvent(h);
+            std::thread::sleep(Duration::from_millis(6000));
+            ResetEvent(h);
+            CloseHandle(h);
+        }
+    }
+
     /// La cuenta del servicio necesita escribir `state.sqlite` y los logs.
     fn grant_data_dir(data_dir: &Path) {
         let _ = std::fs::create_dir_all(data_dir);
@@ -338,6 +390,14 @@ pub mod win {
     pub fn uninstall() -> anyhow::Result<()> {
         anyhow::bail!("uninstall solo existe en Windows")
     }
+    pub fn register_tray_autostart(_exe: &Path) -> anyhow::Result<()> {
+        anyhow::bail!("solo Windows")
+    }
+    pub fn unregister_tray_autostart() -> anyhow::Result<()> {
+        Ok(())
+    }
+    pub fn launch_tray(_exe: &Path) {}
+    pub fn quit_trays() {}
 }
 
 #[cfg(test)]

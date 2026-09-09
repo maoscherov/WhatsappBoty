@@ -33,9 +33,9 @@ impl Metrics { pub fn new() -> Arc<Metrics>; record_fetch(ms: u64, lotes: u32); 
 ```
 `SyncEngine` recibe `Arc<Metrics>` (campo `metrics`), persiste `META_METRICS_JSON` al final de `run_once_with`. `run_ws` recibe `Arc<Metrics>`.
 
-- [ ] Tests unit en `metrics.rs`: media móvil de lookup (α=0.2), `erp_lote_avg_ms = fetch/lotes`, snapshot default.
-- [ ] Implementar; adaptar `sync_flow.rs`/`observer_adapter.rs`/`ws_lookup.rs` a `FetchResult` y al nuevo parámetro.
-- [ ] `cargo test` verde. Commit.
+- [x] Tests unit en `metrics.rs`: media móvil de lookup (α=0.2), `erp_lote_avg_ms = fetch/lotes`, snapshot default.
+- [x] Implementar; adaptar `sync_flow.rs`/`observer_adapter.rs`/`ws_lookup.rs` a `FetchResult` y al nuevo parámetro.
+- [x] `cargo test` verde. Commit.
 
 ### Task 2: Protocolo IPC + `Runtime` con configuración en caliente
 
@@ -54,9 +54,9 @@ pub struct Runtime { pub cfg: RwLock<Config>, pub config_path: PathBuf, pub data
 impl Runtime { pub fn build(data_dir, shutdown) -> Result<Arc<Runtime>>; pub fn start_ws(self: &Arc<Self>); pub async fn handle(self: &Arc<Self>, req: Request) -> Response; pub fn status(&self) -> Result<StatusReport>; async fn test_erp(url) ; async fn test_remedia(url, token); async fn set_config(..) }
 ```
 
-- [ ] Tests unit: serde de `Request`/`Response` (round trip de cada variante).
-- [ ] Tests integración `tests/runtime_config.rs`: `Runtime::build` sobre tempdir con `agent.toml` apuntando a mocks; `handle(Status)` devuelve `branch_id`; `handle(SetConfig{token:"bad"})` con Remedia respondiendo 401 → `ok:false` y `agent.toml` intacto; `SetConfig{token:"good", remedia_url: mock2}` → `ok:true`, archivo actualizado, `runtime.remedia.load().base_url() == mock2`; `SetConfig{erp_url: "http://127.0.0.1:1"}` → `ok:true` con 1 warning; `TestErp` contra mock → `productos == 12`.
-- [ ] Implementar. `service::run_agent` → `Runtime::build` + `start_ws` + loops existentes. Commit.
+- [x] Tests unit: serde de `Request`/`Response` (round trip de cada variante).
+- [x] Tests integración `tests/runtime_config.rs`: `Runtime::build` sobre tempdir con `agent.toml` apuntando a mocks; `handle(Status)` devuelve `branch_id`; `handle(SetConfig{token:"bad"})` con Remedia respondiendo 401 → `ok:false` y `agent.toml` intacto; `SetConfig{token:"good", remedia_url: mock2}` → `ok:true`, archivo actualizado, `runtime.remedia.load().base_url() == mock2`; `SetConfig{erp_url: "http://127.0.0.1:1"}` → `ok:true` con 1 warning; `TestErp` contra mock → `productos == 12`.
+- [x] Implementar. `service::run_agent` → `Runtime::build` + `start_ws` + loops existentes. Commit.
 
 ### Task 3: Servidor y cliente de named pipe
 
@@ -70,8 +70,8 @@ pub fn call_blocking(req: &Request) -> anyhow::Result<Response>; // para el tray
 pub fn security_attributes_from_sddl(sddl: &str) -> anyhow::Result<SecurityAttributes>; // guarda el descriptor vivo
 ```
 
-- [ ] Test integración `tests/ipc_pipe.rs` (cfg(windows)): pipe con nombre aleatorio (`PIPE_NAME` parametrizable via `serve_on(name, ..)`), `call_on(name, Status)` → `StatusReport`; `SyncNow` → `ok:true` y el receiver del canal recibe; request inválida → `ok:false` con error.
-- [ ] Implementar. Commit.
+- [x] Test integración `tests/ipc_pipe.rs` (cfg(windows)): pipe con nombre aleatorio (`PIPE_NAME` parametrizable via `serve_on(name, ..)`), `call_on(name, Status)` → `StatusReport`; `SyncNow` → `ok:true` y el receiver del canal recibe; request inválida → `ok:false` con error.
+- [x] Implementar. Commit.
 
 ### Task 4: Iconos y tray
 
@@ -86,17 +86,17 @@ pub fn tooltip(report: Option<&StatusReport>, now) -> String;
 pub fn run_tray(data_dir: Option<PathBuf>) -> anyhow::Result<()>;   // nwg::init, single-instance mutex, timer 5 s, menú, ventanas
 ```
 
-- [ ] Tests unit en `state.rs`: `icon_state` (None → Down; erp no_autorizado → Err; pendientes > 0 → Warn; ws desconectado → Warn; todo bien → Ok); `menu_lines` formatea "hace N min" y ms.
-- [ ] Implementar tray con nwg: `TrayNotification` + `Menu` + `AnimationTimer`/`Timer`; ventanas de configuración (3 campos, Probar, Guardar con confirmación) y detalle (texto + Copiar); acciones vía `ipc::client::call_blocking`.
-- [ ] Verificación manual: `agent.exe run --data-dir X` + `agent.exe tray --data-dir X`: icono aparece, menú muestra estado, "Sincronizar ahora" se ve en el log del servicio.
-- [ ] Commit.
+- [x] Tests unit en `state.rs`: `icon_state` (None → Down; erp no_autorizado → Err; pendientes > 0 → Warn; ws desconectado → Warn; todo bien → Ok); `menu_lines` formatea "hace N min" y ms.
+- [x] Implementar tray con nwg: `TrayNotification` + `Menu` + `AnimationTimer`/`Timer`; ventanas de configuración (3 campos, Probar, Guardar con confirmación) y detalle (texto + Copiar); acciones vía `ipc::client::call_blocking`.
+- [x] Verificación manual: `agent.exe run --data-dir X` + `agent.exe tray --data-dir X`: icono aparece, menú muestra estado, "Sincronizar ahora" se ve en el log del servicio.
+- [x] Commit.
 
 ### Task 5: Instalación del tray y `status` por pipe
 
 **Files:** Modify `src/service.rs` (`win::install`: clave `Run` HKLM + lanzar tray; `win::uninstall`: borrar clave + evento `Global\RemediaAgentTrayQuit`), `src/main.rs` (`status` intenta pipe primero), `README.md`, `Cargo.toml` (`winreg`).
 
-- [ ] Implementar. `cargo test`, `cargo clippy`, `cargo build --release`. README: sección "Tray" (qué muestra, cómo cambiar token/URLs, qué hace cada color).
-- [ ] Commit.
+- [x] Implementar. `cargo test`, `cargo clippy`, `cargo build --release`. README: sección "Tray" (qué muestra, cómo cambiar token/URLs, qué hace cada color).
+- [x] Commit.
 
 ## Self-Review
 - Spec §2 protocolo → Task 2/3. §3 métricas → Task 1. §4 tray → Task 4. §5 instalación → Task 5. §7 casos: servicio detenido (client error → Down), set_config con sync en curso (ArcSwap), token rotado (heartbeat error → `last_error`, Task 1 registra `META_LAST_HEARTBEAT_ERROR`), status por consola (Task 5).

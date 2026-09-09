@@ -12,5 +12,6 @@ pub mod metrics;
 pub mod remedia;
 pub mod runtime;
 pub mod service;
+pub mod tray;
 
 pub const AGENT_VERSION: &str = env!("CARGO_PKG_VERSION");

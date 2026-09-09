@@ -54,6 +54,8 @@ enum Cmd {
         #[arg(long)]
         data_dir: Option<PathBuf>,
     },
+    /// Icono en la bandeja del sistema: estado, latencias y configuración
+    Tray,
     /// Punto de entrada usado por el Service Control Manager (no invocar a mano)
     #[command(hide = true)]
     Service {
@@ -70,6 +72,10 @@ fn main() -> anyhow::Result<()> {
             install(&data_dir, token, erp, branch, remedia)
         }
         Cmd::Uninstall => {
+            win::quit_trays();
+            if let Err(e) = win::unregister_tray_autostart() {
+                eprintln!("Aviso: no se pudo quitar el autoarranque del tray: {e}");
+            }
             win::uninstall().context("desinstalando el servicio")?;
             println!("Servicio {} eliminado.", service::SERVICE_NAME);
             Ok(())
@@ -91,6 +97,7 @@ fn main() -> anyhow::Result<()> {
             })
         }
         Cmd::Service { data_dir } => win::run_as_service(service::resolve_data_dir(data_dir)),
+        Cmd::Tray => remedia_agent::tray::run_tray(),
         Cmd::SyncNow { data_dir } => {
             let data_dir = service::resolve_data_dir(data_dir);
             let _guard = logging::init(None, true)?;
@@ -145,10 +152,26 @@ fn install(data_dir: &std::path::Path, token: String, erp: String, branch: Strin
     win::install(data_dir, &target).context("registrando el servicio (¿consola como administrador?)")?;
     println!("Servicio {} registrado e iniciado (v{AGENT_VERSION}).", service::SERVICE_NAME);
     println!("Logs en {}", cfg.log.dir.display());
+    match win::register_tray_autostart(&target) {
+        Ok(()) => {
+            win::launch_tray(&target);
+            println!("Icono de bandeja registrado para todos los usuarios y abierto en esta sesión.");
+        }
+        Err(e) => eprintln!("Aviso: no se pudo registrar el icono de bandeja: {e}"),
+    }
     Ok(())
 }
 
 fn status(data_dir: &std::path::Path) -> anyhow::Result<()> {
+    // Con el servicio corriendo, el pipe da los datos vivos (métricas incluidas).
+    if let Ok(resp) = remedia_agent::ipc::client::call_blocking(&remedia_agent::ipc::Request::Status) {
+        if let Some(report) = resp.status {
+            println!("remedia-agent v{AGENT_VERSION} — servicio corriendo\n");
+            print!("{}", remedia_agent::tray::state::detail_text(Some(&report), chrono::Local::now()));
+            return Ok(());
+        }
+    }
+    println!("(servicio detenido: se muestra el último estado guardado)\n");
     let cfg_path = data_dir.join(CONFIG_FILE);
     let state_path = data_dir.join(STATE_FILE);
     println!("remedia-agent v{AGENT_VERSION}");

@@ -1,6 +1,6 @@
 [package]
 name = "remedia-agent"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Conector de catálogo ObServer Gestión → Remedia (servicio de Windows)"
 
@@ -37,6 +37,8 @@ http = "1"
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.7"
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading"] }
+native-windows-gui = { version = "1.0.13", default-features = false, features = ["tray-notification", "menu", "message-window", "notice", "timer", "animation-timer", "textbox", "clipboard", "cursor", "image-decoder"] }
+winreg = "0.55"
 
 [dev-dependencies]
 wiremock = "0.6"
