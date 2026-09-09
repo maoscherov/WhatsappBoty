@@ -4,6 +4,8 @@
 use crate::catalog::CatalogItem;
 use crate::config::Config;
 use crate::erp::ErpAdapter;
+use crate::metrics::{elapsed_ms, Metrics};
+use std::time::Instant;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -127,14 +129,18 @@ pub async fn run_ws(
     erp: Arc<dyn ErpAdapter>,
     sync_now: mpsc::Sender<()>,
     cfg: Arc<Config>,
+    metrics: Arc<Metrics>,
     shutdown: CancellationToken,
 ) {
     let mut backoff = RECONNECT_MIN;
+    let mut ever_connected = false;
     loop {
         if shutdown.is_cancelled() {
             return;
         }
-        match connect_and_serve(&url, &token, &erp, &sync_now, &cfg, &shutdown).await {
+        let result = connect_and_serve(&url, &token, &erp, &sync_now, &cfg, &metrics, &mut ever_connected, &shutdown).await;
+        metrics.set_ws_connected(false);
+        match result {
             Ok(()) => {
                 if shutdown.is_cancelled() {
                     return;
@@ -154,12 +160,15 @@ pub async fn run_ws(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn connect_and_serve(
     url: &str,
     token: &str,
     erp: &Arc<dyn ErpAdapter>,
     sync_now: &mpsc::Sender<()>,
     cfg: &Arc<Config>,
+    metrics: &Arc<Metrics>,
+    ever_connected: &mut bool,
     shutdown: &CancellationToken,
 ) -> anyhow::Result<()> {
     let mut req = url.into_client_request()?;
@@ -171,6 +180,11 @@ async fn connect_and_serve(
         .await
         .map_err(|_| anyhow::anyhow!("timeout conectando"))??;
     info!(url, "websocket conectado");
+    if *ever_connected {
+        metrics.inc_ws_reconnects();
+    }
+    *ever_connected = true;
+    metrics.set_ws_connected(true);
     let (mut tx, mut rx) = ws.split();
 
     let hello = Outbound::Hello {
@@ -218,9 +232,11 @@ async fn connect_and_serve(
                             }
                             Inbound::Lookup { req_id, barcodes, ids } => {
                                 debug!(req_id, barcodes = barcodes.len(), ids = ids.len(), "lookup");
+                                let t = Instant::now();
                                 let (items, missing) = handle_lookup(
                                     erp.as_ref(), barcodes, ids, LOOKUP_TIMEOUT, cfg.erp.max_concurrency,
                                 ).await;
+                                metrics.record_lookup(elapsed_ms(t));
                                 let out = Outbound::LookupResult { req_id, items, missing };
                                 tx.send(Message::Text(serde_json::to_string(&out)?)).await?;
                             }

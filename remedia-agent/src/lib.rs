@@ -7,6 +7,7 @@ pub mod catalog;
 pub mod config;
 pub mod erp;
 pub mod logging;
+pub mod metrics;
 pub mod remedia;
 pub mod service;
 

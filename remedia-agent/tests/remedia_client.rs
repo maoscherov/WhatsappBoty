@@ -81,6 +81,7 @@ async fn full_manifest_and_heartbeat() {
         last_sync_ok_at: None,
         catalog_count: 0,
         pending_batches: 0,
+        metrics: None,
     }).await.unwrap();
 }
 

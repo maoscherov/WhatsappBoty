@@ -15,6 +15,11 @@ pub const META_ERP_VERSION: &str = "erp_version";
 pub const META_CATALOG_COUNT: &str = "catalog_count";
 pub const META_LAST_SYNC_ERROR: &str = "last_sync_error";
 pub const META_LAST_ID_SCAN: &str = "last_id_scan_at";
+pub const META_LAST_SYNC_AT: &str = "last_sync_at";
+pub const META_LAST_SYNC_FETCHED: &str = "last_sync_fetched";
+pub const META_LAST_SYNC_CHANGED: &str = "last_sync_changed";
+pub const META_LAST_HEARTBEAT_ERROR: &str = "last_heartbeat_error";
+pub const META_METRICS_JSON: &str = "metrics_json";
 
 pub const KIND_CATALOG: &str = "catalog";
 pub const KIND_MANIFEST: &str = "manifest";

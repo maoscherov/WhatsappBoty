@@ -3,6 +3,7 @@ mod common;
 use futures_util::{SinkExt, StreamExt};
 use remedia_agent::config::Config;
 use remedia_agent::erp::build_adapter;
+use remedia_agent::metrics::Metrics;
 use remedia_agent::remedia::ws::{handle_lookup, run_ws};
 use std::sync::Arc;
 use std::time::Duration;
@@ -58,7 +59,7 @@ async fn lookup_over_ws_returns_items_and_missing() {
     let (url, server) = ws_server().await;
     let (tx, mut rx) = mpsc::channel(1);
     let shutdown = CancellationToken::new();
-    let agent = tokio::spawn(run_ws(url, "tok".into(), adapter, tx, Arc::clone(&cfg), shutdown.clone()));
+    let agent = tokio::spawn(run_ws(url, "tok".into(), adapter, tx, Arc::clone(&cfg), Metrics::new(), shutdown.clone()));
 
     let mut ws = server.await.unwrap();
     let hello = next_json(&mut ws).await;
@@ -99,7 +100,7 @@ async fn reconnects_after_server_closes() {
     let url = format!("ws://{}/v1/agent/ws", listener.local_addr().unwrap());
     let (tx, _rx) = mpsc::channel(1);
     let shutdown = CancellationToken::new();
-    let agent = tokio::spawn(run_ws(url, "tok".into(), adapter, tx, cfg, shutdown.clone()));
+    let agent = tokio::spawn(run_ws(url, "tok".into(), adapter, tx, cfg, Metrics::new(), shutdown.clone()));
 
     // Primera conexión: la cerramos enseguida.
     let (s1, _) = listener.accept().await.unwrap();

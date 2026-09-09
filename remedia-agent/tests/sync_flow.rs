@@ -4,6 +4,7 @@ use remedia_agent::catalog::state::{META_ERP_STATUS, META_LAST_FULL_MANIFEST, ME
 use remedia_agent::catalog::{State, SyncEngine};
 use remedia_agent::config::Config;
 use remedia_agent::erp::build_adapter;
+use remedia_agent::metrics::Metrics;
 use remedia_agent::remedia::client::CatalogBatch;
 use remedia_agent::remedia::RemediaClient;
 use std::sync::Arc;
@@ -32,7 +33,7 @@ fn engine(erp_uri: &str, remedia_uri: &str, extra: &str) -> SyncEngine {
     let erp = build_adapter(&cfg.erp, Duration::from_secs(5)).unwrap();
     let remedia = Arc::new(RemediaClient::new(&cfg.remedia_url, &cfg.token, Duration::from_secs(5)));
     let state = Arc::new(State::open_in_memory().unwrap());
-    SyncEngine::new(erp, remedia, state, cfg)
+    SyncEngine::new(erp, remedia, state, cfg, Metrics::new())
 }
 
 async fn remedia_ok() -> MockServer {
@@ -104,9 +105,10 @@ async fn stock_change_produces_delta_of_one() {
     let cfg = config(&erp2.uri(), &remedia.uri(), "");
     let e2 = SyncEngine::new(
         build_adapter(&cfg.erp, Duration::from_secs(5)).unwrap(),
-        Arc::clone(&e.remedia),
+        e.remedia(),
         Arc::clone(&e.state),
         cfg,
+        Metrics::new(),
     );
     let r = e2.run_once().await.unwrap();
     assert_eq!(r.changed, 1);
@@ -263,4 +265,29 @@ async fn batches_are_split_at_500() {
     let batches = received_batches(&remedia).await;
     assert_eq!(batches.iter().map(|b| b.items.len()).collect::<Vec<_>>(), vec![500, 500, r.fetched - 1000]);
     assert!(batches.iter().all(|b| b.total_batches == 3));
+}
+
+#[tokio::test]
+async fn metrics_are_recorded_and_persisted_after_a_cycle() {
+    use remedia_agent::catalog::state::META_METRICS_JSON;
+    use remedia_agent::metrics::MetricsSnapshot;
+    let erp = common::mock_erp(2).await;
+    let remedia = remedia_ok().await;
+    let e = engine(&erp.uri(), &remedia.uri(), "");
+    e.run_once().await.unwrap();
+    let snap = e.metrics.snapshot();
+    assert!(snap.erp_fetch_ms.is_some());
+    assert!(snap.erp_lote_avg_ms.unwrap() <= snap.erp_fetch_ms.unwrap());
+    assert!(snap.remedia_push_avg_ms.is_some());
+    assert!(snap.sync_total_ms.unwrap() >= snap.erp_fetch_ms.unwrap());
+    let persisted: MetricsSnapshot =
+        serde_json::from_str(&e.state.get_meta(META_METRICS_JSON).unwrap().unwrap()).unwrap();
+    assert_eq!(persisted.erp_fetch_ms, snap.erp_fetch_ms);
+
+    e.send_heartbeat().await.unwrap();
+    assert!(e.metrics.snapshot().heartbeat_ms.is_some());
+    let hb = remedia.received_requests().await.unwrap().into_iter()
+        .find(|r| r.url.path() == "/v1/sync/heartbeat").unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&hb.body).unwrap();
+    assert!(v["metrics"]["sync_total_ms"].is_number());
 }

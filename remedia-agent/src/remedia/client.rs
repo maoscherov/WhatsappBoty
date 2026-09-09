@@ -63,6 +63,9 @@ pub struct Heartbeat {
     pub last_sync_ok_at: Option<String>,
     pub catalog_count: i64,
     pub pending_batches: i64,
+    /// Latencias del agente. Remedia lo ignora hasta que lo use.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metrics: Option<crate::metrics::MetricsSnapshot>,
 }
 
 #[derive(Debug, thiserror::Error)]

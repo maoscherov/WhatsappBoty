@@ -31,10 +31,18 @@ impl ErpError {
     }
 }
 
+/// Resultado de `fetch_all`: productos y cuántos lotes se leyeron (para medir
+/// el tiempo por lote).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FetchResult {
+    pub productos: Vec<ProductoDTO>,
+    pub lotes: u32,
+}
+
 #[async_trait]
 pub trait ErpAdapter: Send + Sync {
     /// Catálogo completo (sync por lotes).
-    async fn fetch_all(&self) -> Result<Vec<ProductoDTO>, ErpError>;
+    async fn fetch_all(&self) -> Result<FetchResult, ErpError>;
     /// Lookup en vivo por lista de códigos de barras (hasta ~20 por llamada).
     async fn lookup_by_barcodes(&self, barcodes: &[String]) -> Result<Vec<ProductoDTO>, ErpError>;
     /// Lookup en vivo por `idProducto`. `None` si no existe.

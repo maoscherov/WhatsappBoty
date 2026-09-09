@@ -3,19 +3,23 @@
 
 use crate::catalog::state::{
     State, KIND_CATALOG, META_CATALOG_COUNT, META_ERP_STATUS, META_ERP_VERSION,
-    META_LAST_FULL_MANIFEST, META_LAST_HEARTBEAT, META_LAST_SYNC_ERROR, META_LAST_SYNC_OK,
+    META_LAST_FULL_MANIFEST, META_LAST_HEARTBEAT, META_LAST_HEARTBEAT_ERROR, META_LAST_SYNC_AT,
+    META_LAST_SYNC_CHANGED, META_LAST_SYNC_ERROR, META_LAST_SYNC_FETCHED, META_LAST_SYNC_OK,
+    META_METRICS_JSON,
 };
 use crate::catalog::CatalogItem;
 use crate::config::Config;
 use crate::erp::model::ProductoDTO;
 use crate::erp::{ErpAdapter, ErpError};
+use crate::metrics::{elapsed_ms, Metrics};
 use crate::remedia::client::{
     now_rfc3339, CatalogBatch, FullManifest, Heartbeat, ManifestEntry, SCHEMA_VERSION,
     SOURCE_OBSERVER,
 };
 use crate::remedia::{RemediaClient, RemediaError};
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
+use std::time::Instant;
 use tracing::{error, info, warn};
 
 pub const BATCH_SIZE: usize = 500;
@@ -51,11 +55,14 @@ pub struct SyncReport {
     pub flushed_batches: usize,
 }
 
+/// El adapter del ERP y el cliente de Remedia son intercambiables en caliente
+/// (el tray puede cambiar URLs y token sin reiniciar el servicio).
 pub struct SyncEngine {
-    pub erp: Arc<dyn ErpAdapter>,
-    pub remedia: Arc<RemediaClient>,
+    erp: RwLock<Arc<dyn ErpAdapter>>,
+    remedia: RwLock<Arc<RemediaClient>>,
     pub state: Arc<State>,
     pub cfg: Arc<Config>,
+    pub metrics: Arc<Metrics>,
 }
 
 impl SyncEngine {
@@ -64,8 +71,31 @@ impl SyncEngine {
         remedia: Arc<RemediaClient>,
         state: Arc<State>,
         cfg: Arc<Config>,
+        metrics: Arc<Metrics>,
     ) -> SyncEngine {
-        SyncEngine { erp, remedia, state, cfg }
+        SyncEngine {
+            erp: RwLock::new(erp),
+            remedia: RwLock::new(remedia),
+            state,
+            cfg,
+            metrics,
+        }
+    }
+
+    pub fn erp(&self) -> Arc<dyn ErpAdapter> {
+        self.erp.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    pub fn remedia(&self) -> Arc<RemediaClient> {
+        self.remedia.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    pub fn set_erp(&self, erp: Arc<dyn ErpAdapter>) {
+        *self.erp.write().unwrap_or_else(|e| e.into_inner()) = erp;
+    }
+
+    pub fn set_remedia(&self, remedia: Arc<RemediaClient>) {
+        *self.remedia.write().unwrap_or_else(|e| e.into_inner()) = remedia;
     }
 
     /// Un ciclo completo. Nunca falla por el ERP o Remedia caídos: eso queda en
@@ -77,13 +107,26 @@ impl SyncEngine {
     /// Igual que `run_once`, uniendo `extra` (p. ej. el barrido diario por ID)
     /// a los productos del lote. El lote tiene prioridad ante el mismo `idProducto`.
     pub async fn run_once_with(&self, extra: Vec<ProductoDTO>) -> anyhow::Result<SyncReport> {
+        let t_total = Instant::now();
+        let result = self.run_cycle(extra).await;
+        self.metrics.record_sync_total(elapsed_ms(t_total));
+        self.persist_metrics();
+        self.state.set_meta(META_LAST_SYNC_AT, &now_rfc3339())?;
+        result
+    }
+
+    async fn run_cycle(&self, extra: Vec<ProductoDTO>) -> anyhow::Result<SyncReport> {
         // Primero lo que quedó pendiente: mantiene el orden de los envíos.
         let flushed_batches = self.flush_pending().await?;
         let mut report = SyncReport { flushed_batches, ..Default::default() };
 
-        let dtos = match self.erp.fetch_all().await {
+        let erp = self.erp();
+        let t_fetch = Instant::now();
+        let fetched = match erp.fetch_all().await {
             Ok(v) => {
+                self.metrics.record_fetch(elapsed_ms(t_fetch), v.lotes);
                 self.state.set_meta(META_ERP_STATUS, "ok")?;
+                self.state.set_meta(META_LAST_SYNC_ERROR, "")?;
                 v
             }
             Err(e) => {
@@ -95,28 +138,36 @@ impl SyncEngine {
                 return Ok(report);
             }
         };
-        if let Some(v) = self.erp.version().await {
+        if let Some(v) = erp.version().await {
             self.state.set_meta(META_ERP_VERSION, &v)?;
         }
         report.erp_status = "ok".into();
 
-        let items = merge_items(&dtos, &extra);
+        let items = merge_items(&fetched.productos, &extra);
         report.fetched = items.len();
 
         let known = self.state.known_hashes()?;
         let delta: Vec<CatalogItem> = compute_delta(&items, &known).into_iter().cloned().collect();
         report.changed = delta.len();
-        info!(fetched = items.len(), changed = delta.len(), "catálogo leído");
+        info!(fetched = items.len(), changed = delta.len(), lotes = fetched.lotes, "catálogo leído");
 
         let (sent, queued) = self.push_items(delta, "delta").await?;
         report.sent_batches = sent;
         report.queued_batches = queued;
 
         self.state.set_meta(META_CATALOG_COUNT, &items.len().to_string())?;
+        self.state.set_meta(META_LAST_SYNC_FETCHED, &report.fetched.to_string())?;
+        self.state.set_meta(META_LAST_SYNC_CHANGED, &report.changed.to_string())?;
         if queued == 0 {
             self.state.set_meta(META_LAST_SYNC_OK, &now_rfc3339())?;
         }
         Ok(report)
+    }
+
+    fn persist_metrics(&self) {
+        if let Ok(json) = serde_json::to_string(&self.metrics.snapshot()) {
+            let _ = self.state.set_meta(META_METRICS_JSON, &json);
+        }
     }
 
     /// Envía `items` en lotes de `BATCH_SIZE`. Los que Remedia acepta actualizan
@@ -125,10 +176,12 @@ impl SyncEngine {
         if items.is_empty() {
             return Ok((0, 0));
         }
+        let remedia = self.remedia();
         let total = items.len().div_ceil(BATCH_SIZE) as u32;
         let generated_at = now_rfc3339();
         let mut sent = 0;
         let mut queued = 0;
+        let mut push_ms_sum = 0u64;
         for (i, chunk) in items.chunks(BATCH_SIZE).enumerate() {
             let batch = CatalogBatch {
                 schema_version: SCHEMA_VERSION,
@@ -140,8 +193,10 @@ impl SyncEngine {
                 generated_at: generated_at.clone(),
                 items: chunk.to_vec(),
             };
-            match self.remedia.push_catalog(&batch).await {
+            let t = Instant::now();
+            match remedia.push_catalog(&batch).await {
                 Ok(resp) => {
+                    push_ms_sum += elapsed_ms(t);
                     info!(batch = batch.batch, total, received = resp.received, upserted = resp.upserted, "lote enviado");
                     self.state.upsert_hashes(&hashes_of(&batch.items))?;
                     sent += 1;
@@ -154,6 +209,9 @@ impl SyncEngine {
                 }
             }
         }
+        if sent > 0 {
+            self.metrics.record_push_avg(push_ms_sum / sent as u64);
+        }
         Ok((sent, queued))
     }
 
@@ -161,6 +219,7 @@ impl SyncEngine {
     pub async fn flush_pending(&self) -> anyhow::Result<usize> {
         let now = crate::catalog::state::now_unix();
         let due = self.state.due_pending(now)?;
+        let remedia = self.remedia();
         let mut flushed = 0;
         for p in due {
             let batch: CatalogBatch = match serde_json::from_str(&p.payload) {
@@ -171,7 +230,7 @@ impl SyncEngine {
                     continue;
                 }
             };
-            match self.remedia.push_catalog(&batch).await {
+            match remedia.push_catalog(&batch).await {
                 Ok(_) => {
                     self.state.upsert_hashes(&hashes_of(&batch.items))?;
                     self.state.remove_pending(p.id)?;
@@ -196,11 +255,11 @@ impl SyncEngine {
     /// También poda del estado local lo que ya no está en el ERP.
     /// Devuelve la cantidad de productos reenviados.
     pub async fn full_manifest(&self) -> anyhow::Result<usize> {
-        let dtos = self.erp.fetch_all().await.map_err(|e| {
+        let fetched = self.erp().fetch_all().await.map_err(|e| {
             let _ = self.state.set_meta(META_ERP_STATUS, e.status_label());
             anyhow::anyhow!("full-manifest: {e}")
         })?;
-        let items = merge_items(&dtos, &[]);
+        let items = merge_items(&fetched.productos, &[]);
         let current: HashSet<&str> = items.iter().map(|i| i.external_id.as_str()).collect();
 
         let manifest = FullManifest {
@@ -212,7 +271,7 @@ impl SyncEngine {
                 .collect(),
         };
         let resp = self
-            .remedia
+            .remedia()
             .full_manifest(&manifest)
             .await
             .map_err(|e| anyhow::anyhow!("full-manifest: {e}"))?;
@@ -252,17 +311,25 @@ impl SyncEngine {
             last_sync_ok_at: get(META_LAST_SYNC_OK)?,
             catalog_count: get(META_CATALOG_COUNT)?.and_then(|v| v.parse().ok()).unwrap_or(0),
             pending_batches: self.state.pending_count()?,
+            metrics: Some(self.metrics.snapshot()),
         })
     }
 
     pub async fn send_heartbeat(&self) -> anyhow::Result<()> {
         let hb = self.build_heartbeat()?;
-        self.remedia
-            .heartbeat(&hb)
-            .await
-            .map_err(|e| anyhow::anyhow!("heartbeat: {e}"))?;
-        self.state.set_meta(META_LAST_HEARTBEAT, &now_rfc3339())?;
-        Ok(())
+        let t = Instant::now();
+        match self.remedia().heartbeat(&hb).await {
+            Ok(()) => {
+                self.metrics.record_heartbeat(elapsed_ms(t));
+                self.state.set_meta(META_LAST_HEARTBEAT, &now_rfc3339())?;
+                self.state.set_meta(META_LAST_HEARTBEAT_ERROR, "")?;
+                Ok(())
+            }
+            Err(e) => {
+                self.state.set_meta(META_LAST_HEARTBEAT_ERROR, &e.to_string())?;
+                Err(anyhow::anyhow!("heartbeat: {e}"))
+            }
+        }
     }
 
     /// Barrido `GET /api/productos/{id}` por rango `1..=id_scan_max` con
@@ -274,9 +341,10 @@ impl SyncEngine {
         }
         let max = self.cfg.erp.id_scan_max.max(1);
         let sem = Arc::new(tokio::sync::Semaphore::new(self.cfg.erp.max_concurrency.max(1)));
+        let erp_shared = self.erp();
         let mut tasks = tokio::task::JoinSet::new();
         for id in 1..=max {
-            let erp = Arc::clone(&self.erp);
+            let erp = Arc::clone(&erp_shared);
             let sem = Arc::clone(&sem);
             tasks.spawn(async move {
                 let _permit = sem.acquire_owned().await.expect("semaphore");

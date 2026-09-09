@@ -13,7 +13,7 @@ fn adapter(uri: &str) -> ObserverAdapter {
 #[tokio::test]
 async fn fetch_all_reads_all_lotes_and_stops_on_400() {
     let s = common::mock_erp(1).await;
-    let p = adapter(&s.uri()).fetch_all().await.unwrap();
+    let p = adapter(&s.uri()).fetch_all().await.unwrap().productos;
     assert_eq!(p.len(), common::lote1().productos.len());
     assert!(p.iter().any(|x| x.id_producto == 7454));
 }
@@ -21,7 +21,7 @@ async fn fetch_all_reads_all_lotes_and_stops_on_400() {
 #[tokio::test]
 async fn fetch_all_concatenates_lotes() {
     let s = common::mock_erp(3).await;
-    let p = adapter(&s.uri()).fetch_all().await.unwrap();
+    let p = adapter(&s.uri()).fetch_all().await.unwrap().productos;
     assert_eq!(p.len(), common::lote1().productos.len() * 3);
 }
 
@@ -38,7 +38,7 @@ async fn cantidad_lotes_from_first_lote_is_used_even_if_later_lotes_differ() {
         .respond_with(ResponseTemplate::new(200).set_body_json(&l2)).mount(&s).await;
     Mock::given(method("GET")).and(path("/api/productos/lote/3"))
         .respond_with(ResponseTemplate::new(200).set_body_json(&l2)).expect(0).mount(&s).await;
-    let p = adapter(&s.uri()).fetch_all().await.unwrap();
+    let p = adapter(&s.uri()).fetch_all().await.unwrap().productos;
     assert_eq!(p.len(), common::lote1().productos.len() * 2);
 }
 
@@ -52,7 +52,7 @@ async fn early_400_ends_the_scan() {
     Mock::given(method("GET")).and(path("/api/productos/lote/2"))
         .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
             "Message": "El numeroLote=2 no genera un conjunto de productos"}))).mount(&s).await;
-    let p = adapter(&s.uri()).fetch_all().await.unwrap();
+    let p = adapter(&s.uri()).fetch_all().await.unwrap().productos;
     assert_eq!(p.len(), common::lote1().productos.len());
 }
 

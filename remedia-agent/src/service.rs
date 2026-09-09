@@ -8,6 +8,7 @@ use crate::catalog::state::{META_ERP_STATUS, META_LAST_FULL_MANIFEST, META_LAST_
 use crate::catalog::{State, SyncEngine};
 use crate::config::{Config, CONFIG_FILE, STATE_FILE};
 use crate::erp::build_adapter;
+use crate::metrics::Metrics;
 use crate::remedia::client::now_rfc3339;
 use crate::remedia::ws::run_ws;
 use crate::remedia::RemediaClient;
@@ -49,7 +50,7 @@ pub fn build_engine(data_dir: &Path) -> anyhow::Result<Arc<SyncEngine>> {
     let erp = build_adapter(&cfg.erp, cfg.request_timeout())?;
     let remedia = Arc::new(RemediaClient::new(&cfg.remedia_url, &cfg.token, Duration::from_secs(60)));
     let state = Arc::new(State::open(&data_dir.join(STATE_FILE))?);
-    Ok(Arc::new(SyncEngine::new(erp, remedia, state, cfg)))
+    Ok(Arc::new(SyncEngine::new(erp, remedia, state, cfg, Metrics::new())))
 }
 
 /// Loop principal. Termina cuando `shutdown` se cancela.
@@ -69,11 +70,12 @@ pub async fn run_agent(data_dir: PathBuf, shutdown: CancellationToken) -> anyhow
     let mut tasks = tokio::task::JoinSet::new();
 
     tasks.spawn(run_ws(
-        engine.remedia.ws_url(),
+        engine.remedia().ws_url(),
         cfg.token.clone(),
-        Arc::clone(&engine.erp),
+        engine.erp(),
         sync_tx,
         Arc::clone(&cfg),
+        Arc::clone(&engine.metrics),
         shutdown.clone(),
     ));
 

@@ -1,7 +1,7 @@
 //! Adapter para ObServer Gestión (`ServiciosGestion.exe`, Web API self-hosted en `:60064`).
 
 use super::model::{LoteResponse, ProductoDTO};
-use super::{ErpAdapter, ErpError};
+use super::{ErpAdapter, ErpError, FetchResult};
 use async_trait::async_trait;
 use reqwest::{header, Client, Response, StatusCode};
 use std::time::Duration;
@@ -77,23 +77,25 @@ fn truncate(s: &str) -> String {
 impl ErpAdapter for ObserverAdapter {
     /// Itera `1..=cantidadLotes`. El total lo fija el lote 1 de este ciclo;
     /// un 400 antes de llegar corta el barrido.
-    async fn fetch_all(&self) -> Result<Vec<ProductoDTO>, ErpError> {
+    async fn fetch_all(&self) -> Result<FetchResult, ErpError> {
         let Some(first) = self.fetch_lote(1).await? else {
-            return Ok(Vec::new());
+            return Ok(FetchResult::default());
         };
         let total = first.cantidad_lotes.max(1);
         debug!(total_lotes = total, productos = first.productos.len(), "lote 1");
         let mut out = first.productos;
+        let mut lotes = 1;
         for n in 2..=total {
             match self.fetch_lote(n).await? {
                 Some(lote) => {
                     debug!(lote = n, productos = lote.productos.len(), "lote leído");
                     out.extend(lote.productos);
+                    lotes += 1;
                 }
                 None => break,
             }
         }
-        Ok(out)
+        Ok(FetchResult { productos: out, lotes })
     }
 
     async fn lookup_by_barcodes(&self, barcodes: &[String]) -> Result<Vec<ProductoDTO>, ErpError> {
