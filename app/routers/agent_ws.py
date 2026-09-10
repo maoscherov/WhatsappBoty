@@ -56,14 +56,19 @@ async def agent_ws(ws: WebSocket):
         return
 
     registry = get_agent_registry()
+    ip = ws.client.host if ws.client else "?"
     anterior = registry.register(branch.branch_id, ws)
     if anterior is not None:
         # Reconexión desde otra IP con la vieja "viva": la nueva la reemplaza.
+        # Si esto se repite cada pocos segundos, hay DOS agentes con el mismo
+        # token (p. ej. uno de prueba en otra PC) pisándose entre sí.
+        ip_ant = anterior.client.host if getattr(anterior, "client", None) else "?"
+        logger.warning(f"WS {branch.branch_id}: conexión desde {ip} reemplaza a la de {ip_ant}")
         try:
             await anterior.close(code=1000)
         except Exception:
             pass
-    logger.info(f"Agente conectado: {branch.branch_id} "
+    logger.info(f"Agente conectado: {branch.branch_id} desde {ip} "
                 f"v{hello.get('agent_version', '?')}")
     try:
         await get_branch_store(get_db(get_settings().database_url)).set_agent_version(
