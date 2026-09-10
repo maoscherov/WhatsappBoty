@@ -130,3 +130,36 @@ async fn build_adapter_rejects_unknown_kind() {
     };
     assert!(remedia_agent::erp::build_adapter(&cfg, Duration::from_secs(1)).is_err());
 }
+
+#[tokio::test]
+async fn decode_error_explains_where_and_dumps_body() {
+    let s = MockServer::start().await;
+    Mock::given(method("GET")).and(path("/api/productos/lote/1"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"{"cantidadLotes": 1, "productos": [{"idProducto": "no-es-numero", "descripcion": "X"}]}"#))
+        .mount(&s).await;
+    let r = adapter(&s.uri()).fetch_all().await;
+    let Err(ErpError::Decode(msg)) = r else { panic!("{r:?}") };
+    assert!(msg.contains("lote 1"), "{msg}");
+    assert!(msg.contains("line 1 column"), "{msg}");
+    assert!(msg.contains("no-es-numero"), "fragmento: {msg}");
+    assert!(msg.contains("remedia-agent-erp-lote_1.json"), "{msg}");
+}
+
+#[tokio::test]
+async fn real_world_nulls_do_not_break_the_lote() {
+    let s = MockServer::start().await;
+    Mock::given(method("GET")).and(path("/api/productos/lote/1"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"{"cantidadLotes": 1, "productos": [
+                {"idProducto": 1, "troquel": null, "codigoBarras": null, "descripcion": "A", "stockSucursal": null,
+                 "precio": null, "categoria": null, "rubro": null, "subrubro": null, "formaFarmaceutica": null,
+                 "accionesTerapeuticas": null, "laboratorio": null, "nombresDrogas": null, "ofertas": null,
+                 "esVisibleEnVenta": null, "visiblesMismoCB": null, "Baja": null},
+                {"idProducto": 2, "descripcion": "B", "precio": "12,50", "codigoBarras": "779"}]}"#))
+        .mount(&s).await;
+    let r = adapter(&s.uri()).fetch_all().await.unwrap();
+    assert_eq!(r.productos.len(), 2);
+    assert_eq!(r.productos[1].precio.to_string(), "12.50");
+    assert_eq!(r.productos[1].codigo_barras, vec!["779"]);
+}

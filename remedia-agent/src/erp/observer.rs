@@ -59,11 +59,10 @@ impl ObserverAdapter {
                 warn!(lote = n, body = %truncate(&body), "lote fuera de rango, fin del catálogo");
                 Ok(None)
             }
-            s if s.is_success() => resp
-                .json::<LoteResponse>()
-                .await
-                .map(Some)
-                .map_err(|e| ErpError::Decode(format!("lote {n}: {e}"))),
+            s if s.is_success() => {
+                let body = resp.text().await.map_err(|e| ErpError::Decode(format!("lote {n}: {e}")))?;
+                decode_json::<LoteResponse>(&body, &format!("lote {n}")).map(Some)
+            }
             s => Err(ErpError::Http(s.as_u16(), resp.text().await.unwrap_or_default())),
         }
     }
@@ -71,6 +70,52 @@ impl ObserverAdapter {
 
 fn truncate(s: &str) -> String {
     s.chars().take(200).collect()
+}
+
+/// Parsea el cuerpo y, si falla, arma un error con línea/columna, el
+/// fragmento alrededor del problema y guarda la respuesta cruda en un archivo
+/// para poder diagnosticar el formato real del ERP.
+pub fn decode_json<T: serde::de::DeserializeOwned>(body: &str, what: &str) -> Result<T, ErpError> {
+    match serde_json::from_str::<T>(body) {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            let snippet = snippet_at(body, e.line(), e.column());
+            let dump = dump_body(body, what);
+            Err(ErpError::Decode(format!(
+                "{what}: {e}. Fragmento: «{snippet}».{}",
+                dump.map(|p| format!(" Respuesta guardada en {}", p.display())).unwrap_or_default()
+            )))
+        }
+    }
+}
+
+fn snippet_at(body: &str, line: usize, column: usize) -> String {
+    let mut offset = 0;
+    for (i, l) in body.split('\n').enumerate() {
+        if i + 1 == line {
+            offset += column.saturating_sub(1).min(l.len());
+            break;
+        }
+        offset += l.len() + 1;
+    }
+    let start = body[..offset.min(body.len())]
+        .char_indices()
+        .rev()
+        .nth(80)
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    let end = body[offset.min(body.len())..]
+        .char_indices()
+        .nth(80)
+        .map(|(i, _)| offset + i)
+        .unwrap_or(body.len());
+    body[start..end].replace(['\n', '\r'], " ")
+}
+
+fn dump_body(body: &str, what: &str) -> Option<std::path::PathBuf> {
+    let name: String = what.chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect();
+    let path = std::env::temp_dir().join(format!("remedia-agent-erp-{name}.json"));
+    std::fs::write(&path, body).ok().map(|_| path)
 }
 
 #[async_trait]
@@ -118,10 +163,10 @@ impl ErpAdapter for ObserverAdapter {
             .await?;
         match resp.status() {
             StatusCode::NOT_FOUND => Ok(Vec::new()),
-            s if s.is_success() => resp
-                .json::<Vec<ProductoDTO>>()
-                .await
-                .map_err(|e| ErpError::Decode(format!("codigosBarras: {e}"))),
+            s if s.is_success() => {
+                let body = resp.text().await.map_err(|e| ErpError::Decode(format!("codigosBarras: {e}")))?;
+                decode_json::<Vec<ProductoDTO>>(&body, "codigosBarras")
+            }
             s => Err(ErpError::Http(s.as_u16(), resp.text().await.unwrap_or_default())),
         }
     }
@@ -132,11 +177,10 @@ impl ErpAdapter for ObserverAdapter {
             .await?;
         match resp.status() {
             StatusCode::NOT_FOUND => Ok(None),
-            s if s.is_success() => resp
-                .json::<ProductoDTO>()
-                .await
-                .map(Some)
-                .map_err(|e| ErpError::Decode(format!("producto {id}: {e}"))),
+            s if s.is_success() => {
+                let body = resp.text().await.map_err(|e| ErpError::Decode(format!("producto {id}: {e}")))?;
+                decode_json::<ProductoDTO>(&body, &format!("producto {id}")).map(Some)
+            }
             s => Err(ErpError::Http(s.as_u16(), resp.text().await.unwrap_or_default())),
         }
     }
