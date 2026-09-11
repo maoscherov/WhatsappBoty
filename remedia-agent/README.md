@@ -22,8 +22,9 @@ Esto:
 3. Registra el servicio `RemediaAgent` (arranque automático, cuenta
    `NT AUTHORITY\NetworkService`, con permisos sobre el directorio de datos) y lo inicia.
 
-4. Registra el **icono de bandeja** (`agent.exe tray`) para que arranque al iniciar
-   sesión cualquier usuario de la PC, y lo abre en la sesión actual.
+4. Genera `agent-tray.exe` (el mismo binario con subsistema GUI, para que no
+   abra consola) y lo registra en `HKLM\...\Run` para que el **icono de bandeja**
+   arranque al iniciar sesión cualquier usuario de la PC; lo abre en la sesión actual.
 
 Otros comandos:
 
@@ -32,7 +33,7 @@ Otros comandos:
 | `agent.exe status` | Estado vivo por el pipe si el servicio corre (con latencias); si no, el último estado guardado. |
 | `agent.exe sync-now` | Un ciclo de sync (pendientes + delta) en primer plano y termina. |
 | `agent.exe run` | Corre el agente en foreground con logs en consola (Ctrl+C para salir). |
-| `agent.exe tray` | Abre el icono de bandeja a mano (normalmente arranca solo). |
+| `agent-tray.exe` (o `agent.exe tray`) | Abre el icono de bandeja a mano (normalmente arranca solo). |
 | `agent.exe uninstall` | Cierra los trays, quita el autoarranque, detiene y elimina el servicio. No borra `C:\ProgramData\RemediaAgent`. |
 
 Todos aceptan `--data-dir D` para usar otro directorio (útil en desarrollo).

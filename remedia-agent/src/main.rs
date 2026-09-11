@@ -66,6 +66,11 @@ enum Cmd {
 }
 
 fn main() -> anyhow::Result<()> {
+    // `agent-tray.exe` es este mismo binario con subsistema GUI (lo genera el
+    // install): arranca directo como tray, sin consola y sin argumentos.
+    if is_tray_exe() {
+        return remedia_agent::tray::run_tray();
+    }
     let cli = Cli::parse();
     match cli.cmd {
         Cmd::Install { token, erp, branch, remedia, data_dir } => {
@@ -98,7 +103,11 @@ fn main() -> anyhow::Result<()> {
             })
         }
         Cmd::Service { data_dir } => win::run_as_service(service::resolve_data_dir(data_dir)),
-        Cmd::Tray => remedia_agent::tray::run_tray(),
+        Cmd::Tray => {
+            // Lanzado a mano desde una consola: soltarla, así cerrarla no mata el tray.
+            win::detach_console();
+            remedia_agent::tray::run_tray()
+        }
         Cmd::SyncNow { data_dir } => {
             let data_dir = service::resolve_data_dir(data_dir);
             let _guard = logging::init(None, true)?;
@@ -165,6 +174,10 @@ fn install(data_dir: &std::path::Path, token: String, erp: String, branch: Strin
             .with_context(|| format!("copiando {} a {}", current.display(), target.display()))?;
     }
 
+    let tray_exe = data_dir.join(service::TRAY_EXE_NAME);
+    service::make_tray_exe(&target, &tray_exe)
+        .with_context(|| format!("generando {}", tray_exe.display()))?;
+
     win::install(data_dir, &target).context("registrando el servicio (¿consola como administrador?)")?;
     println!(
         "Servicio {} {} e iniciado (v{AGENT_VERSION}).",
@@ -172,14 +185,21 @@ fn install(data_dir: &std::path::Path, token: String, erp: String, branch: Strin
         if existed { "actualizado" } else { "registrado" }
     );
     println!("Logs en {}", cfg.log.dir.display());
-    match win::register_tray_autostart(&target) {
+    match win::register_tray_autostart(&tray_exe) {
         Ok(()) => {
-            win::launch_tray(&target);
+            win::launch_tray(&tray_exe);
             println!("Icono de bandeja registrado para todos los usuarios y abierto en esta sesión.");
         }
         Err(e) => eprintln!("Aviso: no se pudo registrar el icono de bandeja: {e}"),
     }
     Ok(())
+}
+
+fn is_tray_exe() -> bool {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()))
+        .is_some_and(|n| n == service::TRAY_EXE_NAME)
 }
 
 fn status(data_dir: &std::path::Path) -> anyhow::Result<()> {

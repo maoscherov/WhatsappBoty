@@ -361,11 +361,11 @@ pub mod win {
     const RUN_VALUE: &str = "RemediaAgentTray";
 
     /// El tray arranca al iniciar sesión, para todos los usuarios de la PC (HKLM).
-    pub fn register_tray_autostart(exe: &Path) -> anyhow::Result<()> {
+    pub fn register_tray_autostart(tray_exe: &Path) -> anyhow::Result<()> {
         use winreg::enums::HKEY_LOCAL_MACHINE;
         use winreg::RegKey;
         let (key, _) = RegKey::predef(HKEY_LOCAL_MACHINE).create_subkey(RUN_KEY)?;
-        key.set_value(RUN_VALUE, &format!("\"{}\" tray", exe.display()))?;
+        key.set_value(RUN_VALUE, &format!("\"{}\"", tray_exe.display()))?;
         Ok(())
     }
 
@@ -383,10 +383,26 @@ pub mod win {
         }
     }
 
-    /// Lanza el tray para la sesión actual (sin esperar al próximo inicio de sesión).
-    pub fn launch_tray(exe: &Path) {
-        if let Err(e) = std::process::Command::new(exe).arg("tray").spawn() {
+    /// Lanza el tray para la sesión actual (sin esperar al próximo inicio de
+    /// sesión), desacoplado de la consola desde la que corre `install`: si el
+    /// usuario la cierra, el tray sigue.
+    pub fn launch_tray(tray_exe: &Path) {
+        use std::os::windows::process::CommandExt;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        if let Err(e) = std::process::Command::new(tray_exe)
+            .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
+            .spawn()
+        {
             warn!(error = %e, "no se pudo lanzar el tray");
+        }
+    }
+
+    /// Suelta la consola del proceso actual (para `agent.exe tray` lanzado a
+    /// mano desde una consola: cerrarla no debe cerrar el tray).
+    pub fn detach_console() {
+        unsafe {
+            windows_sys::Win32::System::Console::FreeConsole();
         }
     }
 
@@ -446,7 +462,59 @@ pub mod win {
         Ok(())
     }
     pub fn launch_tray(_exe: &Path) {}
+    pub fn detach_console() {}
     pub fn quit_trays() {}
+}
+
+/// Nombre del ejecutable del tray (sin consola) dentro del directorio de datos.
+pub const TRAY_EXE_NAME: &str = "agent-tray.exe";
+
+/// Crea `tray_exe` a partir de `agent_exe`: mismo binario con el subsistema PE
+/// cambiado a GUI, así Windows no le abre una consola al iniciar sesión. Si al
+/// lado de `agent_exe` ya hay un `agent-tray.exe` (build firmado), se copia ese.
+pub fn make_tray_exe(agent_exe: &Path, tray_exe: &Path) -> anyhow::Result<()> {
+    let sibling = agent_exe.with_file_name(TRAY_EXE_NAME);
+    if sibling.exists() && sibling != tray_exe {
+        std::fs::copy(&sibling, tray_exe)?;
+        return Ok(());
+    }
+    let mut bytes = std::fs::read(agent_exe)?;
+    patch_pe_subsystem_gui(&mut bytes)?;
+    std::fs::write(tray_exe, bytes)?;
+    Ok(())
+}
+
+const IMAGE_SUBSYSTEM_WINDOWS_GUI: u16 = 2;
+const IMAGE_SUBSYSTEM_WINDOWS_CUI: u16 = 3;
+
+/// Cambia el campo `Subsystem` de la cabecera opcional PE de consola a GUI.
+/// Es un `u16` en el offset 68 de la cabecera opcional, tanto en PE32 como en PE32+.
+pub fn patch_pe_subsystem_gui(bytes: &mut [u8]) -> anyhow::Result<()> {
+    let u16_at = |b: &[u8], i: usize| -> anyhow::Result<u16> {
+        Ok(u16::from_le_bytes(b.get(i..i + 2).ok_or_else(|| anyhow::anyhow!("PE truncado"))?.try_into()?))
+    };
+    let u32_at = |b: &[u8], i: usize| -> anyhow::Result<u32> {
+        Ok(u32::from_le_bytes(b.get(i..i + 4).ok_or_else(|| anyhow::anyhow!("PE truncado"))?.try_into()?))
+    };
+    if bytes.get(0..2) != Some(b"MZ") {
+        anyhow::bail!("no es un ejecutable PE (falta MZ)");
+    }
+    let pe = u32_at(bytes, 0x3C)? as usize;
+    if bytes.get(pe..pe + 4) != Some(b"PE\0\0") {
+        anyhow::bail!("no es un ejecutable PE (falta la firma PE)");
+    }
+    let opt = pe + 4 + 20;
+    let magic = u16_at(bytes, opt)?;
+    if magic != 0x10b && magic != 0x20b {
+        anyhow::bail!("cabecera opcional PE desconocida: 0x{magic:x}");
+    }
+    let sub = opt + 68;
+    let current = u16_at(bytes, sub)?;
+    if current != IMAGE_SUBSYSTEM_WINDOWS_CUI && current != IMAGE_SUBSYSTEM_WINDOWS_GUI {
+        anyhow::bail!("subsistema inesperado: {current}");
+    }
+    bytes[sub..sub + 2].copy_from_slice(&IMAGE_SUBSYSTEM_WINDOWS_GUI.to_le_bytes());
+    Ok(())
 }
 
 #[cfg(test)]
@@ -464,6 +532,26 @@ mod tests {
         assert!(!should_run_full_manifest(Some(&h1), now));
         let h23 = (now - chrono::Duration::hours(23) - chrono::Duration::minutes(59)).to_rfc3339();
         assert!(!should_run_full_manifest(Some(&h23), now));
+    }
+
+    #[test]
+    fn patches_subsystem_in_a_minimal_pe() {
+        // MZ + e_lfanew=0x40 + "PE\0\0" + COFF(20) + opcional PE32+ con Subsystem=3 en +68.
+        let mut b = vec![0u8; 0x40 + 4 + 20 + 96];
+        b[0] = b'M';
+        b[1] = b'Z';
+        b[0x3C..0x40].copy_from_slice(&0x40u32.to_le_bytes());
+        b[0x40..0x44].copy_from_slice(b"PE\0\0");
+        let opt = 0x40 + 24;
+        b[opt..opt + 2].copy_from_slice(&0x20bu16.to_le_bytes());
+        b[opt + 68..opt + 70].copy_from_slice(&3u16.to_le_bytes());
+        patch_pe_subsystem_gui(&mut b).unwrap();
+        assert_eq!(u16::from_le_bytes([b[opt + 68], b[opt + 69]]), 2);
+        // Idempotente y rechaza basura.
+        patch_pe_subsystem_gui(&mut b).unwrap();
+        assert!(patch_pe_subsystem_gui(&mut vec![0u8; 10]).is_err());
+        b[opt + 68] = 9;
+        assert!(patch_pe_subsystem_gui(&mut b).is_err());
     }
 
     #[test]

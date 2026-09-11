@@ -1,4 +1,4 @@
-# Remedia Agent 0.2.0 — instalación en la farmacia
+# Remedia Agent 0.2.1 — instalación en la farmacia
 
 `agent.exe` (6,5 MB, sin dependencias). Corre como servicio de Windows en la PC
 que ve al ERP ObServer Gestión. Solo hace conexiones salientes: al ERP en la red
@@ -65,6 +65,17 @@ local y a Remedia por HTTPS. No abre ningún puerto.
 prueba en otra PC. Remedia admite una sola conexión por sucursal y cada uno
 reemplaza al otro. Desinstalar el que sobra (`agent.exe uninstall`).
 
+## Si el icono no está
+
+El icono es solo un visor: si se cierra, el servicio sigue sincronizando igual.
+Vuelve solo al iniciar sesión. Para abrirlo sin reiniciar: Win+R y pegar
+
+```
+C:\ProgramData\RemediaAgent\agent-tray.exe
+```
+
+(`agent-tray.exe` lo genera el instalador: es el mismo programa sin ventana de consola.)
+
 ## Cambiar token o direcciones después
 
 Clic derecho en el icono → **Configuración…**. No hace falta administrador.
@@ -100,4 +111,4 @@ Cuando la sucursal esté en verde, en Railway setear `DEFAULT_BRANCH_ID=farmacia
 y redesplegar: recién ahí el bot deja de usar el CSV y pasa a leer el catálogo
 del ERP. Hasta entonces el sync entra a la base sin afectar la operación.
 
-Checksum SHA-256 de este `agent.exe`: empieza con `7176cfc47c4027d2`.
+Checksum SHA-256 de este `agent.exe`: empieza con `3d513c42afcb6cf7`.
