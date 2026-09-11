@@ -1383,7 +1383,13 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
             # arrancaba con saludo quedaba sin búsqueda ("un segundito" al vacío).
             if entidad and not ya_tiene_pending and intencion != "cambio_postventa":
                 _tsku = _time.perf_counter()
-                resultados_sku = deps["sku"].buscar(entidad)
+                # El modelo suele tirar el número ("aveno infantil por 65" →
+                # "aveno infantil"): se le devuelven los de la frase original.
+                from app.services.sku_service import completar_numeros
+                _entidad_busq = completar_numeros(entidad, texto)
+                if _entidad_busq != entidad:
+                    logger.info(f"Entidad completada con números: {entidad!r} → {_entidad_busq!r}")
+                resultados_sku = deps["sku"].buscar(_entidad_busq)
                 # Fallback semántico (pgvector): si el fuzzy no encontró nada,
                 # buscar por significado ("algo para la tos", nombres coloquiales).
                 # Con UMBRAL (11/9): sin él, para "dipirona" o "te consulto si

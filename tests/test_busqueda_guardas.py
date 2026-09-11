@@ -40,6 +40,28 @@ class TestNumeros:
         assert quitar_cantidades("curflex x 30") == "curflex x 30"
         assert quitar_cantidades("aveno infantil 65") == "aveno infantil 65"
 
+    def test_completar_numeros_desde_la_frase(self):
+        from app.services.sku_service import completar_numeros
+        # El modelo extrajo "aveno infantil" de "tenes aveno infantil por 65?"
+        assert completar_numeros("aveno infantil", "tenes aveno infantil por 65?") == "aveno infantil fps 65"
+        assert completar_numeros("ibuprofeno", "dame ibuprofeno 600mg") == "ibuprofeno 600 mg"
+        assert completar_numeros("ibumar", "tenes ibumar 4%?") == "ibumar 4%"
+        # ya los tiene → intacto; sin entidad → None
+        assert completar_numeros("ibuprofeno 600", "ibuprofeno 600") == "ibuprofeno 600"
+        assert completar_numeros(None, "algo 65") is None
+        # una cantidad pedida no se agrega
+        assert completar_numeros("tafirol", "dame 2 tafirol") == "tafirol"
+
+    def test_entidad_sin_numero_mas_frase_gana_el_f65(self):
+        from app.services.sku_service import completar_numeros
+        svc = SKUService.from_rows([
+            _fila("1", "AVENO INFANTIL gel de baño JLI x 250"),
+            _fila("2", "AVENO SOLAR F65 infantil CRE x 175"),
+            _fila("3", "AVENO INFANTIL ACO x 250"),
+        ])
+        q = completar_numeros("aveno infantil", "tenes aveno infantil por 65?")
+        assert svc.buscar(q)[0]["sku_id"] == "2"
+
     def test_f65_le_gana_al_gel_de_bano(self):
         # Caso real 11/9: "tenes aveno infantil por 65?" → ofreció el gel de baño.
         svc = SKUService.from_rows([

@@ -122,7 +122,7 @@ FORMATO DE RESPUESTA:
 Respondé SIEMPRE con un JSON con este esquema (sin texto extra):
 {
   "intencion": "saludo|social|consulta_precio|consulta_stock|pedido|consulta_abierta|agradecimiento|cambio_postventa|desconocido",
-  "entidad_producto": "nombre del producto mencionado o null",
+  "entidad_producto": "nombre del producto mencionado o null — CONSERVÁ los números y unidades tal como los dijo el cliente: dosis, concentración, factor, tamaño (ej: 'aveno infantil 65', 'ibuprofeno 600', 'ibumar 4%', 'curflex x 30'); son lo que distingue una presentación de otra",
   "entidades_adicionales": [],
   "agregar_al_pedido": false,
   "cantidad": 1,

@@ -122,6 +122,28 @@ def quitar_cantidades(consulta: str) -> str:
     return _CANTIDAD_RE.sub(lambda m: _re_mod.sub(r"\d+", "", m.group(0)), consulta or "")
 
 
+def completar_numeros(entidad: Optional[str], texto: str) -> Optional[str]:
+    """
+    El buscador recibe la `entidad_producto` que extrae el modelo, no la frase
+    del cliente — y el modelo tiende a tirar el número ("tenés aveno infantil
+    por 65?" → "aveno infantil", caso real 11/9: ofreció el acondicionador).
+    Si la frase original trae números discriminantes que la entidad no tiene,
+    se le agregan (con su contexto: "fps 65", "600 mg", "4%").
+    """
+    if not entidad or not texto:
+        return entidad
+    tiene = set(numeros_de(entidad))
+    faltan = [n for n in numeros_de(texto) if n not in tiene]
+    if not faltan:
+        return entidad
+    t_norm = normalizar_numeros(texto).lower()
+    extra = []
+    for n in faltan:
+        m = _re_mod.search(rf"\b(fps {_re_mod.escape(n)}|{_re_mod.escape(n)}\s*(?:mg|ml|mcg|gr|g|ui))\b", t_norm)
+        extra.append(m.group(1) if m else n)
+    return f"{entidad} {' '.join(extra)}".strip()
+
+
 def resultado_coincide(variantes: list[str], texto_indexado: str) -> bool:
     """
     ¿El producto encontrado corresponde a lo pedido? Regla determinista que
