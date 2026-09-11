@@ -575,15 +575,12 @@ async def _chequear_stock_vivo(session: dict, phone: str, session_svc,
                        "se cobra con el dato cacheado")
         return None, None
 
-    vivos = {str(it.get("external_id")): it for it in res.items}
     missing = {str(m) for m in res.missing}
     precio_erp_distinto = None
 
-    from app.services.sku_service import get_sku_service
-    from app.services.catalog_store import get_catalog_store
-    from app.services.db import get_db
-    sku_svc = get_sku_service(settings.sku_csv_path)
-    store = get_catalog_store(get_db(settings.database_url))
+    # Refrescar el cache (memoria + Postgres) con lo que dijo el ERP.
+    from app.services.catalog_live import aplicar_items_vivos
+    vivos = await aplicar_items_vivos(res.items, branch)
 
     for pedido in items:
         sid = str(pedido["sku_id"])
@@ -591,26 +588,16 @@ async def _chequear_stock_vivo(session: dict, phone: str, session_svc,
         stock_vivo = None
         if vivo is not None:
             stock_vivo = int(vivo.get("stock") or 0)
-            # Refrescar el cache (memoria + Postgres) con lo que dijo el ERP.
-            try:
-                sku_mem = sku_svc.get_by_id(sid)
-                if sku_mem:
-                    sku_mem.stock_actual = float(stock_vivo)
-                    sku_mem.cantidad_visible = max(stock_vivo, 0)
-                precio_raw = vivo.get("price")
-                await store.update_stock(branch, sid, stock_vivo,
-                                         price=precio_raw)
-                if precio_raw is not None:
-                    precio_vivo = float(precio_raw)
-                    cotizado = float(pedido.get("precio") or 0)
-                    if cotizado and abs(precio_vivo - cotizado) >= 0.01:
-                        precio_erp_distinto = precio_vivo
-                        logger.warning(
-                            f"Precio ERP distinto para {sid}: cotizado "
-                            f"${cotizado:,.2f}, ERP ${precio_vivo:,.2f} — "
-                            "se cobra el cotizado")
-            except Exception as e:
-                logger.debug(f"No se pudo refrescar cache de {sid}: {e}")
+            precio_raw = vivo.get("price")
+            if precio_raw not in (None, ""):
+                precio_vivo = float(precio_raw)
+                cotizado = float(pedido.get("precio") or 0)
+                if cotizado and abs(precio_vivo - cotizado) >= 0.01:
+                    precio_erp_distinto = precio_vivo
+                    logger.warning(
+                        f"Precio ERP distinto para {sid}: cotizado "
+                        f"${cotizado:,.2f}, ERP ${precio_vivo:,.2f} — "
+                        "se cobra el cotizado")
         elif sid in missing:
             stock_vivo = 0   # el ERP ya no lo conoce → tratar como sin stock
 

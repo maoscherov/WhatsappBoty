@@ -1392,6 +1392,13 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                         _sku = deps["sku"].get_by_id(m["sku_id"])
                         if _sku:
                             resultados_sku.append(deps["sku"]._to_response(_sku))
+                # Verificación EN VIVO antes de ofrecer (11/9): el lote del
+                # ERP trae precio 0 / stock 0 para productos que sí hay; si
+                # el agente está conectado se corrige con la verdad del ERP
+                # (un round-trip, 2 s máx). Sin agente, sigue el cache.
+                if resultados_sku:
+                    from app.services.catalog_live import refrescar_ofertas_en_vivo
+                    resultados_sku = await refrescar_ofertas_en_vivo(resultados_sku, deps["sku"])
                 # Descuento de socio ACÁ: así el precio bonificado es el único
                 # que circula (lo ve el modelo, se matchea con la regla del
                 # precio, queda en el pendiente y llega al link sin recalcular).

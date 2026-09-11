@@ -128,6 +128,12 @@ async def bo_branch_lookup(branch_id: str, _=Depends(_auth),
     )
     if res is None:
         raise HTTPException(status_code=504, detail="el agente no respondió")
+    # Cada lookup cura el catálogo con la verdad del ERP (memoria + Postgres).
+    try:
+        from app.services.catalog_live import aplicar_items_vivos
+        await aplicar_items_vivos(res.items, branch_id)
+    except Exception as e:
+        logger.debug(f"lookup: no se pudo aplicar al catálogo: {e}")
     return {"items": res.items, "missing": res.missing}
 
 
