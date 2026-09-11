@@ -548,11 +548,14 @@ async def _chequear_stock_vivo(session: dict, phone: str, session_svc,
     """
     from app.config import get_settings as _gs
     settings = _gs()
-    if settings.live_stock_check != "stock" or not settings.default_branch_id:
+    if settings.live_stock_check != "stock":
+        return None, None
+    from app.services.catalog_source import resolver_branch_default
+    branch = await resolver_branch_default()
+    if not branch:
         return None, None
     from app.services.agent_registry import get_agent_registry
     registry = get_agent_registry()
-    branch = settings.default_branch_id
     if not registry.connected(branch):
         return None, None
 

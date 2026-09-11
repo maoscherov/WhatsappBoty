@@ -437,13 +437,15 @@ async def bo_sku_import_receta(file: UploadFile = File(...), _=Depends(_auth)):
     # flag del Excel va a catalog_extras como OVERRIDE por producto (sobrevive
     # a los syncs). La whitelist de venta libre queda blindada igual que en el
     # camino CSV: los "si" sobre OTC confirmados se reportan, no se aplican.
-    if settings.default_branch_id:
+    from app.services.catalog_source import resolver_branch_default
+    _branch_erp = await resolver_branch_default()
+    if _branch_erp:
         from app.services.catalog_store import get_catalog_store
         from app.services.catalog_refresher import get_catalog_refresher
         from app.services.sku_service import es_venta_libre
         db = get_db(settings.database_url)
         store = get_catalog_store(db)
-        if await store.count_items(settings.default_branch_id) > 0:
+        if await store.count_items(_branch_erp) > 0:
             svc_actual = get_sku_service(settings.sku_csv_path)
             aplicados, conflictos, cambiados = 0, [], set()
             for sku in svc_actual.todos():
@@ -455,12 +457,12 @@ async def bo_sku_import_receta(file: UploadFile = File(...), _=Depends(_auth)):
                                        "antes": sku.requiere_receta, "excel": nueva,
                                        "aplicado": False})
                     continue
-                await store.set_extras(settings.default_branch_id, sku.sku_id,
+                await store.set_extras(_branch_erp, sku.sku_id,
                                        requiere_receta_override=nueva)
                 cambiados.add(sku.sku_id)
                 aplicados += 1
             if cambiados:
-                get_catalog_refresher().schedule(settings.default_branch_id, cambiados)
+                get_catalog_refresher().schedule(_branch_erp, cambiados)
             return {"status": "ok", "modo": "erp_overrides", "total": svc_actual.total,
                     "resumen": {"actualizados": aplicados,
                                 "conflictos_whitelist": conflictos}}
@@ -644,6 +646,7 @@ class ConfigUpdate(BaseModel):
     live_sin_stock_message: str | None = None    # freno por stock en vivo (ERP)
     cc_enabled: str | None = None                # "true"/"false" — pago con cuenta corriente
     cc_tope_monto: str | None = None             # tope por pedido, "0" = sin tope
+    catalogo_fuente: str | None = None           # "erp" | "csv" — de dónde lee el bot el catálogo
     sin_stock_derivar_message: str | None = None
     derivar_pago_manual: str | None = None       # compat: "false" = solo_tarjeta
     pago_manual_mode: str | None = None          # "derivar" | "solo_tarjeta"
@@ -690,6 +693,14 @@ async def bo_config_update(body: ConfigUpdate, _=Depends(_auth)):
     if not updates:
         raise HTTPException(status_code=400, detail="Sin campos para actualizar")
     await cfg_svc.set_many(updates)
+    # Cambiar la fuente del catálogo aplica al toque (sin esperar un sync ni
+    # un redeploy): "csv" recarga el CSV, "erp" recarga desde Postgres.
+    if "catalogo_fuente" in updates:
+        try:
+            from app.services.catalog_source import aplicar_fuente
+            await aplicar_fuente()
+        except Exception as e:
+            logger.warning(f"No se pudo aplicar catalogo_fuente: {e}")
     return await cfg_svc.get_all()
 
 

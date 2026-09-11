@@ -36,8 +36,11 @@ def _store():
     return get_catalog_store(get_db(get_settings().database_url))
 
 
-def _es_default(branch_id: str) -> bool:
-    return branch_id == get_settings().default_branch_id
+async def _es_default(branch_id: str) -> bool:
+    """¿Esta sucursal es la que lee el bot? Se resuelve en cada lote (una
+    query) para que la PRIMERA carga active el catálogo ERP sin esperar."""
+    from app.services.catalog_source import resolver_branch_default
+    return branch_id == await resolver_branch_default(forzar=True)
 
 
 @router.post("/catalog")
@@ -54,7 +57,7 @@ async def sync_catalog(body: CatalogBatchIn, branch: Branch = Depends(require_br
         logger.error(f"sync/catalog {branch.branch_id} falló: {e}")
         raise HTTPException(status_code=500, detail=f"error de catálogo: {str(e)[:150]}")
 
-    if _es_default(branch.branch_id):
+    if await _es_default(branch.branch_id):
         get_catalog_refresher().schedule(
             branch.branch_id,
             {i.external_id for i in body.items},
@@ -79,7 +82,7 @@ async def sync_full_manifest(body: ManifestIn, branch: Branch = Depends(require_
 
     logger.info(f"sync/full-manifest {branch.branch_id}: {len(body.items)} entradas, "
                 f"resend={len(resend)}, deactivated={deactivated}")
-    if _es_default(branch.branch_id) and deactivated:
+    if deactivated and await _es_default(branch.branch_id):
         get_catalog_refresher().schedule(branch.branch_id, set(), inmediata=True)
     return {"resend": resend, "deactivated": deactivated}
 

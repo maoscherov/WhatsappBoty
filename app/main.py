@@ -95,24 +95,22 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"No se pudo hidratar la config: {e}")
 
-        # Catálogo ERP: si la sucursal por defecto tiene filas sincronizadas
-        # por el agente, gana Postgres sobre el CSV (que queda de fallback
-        # para clientes sin ERP — el blob de Redis no se toca).
-        if settings.default_branch_id:
-            try:
-                from app.services.catalog_refresher import get_catalog_refresher
-                from app.services.catalog_store import get_catalog_store
-                _n = await get_catalog_store(get_db(settings.database_url)) \
-                    .count_items(settings.default_branch_id)
-                if _n > 0:
-                    _refresher = get_catalog_refresher()
-                    _refresher._branch_id = settings.default_branch_id
-                    await _refresher.recargar()
-                else:
-                    logger.info(f"Sucursal {settings.default_branch_id} sin catálogo "
-                                "ERP todavía — se usa el CSV")
-            except Exception as e:
-                logger.warning(f"No se pudo cargar el catálogo ERP: {e} — se usa el CSV")
+        # Catálogo ERP: si hay una sucursal sincronizada por el agente (o la
+        # que fija DEFAULT_BRANCH_ID), gana Postgres sobre el CSV, que ya
+        # quedó cargado arriba como fallback (el blob de Redis no se toca).
+        try:
+            from app.services.catalog_refresher import get_catalog_refresher
+            from app.services.catalog_source import resolver_branch_default
+            _branch = await resolver_branch_default(forzar=True)
+            if _branch:
+                _refresher = get_catalog_refresher()
+                _refresher._branch_id = _branch
+                await _refresher.recargar()
+            else:
+                logger.info("Sin sucursal ERP sincronizada (o catalogo_fuente=csv) — "
+                            "el bot usa el CSV")
+        except Exception as e:
+            logger.warning(f"No se pudo cargar el catálogo ERP: {e} — se usa el CSV")
 
     # Job periódico: cierre por inactividad, aviso de demora y devolución al bot
     # de las derivaciones sin atender. Arranca con cualquier proveedor de

@@ -58,7 +58,7 @@ class Settings(BaseSettings):
     images_base_url: str = ""                 # ej: https://tuapp.railway.app/media
 
     # Sync de catálogo desde el ERP de la sucursal (remedia-agent)
-    default_branch_id: str = ""      # sucursal cuyo catálogo usa el bot; vacío = solo CSV
+    default_branch_id: str = ""      # override: sucursal ERP del bot (vacío = la única activa con catálogo)
     live_stock_check: str = "stock"  # off | stock — consulta al agente antes del link de pago
     live_lookup_timeout_s: float = 5.0
 

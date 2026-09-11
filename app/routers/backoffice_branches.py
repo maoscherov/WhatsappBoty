@@ -131,15 +131,30 @@ async def bo_branch_lookup(branch_id: str, _=Depends(_auth),
     return {"items": res.items, "missing": res.missing}
 
 
+@router.get("/catalogo/estado")
+async def bo_catalogo_estado(_=Depends(_auth)):
+    """Fuente actual del catálogo (erp/csv), sucursal, total y última recarga/sync."""
+    from app.services.catalog_source import estado
+    return await estado()
+
+
+@router.post("/catalogo/recargar")
+async def bo_catalogo_recargar(_=Depends(_auth)):
+    """Fuerza la recarga del catálogo en memoria según la fuente vigente."""
+    from app.services.catalog_source import aplicar_fuente
+    return await aplicar_fuente()
+
+
 @router.put("/catalog/{external_id}/extras")
 async def bo_catalog_extras(external_id: str, body: ExtrasIn, _=Depends(_auth)):
     """
-    Datos manuales de un producto ERP (sucursal por defecto): override de
-    receta, pausa manual, imagen. Sobreviven a los syncs (catalog_extras).
+    Datos manuales de un producto ERP (sucursal activa): override de receta,
+    pausa manual, imagen. Sobreviven a los syncs (catalog_extras).
     """
-    settings = get_settings()
-    if not settings.default_branch_id:
-        raise HTTPException(status_code=409, detail="sin sucursal ERP por defecto")
+    from app.services.catalog_source import resolver_branch_default
+    branch = await resolver_branch_default()
+    if not branch:
+        raise HTTPException(status_code=409, detail="sin sucursal ERP activa")
     if body.requiere_receta_override is not None and \
             body.requiere_receta_override not in ("si", "ambiguo", "no", ""):
         raise HTTPException(status_code=422,
@@ -148,6 +163,6 @@ async def bo_catalog_extras(external_id: str, body: ExtrasIn, _=Depends(_auth)):
     if "requiere_receta_override" in campos and campos["requiere_receta_override"] == "":
         campos["requiere_receta_override"] = None   # limpiar el override
     await get_catalog_store(_db()).set_extras(
-        settings.default_branch_id, external_id, **campos)
-    get_catalog_refresher().schedule(settings.default_branch_id, {external_id})
+        branch, external_id, **campos)
+    get_catalog_refresher().schedule(branch, {external_id})
     return {"ok": True}

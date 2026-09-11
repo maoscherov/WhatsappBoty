@@ -92,6 +92,9 @@ DEFAULTS: dict[str, str] = {
     # (/bo/cc/excepciones). Tope 0 = sin tope.
     "cc_enabled": "true",
     "cc_tope_monto": "0",
+    # Fuente del catálogo (11/9): "erp" = Postgres sincronizado por el agente
+    # de la sucursal (gana si hay datos); "csv" = forzar el CSV viejo.
+    "catalogo_fuente": "erp",
     # Aviso de "pedido preparado" según tipo de entrega (minuta 79, acción 1).
     # Placeholders: {producto} {total} {codigo} {direccion} {horario}.
     "pedido_listo_retiro_message": (

@@ -60,6 +60,22 @@ async def db(pg_dsn):
     await d.close()
 
 
+@pytest.fixture(autouse=True)
+def fuente_csv(monkeypatch):
+    """Los tests HTTP no deben disparar la recarga del catálogo en memoria
+    (pisaría el singleton del CSV para el resto de la suite): fuente=csv.
+    La resolución automática se testea aparte en TestFuenteCatalogo."""
+    import app.services.catalog_source as cs
+
+    async def _csv():
+        return "csv"
+
+    monkeypatch.setattr(cs, "fuente_configurada", _csv)
+    cs.invalidar_cache()
+    yield
+    cs.invalidar_cache()
+
+
 @pytest.fixture
 async def branch_token(db) -> str:
     token, token_hash = generar_token()
@@ -285,6 +301,78 @@ class TestBoBranches:
     async def test_sync_now_sin_conexion_409(self, client, db, branch_token):
         r = await client.post(f"/bo/branches/{BRANCH}/sync-now")
         assert r.status_code == 409
+
+
+class TestFuenteCatalogo:
+    """Decisión 11/9: el ERP es la fuente única. Sin DEFAULT_BRANCH_ID, la
+    única sucursal activa con catálogo se elige sola; catalogo_fuente=csv es
+    el botón de pánico; con dos sucursales hace falta el override."""
+
+    async def test_sin_catalogo_no_hay_sucursal(self, db, branch_token, monkeypatch):
+        import app.services.catalog_source as cs
+
+        async def _erp():
+            return "erp"
+        monkeypatch.setattr(cs, "fuente_configurada", _erp)
+        assert await cs.resolver_branch_default(forzar=True) is None
+
+    async def test_unica_sucursal_con_catalogo_se_elige_sola(
+            self, client, db, branch_token, monkeypatch):
+        import app.services.catalog_source as cs
+        # Con fuente csv para que el POST no dispare la recarga...
+        await client.post("/v1/sync/catalog", json=_batch([_item("p1")]),
+                          headers=_auth(branch_token))
+
+        async def _erp():
+            return "erp"
+        monkeypatch.setattr(cs, "fuente_configurada", _erp)
+        assert await cs.resolver_branch_default(forzar=True) == BRANCH
+
+    async def test_fuente_csv_gana(self, client, db, branch_token, monkeypatch):
+        import app.services.catalog_source as cs
+        await client.post("/v1/sync/catalog", json=_batch([_item("p1")]),
+                          headers=_auth(branch_token))
+
+        async def _csv():
+            return "csv"
+        monkeypatch.setattr(cs, "fuente_configurada", _csv)
+        assert await cs.resolver_branch_default(forzar=True) is None
+
+    async def test_override_por_variable(self, db, branch_token, monkeypatch):
+        import app.services.catalog_source as cs
+        from app.config import get_settings
+
+        async def _erp():
+            return "erp"
+        monkeypatch.setattr(cs, "fuente_configurada", _erp)
+        monkeypatch.setattr(get_settings(), "default_branch_id", "otra-sucursal")
+        assert await cs.resolver_branch_default(forzar=True) == "otra-sucursal"
+
+    async def test_dos_sucursales_requieren_override(
+            self, client, db, branch_token, monkeypatch):
+        import app.services.catalog_source as cs
+        await client.post("/v1/sync/catalog", json=_batch([_item("p1")]),
+                          headers=_auth(branch_token))
+        # Segunda sucursal con catálogo
+        r = await client.post("/bo/branches",
+                              json={"branch_id": "farmacia-correa", "nombre": "Correa"})
+        tok2 = r.json()["token"]
+        body = _batch([_item("q1", n=2)])
+        body["branch_id"] = "farmacia-correa"
+        await client.post("/v1/sync/catalog", json=body, headers=_auth(tok2))
+
+        async def _erp():
+            return "erp"
+        monkeypatch.setattr(cs, "fuente_configurada", _erp)
+        assert await cs.resolver_branch_default(forzar=True) is None
+
+    async def test_estado_reporta_fuente(self, db, branch_token, monkeypatch):
+        import app.services.catalog_source as cs
+        cs.marcar_recarga("erp", BRANCH, 1234)
+        est = await cs.estado()
+        assert est["fuente"] == "erp" and est["branch_id"] == BRANCH
+        assert est["fuente_configurada"] == "csv"   # lo fuerza el fixture
+        assert "ultimo_sync" in est
 
 
 class TestDegradacion:

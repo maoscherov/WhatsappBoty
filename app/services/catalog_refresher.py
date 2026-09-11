@@ -53,11 +53,12 @@ class CatalogRefresher:
         """SELECT del catálogo de la sucursal → SKUService.from_rows → swap."""
         from app.config import get_settings
         from app.services.db import get_db
+        from app.services.catalog_source import marcar_recarga, resolver_branch_default
         from app.services.catalog_store import get_catalog_store
         from app.services.sku_service import SKUService, set_sku_service
 
         async with self._lock:
-            branch_id = self._branch_id or get_settings().default_branch_id
+            branch_id = self._branch_id or await resolver_branch_default()
             if not branch_id:
                 return
             ids = self._pending_ids
@@ -71,6 +72,7 @@ class CatalogRefresher:
                 return
             svc = SKUService.from_rows(rows, extras)
             set_sku_service(svc)
+            marcar_recarga("erp", branch_id, svc.total)
             logger.info(f"Catálogo ERP recargado: {svc.total} productos de {branch_id} "
                         f"en {time.perf_counter() - t0:.1f}s ({len(ids)} cambiados)")
 
