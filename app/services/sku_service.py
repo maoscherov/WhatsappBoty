@@ -83,6 +83,74 @@ def _tokens(texto: str) -> list[str]:
     return _re.findall(r"[a-záéíóúñ0-9]{3,}", (texto or "").lower())
 
 
+import re as _re_mod
+
+# Números que DISCRIMINAN en farmacia: dosis (600), FPS (65), tamaño (x 30),
+# concentración (4%). Hasta el 11/9 se borraban todos los dígitos de la
+# consulta como si fueran cantidades pedidas, y "aveno infantil 65" devolvía
+# el gel de baño en vez del protector solar F65.
+_NUMERO_RE = _re_mod.compile(r"(?<![\d.,])(\d+%|\d{2,})(?![\d.,])")
+# Cantidades pedidas, que sí se quitan: "dame 2", "3 cajas", "quiero 2".
+_CANTIDAD_RE = _re_mod.compile(
+    r"\b(?:dame|quiero|necesito|llevo|tra[eé]me|mand[aá]me)\s+(\d+)\b"
+    r"|\b(\d+)\s+(?:unidades?|cajas?|frascos?|paquetes?|potes?|u)\b",
+    _re_mod.IGNORECASE,
+)
+_FPS_RE = _re_mod.compile(r"\b(?:f\.?|fps\.?|factor)\s*(\d{2,3})\b", _re_mod.IGNORECASE)
+_UNIDAD_RE = _re_mod.compile(r"(\d+)\s*(mg|ml|mcg|gr|g|ui|cc|kg|lt|l)\b", _re_mod.IGNORECASE)
+
+
+def normalizar_numeros(texto: str) -> str:
+    """
+    Deja los números aislados y comparables entre consulta y nombre:
+    "F65"/"FPS65"/"factor 65"/"por 65" → "fps 65"; "600mg" → "600 mg".
+    """
+    t = texto or ""
+    t = _FPS_RE.sub(lambda m: f"fps {m.group(1)}", t)
+    t = _re_mod.sub(r"\bpor\s+(\d{2,3})\b", r"fps \1", t, flags=_re_mod.IGNORECASE)
+    t = _UNIDAD_RE.sub(lambda m: f"{m.group(1)} {m.group(2).lower()}", t)
+    return t
+
+
+def numeros_de(texto: str) -> list[str]:
+    """Números discriminantes de un texto ('600', '65', '4%'). 1 dígito solo cuenta con %."""
+    return _NUMERO_RE.findall(normalizar_numeros(texto or ""))
+
+
+def quitar_cantidades(consulta: str) -> str:
+    """Saca SOLO las cantidades pedidas ("dame 2"), nunca dosis ni tamaños."""
+    return _CANTIDAD_RE.sub(lambda m: _re_mod.sub(r"\d+", "", m.group(0)), consulta or "")
+
+
+def resultado_coincide(variantes: list[str], texto_indexado: str) -> bool:
+    """
+    ¿El producto encontrado corresponde a lo pedido? Regla determinista que
+    frena la basura del fuzzy (caso real 11/9: "dipirona" devolvía
+    acondicionadores porque "dipirona" ~ "acon-DICIONA-dor").
+
+    1. Si la consulta nombra un TIPO (talco, suspensión...), el producto tiene
+       que ser de ese tipo.
+    2. Algún término alfabético distintivo de la consulta (o de un sinónimo:
+       ibuprofeno→ibupirac) aparece en el texto indexado, tolerante a typos por
+       prefijo de 4 letras. Los números solo suman en el ranking, nunca
+       alcanzan solos para "coincidir" ("dipirona 500" no es "paracetamol 500").
+    """
+    texto = (texto_indexado or "").lower()
+    if not variantes:
+        return True
+    tipos_q = tipos_mencionados(variantes[0])
+    if tipos_q and not (tipos_q & tipos_mencionados(texto)):
+        return False
+    for v in variantes:
+        for tok in _tokens(v):
+            if tok.isdigit() or tok.endswith("%"):
+                continue
+            pref = tok[:4] if len(tok) >= 4 else tok
+            if pref in texto:
+                return True
+    return False
+
+
 def nombre_coincide(query: str, nombre: str) -> bool:
     """
     True si el producto encontrado corresponde a lo que se pidió.
@@ -167,7 +235,7 @@ class SKUService:
         # JAB→jabón) + marca + laboratorio. Sin la expansión, "talco rexona"
         # no encontraba el talco y el bot ofrecía un desodorante en su lugar.
         search_text = " ".join(filter(None, [
-            expandir_abreviaturas(sku.sku_nombre).lower(),
+            normalizar_numeros(expandir_abreviaturas(sku.sku_nombre)).lower(),
             sku.marca.lower(),
             sku.laboratorio.lower(),
             texto_extra.lower(),
@@ -356,12 +424,15 @@ class SKUService:
         # el problema: "jabon dove" se limpiaba a "dove" y devolvía
         # desodorantes. Ahora el índice contiene esas palabras (expandidas
         # desde las siglas del catálogo), así que discriminan en vez de estorbar.
+        # Los NÚMEROS se conservan (dosis, FPS, tamaño): solo se quitan las
+        # cantidades pedidas ("dame 2") — ver normalizar_numeros/quitar_cantidades.
         _STOP = (
             r'\b(dame|quiero|necesito|ten[eé]s|tienen|hay|precio|cu[aá]nto|cuanto|sale|'
             r'en|de|para|un|una|unos|unas|el|la|los|las|me|mand[aá]s|env[ií]as|'
-            r'env|\d+)\b'
+            r'env)\b'
         )
-        clean_query = _re.sub(_STOP, '', query.lower())
+        clean_query = normalizar_numeros(quitar_cantidades(query.lower()))
+        clean_query = _re.sub(_STOP, '', clean_query)
         clean_query = _re.sub(r'\s+', ' ', clean_query).strip()
         if not clean_query:
             clean_query = query.lower()
@@ -394,7 +465,8 @@ class SKUService:
         # Candidatos: los mismos de antes (cualquiera de los dos scorers supera
         # el umbral). Lo que cambia es cómo se ORDENAN.
         total_docs = max(1, len(self._search_index))
-        q_tokens = {t for t in _tokens(clean_query) if len(t) >= 4}
+        q_tokens = {t for t in _tokens(clean_query) if len(t) >= 4 and not t.isdigit()}
+        q_numeros = set(numeros_de(clean_query))
         log_total = math.log(total_docs + 1)
 
         def _relevancia(idx: int) -> float:
@@ -410,16 +482,28 @@ class SKUService:
                 if tok in texto:
                     df = self._token_df.get(tok, total_docs)
                     bonus += 25.0 * (math.log(total_docs / max(df, 1)) / log_total)
-            return base + min(bonus, 50.0)
+            # Números (dosis, FPS, tamaño): el dato más discriminante de un
+            # medicamento. Presentes → suben fuerte; ausentes cuando el
+            # cliente los pidió → bajan (el F65 le gana al gel de baño).
+            if q_numeros:
+                texto_nums = set(numeros_de(texto))
+                if q_numeros & texto_nums:
+                    bonus += 30.0
+                else:
+                    bonus -= 15.0
+            return base + min(bonus, 60.0)
 
         candidatos = [
-            (self._skus[idx], _relevancia(idx)) for idx in set(best_wr) | set(best_ts)
+            (idx, self._skus[idx], _relevancia(idx)) for idx in set(best_wr) | set(best_ts)
             if not self._skus[idx].pausado
         ]
+        # Guarda determinista: lo que no comparte ningún término con lo pedido
+        # (ni con sus sinónimos) no se ofrece, por más que el fuzzy lo puntúe.
+        candidatos = [c for c in candidatos if resultado_coincide(variantes, self._search_index[c[0]])]
         # Relevancia primero; disponibilidad y ventas sólo desempatan matches parejos.
-        candidatos.sort(key=lambda x: (-x[1], 0 if x[0].disponible else 1, -(x[0].ventas_mes or 0)))
+        candidatos.sort(key=lambda x: (-x[2], 0 if x[1].disponible else 1, -(x[1].ventas_mes or 0)))
 
-        return [self._to_response(s) for s, _sc in candidatos[:top_n]]
+        return [self._to_response(s) for _i, s, _sc in candidatos[:top_n]]
 
     def get_by_id(self, sku_id: str) -> Optional[SKU]:
         for sku in self._skus:

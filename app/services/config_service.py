@@ -95,6 +95,9 @@ DEFAULTS: dict[str, str] = {
     # Fuente del catálogo (11/9): "erp" = Postgres sincronizado por el agente
     # de la sucursal (gana si hay datos); "csv" = forzar el CSV viejo.
     "catalogo_fuente": "erp",
+    # Umbral del fallback semántico de productos (0-1). Por debajo, el
+    # vecino no se ofrece: mejor "no lo encontramos" que Dove para dipirona.
+    "rag_sku_min_score": "0.30",
     # Aviso de "pedido preparado" según tipo de entrega (minuta 79, acción 1).
     # Placeholders: {producto} {total} {codigo} {direccion} {horario}.
     "pedido_listo_retiro_message": (

@@ -33,10 +33,14 @@ _PROMPT = (
     "- credencial: es una credencial/carnet de obra social o prepaga (PAMI, IOMA, etc.).\n"
     "- comprobante: es un comprobante de pago — transferencia bancaria, captura "
     "de una billetera virtual (Mercado Pago, etc.) o ticket/recibo de pago.\n"
-    "- producto: es la foto de un medicamento o producto de salud. Poné su nombre en items.\n"
+    "- producto: es la foto de uno o más productos (cajas/envases) de farmacia o perfumería.\n"
     "- otro: cualquier otra cosa que no encaje.\n"
-    "En items va SOLO cuando hay productos identificables (ej: 'Ibuprofeno 600, Omeprazol 20mg'); "
-    "si no, dejalo vacío."
+    "En items va SOLO cuando hay productos identificables, UNO por envase, escrito como "
+    "MARCA + concentración/dosis + forma + tamaño tal como figura en el envase "
+    "(ej: 'Ibumar 4% suspensión 90ml, Ditral dipirona jarabe 70ml', 'Aveno protector solar "
+    "infantil FPS 65 175ml'). Una caja = un item. NUNCA listes la fórmula, los ingredientes "
+    "ni la composición del envase (xylitol, niacinamida, manteca de karité, excipientes...) "
+    "como items: no son productos pedidos. Si no hay productos identificables, dejalo vacío."
 )
 
 

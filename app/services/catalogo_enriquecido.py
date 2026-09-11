@@ -82,6 +82,15 @@ TIPOS_PRODUCTO: dict[str, set[str]] = {
     "ampollas":       {"ampollas", "ampolla", "amp"},
     "aerosol":        {"aerosol", "aer"},
     "spray":          {"spray", "spr"},
+    # Formas farmacéuticas (11/9): pedir "suspensión" y recibir comprimidos
+    # es el mismo sustituto encubierto que talco→desodorante.
+    "suspension":     {"suspension", "suspensión", "sus", "susp"},
+    "emulsion":       {"emulsion", "emulsión", "emu"},
+    "solucion":       {"solucion", "solución"},
+    "inyectable":     {"inyectable", "inyectables", "iny"},
+    "pastillas":      {"pastillas", "pastilla", "past"},
+    "grageas":        {"grageas", "gragea", "grag"},
+    "serum":          {"serum", "sérum", "ser"},
 }
 
 _TOKEN_RE = re.compile(r"[a-záéíóúñA-ZÁÉÍÓÚÑ0-9]+")

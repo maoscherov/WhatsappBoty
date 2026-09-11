@@ -1386,19 +1386,35 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 resultados_sku = deps["sku"].buscar(entidad)
                 # Fallback semántico (pgvector): si el fuzzy no encontró nada,
                 # buscar por significado ("algo para la tos", nombres coloquiales).
+                # Con UMBRAL (11/9): sin él, para "dipirona" o "te consulto si
+                # tenes" devolvía vecinos arbitrarios (Dove, Dexopral) que el
+                # modelo ofrecía con toda confianza.
                 if not resultados_sku and deps["rag"].enabled():
+                    _cfg_sem = await deps["config"].get_all()
+                    try:
+                        _min_sem = float(_cfg_sem.get("rag_sku_min_score") or 0.30)
+                    except (TypeError, ValueError):
+                        _min_sem = 0.30
                     _sem = await deps["rag"].buscar_semantico(entidad, n=3)
                     for m in _sem:
+                        if float(m.get("score") or 0) < _min_sem:
+                            logger.info(f"Semántico descartado por score {m.get('score'):.2f} "
+                                        f"< {_min_sem}: {m.get('nombre')!r} para {entidad!r}")
+                            continue
                         _sku = deps["sku"].get_by_id(m["sku_id"])
-                        if _sku:
+                        if _sku and not _sku.pausado:
                             resultados_sku.append(deps["sku"]._to_response(_sku))
                 # Verificación EN VIVO antes de ofrecer (11/9): el lote del
                 # ERP trae precio 0 / stock 0 para productos que sí hay; si
                 # el agente está conectado se corrige con la verdad del ERP
                 # (un round-trip, 2 s máx). Sin agente, sigue el cache.
                 if resultados_sku:
-                    from app.services.catalog_live import refrescar_ofertas_en_vivo
+                    from app.services.catalog_live import refrescar_ofertas_en_vivo, filtrar_por_stock
                     resultados_sku = await refrescar_ofertas_en_vivo(resultados_sku, deps["sku"])
+                    # Con catálogo ERP el stock es real: las alternativas se
+                    # ofrecen solo si hay; si nada tiene stock queda el primero
+                    # para decir "no lo tengo, ¿lo encargamos?" (minuta/Belén 11/9).
+                    resultados_sku = filtrar_por_stock(resultados_sku)
                 # Descuento de socio ACÁ: así el precio bonificado es el único
                 # que circula (lo ve el modelo, se matchea con la regla del
                 # precio, queda en el pendiente y llega al link sin recalcular).

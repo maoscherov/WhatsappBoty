@@ -310,6 +310,43 @@ async def bo_diag_claude(_=Depends(_auth)):
     return out
 
 
+@router.get("/sku/search")
+async def bo_sku_search(_=Depends(_auth), q: str = Query(..., min_length=2),
+                        n: int = Query(20, ge=1, le=100)):
+    """
+    Buscador del OPERADOR (Claudia, feedback 52/53: "Holomagnesio Total 5" no
+    aparecía en 'buscar producto' y no podía cotizar). A diferencia del fuzzy
+    del bot, es texto libre: todas las palabras de `q` tienen que estar
+    contenidas en nombre/marca (sin acentos, sin importar mayúsculas), hasta
+    `n` resultados ordenados por nombre — para explorar el catálogo.
+    """
+    import unicodedata as _ud
+
+    def _plano(s: str) -> str:
+        return "".join(c for c in _ud.normalize("NFD", (s or "").lower())
+                       if _ud.category(c) != "Mn")
+
+    from app.services.catalogo_enriquecido import expandir_abreviaturas
+    settings = get_settings()
+    svc = get_sku_service(settings.sku_csv_path)
+    palabras = [p for p in _plano(q).split() if p]
+    out = []
+    for sku in svc.todos():
+        texto = _plano(f"{expandir_abreviaturas(sku.sku_nombre)} {sku.sku_nombre} {sku.marca} {sku.laboratorio}")
+        if all(p in texto for p in palabras):
+            out.append(sku)
+    out.sort(key=lambda s: (0 if s.disponible else 1, s.sku_nombre.lower()))
+    return {
+        "query": q, "total": len(out),
+        "resultados": [
+            {"sku_id": s.sku_id, "nombre": s.sku_nombre, "precio": s.precio_venta,
+             "estado": s.estado, "requiere_receta": s.requiere_receta,
+             "stock": s.cantidad_visible, "barcode": s.barcode}
+            for s in out[:n]
+        ],
+    }
+
+
 @router.get("/sku/check")
 async def bo_sku_check(_=Depends(_auth), q: str = Query(...)):
     """
@@ -647,6 +684,7 @@ class ConfigUpdate(BaseModel):
     cc_enabled: str | None = None                # "true"/"false" — pago con cuenta corriente
     cc_tope_monto: str | None = None             # tope por pedido, "0" = sin tope
     catalogo_fuente: str | None = None           # "erp" | "csv" — de dónde lee el bot el catálogo
+    rag_sku_min_score: str | None = None         # umbral del fallback semántico (0-1)
     sin_stock_derivar_message: str | None = None
     derivar_pago_manual: str | None = None       # compat: "false" = solo_tarjeta
     pago_manual_mode: str | None = None          # "derivar" | "solo_tarjeta"

@@ -28,6 +28,25 @@ def es_dudoso(r: dict) -> bool:
             or r.get("estado") in ("sin_stock", "consultar"))
 
 
+def filtrar_por_stock(resultados: list[dict], fuente: Optional[str] = None) -> list[dict]:
+    """
+    Alternativas solo con stock confirmado (Belén, 11/9: "lo que me ofrece no
+    está en stock"). Aplica SOLO con catálogo ERP, donde el estado es real; con
+    CSV ("consultar" para todo) no se toca nada. Si ninguno tiene stock, queda
+    el primero (el más parecido a lo pedido) para que el bot pueda decir que
+    no lo tiene y ofrecer encargarlo.
+    """
+    if not resultados:
+        return resultados
+    if fuente is None:
+        from app.services.catalog_source import estado_recarga
+        fuente = estado_recarga.get("fuente") or "csv"
+    if fuente != "erp":
+        return resultados
+    con_stock = [r for r in resultados if not r.get("sin_stock")]
+    return con_stock or resultados[:1]
+
+
 async def aplicar_items_vivos(items: list[dict], branch_id: str, sku_svc=None) -> dict[str, dict]:
     """
     Vuelca lo que devolvió el ERP en memoria (SKUService) y Postgres
