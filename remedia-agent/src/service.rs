@@ -549,7 +549,7 @@ mod tests {
         assert_eq!(u16::from_le_bytes([b[opt + 68], b[opt + 69]]), 2);
         // Idempotente y rechaza basura.
         patch_pe_subsystem_gui(&mut b).unwrap();
-        assert!(patch_pe_subsystem_gui(&mut vec![0u8; 10]).is_err());
+        assert!(patch_pe_subsystem_gui(&mut [0u8; 10]).is_err());
         b[opt + 68] = 9;
         assert!(patch_pe_subsystem_gui(&mut b).is_err());
     }
