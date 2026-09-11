@@ -63,12 +63,23 @@ class AgentRegistry:
         ws = self._conns.get(branch_id)
         if ws is None:
             return None
+        # Contrato del agente (ws.rs): `ids: Vec<i64>`. Un string hace fallar
+        # la deserialización y el agente descarta el mensaje sin responder
+        # (caso real 11/9: lookup por "182288" → timeout). Se mandan enteros;
+        # los no numéricos se descartan con log.
+        ids_int: list[int] = []
+        for i in ids or []:
+            try:
+                ids_int.append(int(str(i).strip()))
+            except (TypeError, ValueError):
+                logger.warning(f"lookup: id no numérico descartado: {i!r}")
         req_id = uuid.uuid4().hex
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
         self._futures[req_id] = fut
         try:
             await ws.send_json({"op": "lookup", "req_id": req_id,
-                                "barcodes": barcodes or [], "ids": ids or []})
+                                "barcodes": [str(b) for b in (barcodes or [])],
+                                "ids": ids_int})
             return await asyncio.wait_for(fut, timeout=timeout)
         except asyncio.TimeoutError:
             logger.warning(f"lookup a {branch_id} sin respuesta en {timeout}s")

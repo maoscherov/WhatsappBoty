@@ -95,7 +95,9 @@ class TestLookup:
             hilo.join(timeout=5)
 
             assert resultado["req"]["op"] == "lookup"
-            assert resultado["req"]["ids"] == ["77", "999"]
+            # El agente (Rust) exige ids numéricos: Vec<i64>. Strings → lo descarta.
+            assert resultado["req"]["ids"] == [77, 999]
+            assert all(isinstance(i, int) for i in resultado["req"]["ids"])
             assert res is not None
             assert res.items[0]["external_id"] == "77"
             assert res.missing == ["999"]
