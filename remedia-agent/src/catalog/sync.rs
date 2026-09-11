@@ -26,6 +26,8 @@ pub const BATCH_SIZE: usize = 500;
 pub const BACKOFF_MIN_SECS: u64 = 30;
 pub const BACKOFF_MAX_SECS: u64 = 600;
 pub const ID_SCAN_RETRIES: u32 = 3;
+/// Códigos de barras por llamada a `POST /api/productos/codigosBarras`.
+pub const LIVE_CB_CHUNK: usize = 20;
 
 /// `min(30 · 2^attempts, 600)` segundos.
 pub fn backoff_secs(attempts: u32) -> u64 {
@@ -143,7 +145,8 @@ impl SyncEngine {
         }
         report.erp_status = "ok".into();
 
-        let items = merge_items(&fetched.productos, &extra);
+        let productos = self.enrich_live(fetched.productos).await;
+        let items = merge_items(&productos, &extra);
         report.fetched = items.len();
 
         let known = self.state.known_hashes()?;
@@ -259,7 +262,10 @@ impl SyncEngine {
             let _ = self.state.set_meta(META_ERP_STATUS, e.status_label());
             anyhow::anyhow!("full-manifest: {e}")
         })?;
-        let items = merge_items(&fetched.productos, &[]);
+        // Mismos datos (y hashes) que el delta: si no, el manifiesto pediría
+        // reenviar todo lo corregido en cada corrida.
+        let productos = self.enrich_live(fetched.productos).await;
+        let items = merge_items(&productos, &[]);
         let current: HashSet<&str> = items.iter().map(|i| i.external_id.as_str()).collect();
 
         let manifest = FullManifest {
@@ -332,6 +338,99 @@ impl SyncEngine {
         }
     }
 
+    /// "Pase de verdad" (hallazgo 11/9): `GET /api/productos/lote/{n}` devuelve
+    /// `stockSucursal = 0` y `precio = 0` para productos que la consulta
+    /// individual trae bien (Aveno solar: lote 0/0, en vivo 2 y $32.409). El lote
+    /// sirve para saber QUÉ productos existen; precio y stock se leen de los
+    /// endpoints en vivo: `codigosBarras` de a 20 (barato) y `{id}` para los que
+    /// no tienen CB o comparten CB con otro (el ERP devuelve uno solo por CB).
+    ///
+    /// Con concurrencia 4 y ~50 ms por request: ~2.400 + ~6.300 llamadas ≈ 2-4
+    /// min por ciclo, dentro del intervalo de 15. Best-effort: lo que falla
+    /// conserva el dato del lote; ERP inalcanzable o 401 aborta y devuelve el
+    /// lote tal cual. `erp.live_enrich = false` lo apaga.
+    pub async fn enrich_live(&self, productos: Vec<ProductoDTO>) -> Vec<ProductoDTO> {
+        if !self.cfg.erp.live_enrich || productos.is_empty() {
+            return productos;
+        }
+        let t = Instant::now();
+        let erp = self.erp();
+        let sem = Arc::new(tokio::sync::Semaphore::new(self.cfg.erp.max_concurrency.max(1)));
+        let mut live: HashMap<i64, ProductoDTO> = HashMap::with_capacity(productos.len());
+        let mut fallidos = 0usize;
+
+        // 1) Por código de barras, de a LIVE_CB_CHUNK.
+        let cbs: Vec<String> = productos.iter().flat_map(|p| p.codigo_barras.iter().cloned()).collect();
+        let mut tasks = tokio::task::JoinSet::new();
+        for chunk in cbs.chunks(LIVE_CB_CHUNK) {
+            let erp = Arc::clone(&erp);
+            let sem = Arc::clone(&sem);
+            let chunk = chunk.to_vec();
+            tasks.spawn(async move {
+                let _permit = sem.acquire_owned().await.expect("semaphore");
+                erp.lookup_by_barcodes(&chunk).await
+            });
+        }
+        let cb_calls = tasks.len();
+        while let Some(res) = tasks.join_next().await {
+            match res {
+                Ok(Ok(found)) => {
+                    for p in found {
+                        live.insert(p.id_producto, p);
+                    }
+                }
+                Ok(Err(e @ (ErpError::Unreachable(_) | ErpError::NotAuthorized))) => {
+                    tasks.abort_all();
+                    warn!(error = %e, "pase de verdad abortado (CB): se usa el dato del lote");
+                    return productos;
+                }
+                Ok(Err(e)) => {
+                    fallidos += 1;
+                    warn!(error = %e, "pase de verdad: tanda de CB omitida");
+                }
+                Err(_) => fallidos += 1,
+            }
+        }
+
+        // 2) Los que no aparecieron (sin CB, o CB compartido): por id.
+        let faltan: Vec<i64> = productos
+            .iter()
+            .map(|p| p.id_producto)
+            .filter(|id| !live.contains_key(id))
+            .collect();
+        let id_calls = faltan.len();
+        let mut tasks = tokio::task::JoinSet::new();
+        for id in faltan {
+            let erp = Arc::clone(&erp);
+            let sem = Arc::clone(&sem);
+            tasks.spawn(async move {
+                let _permit = sem.acquire_owned().await.expect("semaphore");
+                erp.lookup_by_id(id).await
+            });
+        }
+        while let Some(res) = tasks.join_next().await {
+            match res {
+                Ok(Ok(Some(p))) => {
+                    live.insert(p.id_producto, p);
+                }
+                Ok(Ok(None)) => {}
+                Ok(Err(e @ (ErpError::Unreachable(_) | ErpError::NotAuthorized))) => {
+                    tasks.abort_all();
+                    warn!(error = %e, "pase de verdad abortado (id): se aplica lo obtenido hasta acá");
+                    break;
+                }
+                Ok(Err(_)) | Err(_) => fallidos += 1,
+            }
+        }
+
+        let (out, corregidos) = apply_live(productos, &live);
+        info!(
+            cb_calls, id_calls, en_vivo = live.len(), corregidos, fallidos,
+            ms = elapsed_ms(t), "pase de verdad terminado"
+        );
+        out
+    }
+
     /// Barrido `GET /api/productos/{id}` por rango `1..=id_scan_max` con
     /// concurrencia acotada. Vacío si `daily_id_scan` está apagado.
     /// Aborta ante ERP inalcanzable o 401; los 404 (huecos) se ignoran.
@@ -381,6 +480,25 @@ impl SyncEngine {
     }
 }
 
+/// Reemplaza cada DTO del lote por su versión en vivo (mismo `idProducto`).
+/// Devuelve `(productos, corregidos)`: cuántos cambiaron de precio o stock.
+pub fn apply_live(productos: Vec<ProductoDTO>, live: &HashMap<i64, ProductoDTO>) -> (Vec<ProductoDTO>, usize) {
+    let mut corregidos = 0usize;
+    let out = productos
+        .into_iter()
+        .map(|p| match live.get(&p.id_producto) {
+            Some(v) => {
+                if v.stock_sucursal != p.stock_sucursal || v.precio != p.precio {
+                    corregidos += 1;
+                }
+                v.clone()
+            }
+            None => p,
+        })
+        .collect();
+    (out, corregidos)
+}
+
 fn hashes_of(items: &[CatalogItem]) -> Vec<(String, String)> {
     items.iter().map(|i| (i.external_id.clone(), i.hash.clone())).collect()
 }
@@ -409,6 +527,38 @@ mod tests {
         assert_eq!(backoff_secs(4), 480);
         assert_eq!(backoff_secs(5), 600);
         assert_eq!(backoff_secs(50), 600);
+    }
+
+    #[test]
+    fn apply_live_replaces_by_id_and_counts_corrections() {
+        use rust_decimal::Decimal;
+        let dto = |id: i64, stock: f64, precio: i64| ProductoDTO {
+            id_producto: id,
+            troquel: 0,
+            codigo_barras: vec![],
+            descripcion: format!("P{id}"),
+            stock_sucursal: stock,
+            precio: Decimal::new(precio, 0),
+            categoria: String::new(),
+            rubro: String::new(),
+            subrubro: String::new(),
+            forma_farmaceutica: None,
+            acciones_terapeuticas: vec![],
+            laboratorio: None,
+            nombres_drogas: None,
+            ofertas: vec![],
+            es_visible_en_venta: true,
+            visibles_mismo_cb: None,
+            baja: false,
+        };
+        // Lote: todo en cero (bug real del ERP). En vivo: 1 con datos, 2 igual, 3 ausente.
+        let lote = vec![dto(1, 0.0, 0), dto(2, 0.0, 0), dto(3, 0.0, 0)];
+        let live: HashMap<i64, ProductoDTO> = [(1, dto(1, 2.0, 32409)), (2, dto(2, 0.0, 0))].into();
+        let (out, corregidos) = apply_live(lote, &live);
+        assert_eq!(corregidos, 1);
+        assert_eq!(out[0].stock_sucursal, 2.0);
+        assert_eq!(out[0].precio, Decimal::new(32409, 0));
+        assert_eq!(out[2].stock_sucursal, 0.0); // sin dato en vivo: queda el lote
     }
 
     #[test]

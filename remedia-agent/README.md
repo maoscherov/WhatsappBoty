@@ -141,6 +141,29 @@ rustc eligió una instalación de Visual Studio incompleta. Compilar desde una
 consola con el entorno de los Build Tools cargado (`vcvars64.bat`), o crear un
 wrapper que lo cargue antes de invocar `cargo`.
 
+## Pase de verdad (0.3.0 — hallazgo 11/9)
+
+`GET /api/productos/lote/{n}` devuelve **`stockSucursal = 0` y `precio = 0`**
+para productos que la consulta individual trae bien (caso real: Aveno solar
+F65 x175 — lote `0 / 0`, `GET /api/productos/182288` → `2 / 32409.09`, y lo
+mismo por `codigosBarras`). El lote solo es confiable para saber QUÉ productos
+existen (nombre, categoría, alta/baja).
+
+Por eso, en cada ciclo, después del lote el agente relee precio y stock de los
+endpoints en vivo: `POST /api/productos/codigosBarras` de a 20 CB (~2.400
+llamadas para ~48k productos) y `GET /api/productos/{id}` para los que no
+tienen CB o lo comparten con otro (el ERP devuelve uno solo por CB). Con
+`max_concurrency = 4` son 2-4 minutos por ciclo. El hash se calcula sobre los
+datos en vivo, así los deltas viajan. Lo que falla conserva el dato del lote;
+ERP inalcanzable o 401 abortan el pase y se usa el lote tal cual.
+
+Apagarlo (vuelve al comportamiento 0.2.x):
+
+```toml
+[erp]
+live_enrich = false
+```
+
 ## Pendiente (spec §1)
 
 El lote del ERP trae ~54k productos y por ID hay ~89k; no se sabe qué filtra.

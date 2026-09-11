@@ -291,3 +291,74 @@ async fn metrics_are_recorded_and_persisted_after_a_cycle() {
     let v: serde_json::Value = serde_json::from_slice(&hb.body).unwrap();
     assert!(v["metrics"]["sync_total_ms"].is_number());
 }
+
+/// Hallazgo 11/9: el lote trae precio 0 y stock 0 para productos que los
+/// endpoints en vivo devuelven bien. El pase de verdad tiene que mandar a
+/// Remedia los valores en vivo, no los del lote.
+#[tokio::test]
+async fn live_enrich_fixes_zeros_from_lote() {
+    use rust_decimal::Decimal;
+    use std::collections::HashMap;
+
+    let mut real = common::lote1();
+    real.cantidad_lotes = 1;
+    let mut zeros = real.clone();
+    for p in &mut zeros.productos {
+        p.stock_sucursal = 0.0;
+        p.precio = Decimal::ZERO;
+    }
+    let erp = MockServer::start().await;
+    common::mount_lote(&erp, &zeros).await;     // el lote miente
+    common::mount_lookups(&erp, &real).await;   // en vivo dice la verdad
+    let remedia = remedia_ok().await;
+    let e = engine(&erp.uri(), &remedia.uri(), "");
+
+    let r = e.run_once().await.unwrap();
+    assert_eq!(r.erp_status, "ok");
+
+    let verdad: HashMap<i64, _> = real.productos.iter().map(|p| (p.id_producto, p)).collect();
+    let items: Vec<_> = received_batches(&remedia).await.into_iter().flat_map(|b| b.items).collect();
+    assert!(!items.is_empty());
+    let mut con_stock = 0;
+    for it in &items {
+        let p = verdad[&it.external_id.parse::<i64>().unwrap()];
+        assert_eq!(it.stock as f64, p.stock_sucursal, "stock de {}", it.external_id);
+        if p.precio > Decimal::ZERO {
+            assert_eq!(it.price, Some(p.precio), "precio de {}", it.external_id);
+        }
+        if it.stock > 0 {
+            con_stock += 1;
+        }
+    }
+    // El fixture real tiene productos con stock: si el pase no corrigiera nada,
+    // todos llegarían en cero.
+    assert!(con_stock > 0 || real.productos.iter().all(|p| p.stock_sucursal == 0.0));
+}
+
+#[tokio::test]
+async fn live_enrich_can_be_turned_off() {
+    use rust_decimal::Decimal;
+
+    let mut real = common::lote1();
+    real.cantidad_lotes = 1;
+    let mut zeros = real.clone();
+    for p in &mut zeros.productos {
+        p.stock_sucursal = 0.0;
+        p.precio = Decimal::ZERO;
+    }
+    let erp = MockServer::start().await;
+    common::mount_lote(&erp, &zeros).await;
+    common::mount_lookups(&erp, &real).await;
+    let remedia = remedia_ok().await;
+    let e = engine(&erp.uri(), &remedia.uri(), "live_enrich = false");
+
+    e.run_once().await.unwrap();
+    let items: Vec<_> = received_batches(&remedia).await.into_iter().flat_map(|b| b.items).collect();
+    assert!(items.iter().all(|it| it.stock == 0 && it.price.is_none()));
+    // y no tocó los endpoints en vivo
+    let vivos = erp.received_requests().await.unwrap().iter()
+        .filter(|r| r.url.path() == "/api/productos/codigosBarras"
+            || (r.url.path().starts_with("/api/productos/") && !r.url.path().contains("/lote/")))
+        .count();
+    assert_eq!(vivos, 0);
+}

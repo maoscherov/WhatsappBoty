@@ -148,6 +148,7 @@ fn install(data_dir: &std::path::Path, token: String, erp: String, branch: Strin
             request_timeout_secs: 30,
             daily_id_scan: false,
             id_scan_max: 100_300,
+            live_enrich: true,
         },
         log: LogConfig { dir: data_dir.join("logs") },
     };

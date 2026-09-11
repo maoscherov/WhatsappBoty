@@ -35,6 +35,11 @@ pub struct ErpConfig {
     pub daily_id_scan: bool,
     #[serde(default = "d_id_scan_max")]
     pub id_scan_max: i64,
+    /// "Pase de verdad" en cada ciclo: precio y stock se releen de los
+    /// endpoints en vivo (`codigosBarras` / `{id}`) porque el lote los trae en
+    /// cero (hallazgo 11/9). Apagarlo vuelve al dato del lote tal cual.
+    #[serde(default = "d_true")]
+    pub live_enrich: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,6 +71,9 @@ fn d_timeout() -> u64 {
 }
 fn d_id_scan_max() -> i64 {
     100_300
+}
+fn d_true() -> bool {
+    true
 }
 fn d_log_dir() -> PathBuf {
     Config::default_data_dir().join("logs")
@@ -139,8 +147,18 @@ dir = "C:\\ProgramData\\RemediaAgent\\logs"
         assert_eq!(c.erp.request_timeout_secs, 30);
         assert!(!c.erp.daily_id_scan);
         assert_eq!(c.erp.id_scan_max, 100_300);
+        assert!(c.erp.live_enrich);
         assert_eq!(c.heartbeat_interval_secs, 300);
         assert_eq!(c.log.dir, PathBuf::from(r"C:\ProgramData\RemediaAgent\logs"));
+    }
+
+    #[test]
+    fn live_enrich_can_be_disabled() {
+        let s = SAMPLE.replace(
+            "base_url = \"http://192.168.1.156:60064\"",
+            "base_url = \"http://192.168.1.156:60064\"\nlive_enrich = false",
+        );
+        assert!(!Config::from_toml(&s).unwrap().erp.live_enrich);
     }
 
     #[test]
