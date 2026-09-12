@@ -75,11 +75,25 @@ class TestChequeoVivo:
         assert msg
         assert (await ss.get("549L3"))["estado"] == "operador"
 
-    async def test_missing_es_stock_cero(self, erp_activo):
+    async def test_missing_no_frena(self, erp_activo):
+        """`missing` mezcla 'no existe' con 'el lookup falló' (timeout durante
+        el pase de verdad). Caso real 11/9: 'no nos queda stock' de un producto
+        con 2 unidades. Desconocido → fail-open."""
         erp_activo(LookupResult(items=[], missing=["55"]))
         ss = SessionService("redis://127.0.0.1:1")
         msg, _ = await _chequear_stock_vivo(_sesion(), "549L4", ss, {})
-        assert msg is not None   # el ERP ya no lo conoce → no se vende
+        assert msg is None
+
+    async def test_freno_deja_la_derivacion_ofrecida(self, erp_activo):
+        """Tras 'no nos queda stock, ¿lo consultamos?', el 'sí' tiene que
+        derivar: el flag es el mismo que usa el flujo de sin-stock."""
+        erp_activo(LookupResult(items=[{"external_id": "55", "stock": 0}]))
+        ss = SessionService("redis://127.0.0.1:1")
+        msg, _ = await _chequear_stock_vivo(_sesion(), "549L10", ss, {})
+        assert msg
+        s = await ss.get("549L10")
+        assert s.get("derivacion_ofrecida") == "Producto Live"
+        assert not s.get("pending_sku_id")
 
     async def test_timeout_sigue_con_cache(self, erp_activo):
         erp_activo(None)   # lookup devolvió None (timeout/sin agente)

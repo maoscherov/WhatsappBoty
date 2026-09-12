@@ -268,7 +268,12 @@ _CONFIRMACION_FANTASMA = re.compile(
     r"queda(?:r[aá])?\s+confirmad\w+|"
     r"gracias\s+por\s+tu\s+compra|"
     r"compra\s+(?:realizada|exitosa)|"
-    r"te\s+esperamos\b[^.!?…$]{0,40}\bretirar\w*)"
+    r"te\s+esperamos\b[^.!?…$]{0,40}\bretirar\w*|"
+    # Reservas/urgencia (11/9): no existe flujo de reserva; "lo reservamos" y
+    # "quedan pocas, conviene reservarlo" son promesas que nadie cumple.
+    r"\breserv(?:a|amos|ar\w*|ad\w+|o)\b|"
+    r"\bapart(?:amos|ar\w*|ad\w+)\b|"
+    r"quedan?\s+poc[oa]s?\s+unidad\w*)"
     r"[^.!?…$]*[.!?…]?",
     re.IGNORECASE,
 )
@@ -276,8 +281,9 @@ _CONFIRMACION_FANTASMA = re.compile(
 
 def quitar_confirmaciones_fantasma(texto: str) -> str:
     """
-    Recorta oraciones donde el modelo anuncia una compra o confirmación que el
-    sistema no hizo. Las oraciones con importes nunca se tocan (el precio que
+    Recorta oraciones donde el modelo anuncia una compra, confirmación o
+    RESERVA que el sistema no hizo (no hay flujo de reserva: "lo reservamos" y
+    "quedan pocas unidades, conviene reservarlo" quedan afuera). Las oraciones con importes nunca se tocan (el precio que
     el bot dice es el que cobra), y si el resultado queda vacío se devuelve el
     original — mejor un anuncio de más que un bot mudo.
     """
@@ -599,7 +605,12 @@ async def _chequear_stock_vivo(session: dict, phone: str, session_svc,
                         f"${cotizado:,.2f}, ERP ${precio_vivo:,.2f} — "
                         "se cobra el cotizado")
         elif sid in missing:
-            stock_vivo = 0   # el ERP ya no lo conoce → tratar como sin stock
+            # El agente mete en `missing` tanto lo que el ERP no conoce como
+            # los lookups que FALLARON (timeout mientras corre el pase de
+            # verdad). Caso real 11/9: "no nos queda stock" de un producto
+            # con 2 unidades. Desconocido → se sigue con el cache (fail-open).
+            logger.warning(f"Stock en vivo: {sid} sin respuesta del ERP (missing) — "
+                           "se cobra con el dato cacheado")
 
         if stock_vivo is not None and stock_vivo < int(pedido.get("cantidad", 1)):
             nombre = pedido.get("nombre") or "ese producto"
@@ -609,6 +620,13 @@ async def _chequear_stock_vivo(session: dict, phone: str, session_svc,
             await session_svc.clear_pending(phone)
             if (cfg.get("sin_stock_mode") or "preguntar") == "derivar":
                 await session_svc.set_estado(phone, "operador", motivo="sin_stock_vivo")
+            else:
+                # "¿Querés que lo consultemos?" → el próximo "sí" deriva (mismo
+                # flag que el flujo de sin-stock del webhook). Sin esto el "sí"
+                # caía al modelo, que re-ofrecía el producto en bucle.
+                _s_off = await session_svc.get(phone)
+                _s_off["derivacion_ofrecida"] = nombre[:60]
+                await session_svc.save(phone, _s_off)
             logger.info(f"Venta frenada por stock en vivo: {sid} stock={stock_vivo} "
                         f"pedido={pedido.get('cantidad', 1)} phone={phone}")
             return plantilla.replace("{producto}", nombre), None

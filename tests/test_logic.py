@@ -1349,6 +1349,30 @@ class TestConfirmacionesFantasma:
     el carrito o generar el link); si vienen del modelo, se recortan.
     """
 
+    def test_reservas_y_urgencia_se_recortan(self):
+        """11/9: no existe flujo de reserva; 'lo reservamos' y 'quedan pocas,
+        conviene reservarlo' son promesas que nadie cumple."""
+        from app.services.checkout_helper import quitar_confirmaciones_fantasma as q
+        t = ("¡Perfecto, María! El protector solar Aveno infantil FPS 65 está disponible "
+             "y sale $27.547,73, ya con tu 15% de descuento de socio. Lo reservamos para "
+             "que lo retires en la sucursal. 😊")
+        out = q(t)
+        assert "reservamos" not in out.lower()
+        assert "$27.547,73" in out                      # el importe intacto
+        t2 = ("Sale $27.547,73. Quedan pocas unidades, así que si te interesa, conviene "
+              "reservarlo ya. ¿Te gustaría proceder con la compra?")
+        out2 = q(t2)
+        assert "pocas unidades" not in out2.lower() and "reservarlo" not in out2.lower()
+        assert "$27.547,73" in out2 and "proceder" in out2
+        # "aparte" (adverbio) no se toca; "reservado" sí
+        assert q("Te lo mando aparte del pedido.") == "Te lo mando aparte del pedido."
+        assert "reservado" not in q("Queda reservado a tu nombre. Sale $100.").lower()
+
+    def test_prompt_prohibe_reservas(self):
+        from app.services.intent_service import SYSTEM_PROMPT
+        assert "RESERVAS (PROHIBIDO)" in SYSTEM_PROMPT
+        assert "conviene reservarla ya" not in SYSTEM_PROMPT
+
     def test_recorta_el_mensaje_real_conservando_el_precio(self):
         r = ch.quitar_confirmaciones_fantasma(
             "¡Perfecto, María! Tu pedido queda confirmado para retirar en sucursal. "
