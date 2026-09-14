@@ -151,6 +151,33 @@ async def bo_catalogo_recargar(_=Depends(_auth)):
     return await aplicar_fuente()
 
 
+@router.post("/mercurio/sync")
+async def bo_mercurio_sync(_=Depends(_auth)):
+    """Corre un ciclo de sync de Mercurio ahora (Mascotas del Oeste)."""
+    from app.services.mercurio_service import get_mercurio_sync, mercurio_configurado, MercurioError
+    if not mercurio_configurado():
+        raise HTTPException(status_code=409, detail="MERCURIO_API_KEY no configurada")
+    try:
+        return await get_mercurio_sync().sincronizar()
+    except MercurioError as e:
+        raise HTTPException(status_code=502, detail=f"Mercurio: {e}")
+
+
+@router.get("/mercurio/estado")
+async def bo_mercurio_estado(_=Depends(_auth)):
+    """Último sync + estado del servicio de Mercurio."""
+    from app.services.mercurio_service import get_mercurio_client, get_mercurio_sync, mercurio_configurado
+    if not mercurio_configurado():
+        return {"configurado": False}
+    try:
+        estado = await get_mercurio_client().estado()
+    except Exception as e:
+        estado = {"ok": False, "error": str(e)[:200]}
+    return {"configurado": True, "servicio": estado,
+            "branch_id": get_settings().mercurio_branch_id,
+            "ultimo_sync": get_mercurio_sync().ultimo}
+
+
 @router.put("/catalog/{external_id}/extras")
 async def bo_catalog_extras(external_id: str, body: ExtrasIn, _=Depends(_auth)):
     """

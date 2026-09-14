@@ -123,14 +123,41 @@ async def lifespan(app: FastAPI):
         logger.warning("Sin credenciales de WhatsApp: el job de sesiones NO arranca "
                        "(no habrá cierre por inactividad ni auto-liberación)")
 
+    # Sync del catálogo de Mercurio (Mascotas del Oeste): API REST en la nube,
+    # sin agente. Solo si hay clave y Postgres.
+    mercurio_task = None
+    if settings.mercurio_api_key and settings.database_url:
+        mercurio_task = asyncio.create_task(_sync_mercurio_periodico())
+        logger.info(f"Sync de Mercurio activo cada {settings.mercurio_sync_interval_secs}s "
+                    f"(sucursal {settings.mercurio_branch_id})")
+
     yield
 
     if cierre_task:
         cierre_task.cancel()
+    if mercurio_task:
+        mercurio_task.cancel()
     try:
         await get_db(settings.database_url).close()
     except Exception:
         pass
+
+
+async def _sync_mercurio_periodico():
+    """Primer sync al arrancar (tras 10 s) y después cada intervalo. Nunca
+    tumba el proceso: los errores quedan en el log y se reintenta al próximo."""
+    from app.services.mercurio_service import get_mercurio_sync
+    logger = logging.getLogger("app.mercurio")
+    settings = get_settings()
+    await asyncio.sleep(10)
+    while True:
+        try:
+            await get_mercurio_sync().sincronizar()
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            logger.error(f"Sync de Mercurio falló: {e}")
+        await asyncio.sleep(max(60, settings.mercurio_sync_interval_secs))
 
 
 async def _cerrar_sesiones_inactivas():

@@ -1,0 +1,143 @@
+{
+ "confidence": 0.9,
+ "cover_slots": {
+  "para.1": {
+   "semantic_role": "title",
+   "purpose": "titulo principal de portada",
+   "binds_to": "title",
+   "demo_value": "Título del documento",
+   "fill_rule": "in_place"
+  },
+  "para.2": {
+   "semantic_role": "subtitle",
+   "purpose": "subtitulo con cliente, version y fecha",
+   "binds_to": "subtitle",
+   "demo_value": "Subtítulo o descripción breve del documento",
+   "fill_rule": "in_place"
+  }
+ },
+ "conventions": {
+  "indexes": [
+   {
+    "index_ref": "field.5",
+    "kind": "outline",
+    "seq_id": null,
+    "feeds_from_role_id": "heading.1",
+    "reconcile": "regenerate"
+   }
+  ],
+  "sections": [
+   {
+    "region_ref": "region.cover",
+    "required": true,
+    "repeatable": false
+   },
+   {
+    "region_ref": "region.toc",
+    "required": true,
+    "repeatable": false
+   },
+   {
+    "region_ref": "region.body",
+    "required": true,
+    "repeatable": true
+   }
+  ]
+ },
+ "role_annotations": {
+  "heading.1": {
+   "purpose": "titulo de seccion principal, naranja con linea inferior",
+   "generation_rules": "uno por seccion mayor; alimenta el indice"
+  },
+  "heading.2": {
+   "purpose": "subtitulo dentro de una seccion",
+   "generation_rules": "jerarquia real bajo heading.1"
+  },
+  "heading.3": {
+   "purpose": "subdivision menor en gris",
+   "generation_rules": "usar con moderacion"
+  },
+  "paragraph": {
+   "purpose": "cuerpo justificado",
+   "generation_rules": "parrafos de 2 a 5 oraciones"
+  },
+  "table.default": {
+   "purpose": "tabla con cabecera naranja y texto blanco, bordes naranjas",
+   "generation_rules": "siempre con caption"
+  },
+  "callout.info": {
+   "purpose": "nota destacada con fondo gris y filete naranja",
+   "generation_rules": "solo para avisos importantes"
+  },
+  "caption": {
+   "purpose": "leyenda de tabla o figura",
+   "generation_rules": "una por tabla"
+  },
+  "list.bullet.1": {
+   "purpose": "lista sin orden",
+   "generation_rules": "items breves"
+  },
+  "list.number.1": {
+   "purpose": "lista ordenada o pasos",
+   "generation_rules": "para secuencias"
+  },
+  "cover.title": {
+   "purpose": "titulo de portada",
+   "generation_rules": "se llena en su lugar"
+  },
+  "cover.subtitle": {
+   "purpose": "subtitulo de portada",
+   "generation_rules": "se llena en su lugar"
+  },
+  "toc": {
+   "purpose": "titulo del indice",
+   "generation_rules": "el campo TOC se regenera desde heading.1 y heading.2"
+  }
+ },
+ "demo_classification": {
+  "regions": [
+   {
+    "region_ref": "region.cover",
+    "verdict": "real",
+    "evidence": "anclas de portada con estilos Title/Subtitle; se llenan en su lugar"
+   },
+   {
+    "region_ref": "region.toc",
+    "verdict": "real",
+    "evidence": "titulo de indice y campo TOC estructurales; se regeneran"
+   },
+   {
+    "region_ref": "region.body",
+    "verdict": "demo",
+    "evidence": "seccion de ejemplo con parrafos, lista, nota y tabla de muestra"
+   }
+  ]
+ },
+ "fragments": [],
+ "palette_annotations": {
+  "accent1": {
+   "name": "naranja de marca",
+   "semantic_role": "accent",
+   "purpose": "titulos y enfasis principal",
+   "use_when": "palabras clave que deben destacarse"
+  },
+  "accent4": {
+   "name": "amarillo de tema",
+   "semantic_role": "danger",
+   "purpose": "no usado por la marca",
+   "use_when": "evitar"
+  },
+  "dk1": {
+   "name": "texto negro",
+   "semantic_role": "text",
+   "purpose": "texto corriente",
+   "use_when": "por defecto"
+  },
+  "lt2": {
+   "name": "gris claro",
+   "semantic_role": "surface",
+   "purpose": "fondos suaves",
+   "use_when": "evitar en texto"
+  }
+ }
+}

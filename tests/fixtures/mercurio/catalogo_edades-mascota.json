@@ -1,0 +1,56 @@
+{
+  "catalogo": "edades-mascota",
+  "cantidad": 10,
+  "items": [
+    {
+      "codigo": "4",
+      "descripcion": "CACHORROS",
+      "id_edad": 4
+    },
+    {
+      "codigo": "5",
+      "descripcion": "ADULTOS",
+      "id_edad": 5
+    },
+    {
+      "codigo": "6",
+      "descripcion": "ADULTOS +7",
+      "id_edad": 6
+    },
+    {
+      "codigo": "7",
+      "descripcion": "KITTEN",
+      "id_edad": 7
+    },
+    {
+      "codigo": "11",
+      "descripcion": "CRIADORES",
+      "id_edad": 11
+    },
+    {
+      "codigo": "13",
+      "descripcion": "ADULTOS +8",
+      "id_edad": 13
+    },
+    {
+      "codigo": "14",
+      "descripcion": "ADULTOS +5",
+      "id_edad": 14
+    },
+    {
+      "codigo": "15",
+      "descripcion": "ADULTOS +12",
+      "id_edad": 15
+    },
+    {
+      "codigo": "16",
+      "descripcion": "ADULTOS +10",
+      "id_edad": 36
+    },
+    {
+      "codigo": "37",
+      "descripcion": "ADULTOS +6",
+      "id_edad": 37
+    }
+  ]
+}

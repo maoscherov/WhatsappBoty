@@ -1,0 +1,46 @@
+{
+  "catalogo": "tamanios-mascota",
+  "cantidad": 8,
+  "items": [
+    {
+      "codigo": "1",
+      "descripcion": "PEQUEÑA/O",
+      "id_tamanio": 1
+    },
+    {
+      "codigo": "2",
+      "descripcion": "MEDIANA/O",
+      "id_tamanio": 2
+    },
+    {
+      "codigo": "3",
+      "descripcion": "GRANDE",
+      "id_tamanio": 3
+    },
+    {
+      "codigo": "4",
+      "descripcion": "GIGANTE",
+      "id_tamanio": 4
+    },
+    {
+      "codigo": "5",
+      "descripcion": "TODOS LOS TAMAÑOS",
+      "id_tamanio": 5
+    },
+    {
+      "codigo": "6",
+      "descripcion": "ADULTOS",
+      "id_tamanio": 7
+    },
+    {
+      "codigo": "7",
+      "descripcion": "CACHORROS",
+      "id_tamanio": 8
+    },
+    {
+      "codigo": "8",
+      "descripcion": "EXTRA PEQUEÑA/O",
+      "id_tamanio": 9
+    }
+  ]
+}

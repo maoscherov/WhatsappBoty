@@ -1,0 +1,586 @@
+{
+  "catalogo": "subgrupos",
+  "cantidad": 116,
+  "items": [
+    {
+      "codigo": "2",
+      "descripcion": "ACCESORIOS",
+      "id_subgrupo": 2
+    },
+    {
+      "codigo": "4",
+      "descripcion": "DECORACION",
+      "id_subgrupo": 4
+    },
+    {
+      "codigo": "5",
+      "descripcion": "FILTROS Y AIREADORES",
+      "id_subgrupo": 5
+    },
+    {
+      "codigo": "6",
+      "descripcion": "ALIMENTOS",
+      "id_subgrupo": 6
+    },
+    {
+      "codigo": "7",
+      "descripcion": "BANDEJAS Y LITERAS",
+      "id_subgrupo": 7
+    },
+    {
+      "codigo": "8",
+      "descripcion": "ILUMINACION, BOMBAS Y CALEFACTORES",
+      "id_subgrupo": 8
+    },
+    {
+      "codigo": "9",
+      "descripcion": "CAMAS, ALMOHADONES, MANTAS Y COLCHONETAS",
+      "id_subgrupo": 9
+    },
+    {
+      "codigo": "10",
+      "descripcion": "COMEDEROS Y BEBEDEROS",
+      "id_subgrupo": 10
+    },
+    {
+      "codigo": "11",
+      "descripcion": "PARA PASEAR",
+      "id_subgrupo": 11
+    },
+    {
+      "codigo": "12",
+      "descripcion": "CUCHAS Y PUERTAS",
+      "id_subgrupo": 12
+    },
+    {
+      "codigo": "13",
+      "descripcion": "PAÑOS Y PAÑALES",
+      "id_subgrupo": 13
+    },
+    {
+      "codigo": "14",
+      "descripcion": "JAULAS",
+      "id_subgrupo": 14
+    },
+    {
+      "codigo": "15",
+      "descripcion": "JUGUETES",
+      "id_subgrupo": 15
+    },
+    {
+      "codigo": "18",
+      "descripcion": "PECERAS Y KITS",
+      "id_subgrupo": 18
+    },
+    {
+      "codigo": "19",
+      "descripcion": "MEDICAMENTOS",
+      "id_subgrupo": 19
+    },
+    {
+      "codigo": "21",
+      "descripcion": "INDUMENTARIA",
+      "id_subgrupo": 21
+    },
+    {
+      "codigo": "V01",
+      "descripcion": "VACUNAS",
+      "id_subgrupo": 22
+    },
+    {
+      "codigo": "V02",
+      "descripcion": "SERVICIOS",
+      "id_subgrupo": 23
+    },
+    {
+      "codigo": "24",
+      "descripcion": "BOCADITOS HUMEDOS",
+      "id_subgrupo": 25
+    },
+    {
+      "codigo": "26",
+      "descripcion": "PIEDRAS SANITARIAS",
+      "id_subgrupo": 26
+    },
+    {
+      "codigo": "27",
+      "descripcion": "PELUQUERIA",
+      "id_subgrupo": 27
+    },
+    {
+      "codigo": "31",
+      "descripcion": "BOLSOS Y TRANSPORTADORAS",
+      "id_subgrupo": 31
+    },
+    {
+      "codigo": "33",
+      "descripcion": "MUEBLES Y RASCADORES",
+      "id_subgrupo": 33
+    },
+    {
+      "codigo": "36",
+      "descripcion": "ALIMENTOS HUMEDOS",
+      "id_subgrupo": 36
+    },
+    {
+      "codigo": "37",
+      "descripcion": "ALMACENADORES",
+      "id_subgrupo": 37
+    },
+    {
+      "codigo": "38",
+      "descripcion": "BEBIDAS",
+      "id_subgrupo": 38
+    },
+    {
+      "codigo": "V03",
+      "descripcion": "TIPOS VISITAS",
+      "id_subgrupo": 51
+    },
+    {
+      "codigo": "V04",
+      "descripcion": "APLICACIONES",
+      "id_subgrupo": 52
+    },
+    {
+      "codigo": "53",
+      "descripcion": "HIERBAS",
+      "id_subgrupo": 53
+    },
+    {
+      "codigo": "54",
+      "descripcion": "MEDALLAS",
+      "id_subgrupo": 54
+    },
+    {
+      "codigo": "V05",
+      "descripcion": "DESCARTABLES",
+      "id_subgrupo": 55
+    },
+    {
+      "codigo": "58",
+      "descripcion": "CORTAUÑAS",
+      "id_subgrupo": 58
+    },
+    {
+      "codigo": "59",
+      "descripcion": "REPELENTES",
+      "id_subgrupo": 59
+    },
+    {
+      "codigo": "60",
+      "descripcion": "LOCIONES Y COLONIAS",
+      "id_subgrupo": 60
+    },
+    {
+      "codigo": "61",
+      "descripcion": "ANTIPULGAS Y GARRAPATAS",
+      "id_subgrupo": 61
+    },
+    {
+      "codigo": "62",
+      "descripcion": "ANTIPARASITARIOS",
+      "id_subgrupo": 62
+    },
+    {
+      "codigo": "63",
+      "descripcion": "SUPLEMENTOS VITAMÍNICOS",
+      "id_subgrupo": 63
+    },
+    {
+      "codigo": "64",
+      "descripcion": "GALLETITAS",
+      "id_subgrupo": 64
+    },
+    {
+      "codigo": "65",
+      "descripcion": "HUESOS Y CUEROS",
+      "id_subgrupo": 65
+    },
+    {
+      "codigo": "66",
+      "descripcion": "PALAS Y ACCESORIOS",
+      "id_subgrupo": 66
+    },
+    {
+      "codigo": "67",
+      "descripcion": "ORTOPEDIA",
+      "id_subgrupo": 67
+    },
+    {
+      "codigo": "68",
+      "descripcion": "SNACK",
+      "id_subgrupo": 68
+    },
+    {
+      "codigo": "69",
+      "descripcion": "CUIDADOS Y MANTENIMIENTO",
+      "id_subgrupo": 69
+    },
+    {
+      "codigo": "70",
+      "descripcion": "PERCHAS, NIDOS Y BAÑADERAS",
+      "id_subgrupo": 70
+    },
+    {
+      "codigo": "71",
+      "descripcion": "CUIDADO DENTAL",
+      "id_subgrupo": 73
+    },
+    {
+      "codigo": "AL001",
+      "descripcion": "ALMOHADONES",
+      "id_subgrupo": 75
+    },
+    {
+      "codigo": "AR002",
+      "descripcion": "ARNESES",
+      "id_subgrupo": 76
+    },
+    {
+      "codigo": "BE003",
+      "descripcion": "BEBEDEROS",
+      "id_subgrupo": 77
+    },
+    {
+      "codigo": "BE004",
+      "descripcion": "BELLEZA",
+      "id_subgrupo": 78
+    },
+    {
+      "codigo": "BI005",
+      "descripcion": "BIJOUTERIE",
+      "id_subgrupo": 79
+    },
+    {
+      "codigo": "BO006",
+      "descripcion": "BOLSOS",
+      "id_subgrupo": 80
+    },
+    {
+      "codigo": "BO007",
+      "descripcion": "BOTAS Y ZAPATILLAS",
+      "id_subgrupo": 81
+    },
+    {
+      "codigo": "BO008",
+      "descripcion": "BOZALES",
+      "id_subgrupo": 82
+    },
+    {
+      "codigo": "CA009",
+      "descripcion": "CAMAS",
+      "id_subgrupo": 83
+    },
+    {
+      "codigo": "CA010",
+      "descripcion": "CARPETAS SANITARIAS",
+      "id_subgrupo": 84
+    },
+    {
+      "codigo": "CA011",
+      "descripcion": "CASCABELES",
+      "id_subgrupo": 85
+    },
+    {
+      "codigo": "CE012",
+      "descripcion": "CEPILLOS, PEINES Y CARDINAS",
+      "id_subgrupo": 86
+    },
+    {
+      "codigo": "CH013",
+      "descripcion": "CHALECOS",
+      "id_subgrupo": 87
+    },
+    {
+      "codigo": "CH014",
+      "descripcion": "CHIFLES",
+      "id_subgrupo": 88
+    },
+    {
+      "codigo": "CO015",
+      "descripcion": "COLCHONES Y COLCHONETAS",
+      "id_subgrupo": 89
+    },
+    {
+      "codigo": "CO016",
+      "descripcion": "COLLARES",
+      "id_subgrupo": 90
+    },
+    {
+      "codigo": "CO017",
+      "descripcion": "COLLARES ISABELINOS",
+      "id_subgrupo": 91
+    },
+    {
+      "codigo": "CO018",
+      "descripcion": "COLLARES Y CORREAS",
+      "id_subgrupo": 92
+    },
+    {
+      "codigo": "CO019",
+      "descripcion": "COMEDEROS",
+      "id_subgrupo": 93
+    },
+    {
+      "codigo": "CO020",
+      "descripcion": "COMPRIMIDOS",
+      "id_subgrupo": 94
+    },
+    {
+      "codigo": "CO021",
+      "descripcion": "CORREAS",
+      "id_subgrupo": 95
+    },
+    {
+      "codigo": "CO022",
+      "descripcion": "CORTAUÑAS, ALICATES Y LIMAS",
+      "id_subgrupo": 96
+    },
+    {
+      "codigo": "CU023",
+      "descripcion": "CUCHAS",
+      "id_subgrupo": 97
+    },
+    {
+      "codigo": "CU024",
+      "descripcion": "CUIDADOS ",
+      "id_subgrupo": 98
+    },
+    {
+      "codigo": "DE025",
+      "descripcion": "DECORACIONES",
+      "id_subgrupo": 99
+    },
+    {
+      "codigo": "EN026",
+      "descripcion": "ENTRENAMIENTO",
+      "id_subgrupo": 100
+    },
+    {
+      "codigo": "FA027",
+      "descripcion": "FAJAS Y CORRECTORES",
+      "id_subgrupo": 101
+    },
+    {
+      "codigo": "FI028",
+      "descripcion": "FILTROS, AIREADORES Y ACCESORIOS",
+      "id_subgrupo": 102
+    },
+    {
+      "codigo": "FR029",
+      "descripcion": "FRISBEES",
+      "id_subgrupo": 103
+    },
+    {
+      "codigo": "GO030",
+      "descripcion": "GOLOSINA SALUDABLE",
+      "id_subgrupo": 104
+    },
+    {
+      "codigo": "GO031",
+      "descripcion": "GOLOSINAS",
+      "id_subgrupo": 105
+    },
+    {
+      "codigo": "HI032",
+      "descripcion": "HIGIENE ",
+      "id_subgrupo": 106
+    },
+    {
+      "codigo": "HI033",
+      "descripcion": "HIGIENE DE PASEO",
+      "id_subgrupo": 107
+    },
+    {
+      "codigo": "HU034",
+      "descripcion": "HUESOS",
+      "id_subgrupo": 108
+    },
+    {
+      "codigo": "HU035",
+      "descripcion": "HUEVOS",
+      "id_subgrupo": 109
+    },
+    {
+      "codigo": "HU036",
+      "descripcion": "HUMEDOS",
+      "id_subgrupo": 110
+    },
+    {
+      "codigo": "ID037",
+      "descripcion": "IDENTIFICACIONES",
+      "id_subgrupo": 111
+    },
+    {
+      "codigo": "JU038",
+      "descripcion": "JUGUETES INTERACTIVOS",
+      "id_subgrupo": 112
+    },
+    {
+      "codigo": "KI039",
+      "descripcion": "KITS",
+      "id_subgrupo": 113
+    },
+    {
+      "codigo": "LI040",
+      "descripcion": "LITERAS Y COLCHONES SANITARIOS",
+      "id_subgrupo": 114
+    },
+    {
+      "codigo": "LO041",
+      "descripcion": "LOCIONES",
+      "id_subgrupo": 115
+    },
+    {
+      "codigo": "MA042",
+      "descripcion": "MANTAS",
+      "id_subgrupo": 116
+    },
+    {
+      "codigo": "MA043",
+      "descripcion": "MAQUINAS PARA PELUQUERIA",
+      "id_subgrupo": 117
+    },
+    {
+      "codigo": "OT044",
+      "descripcion": "OTROS",
+      "id_subgrupo": 118
+    },
+    {
+      "codigo": "OT045",
+      "descripcion": "OTROS ACCESORIOS PELUQUERIA",
+      "id_subgrupo": 119
+    },
+    {
+      "codigo": "OT046",
+      "descripcion": "OTROS JUGUETES",
+      "id_subgrupo": 120
+    },
+    {
+      "codigo": "PA047",
+      "descripcion": "PAÑUELOS",
+      "id_subgrupo": 121
+    },
+    {
+      "codigo": "PA048",
+      "descripcion": "PASEO Y TRANSPORTE",
+      "id_subgrupo": 122
+    },
+    {
+      "codigo": "PA049",
+      "descripcion": "PASEOS EN AUTO",
+      "id_subgrupo": 123
+    },
+    {
+      "codigo": "PE050",
+      "descripcion": "PELOTAS",
+      "id_subgrupo": 124
+    },
+    {
+      "codigo": "PE051",
+      "descripcion": "PELOTAS, VARITAS Y RATONCITOS",
+      "id_subgrupo": 125
+    },
+    {
+      "codigo": "PI052",
+      "descripcion": "PIEDRAS Y COLCHONES SANITARIOS",
+      "id_subgrupo": 126
+    },
+    {
+      "codigo": "PI053",
+      "descripcion": "PILOTOS Y PANTALONES",
+      "id_subgrupo": 127
+    },
+    {
+      "codigo": "PI054",
+      "descripcion": "PIPETAS",
+      "id_subgrupo": 128
+    },
+    {
+      "codigo": "PO055",
+      "descripcion": "POLERAS, BUZOS Y CAMPERAS",
+      "id_subgrupo": 129
+    },
+    {
+      "codigo": "PR056",
+      "descripcion": "PRETALES",
+      "id_subgrupo": 130
+    },
+    {
+      "codigo": "PR057",
+      "descripcion": "PRETALES Y ARNESES",
+      "id_subgrupo": 131
+    },
+    {
+      "codigo": "PR058",
+      "descripcion": "PROTECTORES Y APOSITOS DE CELO",
+      "id_subgrupo": 132
+    },
+    {
+      "codigo": "PU059",
+      "descripcion": "PUERTAS ",
+      "id_subgrupo": 133
+    },
+    {
+      "codigo": "RE060",
+      "descripcion": "REMERAS, JARDINEROS Y CHALECOS",
+      "id_subgrupo": 134
+    },
+    {
+      "codigo": "SA061",
+      "descripcion": "SALUD",
+      "id_subgrupo": 135
+    },
+    {
+      "codigo": "SA062",
+      "descripcion": "SALUD, MANTENIMIENTO Y TEST",
+      "id_subgrupo": 136
+    },
+    {
+      "codigo": "SE063",
+      "descripcion": "SECOS",
+      "id_subgrupo": 137
+    },
+    {
+      "codigo": "SH064",
+      "descripcion": "SHAMPOO MEDICADO",
+      "id_subgrupo": 138
+    },
+    {
+      "codigo": "SH065",
+      "descripcion": "SHAMPOO Y ACONDICIONADORES",
+      "id_subgrupo": 139
+    },
+    {
+      "codigo": "SN066",
+      "descripcion": "SNACKS",
+      "id_subgrupo": 140
+    },
+    {
+      "codigo": "SO067",
+      "descripcion": "SOGAS",
+      "id_subgrupo": 141
+    },
+    {
+      "codigo": "SU068",
+      "descripcion": "SUPLEMENTOS",
+      "id_subgrupo": 142
+    },
+    {
+      "codigo": "TI069",
+      "descripcion": "TIJERAS Y CUCHILLAS",
+      "id_subgrupo": 143
+    },
+    {
+      "codigo": "TR070",
+      "descripcion": "TRANSPORTADORAS",
+      "id_subgrupo": 144
+    },
+    {
+      "codigo": "VE071",
+      "descripcion": "VESTIDOS Y CONJUNTOS",
+      "id_subgrupo": 145
+    }
+  ]
+}

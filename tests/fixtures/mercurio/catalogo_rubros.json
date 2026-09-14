@@ -1,0 +1,101 @@
+{
+  "catalogo": "rubros",
+  "cantidad": 19,
+  "items": [
+    {
+      "codigo": "1",
+      "descripcion": "ACCESORIOS",
+      "id_rubro": 1
+    },
+    {
+      "codigo": "2",
+      "descripcion": "ALIMENTOS",
+      "id_rubro": 2
+    },
+    {
+      "codigo": "3",
+      "descripcion": "PIEDRAS SANITARIAS",
+      "id_rubro": 3
+    },
+    {
+      "codigo": "4",
+      "descripcion": "SALUD",
+      "id_rubro": 4
+    },
+    {
+      "codigo": "6",
+      "descripcion": "HIGIENE Y ESTETICA",
+      "id_rubro": 6
+    },
+    {
+      "codigo": "7",
+      "descripcion": "XVARIOS",
+      "id_rubro": 7
+    },
+    {
+      "codigo": "11",
+      "descripcion": "CEREALES",
+      "id_rubro": 11
+    },
+    {
+      "codigo": "12",
+      "descripcion": "SNACKS",
+      "id_rubro": 12
+    },
+    {
+      "codigo": "xx",
+      "descripcion": "xxxxx",
+      "id_rubro": 36
+    },
+    {
+      "codigo": "xx",
+      "descripcion": "xxxxx",
+      "id_rubro": 37
+    },
+    {
+      "codigo": "xx",
+      "descripcion": "xxxxx",
+      "id_rubro": 38
+    },
+    {
+      "codigo": "xx",
+      "descripcion": "xxxxx",
+      "id_rubro": 39
+    },
+    {
+      "codigo": "e1",
+      "descripcion": "ENTRETENIMIENTO",
+      "id_rubro": 40
+    },
+    {
+      "codigo": "e2",
+      "descripcion": "EQUIPAMIENTO",
+      "id_rubro": 41
+    },
+    {
+      "codigo": "g1",
+      "descripcion": "GOLOSINAS",
+      "id_rubro": 42
+    },
+    {
+      "codigo": "p1",
+      "descripcion": "PASEO",
+      "id_rubro": 43
+    },
+    {
+      "codigo": "p2",
+      "descripcion": "PELUQUERIA",
+      "id_rubro": 44
+    },
+    {
+      "codigo": "b1",
+      "descripcion": "BELLEZA",
+      "id_rubro": 45
+    },
+    {
+      "codigo": "t1",
+      "descripcion": "TEXTIL",
+      "id_rubro": 46
+    }
+  ]
+}

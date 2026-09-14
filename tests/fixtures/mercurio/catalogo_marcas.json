@@ -1,0 +1,2636 @@
+{
+  "catalogo": "marcas",
+  "cantidad": 526,
+  "items": [
+    {
+      "codigo": "5",
+      "descripcion": "RAZA",
+      "id_marca": 1
+    },
+    {
+      "codigo": "6",
+      "descripcion": "PAMPA",
+      "id_marca": 2
+    },
+    {
+      "codigo": "7",
+      "descripcion": "ZIMPI",
+      "id_marca": 3
+    },
+    {
+      "codigo": "9",
+      "descripcion": "MAPU",
+      "id_marca": 4
+    },
+    {
+      "codigo": "10",
+      "descripcion": "CAFRAN",
+      "id_marca": 5
+    },
+    {
+      "codigo": "15",
+      "descripcion": "PER-ROS",
+      "id_marca": 6
+    },
+    {
+      "codigo": "17",
+      "descripcion": "DM",
+      "id_marca": 7
+    },
+    {
+      "codigo": "21",
+      "descripcion": "DR.ZOO",
+      "id_marca": 8
+    },
+    {
+      "codigo": "25",
+      "descripcion": "OSSPRET",
+      "id_marca": 9
+    },
+    {
+      "codigo": "26",
+      "descripcion": "RESINA",
+      "id_marca": 10
+    },
+    {
+      "codigo": "27",
+      "descripcion": "GEPSA",
+      "id_marca": 11
+    },
+    {
+      "codigo": "28",
+      "descripcion": "REPELENTES",
+      "id_marca": 12
+    },
+    {
+      "codigo": "33",
+      "descripcion": "IMPORTADO",
+      "id_marca": 13
+    },
+    {
+      "codigo": "49",
+      "descripcion": "WORL PET",
+      "id_marca": 15
+    },
+    {
+      "codigo": "54",
+      "descripcion": "ICTACUARIO",
+      "id_marca": 16
+    },
+    {
+      "codigo": "55",
+      "descripcion": "ELPE",
+      "id_marca": 17
+    },
+    {
+      "codigo": "56",
+      "descripcion": "BONACQUA",
+      "id_marca": 18
+    },
+    {
+      "codigo": "57",
+      "descripcion": "PORTA",
+      "id_marca": 19
+    },
+    {
+      "codigo": "58",
+      "descripcion": "WAHL",
+      "id_marca": 20
+    },
+    {
+      "codigo": "62",
+      "descripcion": "MISTER HUESO",
+      "id_marca": 21
+    },
+    {
+      "codigo": "65",
+      "descripcion": "JAULAS",
+      "id_marca": 22
+    },
+    {
+      "codigo": "67",
+      "descripcion": "CHOLITAS",
+      "id_marca": 23
+    },
+    {
+      "codigo": "68",
+      "descripcion": "KIPPER",
+      "id_marca": 24
+    },
+    {
+      "codigo": "69",
+      "descripcion": "TOMYCATS",
+      "id_marca": 25
+    },
+    {
+      "codigo": "70",
+      "descripcion": "TETRA",
+      "id_marca": 26
+    },
+    {
+      "codigo": "71",
+      "descripcion": "CUCHASFIBRA",
+      "id_marca": 27
+    },
+    {
+      "codigo": "72",
+      "descripcion": "ELABUELO",
+      "id_marca": 28
+    },
+    {
+      "codigo": "73",
+      "descripcion": "CAUCHO",
+      "id_marca": 29
+    },
+    {
+      "codigo": "74",
+      "descripcion": "LINCE",
+      "id_marca": 30
+    },
+    {
+      "codigo": "75",
+      "descripcion": "CERAMICAS",
+      "id_marca": 31
+    },
+    {
+      "codigo": "76",
+      "descripcion": "VITAFISH",
+      "id_marca": 32
+    },
+    {
+      "codigo": "77",
+      "descripcion": "SHULET",
+      "id_marca": 33
+    },
+    {
+      "codigo": "80",
+      "descripcion": "LAPEGAJOSA",
+      "id_marca": 34
+    },
+    {
+      "codigo": "81",
+      "descripcion": "N1EXPRESS",
+      "id_marca": 35
+    },
+    {
+      "codigo": "82",
+      "descripcion": "VIDRIOS RV",
+      "id_marca": 36
+    },
+    {
+      "codigo": "83",
+      "descripcion": "A OTRA PARTE",
+      "id_marca": 37
+    },
+    {
+      "codigo": "84",
+      "descripcion": "A VOLAR",
+      "id_marca": 38
+    },
+    {
+      "codigo": "85",
+      "descripcion": "SHAMPUSOL",
+      "id_marca": 39
+    },
+    {
+      "codigo": "86",
+      "descripcion": "SHINEPET",
+      "id_marca": 40
+    },
+    {
+      "codigo": "87",
+      "descripcion": "VITAL EXTRA PREMIUM",
+      "id_marca": 41
+    },
+    {
+      "codigo": "88",
+      "descripcion": "TRENZADOS",
+      "id_marca": 42
+    },
+    {
+      "codigo": "89",
+      "descripcion": "DOLPHIN",
+      "id_marca": 43
+    },
+    {
+      "codigo": "92",
+      "descripcion": "ARTICULOS PELUQUERIA",
+      "id_marca": 44
+    },
+    {
+      "codigo": "93",
+      "descripcion": "RAINBOW",
+      "id_marca": 45
+    },
+    {
+      "codigo": "94",
+      "descripcion": "MIMBRE",
+      "id_marca": 46
+    },
+    {
+      "codigo": "96",
+      "descripcion": "MINECAT",
+      "id_marca": 47
+    },
+    {
+      "codigo": "97",
+      "descripcion": "SANICAT",
+      "id_marca": 48
+    },
+    {
+      "codigo": "98",
+      "descripcion": "GEMELOS",
+      "id_marca": 49
+    },
+    {
+      "codigo": "105",
+      "descripcion": "LANDRABBIT",
+      "id_marca": 50
+    },
+    {
+      "codigo": "106",
+      "descripcion": "PARRICAN",
+      "id_marca": 51
+    },
+    {
+      "codigo": "108",
+      "descripcion": "OSTER",
+      "id_marca": 53
+    },
+    {
+      "codigo": "109",
+      "descripcion": "HB",
+      "id_marca": 54
+    },
+    {
+      "codigo": "110",
+      "descripcion": "PETSPRODUCTS",
+      "id_marca": 55
+    },
+    {
+      "codigo": "111",
+      "descripcion": "ANDIS",
+      "id_marca": 56
+    },
+    {
+      "codigo": "112",
+      "descripcion": "ENREIDY",
+      "id_marca": 57
+    },
+    {
+      "codigo": "113",
+      "descripcion": "TURBINA",
+      "id_marca": 58
+    },
+    {
+      "codigo": "114",
+      "descripcion": "ACCESORIOS PELUQ.",
+      "id_marca": 59
+    },
+    {
+      "codigo": "115",
+      "descripcion": "IMPORTADO3",
+      "id_marca": 60
+    },
+    {
+      "codigo": "119",
+      "descripcion": "HIERBA ",
+      "id_marca": 61
+    },
+    {
+      "codigo": "120",
+      "descripcion": "GOLOCAN",
+      "id_marca": 62
+    },
+    {
+      "codigo": "123",
+      "descripcion": "JAULAS NAC",
+      "id_marca": 63
+    },
+    {
+      "codigo": "124",
+      "descripcion": "LABRADOR",
+      "id_marca": 64
+    },
+    {
+      "codigo": "126",
+      "descripcion": "CONAN",
+      "id_marca": 65
+    },
+    {
+      "codigo": "127",
+      "descripcion": "PECERAS",
+      "id_marca": 66
+    },
+    {
+      "codigo": "128",
+      "descripcion": "PRACTI-K",
+      "id_marca": 67
+    },
+    {
+      "codigo": "129",
+      "descripcion": "PEETFEEDER",
+      "id_marca": 68
+    },
+    {
+      "codigo": "150",
+      "descripcion": "DINGO",
+      "id_marca": 69
+    },
+    {
+      "codigo": "151",
+      "descripcion": "FIRSTRAX",
+      "id_marca": 70
+    },
+    {
+      "codigo": "190",
+      "descripcion": "SOL MINERALES",
+      "id_marca": 71
+    },
+    {
+      "codigo": "192",
+      "descripcion": "DM ACC.",
+      "id_marca": 72
+    },
+    {
+      "codigo": "193",
+      "descripcion": "CUCHAS",
+      "id_marca": 73
+    },
+    {
+      "codigo": "194",
+      "descripcion": "PETSOPHY",
+      "id_marca": 74
+    },
+    {
+      "codigo": "195",
+      "descripcion": "VIRU PACK",
+      "id_marca": 75
+    },
+    {
+      "codigo": "196",
+      "descripcion": "EL PICAFLOR",
+      "id_marca": 76
+    },
+    {
+      "codigo": "198",
+      "descripcion": "PLASTICOS",
+      "id_marca": 77
+    },
+    {
+      "codigo": "199",
+      "descripcion": "ART. IMPORTADOS",
+      "id_marca": 78
+    },
+    {
+      "codigo": "201",
+      "descripcion": "LA GERMINADORA",
+      "id_marca": 79
+    },
+    {
+      "codigo": "202",
+      "descripcion": "PAÑOPET",
+      "id_marca": 80
+    },
+    {
+      "codigo": "205",
+      "descripcion": "DANBERS ARGENTINA",
+      "id_marca": 81
+    },
+    {
+      "codigo": "206",
+      "descripcion": "POLIPROPILENO",
+      "id_marca": 82
+    },
+    {
+      "codigo": "208",
+      "descripcion": "KILOMAX",
+      "id_marca": 83
+    },
+    {
+      "codigo": "209",
+      "descripcion": "GAUCHO",
+      "id_marca": 84
+    },
+    {
+      "codigo": "210",
+      "descripcion": "ROPA DEPORTIVA",
+      "id_marca": 85
+    },
+    {
+      "codigo": "212",
+      "descripcion": "SERA",
+      "id_marca": 86
+    },
+    {
+      "codigo": "213",
+      "descripcion": "ISABELINOS SC",
+      "id_marca": 87
+    },
+    {
+      "codigo": "214",
+      "descripcion": "NAT PETS",
+      "id_marca": 88
+    },
+    {
+      "codigo": "215",
+      "descripcion": "IMPORT. CHINA",
+      "id_marca": 89
+    },
+    {
+      "codigo": "216",
+      "descripcion": "HUESODENTAL",
+      "id_marca": 90
+    },
+    {
+      "codigo": "217",
+      "descripcion": "ANIMAL PLANET",
+      "id_marca": 91
+    },
+    {
+      "codigo": "218",
+      "descripcion": "BRAKKO",
+      "id_marca": 92
+    },
+    {
+      "codigo": "219",
+      "descripcion": "DATAMARS",
+      "id_marca": 93
+    },
+    {
+      "codigo": "220",
+      "descripcion": "PLASTICO RV",
+      "id_marca": 94
+    },
+    {
+      "codigo": "221",
+      "descripcion": "PENNPLAX",
+      "id_marca": 95
+    },
+    {
+      "codigo": "222",
+      "descripcion": "EURO",
+      "id_marca": 96
+    },
+    {
+      "codigo": "223",
+      "descripcion": "NELSONIRANCH",
+      "id_marca": 97
+    },
+    {
+      "codigo": "224",
+      "descripcion": "ALLPETS",
+      "id_marca": 98
+    },
+    {
+      "codigo": "225",
+      "descripcion": "DISNEY",
+      "id_marca": 99
+    },
+    {
+      "codigo": "226",
+      "descripcion": "ROLLER",
+      "id_marca": 100
+    },
+    {
+      "codigo": "228",
+      "descripcion": "CPETS",
+      "id_marca": 101
+    },
+    {
+      "codigo": "229",
+      "descripcion": "VESTIDOS",
+      "id_marca": 102
+    },
+    {
+      "codigo": "231",
+      "descripcion": "FAMILY PETS",
+      "id_marca": 103
+    },
+    {
+      "codigo": "232",
+      "descripcion": "BEDYWOOD",
+      "id_marca": 104
+    },
+    {
+      "codigo": "233",
+      "descripcion": "GLUKER",
+      "id_marca": 105
+    },
+    {
+      "codigo": "234",
+      "descripcion": "FIBRAMAS",
+      "id_marca": 106
+    },
+    {
+      "codigo": "235",
+      "descripcion": "MASKOTIN",
+      "id_marca": 107
+    },
+    {
+      "codigo": "236",
+      "descripcion": "EXPOTOTI",
+      "id_marca": 108
+    },
+    {
+      "codigo": "237",
+      "descripcion": "PUPU BAGS",
+      "id_marca": 109
+    },
+    {
+      "codigo": "238",
+      "descripcion": "TODOCACHORROS",
+      "id_marca": 110
+    },
+    {
+      "codigo": "2000",
+      "descripcion": "VITALCAN",
+      "id_marca": 111
+    },
+    {
+      "codigo": "2001",
+      "descripcion": "ROYAL",
+      "id_marca": 112
+    },
+    {
+      "codigo": "2002",
+      "descripcion": "EUKANUBA",
+      "id_marca": 113
+    },
+    {
+      "codigo": "2003",
+      "descripcion": "PEDIGREE",
+      "id_marca": 114
+    },
+    {
+      "codigo": "2004",
+      "descripcion": "WHISKAS",
+      "id_marca": 115
+    },
+    {
+      "codigo": "2005",
+      "descripcion": "PROPLAN",
+      "id_marca": 116
+    },
+    {
+      "codigo": "2006",
+      "descripcion": "CATCHOW",
+      "id_marca": 117
+    },
+    {
+      "codigo": "2007",
+      "descripcion": "DOGUI",
+      "id_marca": 118
+    },
+    {
+      "codigo": "2008",
+      "descripcion": "GATI",
+      "id_marca": 119
+    },
+    {
+      "codigo": "2009",
+      "descripcion": "EXCELLENT",
+      "id_marca": 120
+    },
+    {
+      "codigo": "2010",
+      "descripcion": "DOGCHOW",
+      "id_marca": 121
+    },
+    {
+      "codigo": "2011",
+      "descripcion": "BAYER ",
+      "id_marca": 122
+    },
+    {
+      "codigo": "2012",
+      "descripcion": "SIEGER",
+      "id_marca": 123
+    },
+    {
+      "codigo": "2013",
+      "descripcion": "MAXXIUM",
+      "id_marca": 124
+    },
+    {
+      "codigo": "2014",
+      "descripcion": "GOOSTER",
+      "id_marca": 125
+    },
+    {
+      "codigo": "2015",
+      "descripcion": "IAMS",
+      "id_marca": 126
+    },
+    {
+      "codigo": "2016",
+      "descripcion": "PERFORMANCE",
+      "id_marca": 127
+    },
+    {
+      "codigo": "2030",
+      "descripcion": "SANIMIAU",
+      "id_marca": 128
+    },
+    {
+      "codigo": "2031",
+      "descripcion": "PAEZ",
+      "id_marca": 129
+    },
+    {
+      "codigo": "2032",
+      "descripcion": "CEREALES",
+      "id_marca": 130
+    },
+    {
+      "codigo": "2500",
+      "descripcion": "VETERINARIA",
+      "id_marca": 131
+    },
+    {
+      "codigo": "10000",
+      "descripcion": "RICHMOND",
+      "id_marca": 133
+    },
+    {
+      "codigo": "12100",
+      "descripcion": "BROUWER",
+      "id_marca": 134
+    },
+    {
+      "codigo": "12900",
+      "descripcion": "MAYORS",
+      "id_marca": 135
+    },
+    {
+      "codigo": "13000",
+      "descripcion": "RUMINAL S.A",
+      "id_marca": 136
+    },
+    {
+      "codigo": "13400",
+      "descripcion": "LAMAR",
+      "id_marca": 137
+    },
+    {
+      "codigo": "14700",
+      "descripcion": "BRASCORP S.A.",
+      "id_marca": 138
+    },
+    {
+      "codigo": "21300",
+      "descripcion": "INST.DERMA.",
+      "id_marca": 139
+    },
+    {
+      "codigo": "22000",
+      "descripcion": "AGREED S.A.",
+      "id_marca": 140
+    },
+    {
+      "codigo": "27000",
+      "descripcion": "ALI-MASC ",
+      "id_marca": 141
+    },
+    {
+      "codigo": "27500",
+      "descripcion": "L.O.V.E.",
+      "id_marca": 142
+    },
+    {
+      "codigo": "27800",
+      "descripcion": "TRITON",
+      "id_marca": 143
+    },
+    {
+      "codigo": "32800",
+      "descripcion": "AFFORD",
+      "id_marca": 144
+    },
+    {
+      "codigo": "37000",
+      "descripcion": "CARRETELES",
+      "id_marca": 145
+    },
+    {
+      "codigo": "39000",
+      "descripcion": "NOVARTIS ",
+      "id_marca": 146
+    },
+    {
+      "codigo": "39022",
+      "descripcion": "PLYRAP S.A.",
+      "id_marca": 147
+    },
+    {
+      "codigo": "40000",
+      "descripcion": "JANVIER",
+      "id_marca": 148
+    },
+    {
+      "codigo": "43000",
+      "descripcion": "INTERVET",
+      "id_marca": 149
+    },
+    {
+      "codigo": "45300",
+      "descripcion": "BAGO S.A.",
+      "id_marca": 150
+    },
+    {
+      "codigo": "47600",
+      "descripcion": "GRUPO PILAR",
+      "id_marca": 151
+    },
+    {
+      "codigo": "48500",
+      "descripcion": "ATON",
+      "id_marca": 152
+    },
+    {
+      "codigo": "51000",
+      "descripcion": "JOHNMARTIN",
+      "id_marca": 153
+    },
+    {
+      "codigo": "55000",
+      "descripcion": "HOLLIDAY",
+      "id_marca": 154
+    },
+    {
+      "codigo": "56000",
+      "descripcion": "IMVI S.A.",
+      "id_marca": 155
+    },
+    {
+      "codigo": "57000",
+      "descripcion": "KONIG",
+      "id_marca": 156
+    },
+    {
+      "codigo": "59000",
+      "descripcion": "LABYES",
+      "id_marca": 157
+    },
+    {
+      "codigo": "60000",
+      "descripcion": "MERIAL ",
+      "id_marca": 158
+    },
+    {
+      "codigo": "63000",
+      "descripcion": "PROAGRO",
+      "id_marca": 159
+    },
+    {
+      "codigo": "64000",
+      "descripcion": "PFIZER ",
+      "id_marca": 160
+    },
+    {
+      "codigo": "73000",
+      "descripcion": "SYNTEX S.A.",
+      "id_marca": 161
+    },
+    {
+      "codigo": "79000",
+      "descripcion": "VONFRANKEN",
+      "id_marca": 162
+    },
+    {
+      "codigo": "80000",
+      "descripcion": "VETUE ",
+      "id_marca": 163
+    },
+    {
+      "codigo": "89000",
+      "descripcion": "RUTA SEIS S.A.",
+      "id_marca": 164
+    },
+    {
+      "codigo": "165",
+      "descripcion": "KUALCOS",
+      "id_marca": 165
+    },
+    {
+      "codigo": "166",
+      "descripcion": "BONEXPRESS",
+      "id_marca": 166
+    },
+    {
+      "codigo": "167",
+      "descripcion": "VETANCO",
+      "id_marca": 167
+    },
+    {
+      "codigo": "168",
+      "descripcion": "LAZAR",
+      "id_marca": 168
+    },
+    {
+      "codigo": "170",
+      "descripcion": "NORT",
+      "id_marca": 170
+    },
+    {
+      "codigo": "171",
+      "descripcion": "FADA PHARMA",
+      "id_marca": 171
+    },
+    {
+      "codigo": "172",
+      "descripcion": "BOEHRINGER INGELHEIM",
+      "id_marca": 172
+    },
+    {
+      "codigo": "173",
+      "descripcion": "ALLICNANI",
+      "id_marca": 173
+    },
+    {
+      "codigo": "174",
+      "descripcion": "AGROINSUMOS",
+      "id_marca": 174
+    },
+    {
+      "codigo": "175",
+      "descripcion": "ALFASAN",
+      "id_marca": 175
+    },
+    {
+      "codigo": "177",
+      "descripcion": "NOVARA",
+      "id_marca": 177
+    },
+    {
+      "codigo": "178",
+      "descripcion": "CAVANNA",
+      "id_marca": 178
+    },
+    {
+      "codigo": "179",
+      "descripcion": "MARTORANI",
+      "id_marca": 179
+    },
+    {
+      "codigo": "180",
+      "descripcion": "RIGECIN",
+      "id_marca": 180
+    },
+    {
+      "codigo": "181",
+      "descripcion": "TECSOLPAR",
+      "id_marca": 181
+    },
+    {
+      "codigo": "182",
+      "descripcion": "BAXTER",
+      "id_marca": 182
+    },
+    {
+      "codigo": "183",
+      "descripcion": "MCM",
+      "id_marca": 183
+    },
+    {
+      "codigo": "184",
+      "descripcion": "KANGKANG",
+      "id_marca": 184
+    },
+    {
+      "codigo": "185",
+      "descripcion": "RYMCO",
+      "id_marca": 185
+    },
+    {
+      "codigo": "186",
+      "descripcion": "NORGREEN",
+      "id_marca": 186
+    },
+    {
+      "codigo": "187",
+      "descripcion": "BECTONDICKIMSON",
+      "id_marca": 187
+    },
+    {
+      "codigo": "188",
+      "descripcion": "PROPATO",
+      "id_marca": 188
+    },
+    {
+      "codigo": "189",
+      "descripcion": "TOOMEY",
+      "id_marca": 189
+    },
+    {
+      "codigo": "190",
+      "descripcion": "BREMEN",
+      "id_marca": 190
+    },
+    {
+      "codigo": "191",
+      "descripcion": "ALFADOVES",
+      "id_marca": 191
+    },
+    {
+      "codigo": "192",
+      "descripcion": "ANIMALES",
+      "id_marca": 192
+    },
+    {
+      "codigo": "193",
+      "descripcion": "VARIOS",
+      "id_marca": 193
+    },
+    {
+      "codigo": "194",
+      "descripcion": "COMARSA",
+      "id_marca": 194
+    },
+    {
+      "codigo": "195",
+      "descripcion": "SERTEX",
+      "id_marca": 195
+    },
+    {
+      "codigo": "196",
+      "descripcion": "PORTA",
+      "id_marca": 196
+    },
+    {
+      "codigo": "197",
+      "descripcion": "LADECE",
+      "id_marca": 197
+    },
+    {
+      "codigo": "198",
+      "descripcion": "ANGIOCATH",
+      "id_marca": 198
+    },
+    {
+      "codigo": "199",
+      "descripcion": "PRODUCTOS MEDICOS DESCARTABLES S.A",
+      "id_marca": 199
+    },
+    {
+      "codigo": "200",
+      "descripcion": "DESCARTABLES",
+      "id_marca": 200
+    },
+    {
+      "codigo": "201",
+      "descripcion": "SPINEDA",
+      "id_marca": 201
+    },
+    {
+      "codigo": "202",
+      "descripcion": "LINDAVET",
+      "id_marca": 202
+    },
+    {
+      "codigo": "203",
+      "descripcion": "GRABADOS",
+      "id_marca": 203
+    },
+    {
+      "codigo": "204",
+      "descripcion": "AGROPHARMA",
+      "id_marca": 204
+    },
+    {
+      "codigo": "205",
+      "descripcion": "FARMACO",
+      "id_marca": 205
+    },
+    {
+      "codigo": "206",
+      "descripcion": "SENASA",
+      "id_marca": 206
+    },
+    {
+      "codigo": "207",
+      "descripcion": "ZOOVET",
+      "id_marca": 207
+    },
+    {
+      "codigo": "208",
+      "descripcion": "DENVERFARMA",
+      "id_marca": 208
+    },
+    {
+      "codigo": "209",
+      "descripcion": "YENU",
+      "id_marca": 209
+    },
+    {
+      "codigo": "210",
+      "descripcion": "FABRA",
+      "id_marca": 210
+    },
+    {
+      "codigo": "211",
+      "descripcion": "ALLIGNANI HNOS. S.R.L.",
+      "id_marca": 211
+    },
+    {
+      "codigo": "212",
+      "descripcion": "ACCESORIOSBA",
+      "id_marca": 212
+    },
+    {
+      "codigo": "213",
+      "descripcion": "MILLEX",
+      "id_marca": 213
+    },
+    {
+      "codigo": "214",
+      "descripcion": "CAN CAT",
+      "id_marca": 214
+    },
+    {
+      "codigo": "215",
+      "descripcion": "CDC",
+      "id_marca": 215
+    },
+    {
+      "codigo": "216",
+      "descripcion": "CALMACAT",
+      "id_marca": 216
+    },
+    {
+      "codigo": "217",
+      "descripcion": "RIO DE JANEIRO",
+      "id_marca": 217
+    },
+    {
+      "codigo": "218",
+      "descripcion": "FABOP",
+      "id_marca": 218
+    },
+    {
+      "codigo": "219",
+      "descripcion": "RICHET",
+      "id_marca": 219
+    },
+    {
+      "codigo": "220",
+      "descripcion": "ISAMI",
+      "id_marca": 220
+    },
+    {
+      "codigo": "221",
+      "descripcion": "PUBLICIDAD",
+      "id_marca": 221
+    },
+    {
+      "codigo": "222",
+      "descripcion": "FIORINO EHW321",
+      "id_marca": 222
+    },
+    {
+      "codigo": "224",
+      "descripcion": "FIORINO LER434",
+      "id_marca": 224
+    },
+    {
+      "codigo": "226",
+      "descripcion": "FIORINO IEF241",
+      "id_marca": 226
+    },
+    {
+      "codigo": "227",
+      "descripcion": "KANGOO 827",
+      "id_marca": 227
+    },
+    {
+      "codigo": "228",
+      "descripcion": "SERVICIOS",
+      "id_marca": 228
+    },
+    {
+      "codigo": "229",
+      "descripcion": "SUELDOS VET",
+      "id_marca": 229
+    },
+    {
+      "codigo": "230",
+      "descripcion": "SUELDOS VENTA",
+      "id_marca": 230
+    },
+    {
+      "codigo": "231",
+      "descripcion": "SUELDOS REPARTO",
+      "id_marca": 231
+    },
+    {
+      "codigo": "232",
+      "descripcion": "SUELDOS ADMIN",
+      "id_marca": 232
+    },
+    {
+      "codigo": "233",
+      "descripcion": "HORAS EXTRAS EMPLEADOS",
+      "id_marca": 233
+    },
+    {
+      "codigo": "255",
+      "descripcion": "SUELDOS PELUQUERIA",
+      "id_marca": 234
+    },
+    {
+      "codigo": "235",
+      "descripcion": "MANTENIMIENTO LOCAL",
+      "id_marca": 235
+    },
+    {
+      "codigo": "236",
+      "descripcion": "IMPUESTOS",
+      "id_marca": 236
+    },
+    {
+      "codigo": "237",
+      "descripcion": "OTROS",
+      "id_marca": 237
+    },
+    {
+      "codigo": "238",
+      "descripcion": "ENTREMES",
+      "id_marca": 238
+    },
+    {
+      "codigo": "239",
+      "descripcion": "SUELDOS VARIOS",
+      "id_marca": 239
+    },
+    {
+      "codigo": "240",
+      "descripcion": "ROPA DM",
+      "id_marca": 240
+    },
+    {
+      "codigo": "241",
+      "descripcion": "PLANTINES",
+      "id_marca": 241
+    },
+    {
+      "codigo": "242",
+      "descripcion": "FRISKIES",
+      "id_marca": 242
+    },
+    {
+      "codigo": "243",
+      "descripcion": "SEPIOLITA",
+      "id_marca": 243
+    },
+    {
+      "codigo": "244",
+      "descripcion": "PLANTAS",
+      "id_marca": 244
+    },
+    {
+      "codigo": "245",
+      "descripcion": "ZOETIS",
+      "id_marca": 245
+    },
+    {
+      "codigo": "246",
+      "descripcion": "PROVIDEAN",
+      "id_marca": 246
+    },
+    {
+      "codigo": "247",
+      "descripcion": "VANNIER",
+      "id_marca": 247
+    },
+    {
+      "codigo": "248",
+      "descripcion": "ARANCEL",
+      "id_marca": 248
+    },
+    {
+      "codigo": "249",
+      "descripcion": "MENUCAR",
+      "id_marca": 249
+    },
+    {
+      "codigo": "250",
+      "descripcion": "3ARROYOS",
+      "id_marca": 250
+    },
+    {
+      "codigo": "251",
+      "descripcion": "FLUENCE NRJ 646",
+      "id_marca": 251
+    },
+    {
+      "codigo": "252",
+      "descripcion": "MIRA",
+      "id_marca": 252
+    },
+    {
+      "codigo": "253",
+      "descripcion": "MONTKEMT",
+      "id_marca": 253
+    },
+    {
+      "codigo": "254",
+      "descripcion": "OVER",
+      "id_marca": 254
+    },
+    {
+      "codigo": "1",
+      "descripcion": "SUPERPREMIUMBOUTIQUE",
+      "id_marca": 255
+    },
+    {
+      "codigo": "256",
+      "descripcion": "SUPERPREMIUM",
+      "id_marca": 256
+    },
+    {
+      "codigo": "257",
+      "descripcion": "PREMIUMDOG",
+      "id_marca": 257
+    },
+    {
+      "codigo": "258",
+      "descripcion": "CLASSIC",
+      "id_marca": 258
+    },
+    {
+      "codigo": "259",
+      "descripcion": "EXTRA",
+      "id_marca": 259
+    },
+    {
+      "codigo": "260",
+      "descripcion": "ECONOMICA",
+      "id_marca": 260
+    },
+    {
+      "codigo": "261",
+      "descripcion": "METALURGICA",
+      "id_marca": 261
+    },
+    {
+      "codigo": "262",
+      "descripcion": "MATA TODO",
+      "id_marca": 262
+    },
+    {
+      "codigo": "263",
+      "descripcion": "MUNDO VIVO",
+      "id_marca": 263
+    },
+    {
+      "codigo": "264",
+      "descripcion": "CHAUOLOR",
+      "id_marca": 264
+    },
+    {
+      "codigo": "265",
+      "descripcion": "SANREMO",
+      "id_marca": 265
+    },
+    {
+      "codigo": "266",
+      "descripcion": "DR. COSSIA",
+      "id_marca": 266
+    },
+    {
+      "codigo": "267",
+      "descripcion": "FABOFUROX",
+      "id_marca": 267
+    },
+    {
+      "codigo": "268",
+      "descripcion": "OLDPRINCE",
+      "id_marca": 268
+    },
+    {
+      "codigo": "269",
+      "descripcion": "PROVET",
+      "id_marca": 269
+    },
+    {
+      "codigo": "270",
+      "descripcion": "NATURE",
+      "id_marca": 270
+    },
+    {
+      "codigo": "271",
+      "descripcion": "CHINFIELD",
+      "id_marca": 271
+    },
+    {
+      "codigo": "272",
+      "descripcion": "FABAMOX",
+      "id_marca": 272
+    },
+    {
+      "codigo": "273",
+      "descripcion": "PETTRAVEL",
+      "id_marca": 273
+    },
+    {
+      "codigo": "274",
+      "descripcion": "FANCY FEAST",
+      "id_marca": 274
+    },
+    {
+      "codigo": "275",
+      "descripcion": "GREENCARPET",
+      "id_marca": 275
+    },
+    {
+      "codigo": "276",
+      "descripcion": "NATURALMEAT",
+      "id_marca": 276
+    },
+    {
+      "codigo": "277",
+      "descripcion": "DIS.PARA MASCOTAS",
+      "id_marca": 277
+    },
+    {
+      "codigo": "278",
+      "descripcion": "ELANCO",
+      "id_marca": 278
+    },
+    {
+      "codigo": "279",
+      "descripcion": "ALPHARMA",
+      "id_marca": 279
+    },
+    {
+      "codigo": "280",
+      "descripcion": "PALITO MULTICOLOR",
+      "id_marca": 280
+    },
+    {
+      "codigo": "281",
+      "descripcion": "MSD",
+      "id_marca": 281
+    },
+    {
+      "codigo": "282",
+      "descripcion": "BUENASMASCOTAS",
+      "id_marca": 282
+    },
+    {
+      "codigo": "283",
+      "descripcion": "AFRESOL",
+      "id_marca": 283
+    },
+    {
+      "codigo": "284",
+      "descripcion": "ALFADOG",
+      "id_marca": 284
+    },
+    {
+      "codigo": "285",
+      "descripcion": "SCIENCEDIET",
+      "id_marca": 285
+    },
+    {
+      "codigo": "286",
+      "descripcion": "7 VIDAS",
+      "id_marca": 286
+    },
+    {
+      "codigo": "287",
+      "descripcion": "ALQUITRAN",
+      "id_marca": 287
+    },
+    {
+      "codigo": "288",
+      "descripcion": "PETSPLAST",
+      "id_marca": 288
+    },
+    {
+      "codigo": "289",
+      "descripcion": "ZOOTEC",
+      "id_marca": 289
+    },
+    {
+      "codigo": "291",
+      "descripcion": "ARQUIPETS",
+      "id_marca": 291
+    },
+    {
+      "codigo": "292",
+      "descripcion": "VENT3",
+      "id_marca": 292
+    },
+    {
+      "codigo": "293",
+      "descripcion": "VIRUTA",
+      "id_marca": 293
+    },
+    {
+      "codigo": "294",
+      "descripcion": "CANINECOUTURE ",
+      "id_marca": 294
+    },
+    {
+      "codigo": "295",
+      "descripcion": "DOGSELECTION",
+      "id_marca": 295
+    },
+    {
+      "codigo": "296",
+      "descripcion": "GRAMAS",
+      "id_marca": 296
+    },
+    {
+      "codigo": "297",
+      "descripcion": "CANDIET",
+      "id_marca": 297
+    },
+    {
+      "codigo": "298",
+      "descripcion": "FIORINO HAQ 482",
+      "id_marca": 298
+    },
+    {
+      "codigo": "299",
+      "descripcion": "ISSA",
+      "id_marca": 299
+    },
+    {
+      "codigo": "300",
+      "descripcion": "MAGMA",
+      "id_marca": 300
+    },
+    {
+      "codigo": "301",
+      "descripcion": "CHAKY",
+      "id_marca": 301
+    },
+    {
+      "codigo": "302",
+      "descripcion": "PRINCIPEDEPAZ",
+      "id_marca": 302
+    },
+    {
+      "codigo": "303",
+      "descripcion": "PRINCIPEDEAZUL ",
+      "id_marca": 303
+    },
+    {
+      "codigo": "304",
+      "descripcion": "RECO",
+      "id_marca": 304
+    },
+    {
+      "codigo": "305",
+      "descripcion": "CATWAY",
+      "id_marca": 305
+    },
+    {
+      "codigo": "306",
+      "descripcion": "PEPE",
+      "id_marca": 306
+    },
+    {
+      "codigo": "307",
+      "descripcion": "NATURALEZA DAMY",
+      "id_marca": 307
+    },
+    {
+      "codigo": "308",
+      "descripcion": "FIORINO IER240",
+      "id_marca": 308
+    },
+    {
+      "codigo": "309",
+      "descripcion": "GENERAR",
+      "id_marca": 309
+    },
+    {
+      "codigo": "310",
+      "descripcion": "LAIKA",
+      "id_marca": 310
+    },
+    {
+      "codigo": "311",
+      "descripcion": "MOKSHA",
+      "id_marca": 311
+    },
+    {
+      "codigo": "312",
+      "descripcion": "INFEC",
+      "id_marca": 312
+    },
+    {
+      "codigo": "313",
+      "descripcion": "BIOGENESIS",
+      "id_marca": 313
+    },
+    {
+      "codigo": "314",
+      "descripcion": "DOBRO",
+      "id_marca": 315
+    },
+    {
+      "codigo": "316",
+      "descripcion": "NOBACTAM",
+      "id_marca": 316
+    },
+    {
+      "codigo": "317",
+      "descripcion": "ARSA",
+      "id_marca": 317
+    },
+    {
+      "codigo": "318",
+      "descripcion": "TIJERAS",
+      "id_marca": 318
+    },
+    {
+      "codigo": "320",
+      "descripcion": "PETSTADIUM",
+      "id_marca": 320
+    },
+    {
+      "codigo": "321",
+      "descripcion": "EQUISYSTEMS",
+      "id_marca": 321
+    },
+    {
+      "codigo": "322",
+      "descripcion": "FABOACID",
+      "id_marca": 322
+    },
+    {
+      "codigo": "323",
+      "descripcion": "SAVANT",
+      "id_marca": 323
+    },
+    {
+      "codigo": "324",
+      "descripcion": "SAVANT",
+      "id_marca": 324
+    },
+    {
+      "codigo": "325",
+      "descripcion": "LABORATORIO INTERNACIONAL ARGENTINO",
+      "id_marca": 325
+    },
+    {
+      "codigo": "326",
+      "descripcion": "DANIELS",
+      "id_marca": 326
+    },
+    {
+      "codigo": "327",
+      "descripcion": "KONGO",
+      "id_marca": 327
+    },
+    {
+      "codigo": "328",
+      "descripcion": "MAINTENANCECRIADORES",
+      "id_marca": 328
+    },
+    {
+      "codigo": "329",
+      "descripcion": "VORAZ",
+      "id_marca": 329
+    },
+    {
+      "codigo": "330",
+      "descripcion": "CEREALESPERROS",
+      "id_marca": 330
+    },
+    {
+      "codigo": "331",
+      "descripcion": "BOCATTO",
+      "id_marca": 331
+    },
+    {
+      "codigo": "332",
+      "descripcion": "MAXICAN",
+      "id_marca": 332
+    },
+    {
+      "codigo": "333",
+      "descripcion": "MAXICAT",
+      "id_marca": 333
+    },
+    {
+      "codigo": "334",
+      "descripcion": "SMUG",
+      "id_marca": 334
+    },
+    {
+      "codigo": "335",
+      "descripcion": "SABROSITOS",
+      "id_marca": 335
+    },
+    {
+      "codigo": "336",
+      "descripcion": "ATOS",
+      "id_marca": 336
+    },
+    {
+      "codigo": "337",
+      "descripcion": "DUPARK",
+      "id_marca": 337
+    },
+    {
+      "codigo": "338",
+      "descripcion": "KUPKA",
+      "id_marca": 338
+    },
+    {
+      "codigo": "339",
+      "descripcion": "BAUPARK",
+      "id_marca": 339
+    },
+    {
+      "codigo": "340",
+      "descripcion": "CLIP PACK",
+      "id_marca": 340
+    },
+    {
+      "codigo": "341",
+      "descripcion": "COOPERACION",
+      "id_marca": 341
+    },
+    {
+      "codigo": "342",
+      "descripcion": "DAMA",
+      "id_marca": 342
+    },
+    {
+      "codigo": "343",
+      "descripcion": "VERDEO PETS",
+      "id_marca": 343
+    },
+    {
+      "codigo": "344",
+      "descripcion": "STEFANPLAST",
+      "id_marca": 344
+    },
+    {
+      "codigo": "346",
+      "descripcion": "LLQ 827",
+      "id_marca": 346
+    },
+    {
+      "codigo": "347",
+      "descripcion": "ROTAMEC",
+      "id_marca": 347
+    },
+    {
+      "codigo": "348",
+      "descripcion": "POMPY",
+      "id_marca": 348
+    },
+    {
+      "codigo": "349",
+      "descripcion": "INFINITY",
+      "id_marca": 349
+    },
+    {
+      "codigo": "350",
+      "descripcion": "GUMI",
+      "id_marca": 350
+    },
+    {
+      "codigo": "351",
+      "descripcion": "KNOBBY",
+      "id_marca": 351
+    },
+    {
+      "codigo": "352",
+      "descripcion": "MARINA",
+      "id_marca": 352
+    },
+    {
+      "codigo": "353",
+      "descripcion": "ELITE",
+      "id_marca": 353
+    },
+    {
+      "codigo": "354",
+      "descripcion": "DOG IT",
+      "id_marca": 354
+    },
+    {
+      "codigo": "355",
+      "descripcion": "LE SALON ESSENTIALS",
+      "id_marca": 355
+    },
+    {
+      "codigo": "356",
+      "descripcion": "AVENUE",
+      "id_marca": 356
+    },
+    {
+      "codigo": "357",
+      "descripcion": "VOYAGUER",
+      "id_marca": 357
+    },
+    {
+      "codigo": "358",
+      "descripcion": "CAT LOVE",
+      "id_marca": 358
+    },
+    {
+      "codigo": "359",
+      "descripcion": "CAT IT",
+      "id_marca": 359
+    },
+    {
+      "codigo": "360",
+      "descripcion": "SPEDD CIRCUIT",
+      "id_marca": 360
+    },
+    {
+      "codigo": "361",
+      "descripcion": "TERRA TOYS",
+      "id_marca": 361
+    },
+    {
+      "codigo": "362",
+      "descripcion": "LE SALON",
+      "id_marca": 362
+    },
+    {
+      "codigo": "363",
+      "descripcion": "JOTABE",
+      "id_marca": 363
+    },
+    {
+      "codigo": "364",
+      "descripcion": "ACTIVE",
+      "id_marca": 364
+    },
+    {
+      "codigo": "365",
+      "descripcion": "BOX",
+      "id_marca": 365
+    },
+    {
+      "codigo": "366",
+      "descripcion": "FATRO",
+      "id_marca": 366
+    },
+    {
+      "codigo": "367",
+      "descripcion": "HAGEN",
+      "id_marca": 367
+    },
+    {
+      "codigo": "368",
+      "descripcion": "NERF",
+      "id_marca": 368
+    },
+    {
+      "codigo": "369",
+      "descripcion": "NIKAN",
+      "id_marca": 369
+    },
+    {
+      "codigo": "370",
+      "descripcion": "ZAMPARO",
+      "id_marca": 370
+    },
+    {
+      "codigo": "371",
+      "descripcion": "SUELDOS",
+      "id_marca": 371
+    },
+    {
+      "codigo": "372",
+      "descripcion": "CATHOME",
+      "id_marca": 372
+    },
+    {
+      "codigo": "373",
+      "descripcion": "HAPPYDOG",
+      "id_marca": 373
+    },
+    {
+      "codigo": "374",
+      "descripcion": "CANI-NO",
+      "id_marca": 374
+    },
+    {
+      "codigo": "375",
+      "descripcion": "FELI-NO",
+      "id_marca": 375
+    },
+    {
+      "codigo": "376",
+      "descripcion": "KANGOO PBY 350 (PLOTEADA)",
+      "id_marca": 376
+    },
+    {
+      "codigo": "377",
+      "descripcion": "WAFFEN",
+      "id_marca": 377
+    },
+    {
+      "codigo": "378",
+      "descripcion": "CAN BISCOTTI",
+      "id_marca": 378
+    },
+    {
+      "codigo": "379",
+      "descripcion": "FIAT DUCATO JSG137",
+      "id_marca": 379
+    },
+    {
+      "codigo": "380",
+      "descripcion": "CARNIX",
+      "id_marca": 380
+    },
+    {
+      "codigo": "381",
+      "descripcion": "VAGONETA",
+      "id_marca": 381
+    },
+    {
+      "codigo": "382",
+      "descripcion": "DR. PERROT",
+      "id_marca": 382
+    },
+    {
+      "codigo": "383",
+      "descripcion": "ALE VET",
+      "id_marca": 383
+    },
+    {
+      "codigo": "384",
+      "descripcion": "POVIBAC",
+      "id_marca": 384
+    },
+    {
+      "codigo": "385",
+      "descripcion": "SUELTO",
+      "id_marca": 385
+    },
+    {
+      "codigo": "386",
+      "descripcion": "BABS",
+      "id_marca": 386
+    },
+    {
+      "codigo": "387",
+      "descripcion": "THE BEST",
+      "id_marca": 387
+    },
+    {
+      "codigo": "388",
+      "descripcion": "ULTRA PUM",
+      "id_marca": 388
+    },
+    {
+      "codigo": "389",
+      "descripcion": "CAPTIVA",
+      "id_marca": 389
+    },
+    {
+      "codigo": "390",
+      "descripcion": "PAWISE",
+      "id_marca": 390
+    },
+    {
+      "codigo": "391",
+      "descripcion": "PETOUCH",
+      "id_marca": 391
+    },
+    {
+      "codigo": "392",
+      "descripcion": "DIMBO",
+      "id_marca": 392
+    },
+    {
+      "codigo": "393",
+      "descripcion": "BAIRES",
+      "id_marca": 393
+    },
+    {
+      "codigo": "394",
+      "descripcion": "GIGWI",
+      "id_marca": 394
+    },
+    {
+      "codigo": "395",
+      "descripcion": "ALFAVET S.A",
+      "id_marca": 395
+    },
+    {
+      "codigo": "396",
+      "descripcion": "KAWA",
+      "id_marca": 396
+    },
+    {
+      "codigo": "397",
+      "descripcion": "POLIFIBER",
+      "id_marca": 397
+    },
+    {
+      "codigo": "398",
+      "descripcion": "ECO BOLSAS",
+      "id_marca": 398
+    },
+    {
+      "codigo": "399",
+      "descripcion": "PETNATION",
+      "id_marca": 399
+    },
+    {
+      "codigo": "400",
+      "descripcion": "SOBO",
+      "id_marca": 400
+    },
+    {
+      "codigo": "401",
+      "descripcion": "NATURE´S MIRACLE",
+      "id_marca": 401
+    },
+    {
+      "codigo": "402",
+      "descripcion": "THINK ANIMAL",
+      "id_marca": 402
+    },
+    {
+      "codigo": "403",
+      "descripcion": "FIPROSOL",
+      "id_marca": 403
+    },
+    {
+      "codigo": "404",
+      "descripcion": "LIQ",
+      "id_marca": 404
+    },
+    {
+      "codigo": "405",
+      "descripcion": "WAU!",
+      "id_marca": 405
+    },
+    {
+      "codigo": "406",
+      "descripcion": "OPTION SPOT",
+      "id_marca": 406
+    },
+    {
+      "codigo": "407",
+      "descripcion": "FELIX",
+      "id_marca": 407
+    },
+    {
+      "codigo": "408",
+      "descripcion": "UNIFORME MO",
+      "id_marca": 408
+    },
+    {
+      "codigo": "409",
+      "descripcion": "OH MY PET!",
+      "id_marca": 409
+    },
+    {
+      "codigo": "410",
+      "descripcion": "ZOOFASHION",
+      "id_marca": 410
+    },
+    {
+      "codigo": "411",
+      "descripcion": "FURACAO PET",
+      "id_marca": 411
+    },
+    {
+      "codigo": "412",
+      "descripcion": "COCOONING",
+      "id_marca": 412
+    },
+    {
+      "codigo": "413",
+      "descripcion": "FURMINATOR",
+      "id_marca": 413
+    },
+    {
+      "codigo": "414",
+      "descripcion": "KONG",
+      "id_marca": 414
+    },
+    {
+      "codigo": "415",
+      "descripcion": "PRIX",
+      "id_marca": 415
+    },
+    {
+      "codigo": "416",
+      "descripcion": "BPART",
+      "id_marca": 416
+    },
+    {
+      "codigo": "417",
+      "descripcion": "KUBIAK",
+      "id_marca": 417
+    },
+    {
+      "codigo": "418",
+      "descripcion": "CROCI",
+      "id_marca": 418
+    },
+    {
+      "codigo": "419",
+      "descripcion": "BLUMED",
+      "id_marca": 419
+    },
+    {
+      "codigo": "420",
+      "descripcion": "GOODIES",
+      "id_marca": 420
+    },
+    {
+      "codigo": "421",
+      "descripcion": "PROMO",
+      "id_marca": 421
+    },
+    {
+      "codigo": "422",
+      "descripcion": "VIRBAC",
+      "id_marca": 422
+    },
+    {
+      "codigo": "423",
+      "descripcion": "BE-DOG",
+      "id_marca": 423
+    },
+    {
+      "codigo": "424",
+      "descripcion": "PETTIQUE",
+      "id_marca": 424
+    },
+    {
+      "codigo": "425",
+      "descripcion": "MON AMI",
+      "id_marca": 425
+    },
+    {
+      "codigo": "426",
+      "descripcion": "TODO EL AMOR",
+      "id_marca": 426
+    },
+    {
+      "codigo": "427",
+      "descripcion": "CRAZY PET",
+      "id_marca": 427
+    },
+    {
+      "codigo": "428",
+      "descripcion": "KEY WORDS ",
+      "id_marca": 429
+    },
+    {
+      "codigo": "430",
+      "descripcion": "GOLOMIAU",
+      "id_marca": 430
+    },
+    {
+      "codigo": "431",
+      "descripcion": "JUVENIA",
+      "id_marca": 431
+    },
+    {
+      "codigo": "432",
+      "descripcion": "KANGOO AB154",
+      "id_marca": 432
+    },
+    {
+      "codigo": "433",
+      "descripcion": "IMPETU",
+      "id_marca": 433
+    },
+    {
+      "codigo": "434",
+      "descripcion": "RAZORLINE",
+      "id_marca": 434
+    },
+    {
+      "codigo": "435",
+      "descripcion": "AUTO MOBILIA",
+      "id_marca": 435
+    },
+    {
+      "codigo": "436",
+      "descripcion": "ELASTIKAN",
+      "id_marca": 436
+    },
+    {
+      "codigo": "437",
+      "descripcion": "LTIM",
+      "id_marca": 437
+    },
+    {
+      "codigo": "438",
+      "descripcion": "TAILS",
+      "id_marca": 438
+    },
+    {
+      "codigo": "439",
+      "descripcion": "NATURAL CHOICE",
+      "id_marca": 439
+    },
+    {
+      "codigo": "440",
+      "descripcion": "PETCHIP",
+      "id_marca": 440
+    },
+    {
+      "codigo": "441",
+      "descripcion": "TIENDA DE PICHICHOS",
+      "id_marca": 441
+    },
+    {
+      "codigo": "442",
+      "descripcion": "GIFT CARD",
+      "id_marca": 442
+    },
+    {
+      "codigo": "443",
+      "descripcion": "GOOD CANINA",
+      "id_marca": 443
+    },
+    {
+      "codigo": "444",
+      "descripcion": "DOG STUFF",
+      "id_marca": 444
+    },
+    {
+      "codigo": "445",
+      "descripcion": "MY FAMILY",
+      "id_marca": 445
+    },
+    {
+      "codigo": "446",
+      "descripcion": "WHOLE EARTH FARMS",
+      "id_marca": 446
+    },
+    {
+      "codigo": "447",
+      "descripcion": "BIKIT GUARD",
+      "id_marca": 448
+    },
+    {
+      "codigo": "449",
+      "descripcion": "KOXS",
+      "id_marca": 449
+    },
+    {
+      "codigo": "450",
+      "descripcion": "UNIK",
+      "id_marca": 450
+    },
+    {
+      "codigo": "451",
+      "descripcion": "EUROPET",
+      "id_marca": 451
+    },
+    {
+      "codigo": "452",
+      "descripcion": "CITROEN C3 (NICO)",
+      "id_marca": 453
+    },
+    {
+      "codigo": "454",
+      "descripcion": "LIVING WORLD",
+      "id_marca": 454
+    },
+    {
+      "codigo": "455",
+      "descripcion": "HUSKY",
+      "id_marca": 455
+    },
+    {
+      "codigo": "456",
+      "descripcion": "ULTRA",
+      "id_marca": 456
+    },
+    {
+      "codigo": "457",
+      "descripcion": "DOGPRO",
+      "id_marca": 457
+    },
+    {
+      "codigo": "458",
+      "descripcion": "EARTH RATED",
+      "id_marca": 458
+    },
+    {
+      "codigo": "459",
+      "descripcion": "CATPRO",
+      "id_marca": 459
+    },
+    {
+      "codigo": "460",
+      "descripcion": "ZEUS",
+      "id_marca": 460
+    },
+    {
+      "codigo": "461",
+      "descripcion": "ALPHA",
+      "id_marca": 461
+    },
+    {
+      "codigo": "462",
+      "descripcion": "IMPORTADO2",
+      "id_marca": 462
+    },
+    {
+      "codigo": "463",
+      "descripcion": "VQPET H",
+      "id_marca": 463
+    },
+    {
+      "codigo": "464",
+      "descripcion": "ECOLIGHT",
+      "id_marca": 464
+    },
+    {
+      "codigo": "465",
+      "descripcion": "ABSORSOL",
+      "id_marca": 465
+    },
+    {
+      "codigo": "466",
+      "descripcion": "BEEF",
+      "id_marca": 466
+    },
+    {
+      "codigo": "467",
+      "descripcion": "PETMENU",
+      "id_marca": 467
+    },
+    {
+      "codigo": "468",
+      "descripcion": "MASTERCROCK",
+      "id_marca": 468
+    },
+    {
+      "codigo": "469",
+      "descripcion": "LA CASA DE ALMENDRA",
+      "id_marca": 469
+    },
+    {
+      "codigo": "470",
+      "descripcion": "CHEEDOG",
+      "id_marca": 470
+    },
+    {
+      "codigo": "471",
+      "descripcion": "CAMABE",
+      "id_marca": 471
+    },
+    {
+      "codigo": "472",
+      "descripcion": "HUELLA",
+      "id_marca": 472
+    },
+    {
+      "codigo": "473",
+      "descripcion": "REYES Y REINAS",
+      "id_marca": 473
+    },
+    {
+      "codigo": "474",
+      "descripcion": "PETTY CLEAN",
+      "id_marca": 474
+    },
+    {
+      "codigo": "475",
+      "descripcion": "ANGUS",
+      "id_marca": 475
+    },
+    {
+      "codigo": "476",
+      "descripcion": "KARER",
+      "id_marca": 476
+    },
+    {
+      "codigo": "477",
+      "descripcion": "GENERICOS",
+      "id_marca": 477
+    },
+    {
+      "codigo": "478",
+      "descripcion": "NUTRIQUE",
+      "id_marca": 478
+    },
+    {
+      "codigo": "479",
+      "descripcion": "GRAN PASTOR",
+      "id_marca": 479
+    },
+    {
+      "codigo": "480",
+      "descripcion": "GOOD DOG",
+      "id_marca": 480
+    },
+    {
+      "codigo": "481",
+      "descripcion": "FIORINO AE222UL",
+      "id_marca": 481
+    },
+    {
+      "codigo": "482",
+      "descripcion": "FIORINO AE222UM",
+      "id_marca": 482
+    },
+    {
+      "codigo": "483",
+      "descripcion": "SUPERCOAT",
+      "id_marca": 483
+    },
+    {
+      "codigo": "484",
+      "descripcion": "DOG MENU",
+      "id_marca": 484
+    },
+    {
+      "codigo": "485",
+      "descripcion": "BRUT",
+      "id_marca": 485
+    },
+    {
+      "codigo": "486",
+      "descripcion": "MODEL",
+      "id_marca": 486
+    },
+    {
+      "codigo": "487",
+      "descripcion": "TIGUAN AD843EK (SOFI)",
+      "id_marca": 487
+    },
+    {
+      "codigo": "488",
+      "descripcion": "MO",
+      "id_marca": 488
+    },
+    {
+      "codigo": "489",
+      "descripcion": "EKAN",
+      "id_marca": 489
+    },
+    {
+      "codigo": "490",
+      "descripcion": "TIDY CATS",
+      "id_marca": 490
+    },
+    {
+      "codigo": "491",
+      "descripcion": "AGILITY",
+      "id_marca": 491
+    },
+    {
+      "codigo": "492",
+      "descripcion": "PRODAC",
+      "id_marca": 492
+    },
+    {
+      "codigo": "493",
+      "descripcion": "BONGO",
+      "id_marca": 493
+    },
+    {
+      "codigo": "494",
+      "descripcion": "PETSIGN",
+      "id_marca": 494
+    },
+    {
+      "codigo": "495",
+      "descripcion": "OPTIMUM",
+      "id_marca": 495
+    },
+    {
+      "codigo": "496",
+      "descripcion": "NUTRIBON",
+      "id_marca": 496
+    },
+    {
+      "codigo": "497",
+      "descripcion": "HOP",
+      "id_marca": 497
+    },
+    {
+      "codigo": "498",
+      "descripcion": "WENUY",
+      "id_marca": 498
+    },
+    {
+      "codigo": "499",
+      "descripcion": "MAGIC COAT",
+      "id_marca": 500
+    },
+    {
+      "codigo": "501",
+      "descripcion": "NYLABONE",
+      "id_marca": 501
+    },
+    {
+      "codigo": "502",
+      "descripcion": "BECHLAB",
+      "id_marca": 502
+    },
+    {
+      "codigo": "503",
+      "descripcion": "RANGER",
+      "id_marca": 503
+    },
+    {
+      "codigo": "504",
+      "descripcion": "OVEJA NEGRA",
+      "id_marca": 504
+    },
+    {
+      "codigo": "505",
+      "descripcion": "PET & POP",
+      "id_marca": 505
+    },
+    {
+      "codigo": "506",
+      "descripcion": "REYCAN",
+      "id_marca": 506
+    },
+    {
+      "codigo": "507",
+      "descripcion": "MOCHI CHUNIS",
+      "id_marca": 507
+    },
+    {
+      "codigo": "508",
+      "descripcion": "DENTAL LIFE",
+      "id_marca": 508
+    },
+    {
+      "codigo": "509",
+      "descripcion": "TIGRE",
+      "id_marca": 509
+    },
+    {
+      "codigo": "510",
+      "descripcion": "INNOVAR",
+      "id_marca": 510
+    },
+    {
+      "codigo": "511",
+      "descripcion": "TONIPETS",
+      "id_marca": 511
+    },
+    {
+      "codigo": "512",
+      "descripcion": "ELMER",
+      "id_marca": 512
+    },
+    {
+      "codigo": "513",
+      "descripcion": "MUNDO DE FELIX",
+      "id_marca": 513
+    },
+    {
+      "codigo": "514",
+      "descripcion": "LAB. JENNER",
+      "id_marca": 514
+    },
+    {
+      "codigo": "515",
+      "descripcion": "GREENLAND",
+      "id_marca": 515
+    },
+    {
+      "codigo": "516",
+      "descripcion": "PELLCAT",
+      "id_marca": 516
+    },
+    {
+      "codigo": "517",
+      "descripcion": "EASY RECORDED",
+      "id_marca": 517
+    },
+    {
+      "codigo": "518",
+      "descripcion": "TRONQUITOS",
+      "id_marca": 518
+    },
+    {
+      "codigo": "519",
+      "descripcion": "M-PETS",
+      "id_marca": 519
+    },
+    {
+      "codigo": "520",
+      "descripcion": "ABONOS",
+      "id_marca": 521
+    },
+    {
+      "codigo": "522",
+      "descripcion": "AEROJAULA",
+      "id_marca": 522
+    },
+    {
+      "codigo": "523",
+      "descripcion": "SUELDOS LIMPIEZA",
+      "id_marca": 523
+    },
+    {
+      "codigo": "524",
+      "descripcion": "SUELDO SUPERVISOR",
+      "id_marca": 524
+    },
+    {
+      "codigo": "525",
+      "descripcion": "BONELO",
+      "id_marca": 527
+    },
+    {
+      "codigo": "528",
+      "descripcion": "REYCAT",
+      "id_marca": 528
+    },
+    {
+      "codigo": "529",
+      "descripcion": "AF413LJ (SOFI)",
+      "id_marca": 529
+    },
+    {
+      "codigo": "530",
+      "descripcion": "ZEEDOG",
+      "id_marca": 530
+    },
+    {
+      "codigo": "531",
+      "descripcion": "TOTAL KHAN",
+      "id_marca": 531
+    },
+    {
+      "codigo": "532",
+      "descripcion": "XTREME DOG",
+      "id_marca": 532
+    },
+    {
+      "codigo": "533",
+      "descripcion": "FULL NUTRITION",
+      "id_marca": 533
+    },
+    {
+      "codigo": "534",
+      "descripcion": "ATMAN",
+      "id_marca": 534
+    },
+    {
+      "codigo": "535",
+      "descripcion": "DUKE AND TINY",
+      "id_marca": 535
+    },
+    {
+      "codigo": "536",
+      "descripcion": "GROWIS",
+      "id_marca": 536
+    },
+    {
+      "codigo": "537",
+      "descripcion": "BURNET",
+      "id_marca": 537
+    },
+    {
+      "codigo": "538",
+      "descripcion": "ROCATS",
+      "id_marca": 538
+    },
+    {
+      "codigo": "539",
+      "descripcion": "ECOKATZ",
+      "id_marca": 539
+    },
+    {
+      "codigo": "540",
+      "descripcion": "REAL FOOD",
+      "id_marca": 540
+    },
+    {
+      "codigo": "541",
+      "descripcion": "FAWNA",
+      "id_marca": 541
+    },
+    {
+      "codigo": "542",
+      "descripcion": "FAWNA",
+      "id_marca": 542
+    },
+    {
+      "codigo": "543",
+      "descripcion": "STONECAT ",
+      "id_marca": 543
+    },
+    {
+      "codigo": "544",
+      "descripcion": "UNION PET ",
+      "id_marca": 544
+    }
+  ]
+}

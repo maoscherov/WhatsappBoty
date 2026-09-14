@@ -560,10 +560,6 @@ async def _chequear_stock_vivo(session: dict, phone: str, session_svc,
     branch = await resolver_branch_default()
     if not branch:
         return None, None
-    from app.services.agent_registry import get_agent_registry
-    registry = get_agent_registry()
-    if not registry.connected(branch):
-        return None, None
 
     items = session.get("pending_items") or []
     if not items and session.get("pending_sku_id"):
@@ -574,8 +570,9 @@ async def _chequear_stock_vivo(session: dict, phone: str, session_svc,
     if not items:
         return None, None
 
-    res = await registry.lookup(branch, ids=[str(i["sku_id"]) for i in items],
-                                timeout=settings.live_lookup_timeout_s)
+    from app.services.catalog_live import lookup_vivo
+    res = await lookup_vivo(branch, [str(i["sku_id"]) for i in items],
+                            timeout=settings.live_lookup_timeout_s)
     if res is None:
         logger.warning(f"Stock en vivo: sin respuesta del agente para {phone} — "
                        "se cobra con el dato cacheado")

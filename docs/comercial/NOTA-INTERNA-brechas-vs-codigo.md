@@ -65,7 +65,7 @@ campañas desde el CRM.
 
 ## Placeholders a completar antes de enviar
 
-- `[CLIENTE]` y `[PROVEEDOR]` en portada y cuerpo de ambos documentos.
+- `[CLIENTE]` en portada y cuerpo de los tres documentos (el proveedor ya figura como Keep IT Simple; look & feel KIS aplicado el 2026-09-11).
 - Datos de contacto para ejercicio de derechos en el Anexo A del doc 1.
 - Región de alojamiento real (Railway) en la tabla de subencargados si el cliente pregunta.
 - Nombre del proveedor de conectividad a WhatsApp si se usa Kapso (el doc lo deja genérico a propósito).

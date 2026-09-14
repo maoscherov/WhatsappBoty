@@ -1,296 +1,333 @@
 """
-Cliente SOAP para Mercurio ERP.
+Cliente REST de Mercurio (ERP de Mascotas del Oeste) + sync de catálogo.
 
-ESQUELETO — pendiente de completar cuando tengamos:
-  - WSDL del webservice (define nombres exactos de operaciones y tipos)
-  - Credenciales de Basic Auth (idealmente de un ambiente de test)
-  - Contrato final del JSON de GetPedido (el doc dice que "podría adecuarse")
+Doc: docs/superpowers/specs/2026-09-14-mercurio-api-v1.md (API v1 del
+10/9/2026 + relevamiento contra preproducción del 14/9).
 
-Métodos del WS según doc "Conexión Mercurio ERP MO":
-  Artículos: GetArticuloCantidadPaginas, GetArticuloPaginaType,
-             GetGrupoType, GetSubGrupoType, GetMarcaType, GetRubroType
-  Stock:     GetArticuloStockDepositos(id_articulo)
-  Pedidos:   GetPedido(pedido: json) → idPedido del ERP
-  Clientes:  GetClienteType(dni)
+A diferencia de Observer (farmacia), Mercurio es una API en la nube: no hay
+agente en el local. El servidor sincroniza directo cada 15 min y escribe en las
+MISMAS tablas del catálogo ERP (`branches` / `catalog_items`), así el bot usa
+la misma recarga, búsqueda y verificación en vivo.
 
-Uso previsto:
-  svc = get_mercurio_service()
-  skus = await svc.sync_catalogo()          # job programado / POST /bo/sku/sync-erp
-  stock = await svc.get_stock("391")        # antes de generar link MP
-  erp_id = await svc.crear_pedido(order)    # al confirmar pago MP
+Estructura del catálogo Mercurio: cada producto viene como un artículo PADRE
+(`codigo == codigo_padre`, precio 0, stock null) más sus VARIANTES vendibles
+(`codigo` propio, `variacion` = "400 gr" / "Nº 4" / "ROSA", precio y stock).
+Se sincronizan solo las variantes; el padre aporta el nombre base y, en el
+pedido, `product_id` (variante = `variant_id`).
+
+Alta de pedidos (POST /v1/pedidos): DETRÁS de `mercurio_pedidos_enabled`
+hasta que el proveedor confirme estados, `customer_id` y depósito de venta.
 """
 
 import asyncio
+import hashlib
 import json
 import logging
+import re
+from decimal import Decimal, InvalidOperation
 from typing import Optional
+
+import httpx
+
+from app.models.sync import CatalogItemIn, ManifestEntryIn
 
 logger = logging.getLogger(__name__)
 
-# zeep es sincrónico: todas las llamadas SOAP se despachan con asyncio.to_thread
-# para no bloquear el event loop de FastAPI.
-try:
-    from zeep import Client
-    from zeep.transports import Transport
-    from requests import Session
-    from requests.auth import HTTPBasicAuth
-    _ZEEP_OK = True
-except ImportError:
-    _ZEEP_OK = False
+BASE_URL_DEFAULT = "https://api.mercurio.com.ar/v1"
+CATALOGOS = {
+    "rubros": "id_rubro", "marcas": "id_marca", "materiales": "id_material",
+    "grupos": "id_grupo", "subgrupos": "id_subgrupo",
+    "tamanios-mascota": "id_tamanio", "edades-mascota": "id_edad",
+}
+SOURCE_MERCURIO = "mercurio"
+MAX_REINTENTOS = 3
+SEPARADOR_DEPOSITOS = "ç"   # 'ç' — así lo manda Mercurio en stock_x_deposito
 
 
 class MercurioError(Exception):
-    """Error de comunicación o de negocio con el ERP."""
+    """Error de comunicación o de negocio con Mercurio."""
 
 
-class MercurioService:
-    def __init__(self, wsdl_url: str, user: str, password: str, timeout: int = 15):
-        self._wsdl_url = wsdl_url
-        self._user = user
-        self._password = password
-        self._timeout = timeout
-        self._client: Optional["Client"] = None
-        # Cache de taxonomías (id → descripción) para armar nombres buscables
-        self._marcas: dict[str, str] = {}
-        self._grupos: dict[str, str] = {}
-        self._rubros: dict[str, str] = {}
-        self._subgrupos: dict[str, str] = {}
+# ── Parseo de campos (todo llega como string) ─────────────────────────────────
 
-    # ── Infraestructura ──────────────────────────────────────────────────────
-
-    def _get_client(self) -> "Client":
-        """Crea el cliente zeep en forma lazy (el WSDL se descarga una sola vez)."""
-        if not _ZEEP_OK:
-            raise MercurioError("zeep no instalado — agregar 'zeep' a requirements.txt")
-        if not self._wsdl_url:
-            raise MercurioError("MERCURIO_WSDL_URL no configurada")
-        if self._client is None:
-            session = Session()
-            session.auth = HTTPBasicAuth(self._user, self._password)
-            transport = Transport(session=session, timeout=self._timeout)
-            self._client = Client(self._wsdl_url, transport=transport)
-        return self._client
-
-    async def _call(self, operation: str, *args, **kwargs):
-        """Ejecuta una operación SOAP en un thread para no bloquear el event loop."""
-        def _do():
-            client = self._get_client()
-            fn = getattr(client.service, operation, None)
-            if fn is None:
-                raise MercurioError(f"Operación SOAP inexistente: {operation}")
-            return fn(*args, **kwargs)
+def parsear_stock_x_deposito(valor: Optional[str]) -> dict[str, float]:
+    """'1|8.00ç4|0.00ç27|1.00' → {'1': 8.0, '4': 0.0, '27': 1.0}."""
+    out: dict[str, float] = {}
+    for par in (valor or "").split(SEPARADOR_DEPOSITOS):
+        if "|" not in par:
+            continue
+        dep, cant = par.split("|", 1)
         try:
-            return await asyncio.to_thread(_do)
-        except MercurioError:
-            raise
-        except Exception as e:
-            logger.error(f"Mercurio SOAP error en {operation}: {type(e).__name__}: {e}")
-            raise MercurioError(f"{operation} falló: {e}") from e
+            out[dep.strip()] = float(cant.strip() or 0)
+        except ValueError:
+            continue
+    return out
 
-    async def health(self) -> bool:
-        """Ping liviano para /bo/health — usa la op más barata disponible."""
-        try:
-            await self._call("GetArticuloCantidadPaginas")
-            return True
-        except MercurioError:
-            return False
 
-    # ── Taxonomías ───────────────────────────────────────────────────────────
+def _decimal(valor) -> Optional[Decimal]:
+    """'1728.4210000' → Decimal('1728.42'); 0/vacío/None → None (sin precio)."""
+    if valor in (None, "", " "):
+        return None
+    try:
+        d = Decimal(str(valor).strip().replace(",", "."))
+    except InvalidOperation:
+        return None
+    if d <= 0:
+        return None
+    return d.quantize(Decimal("0.01"))
 
-    async def _load_taxonomias(self):
-        """Carga marcas/grupos/rubros/subgrupos para resolver IDs a nombres."""
-        # TODO: confirmar con WSDL el shape exacto de la respuesta
-        # (el doc muestra: {'codigo': '5', 'descripcion': 'RAZA', 'id_marca': '1'})
-        for op, cache, id_key in [
-            ("GetMarcaType", self._marcas, "id_marca"),
-            ("GetGrupoType", self._grupos, "id_grupo"),
-            ("GetRubroType", self._rubros, "id_rubro"),
-            ("GetSubGrupoType", self._subgrupos, "id_subgrupo"),
-        ]:
+
+def _entero(valor) -> int:
+    try:
+        return int(float(str(valor).strip() or 0))
+    except ValueError:
+        return 0
+
+
+def _texto(valor) -> str:
+    return re.sub(r"\s+", " ", str(valor or "")).strip()
+
+
+def es_padre(art: dict) -> bool:
+    """Artículo agrupador (no vendible): mismo código que su padre y sin precio."""
+    codigo = _texto(art.get("codigo"))
+    padre = _texto(art.get("codigo_padre"))
+    return bool(codigo) and codigo == padre and _decimal(art.get("precio")) is None
+
+
+def _barcodes(art: dict) -> list[str]:
+    """codigo_ean + codigo_barras sin duplicados, solo los que parecen EAN
+    (8 a 14 dígitos): los valores internos ("15181000" para un pretal) son
+    indistinguibles por forma, pero al menos se filtran los alfanuméricos y
+    los cortos."""
+    out: list[str] = []
+    for k in ("codigo_ean", "codigo_barras"):
+        cb = re.sub(r"\s", "", str(art.get(k) or ""))
+        if cb.isdigit() and 8 <= len(cb) <= 14 and cb not in out:
+            out.append(cb)
+    return out
+
+
+def articulo_a_item(art: dict, tax: dict[str, dict[str, str]]) -> CatalogItemIn:
+    """
+    Artículo Mercurio → CatalogItemIn (el mismo contrato que el agente de
+    farmacia). Mapeo:
+      name      = descripcion (espacios colapsados)
+      brand     = marca; form = variacion ("400 gr", "Nº 4")
+      category  = rubro (ALIMENTOS, ACCESORIOS...)  → requiere_receta "no"
+      rubro     = grupo (PERROS, GATOS...)  subrubro = subgrupo (SECOS, CORREAS)
+      therapeutic_actions = etapa (material) + edad + tamaño de mascota,
+                  para que "cachorro" o "adulto +7" entren a la búsqueda
+      price     = precio (Decimal, None si 0)   stock = stock (suma depósitos)
+    El hash cubre lo que el bot usa: si no cambia, el upsert no escribe.
+    """
+    def nombre(cat: str, k: str) -> Optional[str]:
+        v = art.get(k)
+        return tax.get(cat, {}).get(str(v)) if v not in (None, "") else None
+
+    extras = [x for x in (nombre("materiales", "id_material"),
+                          nombre("edades-mascota", "id_edad_mascota"),
+                          nombre("tamanios-mascota", "id_tamanio_mascota")) if x]
+    campos = {
+        "external_id": _texto(art.get("id_articulo_mercurio")),
+        "barcodes": _barcodes(art),
+        "name": _texto(art.get("descripcion")),
+        "brand": nombre("marcas", "id_marca"),
+        "form": _texto(art.get("variacion")) or None,
+        "category": nombre("rubros", "id_rubro") or "",
+        "rubro": nombre("grupos", "id_grupo") or "",
+        "subrubro": nombre("subgrupos", "id_subgrupo") or "",
+        "therapeutic_actions": extras,
+        "price": _decimal(art.get("precio")),
+        "stock": _entero(art.get("stock")),
+        "visible": True,
+        "active": True,
+    }
+    firma = json.dumps({**campos, "price": str(campos["price"])}, ensure_ascii=False, sort_keys=True)
+    return CatalogItemIn(hash=hashlib.sha256(firma.encode()).hexdigest(), troquel=None,
+                         drug=None, **campos)
+
+
+# ── Cliente HTTP ──────────────────────────────────────────────────────────────
+
+class MercurioClient:
+    def __init__(self, api_key: str, base_url: str = BASE_URL_DEFAULT, timeout: float = 60.0,
+                 transport: Optional[httpx.AsyncBaseTransport] = None):
+        self._base = (base_url or BASE_URL_DEFAULT).rstrip("/")
+        self._client = httpx.AsyncClient(
+            headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json"},
+            timeout=timeout, transport=transport,
+        )
+
+    async def aclose(self):
+        await self._client.aclose()
+
+    async def _get(self, path: str, params: Optional[dict] = None) -> dict:
+        """GET con reintentos: 429 respeta Retry-After; 5xx backoff 1-2-4 s."""
+        ultimo: Optional[Exception] = None
+        for intento in range(MAX_REINTENTOS):
             try:
-                rows = await self._call(op)
-                cache.clear()
-                for r in rows or []:
-                    cache[str(r[id_key])] = str(r["descripcion"]).strip()
-            except (MercurioError, KeyError, TypeError) as e:
-                logger.warning(f"No se pudo cargar taxonomía {op}: {e}")
+                r = await self._client.get(f"{self._base}{path}", params=params)
+            except httpx.HTTPError as e:
+                ultimo = MercurioError(f"{path}: {e}")
+                await asyncio.sleep(2 ** intento)
+                continue
+            if r.status_code == 429:
+                espera = int(r.headers.get("Retry-After") or 60)
+                logger.warning(f"Mercurio 429 en {path}: espero {espera}s")
+                await asyncio.sleep(min(espera, 120))
+                continue
+            if r.status_code >= 500:
+                ultimo = MercurioError(f"{path}: HTTP {r.status_code}")
+                await asyncio.sleep(2 ** intento)
+                continue
+            if r.status_code == 404:
+                raise MercurioError(f"{path}: 404")
+            if r.status_code >= 400:
+                raise MercurioError(f"{path}: HTTP {r.status_code} {r.text[:200]}")
+            try:
+                return r.json()
+            except ValueError as e:
+                raise MercurioError(f"{path}: respuesta no JSON ({e})")
+        raise ultimo or MercurioError(f"{path}: sin respuesta")
 
-    # ── Catálogo ─────────────────────────────────────────────────────────────
+    async def estado(self) -> dict:
+        return await self._get("/estado")
 
-    def _map_articulo(self, art: dict) -> Optional[dict]:
-        """
-        Mapea un artículo de Mercurio al modelo SKU del bot.
+    async def catalogo(self, nombre: str) -> dict[str, str]:
+        """{id: descripcion} de uno de los 7 catálogos."""
+        clave = CATALOGOS[nombre]
+        body = await self._get(f"/{nombre}")
+        return {str(i.get(clave)): _texto(i.get("descripcion")) for i in body.get("items") or []}
 
-        Artículo Mercurio (doc):
-          codigo, codigo_padre, variacion, descripcion, descripcion_adicional,
-          observaciones, precio, stock, id_marca/grupo/rubro/subgrupo,
-          codigo_barras, destacado, info_adicional, stock_x_deposito,
-          atributos_variacion
-        """
+    async def taxonomias(self) -> dict[str, dict[str, str]]:
+        return {n: await self.catalogo(n) for n in CATALOGOS}
+
+    async def paginas(self) -> int:
+        body = await self._get("/articulos/paginas")
+        return int(body.get("paginas") or 0)
+
+    async def articulos(self, pagina: int) -> list[dict]:
+        body = await self._get("/articulos", params={"pagina": pagina})
+        return body.get("articulos") or []
+
+    async def stock(self, id_articulo: str) -> Optional[dict[str, float]]:
+        """Stock por depósito en vivo; None si el artículo no existe."""
         try:
-            marca = self._marcas.get(str(art.get("id_marca")), "")
-            rubro = self._rubros.get(str(art.get("id_rubro")), "")
-            descripcion = str(art.get("descripcion", "")).strip()
-            variacion = str(art.get("variacion") or "").strip()
-
-            # Variantes: por ahora se aplanan como SKUs independientes,
-            # el nombre incluye la variación para desambiguar en la búsqueda.
-            nombre = " ".join(p for p in [marca, descripcion, variacion] if p)
-
-            stock = float(art.get("stock") or 0)
-            return {
-                "sku_id": str(art["codigo"]),
-                "nombre": nombre,
-                # Texto extra para el fuzzy search (marca + rubro + código de barras)
-                "busqueda": " ".join(p for p in [nombre, rubro, str(art.get("codigo_barras") or "")] if p),
-                "precio": float(art.get("precio") or 0),
-                "stock": stock,
-                "estado": "disponible" if stock > 0 else "sin_stock",
-                "codigo_barras": str(art.get("codigo_barras") or ""),
-                "destacado": str(art.get("destacado")) == "1",
-                # TODO: decidir si observaciones (descripción comercial larga)
-                # se le pasa a Claude como contexto del producto
-                "observaciones": str(art.get("observaciones") or "").strip(),
-            }
-        except (KeyError, ValueError, TypeError) as e:
-            logger.warning(f"Artículo Mercurio inválido, se saltea: {e} — {art}")
-            return None
-
-    async def sync_catalogo(self) -> list[dict]:
-        """
-        Descarga el catálogo completo paginado y lo devuelve mapeado al modelo SKU.
-
-        El caller (job de sync / endpoint de backoffice) es responsable de
-        persistirlo (CSV o Redis) y llamar reload_sku_service().
-        """
-        await self._load_taxonomias()
-
-        total_paginas = int(await self._call("GetArticuloCantidadPaginas"))
-        logger.info(f"Mercurio sync: {total_paginas} páginas de artículos")
-
-        skus: list[dict] = []
-        for pagina in range(1, total_paginas + 1):
-            # TODO: confirmar en WSDL la firma exacta (¿nro de página 0-based o 1-based?
-            # ¿tamaño de página configurable?)
-            articulos = await self._call("GetArticuloPaginaType", pagina)
-            for art in articulos or []:
-                sku = self._map_articulo(art)
-                if sku:
-                    skus.append(sku)
-
-        logger.info(f"Mercurio sync: {len(skus)} SKUs mapeados")
-        return skus
-
-    # ── Stock en tiempo real ─────────────────────────────────────────────────
-
-    async def get_stock(self, id_articulo: str) -> Optional[float]:
-        """
-        Stock total en tiempo real para un artículo (suma de depósitos).
-        Devuelve None si el WS no responde — el caller decide el fallback
-        (usar el stock cacheado del catálogo en vez de frenar la venta).
-        """
-        try:
-            # Respuesta esperada (doc): stock_x_deposito → {1: '10.00', 4: '1.00'}
-            result = await self._call("GetArticuloStockDepositos", int(id_articulo))
-            if result is None:
+            body = await self._get(f"/articulos/{id_articulo}/stock")
+        except MercurioError as e:
+            if ": 404" in str(e):
                 return None
-            if isinstance(result, dict):
-                return sum(float(v) for v in result.values())
-            return float(result)
-        except (MercurioError, ValueError, TypeError):
-            return None
+            raise
+        total: dict[str, float] = {}
+        for f in body.get("stock_x_deposito") or []:
+            total.update(parsear_stock_x_deposito(f.get("stock_x_zona") or f.get("stock_x_deposito")))
+        return total
 
-    # ── Pedidos ──────────────────────────────────────────────────────────────
 
-    def _map_pedido(self, order: dict) -> dict:
-        """
-        Arma el JSON de GetPedido a partir de un order del bot (order_service).
+# ── Sync de catálogo ──────────────────────────────────────────────────────────
 
-        Formato según doc (ejemplo pág. 1-3). PENDIENTE de acordar con Mercurio:
-          - customer_id cuando no tenemos CUIT/DNI del cliente
-          - valores válidos de payment_method y shipping_name
-        """
-        return {
-            "id": order["id"],
-            "number": order.get("pickup_code", order["id"]),
-            "state": "complete",
-            "currency": "ARS",
-            "created_at": order.get("created_at"),
-            "updated_at": order.get("updated_at", order.get("created_at")),
-            "discount_total": 0.0,
-            "shipping_name": "Retiro en sucursal",   # TODO: nombre real de la sucursal
-            "shipping_total": 0.0,
-            "payment_method": "Mercado Pago",        # TODO: valor acordado con Mercurio
-            "total": float(order["total"]),
-            "customer_id": "",                       # TODO: definir cliente genérico web
-            "bill_address": self._direccion_sucursal(order),
-            "ship_address": self._direccion_sucursal(order),
-            "line_items": [
-                {
-                    "order_id": order["id"],
-                    "name": order["sku_nombre"],
-                    "product_id": order["sku_id"],
-                    "variant_id": order["sku_id"],
-                    "quantity": int(order.get("cantidad", 1)),
-                    "subtotal": float(order["total"]),
-                    "total": float(order["total"]),
-                }
-            ],
+class MercurioSync:
+    """Recorre catálogos + páginas y vuelca las variantes en catalog_items."""
+
+    def __init__(self, client: MercurioClient, branch_id: str, db):
+        self._client = client
+        self._branch = branch_id
+        self._db = db
+        self.ultimo: dict = {}
+
+    async def asegurar_sucursal(self):
+        """La sucursal Mercurio no tiene agente: se crea sola (token inútil)."""
+        from app.services.branch_auth import generar_token
+        from app.services.branch_store import get_branch_store
+        store = get_branch_store(self._db)
+        if not await store.get(self._branch):
+            _, token_hash = generar_token()
+            await store.crear(self._branch, "Mascotas del Oeste (Mercurio)", token_hash)
+            logger.info(f"Sucursal {self._branch} creada para el sync de Mercurio")
+
+    async def sincronizar(self) -> dict:
+        """Un ciclo completo. Devuelve el reporte (también en self.ultimo)."""
+        import time
+        from app.services.catalog_store import get_catalog_store
+        from app.services.branch_store import get_branch_store
+
+        t0 = time.perf_counter()
+        await self.asegurar_sucursal()
+        tax = await self._client.taxonomias()
+        paginas = await self._client.paginas()
+        items: list[CatalogItemIn] = []
+        padres = 0
+        for p in range(1, max(paginas, 1) + 1):
+            for art in await self._client.articulos(p):
+                if es_padre(art):
+                    padres += 1
+                    continue
+                try:
+                    items.append(articulo_a_item(art, tax))
+                except Exception as e:
+                    logger.warning(f"Mercurio: artículo {art.get('id_articulo_mercurio')} omitido: {e}")
+
+        store = get_catalog_store(self._db)
+        received = upserted = 0
+        for i in range(0, len(items), 500):
+            r, u = await store.upsert_items(self._branch, items[i:i + 500], source=SOURCE_MERCURIO)
+            received += r
+            upserted += u
+        # Lo que ya no está en Mercurio se desactiva (mismo mecanismo que el
+        # full-manifest del agente).
+        deactivated = 0
+        if items:
+            _, deactivated = await store.full_manifest(
+                self._branch, [ManifestEntryIn(external_id=i.external_id, hash=i.hash) for i in items])
+        await get_branch_store(self._db).heartbeat(
+            self._branch, agent_version="mercurio-rest", erp_version="v1", erp_status="ok",
+            catalog_count=len(items), pending_batches=0)
+
+        self.ultimo = {
+            "paginas": paginas, "variantes": len(items), "padres_omitidos": padres,
+            "upserted": upserted, "unchanged": received - upserted,
+            "deactivated": deactivated, "ms": int((time.perf_counter() - t0) * 1000),
         }
+        logger.info(f"Mercurio sync: {self.ultimo}")
 
-    @staticmethod
-    def _direccion_sucursal(order: dict) -> dict:
-        """Dirección para retiro en sucursal — el teléfono es el del cliente WA."""
-        # TODO: datos reales de la sucursal (configurables por env o backoffice)
-        return {
-            "firstname": "Cliente",
-            "lastname": "WhatsApp",
-            "address1": "",
-            "address2": "",
-            "city": "",
-            "zipcode": "",
-            "company": "Remedia",
-            "phone": order.get("phone", ""),
-            "state": "",
-            "country": "Argentina",
-        }
-
-    async def crear_pedido(self, order: dict) -> Optional[str]:
-        """
-        Envía el pedido al ERP. Devuelve el idPedido de Mercurio, o None si falló.
-
-        El caller (mp_webhook) debe encolar reintentos cuando devuelve None:
-        el pago ya se cobró y el pedido no se puede perder.
-        """
-        pedido_json = self._map_pedido(order)
-        try:
-            # TODO: confirmar en WSDL si GetPedido recibe string JSON o estructura tipada
-            erp_id = await self._call("GetPedido", json.dumps(pedido_json))
-            logger.info(f"Pedido {order['id']} creado en Mercurio: erp_id={erp_id}")
-            return str(erp_id) if erp_id is not None else None
-        except MercurioError:
-            logger.error(f"Pedido {order['id']} NO pudo enviarse a Mercurio — encolar reintento")
-            return None
-
-    # ── Clientes (fase 2) ────────────────────────────────────────────────────
-
-    async def get_cliente(self, dni: str) -> Optional[dict]:
-        """Busca un cliente del ERP por DNI. Fase 2 — el bot hoy no pide DNI."""
-        try:
-            return await self._call("GetClienteType", dni)
-        except MercurioError:
-            return None
+        if upserted or deactivated:
+            try:
+                from app.services.catalog_refresher import get_catalog_refresher
+                from app.services.catalog_source import resolver_branch_default
+                if await resolver_branch_default(forzar=True) == self._branch:
+                    get_catalog_refresher().schedule(
+                        self._branch, {i.external_id for i in items}, inmediata=True)
+            except Exception as e:
+                logger.warning(f"Mercurio: no se pudo programar la recarga: {e}")
+        return self.ultimo
 
 
-_instance: Optional[MercurioService] = None
+_client: Optional[MercurioClient] = None
+_sync: Optional[MercurioSync] = None
 
 
-def get_mercurio_service(
-    wsdl_url: str = "",
-    user: str = "",
-    password: str = "",
-) -> MercurioService:
-    global _instance
-    if _instance is None:
-        _instance = MercurioService(wsdl_url, user, password)
-    return _instance
+def mercurio_configurado() -> bool:
+    from app.config import get_settings
+    return bool(get_settings().mercurio_api_key)
+
+
+def get_mercurio_client() -> MercurioClient:
+    global _client
+    if _client is None:
+        from app.config import get_settings
+        s = get_settings()
+        if not s.mercurio_api_key:
+            raise MercurioError("MERCURIO_API_KEY no configurada")
+        _client = MercurioClient(s.mercurio_api_key, s.mercurio_base_url)
+    return _client
+
+
+def get_mercurio_sync() -> MercurioSync:
+    global _sync
+    if _sync is None:
+        from app.config import get_settings
+        from app.services.db import get_db
+        s = get_settings()
+        _sync = MercurioSync(get_mercurio_client(), s.mercurio_branch_id, get_db(s.database_url))
+    return _sync

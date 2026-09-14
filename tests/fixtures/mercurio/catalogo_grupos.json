@@ -1,0 +1,51 @@
+{
+  "catalogo": "grupos",
+  "cantidad": 9,
+  "items": [
+    {
+      "codigo": "2",
+      "descripcion": "PERROS",
+      "id_grupo": 2
+    },
+    {
+      "codigo": "3",
+      "descripcion": "GATOS",
+      "id_grupo": 3
+    },
+    {
+      "codigo": "4",
+      "descripcion": "PECES",
+      "id_grupo": 4
+    },
+    {
+      "codigo": "5",
+      "descripcion": "PERROS/GATOS",
+      "id_grupo": 5
+    },
+    {
+      "codigo": "6",
+      "descripcion": "REPTILES",
+      "id_grupo": 6
+    },
+    {
+      "codigo": "7",
+      "descripcion": "ROEDORES",
+      "id_grupo": 7
+    },
+    {
+      "codigo": "8",
+      "descripcion": "PAJAROS",
+      "id_grupo": 8
+    },
+    {
+      "codigo": "9",
+      "descripcion": "VETERINARIA",
+      "id_grupo": 9
+    },
+    {
+      "codigo": "10",
+      "descripcion": "LIQUIDACION",
+      "id_grupo": 11
+    }
+  ]
+}

@@ -62,10 +62,13 @@ class Settings(BaseSettings):
     live_stock_check: str = "stock"  # off | stock — consulta al agente antes del link de pago
     live_lookup_timeout_s: float = 5.0
 
-    # Mercurio ERP (SOAP) — vacíos hasta tener WSDL y credenciales
-    mercurio_wsdl_url: str = ""
-    mercurio_user: str = ""
-    mercurio_password: str = ""
+    # Mercurio (ERP de Mascotas del Oeste) — API REST en la nube, sin agente.
+    # Con la clave seteada arranca el sync periódico del catálogo.
+    mercurio_api_key: str = ""
+    mercurio_base_url: str = "https://api.mercurio.com.ar/v1"
+    mercurio_branch_id: str = "mascotas-oeste"
+    mercurio_sync_interval_secs: int = 900
+    mercurio_pedidos_enabled: bool = False   # alta de pedidos: apagado hasta confirmar estados/cliente
 
     class Config:
         env_file = ".env"

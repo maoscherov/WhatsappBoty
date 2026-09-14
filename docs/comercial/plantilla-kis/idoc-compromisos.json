@@ -1,0 +1,667 @@
+{
+ "cover": {
+  "title": "Compromisos de cumplimiento en materia de datos personales",
+  "subtitle": "Declaración de Keep IT Simple como encargado del tratamiento para el servicio Remedia en [CLIENTE]  ·  Versión 1.0  ·  Septiembre de 2026"
+ },
+ "blocks": [
+  {
+   "type": "toc",
+   "title": "Contenido",
+   "max_level": 2
+  },
+  {
+   "type": "heading",
+   "level": 1,
+   "runs": [
+    {
+     "t": "1. Declaración"
+    }
+   ]
+  },
+  {
+   "type": "paragraph",
+   "runs": [
+    {
+     "t": "Keep IT Simple declara que el servicio Remedia, en su implementación para [CLIENTE], opera bajo los compromisos que se detallan en este documento. Cada compromiso es verificable: indica qué se cumple, cómo se cumple y qué evidencia se entrega al Cliente antes del inicio en producción."
+    }
+   ]
+  },
+  {
+   "type": "callout",
+   "intent": "info",
+   "title": "En una frase",
+   "runs": [
+    {
+     "t": "Los datos son del Cliente, se usan sólo para atender a sus clientes por WhatsApp, viven el tiempo mínimo necesario, los de salud los trata siempre una persona habilitada, y el titular puede informarse, darse de baja y ejercer sus derechos por el mismo canal."
+    }
+   ]
+  },
+  {
+   "type": "paragraph",
+   "runs": [
+    {
+     "t": "Este documento resume los compromisos; el análisis normativo, el inventario de datos y los anexos contractuales están en el documento de adecuación completo. Ambos forman parte de la propuesta de implementación."
+    }
+   ]
+  },
+  {
+   "type": "heading",
+   "level": 1,
+   "runs": [
+    {
+     "t": "2. Qué cumplimos, artículo por artículo"
+    }
+   ]
+  },
+  {
+   "type": "paragraph",
+   "runs": [
+    {
+     "t": "La tabla recorre las obligaciones de la Ley 25.326 y su reglamentación que alcanzan al servicio, y el compromiso concreto frente a cada una."
+    }
+   ]
+  },
+  {
+   "type": "table",
+   "role": "default",
+   "columns": [
+    "Obligación legal",
+    "Compromiso de Keep IT Simple",
+    "Cómo se verifica"
+   ],
+   "rows": [
+    [
+     {
+      "runs": [
+       {
+        "t": "Art. 4 — Calidad y finalidad.",
+        "b": true
+       },
+       {
+        "t": " Los datos deben ser ciertos, adecuados, pertinentes y no excesivos respecto de la finalidad, y destruirse cuando dejan de ser necesarios."
+       }
+      ]
+     },
+     "El asistente recolecta sólo lo indispensable para cada paso: teléfono, lo que el cliente escribe, y una dirección únicamente si eligió envío a domicilio. No pide DNI, correo ni fecha de nacimiento. Cada dato tiene vencimiento: sesión 25 horas, imágenes 7 días, pedidos 7 días, historial según la política acordada con el Cliente.",
+     "Inventario de datos con retención por categoría; job de depuración activo; captura de la configuración."
+    ],
+    [
+     {
+      "runs": [
+       {
+        "t": "Art. 5 — Consentimiento.",
+        "b": true
+       },
+       {
+        "t": " El tratamiento requiere consentimiento libre, expreso e informado, salvo excepciones (relación contractual, datos de contacto básicos)."
+       }
+      ]
+     },
+     "El titular inicia la conversación de forma voluntaria y recibe el aviso de privacidad antes de que se le pida ningún dato. Para socios y clientes existentes se apoya además en la relación previa con el Cliente (art. 5 inc. 2). Los mensajes proactivos sólo se envían con opt-in registrado.",
+     "Texto del aviso configurado; prueba de flujo; registro de opt-in."
+    ],
+    [
+     {
+      "runs": [
+       {
+        "t": "Art. 6 — Información.",
+        "b": true
+       },
+       {
+        "t": " Al recolectar datos hay que informar finalidad, destinatarios, carácter obligatorio u optativo, consecuencias de no proveerlos, y derechos."
+       }
+      ]
+     },
+     "Aviso en el primer mensaje de cada conversación nueva con los cinco elementos del artículo, más la identificación del asistente como sistema automatizado y el enlace a la política de privacidad del Cliente.",
+     "Captura del primer mensaje; texto aprobado por el Cliente."
+    ],
+    [
+     {
+      "runs": [
+       {
+        "t": "Art. 7 y 8 — Datos sensibles y de salud.",
+        "b": true
+       },
+       {
+        "t": " Sólo pueden tratarse con consentimiento expreso o por establecimientos sanitarios y profesionales de la salud, bajo secreto profesional."
+       }
+      ]
+     },
+     "El asistente nunca interpreta ni resuelve una receta: la reconoce, la guarda de forma temporal y la deriva a un operador habilitado del Cliente. El modelo de lenguaje no recibe DNI, domicilio, diagnóstico ni el paquete de datos de la receta. La lectura automática de recetas está desactivada por defecto y sólo se habilita por decisión escrita del Cliente.",
+     "Prueba del circuito de receta; configuración de la función de lectura; registro de la decisión del Cliente."
+    ],
+    [
+     {
+      "runs": [
+       {
+        "t": "Art. 9 — Seguridad.",
+        "b": true
+       },
+       {
+        "t": " Medidas técnicas y organizativas para garantizar seguridad y confidencialidad, evitar adulteración, pérdida y acceso no autorizado."
+       }
+      ]
+     },
+     "Medidas alineadas con la Resolución AAIP 47/2018, detalladas en la sección 6: cifrado en tránsito y en reposo, usuarios individuales con roles, auditoría, respaldos, gestión de vulnerabilidades e incidentes.",
+     "Matriz de controles con evidencia por control; informe de revisión de seguridad previo al go-live."
+    ],
+    [
+     {
+      "runs": [
+       {
+        "t": "Art. 10 — Deber de confidencialidad.",
+        "b": true
+       },
+       {
+        "t": " Quienes intervienen en el tratamiento están obligados al secreto profesional, aun después de finalizada la relación."
+       }
+      ]
+     },
+     "Todo el personal de Keep IT Simple con acceso a producción firma acuerdo de confidencialidad; el acceso es nominal, revocable y registrado. Los operadores del Cliente acceden con usuario propio.",
+     "Modelo de acuerdo firmado; listado de accesos vigentes."
+    ],
+    [
+     {
+      "runs": [
+       {
+        "t": "Art. 11 — Cesión.",
+        "b": true
+       },
+       {
+        "t": " Los datos sólo pueden cederse para fines relacionados con el interés legítimo del cedente y del cesionario, con consentimiento del titular."
+       }
+      ]
+     },
+     "Keep IT Simple no cede datos a nadie. Los terceros que intervienen son subencargados que prestan un servicio técnico bajo contrato, no cesionarios. La lista es cerrada y la aprueba el Cliente.",
+     "Matriz de subencargados aprobada; cláusula de no cesión en el contrato."
+    ],
+    [
+     {
+      "runs": [
+       {
+        "t": "Art. 12 — Transferencia internacional.",
+        "b": true
+       },
+       {
+        "t": " Prohibida hacia países sin nivel adecuado de protección, salvo consentimiento o cláusulas contractuales."
+       }
+      ]
+     },
+     "Los subencargados radicados en Estados Unidos (mensajería, inteligencia artificial, nube) operan bajo los contratos modelo de la Disposición 60-E/2016 y sus términos de API prohíben el uso de los datos para entrenamiento. El aviso de privacidad informa la transferencia.",
+     "Cláusulas incorporadas; términos de cada proveedor archivados."
+    ],
+    [
+     {
+      "runs": [
+       {
+        "t": "Art. 14 — Derecho de acceso.",
+        "b": true
+       },
+       {
+        "t": " El titular puede pedir sus datos y obtenerlos dentro de los 10 días corridos."
+       }
+      ]
+     },
+     "El Cliente exporta desde el panel el historial y los pedidos de un número. Keep IT Simple responde cualquier pedido interno del Cliente en 48 horas hábiles.",
+     "Prueba de exportación; procedimiento escrito."
+    ],
+    [
+     {
+      "runs": [
+       {
+        "t": "Art. 16 — Rectificación, actualización y supresión.",
+        "b": true
+       },
+       {
+        "t": " Dentro de los 5 días hábiles de la solicitud."
+       }
+      ]
+     },
+     "Acción \"Suprimir titular\" en el panel: borra sesión, pedidos, imágenes e historial, conserva sólo lo exigido por ley y una marca de exclusión para no volver a contactarlo. Rectificación de padrón desde la fuente del Cliente.",
+     "Prueba de supresión con datos sintéticos; registro de auditoría de la acción."
+    ],
+    [
+     {
+      "runs": [
+       {
+        "t": "Art. 21 — Registro de bases de datos.",
+        "b": true
+       },
+       {
+        "t": " El responsable debe inscribir sus bases ante la AAIP."
+       }
+      ]
+     },
+     "Keep IT Simple entrega en la primera semana la descripción técnica completa (finalidad, categorías, ubicación, medidas, transferencias) para que el Cliente incorpore el canal a su inscripción.",
+     "Descripción técnica entregada."
+    ],
+    [
+     {
+      "runs": [
+       {
+        "t": "Art. 25 — Prestación de servicios de tratamiento.",
+        "b": true
+       },
+       {
+        "t": " El encargado no puede aplicar los datos a otro fin ni cederlos; el contrato regula el tratamiento; los datos se destruyen al terminar."
+       }
+      ]
+     },
+     "Contrato de encargo con las cláusulas mínimas (objeto e instrucciones, confidencialidad, seguridad, subencargados, transferencias, asistencia, incidentes, devolución y destrucción, auditoría). Al fin del contrato: devolución en formato estructurado o destrucción certificada en 30 días.",
+     "Contrato firmado; certificado de destrucción al cierre."
+    ],
+    [
+     {
+      "runs": [
+       {
+        "t": "Art. 27 — Archivos con fines publicitarios.",
+        "b": true
+       },
+       {
+        "t": " El titular puede pedir en cualquier momento el retiro o bloqueo de su nombre."
+       }
+      ]
+     },
+     "Palabra BAJA en el chat: confirmación inmediata, exclusión de todo mensaje proactivo y marca que sobrevive a la depuración del resto de los datos.",
+     "Prueba de baja; registro de exclusiones."
+    ],
+    [
+     {
+      "runs": [
+       {
+        "t": "Res. AAIP 47/2018 — Medidas de seguridad recomendadas.",
+        "b": true
+       }
+      ]
+     },
+     "Adoptadas en los nueve dominios de la resolución (ver sección 6).",
+     "Matriz de controles."
+    ],
+    [
+     {
+      "runs": [
+       {
+        "t": "Res. AAIP 4/2019 — Decisiones automatizadas y transparencia.",
+        "b": true
+       }
+      ]
+     },
+     "El asistente se identifica como sistema automatizado y toda decisión con efecto para el titular (validación de receta, reclamo, reintegro) la toma una persona del Cliente.",
+     "Aviso inicial; circuito de derivación."
+    ]
+   ],
+   "caption": "Tabla 1. Obligaciones de la Ley 25.326 y compromiso asociado."
+  },
+  {
+   "type": "heading",
+   "level": 1,
+   "runs": [
+    {
+     "t": "3. Qué datos tratamos y por cuánto tiempo"
+    }
+   ]
+  },
+  {
+   "type": "table",
+   "role": "default",
+   "columns": [
+    "Dato",
+    "Para qué",
+    "Hasta cuándo"
+   ],
+   "rows": [
+    [
+     "Teléfono de WhatsApp",
+     "Identificar la conversación y avisar pedidos",
+     "Sesión 25 h; pedidos 7 días; historial según política del Cliente (sugerido 12 meses)"
+    ],
+    [
+     "Contenido de la conversación",
+     "Atender, cotizar, dar trazabilidad al operador",
+     "Ídem historial"
+    ],
+    [
+     "Nombre y número de socio (del padrón del Cliente)",
+     "Descuento de socio y saludo por nombre",
+     "Mientras el Cliente mantenga el padrón"
+    ],
+    [
+     "Dirección de envío",
+     "Entregar a domicilio",
+     "7 días; luego se enmascara"
+    ],
+    [
+     "Imagen de receta o credencial (dato de salud)",
+     "Que un operador habilitado la cotice",
+     "7 días, borrado automático"
+    ],
+    [
+     "Datos de pago",
+     "Confirmar el cobro",
+     "Sólo identificador de pago, marca y primeros 6 dígitos. Nunca el número completo"
+    ],
+    [
+     "Acciones de operadores",
+     "Auditoría",
+     "24 meses"
+    ]
+   ],
+   "caption": "Tabla 2. Datos tratados y retención."
+  },
+  {
+   "type": "paragraph",
+   "runs": [
+    {
+     "t": "Lo que no tratamos: ",
+     "b": true
+    },
+    {
+     "t": "no pedimos DNI, correo ni fecha de nacimiento; no leemos el DNI ni el domicilio del padrón para conversar; no conservamos audios; no guardamos datos de tarjeta; no usamos los datos para ningún fin propio ni los cruzamos con otros clientes."
+    }
+   ]
+  },
+  {
+   "type": "heading",
+   "level": 1,
+   "runs": [
+    {
+     "t": "4. Datos de salud: el compromiso específico"
+    }
+   ]
+  },
+  {
+   "type": "list",
+   "ordered": true,
+   "items": [
+    {
+     "text": "Una foto de receta o credencial se reconoce automáticamente y se guarda en un espacio temporal, accesible sólo con usuario autenticado del Cliente."
+    },
+    {
+     "text": "La conversación se deriva de inmediato a un operador. El asistente informa al cliente que una persona continuará y deja de responder de forma automática."
+    },
+    {
+     "text": "El operador cotiza y valida desde el panel. Ninguna decisión sobre la receta la toma el asistente."
+    },
+    {
+     "text": "A los 7 días la imagen se elimina. En el historial queda sólo la constancia de que hubo una derivación por receta."
+    },
+    {
+     "text": "Si el Cliente no es un establecimiento sanitario (por ejemplo, una mutual), el asistente no procesa recetas: deriva sin almacenar."
+    }
+   ]
+  },
+  {
+   "type": "heading",
+   "level": 1,
+   "runs": [
+    {
+     "t": "5. Derechos del titular: cómo se ejercen"
+    }
+   ]
+  },
+  {
+   "type": "table",
+   "role": "default",
+   "columns": [
+    "Derecho",
+    "Cómo",
+    "Plazo"
+   ],
+   "rows": [
+    [
+     "Información",
+     "Aviso en el primer mensaje",
+     "Inmediato"
+    ],
+    [
+     "Baja de comunicaciones",
+     "Escribir BAJA en el chat",
+     "Inmediato"
+    ],
+    [
+     "Acceso",
+     "Pedido al Cliente por WhatsApp, correo o el canal designado; exportación desde el panel",
+     "10 días corridos"
+    ],
+    [
+     "Rectificación / actualización",
+     "Pedido al Cliente; corrección en padrón o pedido",
+     "5 días hábiles"
+    ],
+    [
+     "Supresión",
+     "Pedido al Cliente; acción de supresión en el panel con auditoría",
+     "5 días hábiles"
+    ]
+   ],
+   "caption": "Tabla 3. Derechos del titular y plazos."
+  },
+  {
+   "type": "heading",
+   "level": 1,
+   "runs": [
+    {
+     "t": "6. Medidas de seguridad comprometidas"
+    }
+   ]
+  },
+  {
+   "type": "table",
+   "role": "default",
+   "columns": [
+    "Dominio",
+    "Compromiso"
+   ],
+   "rows": [
+    [
+     "Cifrado",
+     "TLS 1.2+ en toda comunicación. Discos cifrados por el proveedor de nube; imágenes de recetas y padrón cifrados además a nivel de aplicación con clave rotable."
+    ],
+    [
+     "Control de acceso",
+     "Usuarios individuales con contraseña y roles (administrador, dueño, operador). Sin claves compartidas. Sesiones con expiración. Baja inmediata al desvincular a un operador."
+    ],
+    [
+     "Auditoría",
+     "Registro de quién vio, tomó, cotizó, preparó, entregó, exportó o suprimió, con fecha y hora. Retención 24 meses."
+    ],
+    [
+     "Registros técnicos",
+     "Sin contenido de mensajes ni teléfonos completos (se conservan los últimos 4 dígitos)."
+    ],
+    [
+     "Respaldo",
+     "Copias diarias cifradas, retención 30 días, restauración probada trimestralmente."
+    ],
+    [
+     "Vulnerabilidades y cambios",
+     "Dependencias monitoreadas; parches críticos en 7 días; todo cambio pasa por control de versiones y pruebas; revisión de seguridad previa al go-live y anual."
+    ],
+    [
+     "Incidentes",
+     "Procedimiento documentado; notificación al Cliente dentro de las 72 horas de detectado, con naturaleza, alcance y medidas; simulacro antes del go-live."
+    ],
+    [
+     "Entornos",
+     "Desarrollo y pruebas separados de producción, sin datos reales de titulares."
+    ],
+    [
+     "Aislamiento",
+     "Cada Cliente en un despliegue propio con base de datos, caché y credenciales separadas."
+    ],
+    [
+     "Personal",
+     "Acuerdos de confidencialidad, acceso nominal y revocable, capacitación anual."
+    ]
+   ],
+   "caption": "Tabla 4. Medidas de seguridad por dominio."
+  },
+  {
+   "type": "heading",
+   "level": 1,
+   "runs": [
+    {
+     "t": "7. Terceros que intervienen"
+    }
+   ]
+  },
+  {
+   "type": "paragraph",
+   "runs": [
+    {
+     "t": "Lista cerrada. Cualquier cambio se notifica al Cliente con 30 días de antelación y derecho de objeción."
+    }
+   ]
+  },
+  {
+   "type": "table",
+   "role": "default",
+   "columns": [
+    "Tercero",
+    "Para qué",
+    "Qué recibe",
+    "País"
+   ],
+   "rows": [
+    [
+     "Meta (WhatsApp Business Platform)",
+     "Canal de mensajería",
+     "Teléfono, mensajes y archivos",
+     "EE. UU."
+    ],
+    [
+     "Anthropic / OpenAI",
+     "Interpretar mensajes y redactar respuestas; clasificar imágenes",
+     "Últimos turnos de la conversación, nombre y número de socio. Imágenes sólo si el Cliente habilita la lectura de recetas",
+     "EE. UU."
+    ],
+    [
+     "Groq",
+     "Transcribir audios",
+     "El audio, sin conservarlo",
+     "EE. UU."
+    ],
+    [
+     "Mercado Pago / Payway",
+     "Cobrar",
+     "Ítem, monto, token de tarjeta generado en el navegador",
+     "Argentina"
+    ],
+    [
+     "Proveedor de nube",
+     "Alojar el servicio",
+     "Todos los datos, cifrados en reposo",
+     "EE. UU. o región acordada"
+    ]
+   ],
+   "caption": "Tabla 5. Subencargados y datos que reciben."
+  },
+  {
+   "type": "paragraph",
+   "runs": [
+    {
+     "t": "Con todos ellos: contrato o términos que prohíben usar los datos para fines propios o entrenamiento de modelos, y cláusulas de transferencia internacional según la Disposición 60-E/2016."
+    }
+   ]
+  },
+  {
+   "type": "heading",
+   "level": 1,
+   "runs": [
+    {
+     "t": "8. Cuándo se cumple cada cosa"
+    }
+   ]
+  },
+  {
+   "type": "paragraph",
+   "runs": [
+    {
+     "t": "Los compromisos se completan durante la implementación y se verifican en el acta de aceptación. Ninguno queda para después del inicio en producción."
+    }
+   ]
+  },
+  {
+   "type": "table",
+   "role": "default",
+   "columns": [
+    "Momento",
+    "Compromisos que quedan cumplidos"
+   ],
+   "rows": [
+    [
+     "Semana 1",
+     "Contrato de encargo firmado; lista de subencargados aprobada; política de retención definida; descripción técnica para la inscripción ante la AAIP entregada; acuerdos de confidencialidad."
+    ],
+    [
+     "Semana 2",
+     "Aviso de privacidad y palabra BAJA operativos; usuarios y roles del panel; registro de auditoría."
+    ],
+    [
+     "Semana 3",
+     "Cifrado en reposo de imágenes y padrón; depuración automática del historial; acción de supresión y exportación por titular; revisión de seguridad."
+    ],
+    [
+     "Semana 4",
+     "Pruebas de ejercicio de derechos con datos sintéticos; simulacro de incidente; capacitación de operadores."
+    ],
+    [
+     "Go-live",
+     "Acta de aceptación con el checklist de 20 controles firmado por ambas partes."
+    ],
+    [
+     "Continuo",
+     "Revisión anual de medidas y subencargados; restauración trimestral; notificación de incidentes en 72 h; asistencia al Cliente en 48 h hábiles."
+    ]
+   ],
+   "caption": "Tabla 6. Cronograma de cumplimiento."
+  },
+  {
+   "type": "pagebreak"
+  },
+  {
+   "type": "heading",
+   "level": 1,
+   "runs": [
+    {
+     "t": "9. Firmas"
+    }
+   ]
+  },
+  {
+   "type": "paragraph",
+   "runs": [
+    {
+     "t": "Las partes suscriben la presente declaración como parte integrante de la propuesta de implementación de Remedia. Los compromisos aquí enunciados se incorporan al contrato de servicio y al contrato de encargo de tratamiento."
+    }
+   ]
+  },
+  {
+   "type": "table",
+   "role": "default",
+   "columns": [
+    "Por Keep IT Simple",
+    "Por [CLIENTE]"
+   ],
+   "rows": [
+    [
+     "Firma: ______________________________",
+     "Firma: ______________________________"
+    ],
+    [
+     "Aclaración: __________________________",
+     "Aclaración: __________________________"
+    ],
+    [
+     "Cargo: ______________________________",
+     "Cargo: ______________________________"
+    ],
+    [
+     "Fecha: ____ / ____ / ________",
+     "Fecha: ____ / ____ / ________"
+    ]
+   ],
+   "caption": "Tabla 7. Bloque de firmas."
+  }
+ ]
+}

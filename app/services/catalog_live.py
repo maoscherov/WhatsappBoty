@@ -82,22 +82,64 @@ async def aplicar_items_vivos(items: list[dict], branch_id: str, sku_svc=None) -
     return vivos
 
 
+async def lookup_vivo(branch: str, ids: list[str], timeout: float = OFERTA_TIMEOUT_SECS):
+    """
+    Consulta en vivo al ERP de la sucursal, por el canal que tenga:
+      - agente por WebSocket (farmacia / Observer), si está conectado;
+      - API REST de Mercurio (Mascotas del Oeste), si la sucursal es la de
+        Mercurio y hay clave — sin agente, el servidor pregunta directo.
+    Devuelve LookupResult o None (sin canal / timeout → seguir con el cache).
+    """
+    from app.services.agent_registry import LookupResult, get_agent_registry
+
+    registry = get_agent_registry()
+    if registry.connected(branch):
+        return await registry.lookup(branch, ids=list(ids), timeout=timeout)
+
+    from app.config import get_settings
+    settings = get_settings()
+    if settings.mercurio_api_key and branch == settings.mercurio_branch_id:
+        import asyncio
+        from app.services.mercurio_service import get_mercurio_client
+        cliente = get_mercurio_client()
+
+        async def _uno(sid: str):
+            deps = await cliente.stock(sid)
+            return sid, deps
+
+        try:
+            pares = await asyncio.wait_for(
+                asyncio.gather(*(_uno(str(i)) for i in ids), return_exceptions=True),
+                timeout=timeout)
+        except asyncio.TimeoutError:
+            logger.warning(f"Mercurio: stock en vivo sin respuesta en {timeout}s")
+            return None
+        items, missing = [], []
+        for par in pares:
+            if isinstance(par, Exception):
+                logger.warning(f"Mercurio: stock en vivo falló: {par}")
+                continue          # desconocido: no va a missing (fail-open)
+            sid, deps = par
+            if deps is None:
+                missing.append(sid)
+            else:
+                items.append({"external_id": sid, "stock": int(sum(deps.values())), "price": None})
+        return LookupResult(items=items, missing=missing)
+    return None
+
+
 async def lookup_y_aplicar(ids: list[str], timeout: float = OFERTA_TIMEOUT_SECS,
                            sku_svc=None) -> Optional[dict[str, dict]]:
     """
-    Pregunta al agente por `ids` y aplica la respuesta. None = sin agente,
-    sin sucursal ERP o timeout (seguir con el cache).
+    Pregunta al ERP por `ids` (agente o Mercurio) y aplica la respuesta.
+    None = sin canal, sin sucursal ERP o timeout (seguir con el cache).
     """
-    from app.services.agent_registry import get_agent_registry
     from app.services.catalog_source import resolver_branch_default
 
     branch = await resolver_branch_default()
     if not branch or not ids:
         return None
-    registry = get_agent_registry()
-    if not registry.connected(branch):
-        return None
-    res = await registry.lookup(branch, ids=list(ids), timeout=timeout)
+    res = await lookup_vivo(branch, list(ids), timeout=timeout)
     if res is None:
         return None
     vivos = await aplicar_items_vivos(res.items, branch, sku_svc=sku_svc)

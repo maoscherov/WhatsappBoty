@@ -45,12 +45,18 @@ async def resolver_branch_default(forzar: bool = False) -> Optional[str]:
       3. exactamente una sucursal activa con filas en catalog_items → esa
       4. varias → None + warning (hace falta el override); ninguna → None
     """
-    if not forzar and time.time() - _cache["at"] < _CACHE_SECS:
-        return _cache["branch_id"]
-
     from app.config import get_settings
     from app.services.db import get_db
     settings = get_settings()
+
+    # El override por variable no necesita DB ni cache (y así un cache viejo
+    # nunca lo pisa).
+    if settings.default_branch_id and await fuente_configurada() != "csv":
+        return settings.default_branch_id
+
+    if not forzar and time.time() - _cache["at"] < _CACHE_SECS:
+        return _cache["branch_id"]
+
     resultado: Optional[str] = None
 
     if await fuente_configurada() == "csv":
