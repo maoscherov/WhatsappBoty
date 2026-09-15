@@ -348,12 +348,9 @@ class TestFuenteCatalogo:
         monkeypatch.setattr(get_settings(), "default_branch_id", "otra-sucursal")
         assert await cs.resolver_branch_default(forzar=True) == "otra-sucursal"
 
-    async def test_dos_sucursales_requieren_override(
-            self, client, db, branch_token, monkeypatch):
-        import app.services.catalog_source as cs
+    async def _segunda_sucursal(self, client, branch_token):
         await client.post("/v1/sync/catalog", json=_batch([_item("p1")]),
                           headers=_auth(branch_token))
-        # Segunda sucursal con catálogo
         r = await client.post("/bo/branches",
                               json={"branch_id": "farmacia-correa", "nombre": "Correa"})
         tok2 = r.json()["token"]
@@ -361,10 +358,38 @@ class TestFuenteCatalogo:
         body["branch_id"] = "farmacia-correa"
         await client.post("/v1/sync/catalog", json=body, headers=_auth(tok2))
 
+    async def test_dos_sucursales_sin_previa_ni_override_es_csv(
+            self, client, db, branch_token, monkeypatch):
+        import app.services.catalog_source as cs
+        await self._segunda_sucursal(client, branch_token)
         async def _erp():
             return "erp"
         monkeypatch.setattr(cs, "fuente_configurada", _erp)
+        cs.invalidar_cache()
+        cs._cache["branch_id"] = None
+        monkeypatch.setitem(cs.estado_recarga, "branch_id", None)
         assert await cs.resolver_branch_default(forzar=True) is None
+        assert sorted(cs._conflicto) == ["farmacia-correa", BRANCH]
+
+    async def test_dos_sucursales_mantiene_la_que_venia(
+            self, client, db, branch_token, monkeypatch):
+        """Caso real 15/9: apareció una segunda sucursal (Mercurio) en la base
+        de la farmacia y el bot quedó SIN sucursal → se congeló. Ahora se queda
+        con la que ya usaba y reporta el conflicto."""
+        import app.services.catalog_source as cs
+        async def _erp():
+            return "erp"
+        monkeypatch.setattr(cs, "fuente_configurada", _erp)
+        await client.post("/v1/sync/catalog", json=_batch([_item("p1")]),
+                          headers=_auth(branch_token))
+        assert await cs.resolver_branch_default(forzar=True) == BRANCH   # única → se elige
+
+        await self._segunda_sucursal(client, branch_token)
+        assert await cs.resolver_branch_default(forzar=True) == BRANCH   # pegajosa
+        assert BRANCH in cs._conflicto and "farmacia-correa" in cs._conflicto
+        est = await cs.estado()
+        assert sorted(est["conflicto"]) == ["farmacia-correa", BRANCH]
+        assert "desfase_segs" in est and est["override"] is False
 
     async def test_estado_reporta_fuente(self, db, branch_token, monkeypatch):
         import app.services.catalog_source as cs

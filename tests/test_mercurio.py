@@ -227,6 +227,44 @@ class TestSync:
         assert row["active"] is False
 
 
+class TestConvivencia:
+    """Caso real 15/9: el sync de Mercurio corrió en el deploy de la farmacia,
+    creó una segunda sucursal y el bot dejó de recargar. No debe correr donde
+    ya hay otra sucursal con catálogo, salvo permiso explícito + override."""
+
+    async def _catalogo_de_otro(self, db):
+        from app.services.branch_auth import generar_token
+        from app.services.branch_store import BranchStore
+        from app.services.catalog_store import get_catalog_store
+        from app.models.sync import CatalogItemIn
+        _, h = generar_token()
+        await BranchStore(db).crear("farmacia-x", "Farmacia", h)
+        await get_catalog_store(db).upsert_items("farmacia-x", [CatalogItemIn(
+            external_id="1", hash="a" * 64, name="Ibupirac", price=None, stock=0)])
+
+    async def test_no_corre_si_hay_otra_sucursal(self, db, monkeypatch):
+        from app.services.mercurio_service import MercurioConvivenciaError
+        await self._catalogo_de_otro(db)
+        sync = MercurioSync(_cliente(), "mascotas-test", db)
+        with pytest.raises(MercurioConvivenciaError):
+            await sync.sincronizar()
+        # y no creó su sucursal ni escribió nada
+        assert await db.fetchrow("SELECT 1 FROM branches WHERE branch_id = 'mascotas-test'") is None
+
+    async def test_convive_solo_con_permiso_y_override(self, db, monkeypatch):
+        import app.services.catalog_source as cs
+        from app.config import get_settings
+        async def _csv():
+            return "csv"
+        monkeypatch.setattr(cs, "fuente_configurada", _csv)
+        await self._catalogo_de_otro(db)
+        s = get_settings()
+        monkeypatch.setattr(s, "mercurio_convivir", True)
+        monkeypatch.setattr(s, "default_branch_id", "farmacia-x")
+        rep = await MercurioSync(_cliente(), "mascotas-test", db).sincronizar()
+        assert rep["variantes"] == 22
+
+
 class TestStockVivoMercurio:
     async def test_lookup_vivo_usa_mercurio_sin_agente(self, monkeypatch):
         import app.services.mercurio_service as m

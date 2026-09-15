@@ -146,7 +146,7 @@ async def lifespan(app: FastAPI):
 async def _sync_mercurio_periodico():
     """Primer sync al arrancar (tras 10 s) y después cada intervalo. Nunca
     tumba el proceso: los errores quedan en el log y se reintenta al próximo."""
-    from app.services.mercurio_service import get_mercurio_sync
+    from app.services.mercurio_service import MercurioConvivenciaError, get_mercurio_sync
     logger = logging.getLogger("app.mercurio")
     settings = get_settings()
     await asyncio.sleep(10)
@@ -154,6 +154,12 @@ async def _sync_mercurio_periodico():
         try:
             await get_mercurio_sync().sincronizar()
         except asyncio.CancelledError:
+            return
+        except MercurioConvivenciaError as e:
+            # No reintentar: esta base es de otra sucursal. Queda el error en
+            # el log y en /bo/mercurio/estado; el operador saca la clave.
+            logger.error(f"Sync de Mercurio DESACTIVADO en este deploy: {e}")
+            get_mercurio_sync().ultimo = {"error": str(e)}
             return
         except Exception as e:
             logger.error(f"Sync de Mercurio falló: {e}")

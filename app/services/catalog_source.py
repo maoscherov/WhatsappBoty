@@ -20,6 +20,8 @@ _CACHE_SECS = 60.0
 
 # Estado observable (para /bo/catalogo/estado).
 estado_recarga: dict = {"fuente": "csv", "branch_id": None, "at": None, "total": 0}
+# Sucursales en conflicto (más de una con catálogo y sin override).
+_conflicto: list[str] = []
 
 
 def invalidar_cache():
@@ -75,12 +77,26 @@ async def resolver_branch_default(forzar: bool = False) -> Optional[str]:
                 GROUP BY b.branch_id
                 HAVING COUNT(c.external_id) > 0
                 """)
+            ids = [r["branch_id"] for r in rows]
             if len(rows) == 1:
-                resultado = rows[0]["branch_id"]
+                resultado = ids[0]
+                _conflicto.clear()
             elif len(rows) > 1:
-                logger.warning(
-                    f"Hay {len(rows)} sucursales con catálogo ERP y no está "
-                    "DEFAULT_BRANCH_ID: el bot sigue con el CSV hasta que se defina.")
+                # Caso real 15/9: el sync de Mercurio creó una segunda sucursal
+                # en la base de la farmacia y el bot quedó SIN sucursal → dejó
+                # de recargar y se congeló con datos viejos. Ahora es pegajoso:
+                # se mantiene la que ya venía usando y se grita el conflicto.
+                _conflicto[:] = ids
+                previa = _cache.get("branch_id") or estado_recarga.get("branch_id")
+                if previa in ids:
+                    resultado = previa
+                    logger.warning(
+                        f"Hay {len(rows)} sucursales con catálogo ERP ({ids}) y no está "
+                        f"DEFAULT_BRANCH_ID: el bot SIGUE con {previa}. Definí la variable.")
+                else:
+                    logger.error(
+                        f"Hay {len(rows)} sucursales con catálogo ERP ({ids}) y no está "
+                        "DEFAULT_BRANCH_ID ni una previa: el bot usa el CSV. Definí la variable.")
 
     _cache["branch_id"] = resultado
     _cache["at"] = time.time()
@@ -138,6 +154,15 @@ async def estado() -> dict:
                 }
         except Exception:
             pass
+    # Desfase memoria vs base: si el último push del agente es posterior a la
+    # última recarga, el bot está respondiendo con datos viejos.
+    desfase_segs = None
+    if ultimo_sync and ultimo_sync.get("last_catalog_push_at") and estado_recarga.get("at"):
+        try:
+            push = ultimo_sync["last_catalog_push_at"].timestamp()
+            desfase_segs = max(0, int(push - float(estado_recarga["at"])))
+        except Exception:
+            desfase_segs = None
     return {
         "fuente": estado_recarga.get("fuente") or "csv",
         "fuente_configurada": await fuente_configurada(),
@@ -145,4 +170,7 @@ async def estado() -> dict:
         "total_productos": total_mem,
         "ultima_recarga_at": estado_recarga.get("at"),
         "ultimo_sync": ultimo_sync,
+        "conflicto": list(_conflicto),          # >1 sucursal con catálogo sin override
+        "desfase_segs": desfase_segs,           # >0 = la memoria está atrás de la base
+        "override": bool(settings.default_branch_id),
     }

@@ -99,3 +99,14 @@ titulo_producto, descripcion_producto, meta_title, meta_descripcion, meta_keywor
 - Un deploy = una sucursal activa: Mascotas del Oeste corre en su propio
   servicio de Railway con su Postgres. Si conviviera con farmacia-mutual en la
   misma base, haría falta `DEFAULT_BRANCH_ID`.
+
+## Incidente 15/9 — convivencia de sucursales
+
+El sync corrió en el deploy de la farmacia (la clave estaba en Railway) y creó
+`mascotas-oeste` junto a `farmacia-mutual`: con dos sucursales y sin
+`DEFAULT_BRANCH_ID` el bot quedó sin sucursal activa, dejó de recargar y se
+congeló con datos viejos (OFF Defense: base stock 1, memoria 0). Correcciones:
+resolución pegajosa (mantiene la sucursal que venía usando y reporta
+`conflicto` en `/bo/catalogo/estado`), y `MercurioSync` aborta con
+`MercurioConvivenciaError` si la base ya tiene otra sucursal con catálogo,
+salvo `MERCURIO_CONVIVIR=true` + `DEFAULT_BRANCH_ID`.

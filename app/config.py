@@ -69,6 +69,7 @@ class Settings(BaseSettings):
     mercurio_branch_id: str = "mascotas-oeste"
     mercurio_sync_interval_secs: int = 900
     mercurio_pedidos_enabled: bool = False   # alta de pedidos: apagado hasta confirmar estados/cliente
+    mercurio_convivir: bool = False          # permitir el sync en una base que ya tiene otra sucursal (requiere DEFAULT_BRANCH_ID)
 
     class Config:
         env_file = ".env"

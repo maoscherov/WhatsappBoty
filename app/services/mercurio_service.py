@@ -48,6 +48,12 @@ class MercurioError(Exception):
     """Error de comunicación o de negocio con Mercurio."""
 
 
+class MercurioConvivenciaError(MercurioError):
+    """Esta base ya tiene otra sucursal con catálogo: el sync no debe correr acá.
+    Caso real 15/9: corrió en el deploy de la farmacia, creó una segunda
+    sucursal y el bot dejó de recargar su catálogo."""
+
+
 # ── Parseo de campos (todo llega como string) ─────────────────────────────────
 
 def parsear_stock_x_deposito(valor: Optional[str]) -> dict[str, float]:
@@ -236,10 +242,28 @@ class MercurioSync:
         self._db = db
         self.ultimo: dict = {}
 
+    async def verificar_convivencia(self):
+        """
+        Mercurio va en su propio deploy con su Postgres. Si en esta base hay
+        OTRA sucursal con catálogo (la farmacia), abortar: dos sucursales sin
+        DEFAULT_BRANCH_ID dejan al bot sin fuente y congelado. Se permite solo
+        con MERCURIO_CONVIVIR=true y DEFAULT_BRANCH_ID definido.
+        """
+        from app.config import get_settings
+        settings = get_settings()
+        rows = await self._db.fetch(
+            "SELECT DISTINCT branch_id FROM catalog_items WHERE branch_id <> $1", self._branch)
+        otras = [r["branch_id"] for r in rows]
+        if otras and not (settings.mercurio_convivir and settings.default_branch_id):
+            raise MercurioConvivenciaError(
+                f"esta base ya tiene catálogo de {otras}; el sync de Mercurio no corre acá "
+                "(usar un servicio propio, o MERCURIO_CONVIVIR=true + DEFAULT_BRANCH_ID)")
+
     async def asegurar_sucursal(self):
         """La sucursal Mercurio no tiene agente: se crea sola (token inútil)."""
         from app.services.branch_auth import generar_token
         from app.services.branch_store import get_branch_store
+        await self.verificar_convivencia()
         store = get_branch_store(self._db)
         if not await store.get(self._branch):
             _, token_hash = generar_token()
