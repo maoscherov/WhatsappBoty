@@ -17,6 +17,9 @@ pub const STALE_SYNC_MINUTES: i64 = 60;
 
 pub fn icon_state(r: Option<&StatusReport>, now: DateTime<Local>) -> IconState {
     let Some(r) = r else { return IconState::Down };
+    if r.paused {
+        return IconState::Warn;   // pausado a mano: amarillo, no rojo
+    }
     if matches!(r.erp_status.as_str(), "no_autorizado" | "inalcanzable" | "error") {
         return IconState::Err;
     }
@@ -124,6 +127,10 @@ pub fn menu_lines(r: Option<&StatusReport>, now: DateTime<Local>) -> Vec<String>
 pub fn tooltip(r: Option<&StatusReport>, now: DateTime<Local>) -> String {
     let t = match r {
         None => "Remedia · servicio detenido".to_string(),
+        Some(r) if r.paused => format!(
+            "Remedia · sincronización PAUSADA · último sync {}",
+            fmt_ago(r.last_sync_ok_at.as_deref(), now)
+        ),
         Some(r) => format!(
             "Remedia · ERP {} · sync {}",
             erp_status_text(&r.erp_status).split(' ').next().unwrap_or(""),

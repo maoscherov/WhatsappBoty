@@ -3,7 +3,7 @@
 
 use anyhow::Context;
 use rusqlite::{params, Connection, OptionalExtension};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -20,6 +20,8 @@ pub const META_LAST_SYNC_FETCHED: &str = "last_sync_fetched";
 pub const META_LAST_SYNC_CHANGED: &str = "last_sync_changed";
 pub const META_LAST_HEARTBEAT_ERROR: &str = "last_heartbeat_error";
 pub const META_METRICS_JSON: &str = "metrics_json";
+pub const META_LAST_FULL_LIVE: &str = "last_full_live_at";
+pub const META_PAUSED: &str = "paused";
 
 pub const KIND_CATALOG: &str = "catalog";
 pub const KIND_MANIFEST: &str = "manifest";
@@ -54,6 +56,11 @@ CREATE TABLE IF NOT EXISTS pending(
 CREATE TABLE IF NOT EXISTS meta(
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS live(
+    id       INTEGER PRIMARY KEY,
+    activo   INTEGER NOT NULL,
+    visto_at INTEGER NOT NULL
 );
 ";
 
@@ -135,6 +142,42 @@ impl State {
         }
         tx.commit()?;
         Ok(())
+    }
+
+    // ---- live: qué productos se verificaron en vivo y cuáles "están vivos" ----
+    // (stock o precio > 0 en la última lectura buena). Base del pase de verdad
+    // SELECTIVO (0.3.2): por ciclo se releen solo los activos y los nunca
+    // vistos; el resto, una vez por día.
+
+    pub fn live_marcar(&self, items: &[(i64, bool)]) -> anyhow::Result<()> {
+        let conn = self.lock();
+        let now = now_unix();
+        let tx = conn.unchecked_transaction()?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO live(id, activo, visto_at) VALUES(?1, ?2, ?3)
+                 ON CONFLICT(id) DO UPDATE SET activo = excluded.activo, visto_at = excluded.visto_at",
+            )?;
+            for (id, activo) in items {
+                stmt.execute(rusqlite::params![id, if *activo { 1 } else { 0 }, now])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn live_activos(&self) -> anyhow::Result<HashSet<i64>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare("SELECT id FROM live WHERE activo = 1")?;
+        let rows = stmt.query_map([], |r| r.get::<_, i64>(0))?;
+        rows.collect::<Result<HashSet<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn live_vistos(&self) -> anyhow::Result<HashSet<i64>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare("SELECT id FROM live")?;
+        let rows = stmt.query_map([], |r| r.get::<_, i64>(0))?;
+        rows.collect::<Result<HashSet<_>, _>>().map_err(Into::into)
     }
 
     pub fn count_items(&self) -> anyhow::Result<i64> {

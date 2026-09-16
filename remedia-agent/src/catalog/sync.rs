@@ -5,7 +5,7 @@ use crate::catalog::state::{
     State, KIND_CATALOG, META_CATALOG_COUNT, META_ERP_STATUS, META_ERP_VERSION,
     META_LAST_FULL_MANIFEST, META_LAST_HEARTBEAT, META_LAST_HEARTBEAT_ERROR, META_LAST_SYNC_AT,
     META_LAST_SYNC_CHANGED, META_LAST_SYNC_ERROR, META_LAST_SYNC_FETCHED, META_LAST_SYNC_OK,
-    META_METRICS_JSON,
+    META_LAST_FULL_LIVE, META_METRICS_JSON,
 };
 use crate::catalog::CatalogItem;
 use crate::config::Config;
@@ -19,7 +19,7 @@ use crate::remedia::client::{
 use crate::remedia::{RemediaClient, RemediaError};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tracing::{error, info, warn};
 
 pub const BATCH_SIZE: usize = 500;
@@ -59,14 +59,73 @@ pub struct SyncReport {
     /// conserva el último valor bueno). Incidente 15/9: se mandaban los ceros
     /// del lote y pisaban precio/stock reales.
     pub sin_verificar: usize,
+    /// Omitidos por el pase selectivo (no se releyeron a propósito).
+    pub omitidos: usize,
 }
 
 /// Resultado del pase de verdad: lo verificado (o sin nada que verificar) y
-/// lo que quedó sin poder leerse en vivo.
+/// lo que quedó sin poder leerse en vivo — o se omitió a propósito (pase
+/// selectivo). Ninguno de los `sin_verificar` se envía.
 #[derive(Debug, Default)]
 pub struct EnrichOutcome {
     pub productos: Vec<ProductoDTO>,
     pub sin_verificar: Vec<ProductoDTO>,
+    /// Cuántos de `sin_verificar` se omitieron por selección (no por falla).
+    pub omitidos: usize,
+    /// Fue un barrido completo (todos los productos consultados en vivo).
+    pub completo: bool,
+}
+
+/// Qué productos relee el pase de verdad en este ciclo.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LiveModo {
+    /// Todos (primera vez, `live_selective = false`, o la corrida diaria).
+    Completo,
+    /// Solo los activos (stock o precio > 0 en la última lectura) y los nunca
+    /// vistos. El resto queda como estaba en el servidor.
+    Selectivo,
+}
+
+/// Parte los productos del lote en (a verificar, omitidos) según el modo.
+pub fn seleccionar(
+    productos: Vec<ProductoDTO>,
+    modo: LiveModo,
+    activos: &HashSet<i64>,
+    vistos: &HashSet<i64>,
+) -> (Vec<ProductoDTO>, Vec<ProductoDTO>) {
+    if modo == LiveModo::Completo {
+        return (productos, Vec::new());
+    }
+    let mut a_verificar = Vec::new();
+    let mut omitidos = Vec::new();
+    for p in productos {
+        if activos.contains(&p.id_producto) || !vistos.contains(&p.id_producto) {
+            a_verificar.push(p);
+        } else {
+            omitidos.push(p);
+        }
+    }
+    (a_verificar, omitidos)
+}
+
+/// ¿Toca el barrido completo? Sin estado previo, con la selección apagada, o
+/// a la hora configurada si hoy todavía no se hizo.
+pub fn modo_para(cfg: &Config, ahora: chrono::DateTime<chrono::Local>, last_full: Option<&str>,
+                 vistos: usize) -> LiveModo {
+    if !cfg.erp.live_selective || vistos == 0 {
+        return LiveModo::Completo;
+    }
+    use chrono::{Datelike, Timelike};
+    let hoy_hecho = last_full
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|d| d.with_timezone(&chrono::Local).ordinal() == ahora.ordinal()
+                 && d.with_timezone(&chrono::Local).year() == ahora.year())
+        .unwrap_or(false);
+    if ahora.hour() as u8 == cfg.erp.live_full_hour && !hoy_hecho {
+        LiveModo::Completo
+    } else {
+        LiveModo::Selectivo
+    }
 }
 
 /// El adapter del ERP y el cliente de Remedia son intercambiables en caliente
@@ -158,7 +217,8 @@ impl SyncEngine {
         report.erp_status = "ok".into();
 
         let outcome = self.enrich_live(fetched.productos).await;
-        report.sin_verificar = outcome.sin_verificar.len();
+        report.sin_verificar = outcome.sin_verificar.len() - outcome.omitidos;
+        report.omitidos = outcome.omitidos;
         let items = merge_items(&outcome.productos, &extra);
         report.fetched = items.len() + outcome.sin_verificar.len();
 
@@ -166,7 +226,7 @@ impl SyncEngine {
         let delta: Vec<CatalogItem> = compute_delta(&items, &known).into_iter().cloned().collect();
         report.changed = delta.len();
         info!(fetched = report.fetched, changed = delta.len(), sin_verificar = report.sin_verificar,
-              lotes = fetched.lotes, "catálogo leído");
+              omitidos = report.omitidos, lotes = fetched.lotes, "catálogo leído");
 
         let (sent, queued) = self.push_items(delta, "delta").await?;
         report.sent_batches = sent;
@@ -374,9 +434,21 @@ impl SyncEngine {
     /// lote tal cual. `erp.live_enrich = false` lo apaga.
     pub async fn enrich_live(&self, productos: Vec<ProductoDTO>) -> EnrichOutcome {
         if !self.cfg.erp.live_enrich || productos.is_empty() {
-            return EnrichOutcome { productos, sin_verificar: Vec::new() };
+            return EnrichOutcome { productos, ..Default::default() };
         }
         let t = Instant::now();
+
+        // Modo: completo o selectivo (0.3.2), según estado y hora.
+        let vistos = self.state.live_vistos().unwrap_or_default();
+        let activos = self.state.live_activos().unwrap_or_default();
+        let last_full = self.state.get_meta(META_LAST_FULL_LIVE).ok().flatten();
+        let modo = modo_para(&self.cfg, chrono::Local::now(), last_full.as_deref(), vistos.len());
+        let total = productos.len();
+        let (productos, omitidos_v) = seleccionar(productos, modo, &activos, &vistos);
+        let omitidos = omitidos_v.len();
+        info!(?modo, a_verificar = productos.len(), omitidos, total, "pase de verdad: selección");
+
+        let pausa = Duration::from_millis(self.cfg.erp.live_pause_ms);
         let erp = self.erp();
         let sem = Arc::new(tokio::sync::Semaphore::new(self.cfg.erp.max_concurrency.max(1)));
         let mut live: HashMap<i64, ProductoDTO> = HashMap::with_capacity(productos.len());
@@ -394,7 +466,9 @@ impl SyncEngine {
             let chunk = chunk.to_vec();
             tasks.spawn(async move {
                 let _permit = sem.acquire_owned().await.expect("semaphore");
-                lookup_cb_bisect(erp.as_ref(), chunk).await
+                let r = lookup_cb_bisect(erp.as_ref(), chunk).await;
+                tokio::time::sleep(pausa).await;   // no saturar el ERP
+                r
             });
         }
         let cb_calls = tasks.len();
@@ -435,7 +509,9 @@ impl SyncEngine {
                 let sem = Arc::clone(&sem);
                 tasks.spawn(async move {
                     let _permit = sem.acquire_owned().await.expect("semaphore");
-                    (id, erp.lookup_by_id(id).await)
+                    let r = erp.lookup_by_id(id).await;
+                    tokio::time::sleep(pausa).await;   // no saturar el ERP
+                    (id, r)
                 });
             }
             let mut pendientes: HashSet<i64> = HashSet::new();
@@ -469,18 +545,31 @@ impl SyncEngine {
             }
         }
 
-        let (out, corregidos, sin_verificar) = apply_live(productos, &live, &id_fallidos);
+        let (out, corregidos, mut sin_verificar) = apply_live(productos, &live, &id_fallidos);
         if !sin_verificar.is_empty() {
             warn!(
-                sin_verificar = sin_verificar.len(),
+                fallidos = sin_verificar.len(),
                 "pase de verdad: productos sin dato en vivo NO se envían (el servidor conserva el último bueno)"
             );
         }
+        // Estado "live": qué se vio y qué está activo (stock o precio > 0).
+        let marcas: Vec<(i64, bool)> = live
+            .values()
+            .map(|p| (p.id_producto, p.stock_sucursal > 0.0 || p.precio > rust_decimal::Decimal::ZERO))
+            .collect();
+        if let Err(e) = self.state.live_marcar(&marcas) {
+            warn!(error = %e, "no se pudo guardar el estado live");
+        }
+        let completo = modo == LiveModo::Completo && !abortado && id_fallidos.is_empty();
+        if completo {
+            let _ = self.state.set_meta(META_LAST_FULL_LIVE, &now_rfc3339());
+        }
         info!(
-            cb_calls, id_calls, en_vivo = live.len(), corregidos, cb_fallidos,
-            sin_verificar = sin_verificar.len(), ms = elapsed_ms(t), "pase de verdad terminado"
+            ?modo, cb_calls, id_calls, en_vivo = live.len(), corregidos, cb_fallidos,
+            fallidos = sin_verificar.len(), omitidos, ms = elapsed_ms(t), "pase de verdad terminado"
         );
-        EnrichOutcome { productos: out, sin_verificar }
+        sin_verificar.extend(omitidos_v);
+        EnrichOutcome { productos: out, sin_verificar, omitidos, completo }
     }
 
     /// Barrido `GET /api/productos/{id}` por rango `1..=id_scan_max` con
@@ -656,6 +745,43 @@ mod tests {
         // El 4 no se envía: mandarlo en cero pisaría el dato bueno del servidor (15/9).
         assert_eq!(sin_verificar.len(), 1);
         assert_eq!(sin_verificar[0].id_producto, 4);
+    }
+
+    #[test]
+    fn seleccion_selectiva_relee_activos_y_nunca_vistos() {
+        let dto = |id: i64| ProductoDTO {
+            id_producto: id, troquel: 0, codigo_barras: vec![], descripcion: format!("P{id}"),
+            stock_sucursal: 0.0, precio: rust_decimal::Decimal::ZERO, categoria: String::new(),
+            rubro: String::new(), subrubro: String::new(), forma_farmaceutica: None,
+            acciones_terapeuticas: vec![], laboratorio: None, nombres_drogas: None, ofertas: vec![],
+            es_visible_en_venta: true, visibles_mismo_cb: None, baja: false,
+        };
+        let lote = vec![dto(1), dto(2), dto(3), dto(4)];
+        let activos: HashSet<i64> = [1].into();          // tuvo stock/precio
+        let vistos: HashSet<i64> = [1, 2, 3].into();     // 4 es nuevo
+        let (ver, omit) = seleccionar(lote.clone(), LiveModo::Selectivo, &activos, &vistos);
+        assert_eq!(ver.iter().map(|p| p.id_producto).collect::<Vec<_>>(), vec![1, 4]);
+        assert_eq!(omit.iter().map(|p| p.id_producto).collect::<Vec<_>>(), vec![2, 3]);
+        let (ver, omit) = seleccionar(lote, LiveModo::Completo, &activos, &vistos);
+        assert_eq!(ver.len(), 4);
+        assert!(omit.is_empty());
+    }
+
+    #[test]
+    fn modo_completo_sin_estado_o_a_la_hora() {
+        use chrono::TimeZone;
+        let mut cfg = Config::from_toml(
+            "branch_id = \"b\"\nremedia_url = \"https://r\"\ntoken = \"t\"\n[erp]\nbase_url = \"http://e\"\n",
+        ).unwrap();
+        let ahora = chrono::Local.with_ymd_and_hms(2026, 9, 16, 3, 10, 0).unwrap();
+        assert_eq!(modo_para(&cfg, ahora, None, 0), LiveModo::Completo);          // sin estado
+        assert_eq!(modo_para(&cfg, ahora, None, 100), LiveModo::Completo);        // 3 AM, nunca hecho
+        let hoy = chrono::Local.with_ymd_and_hms(2026, 9, 16, 3, 2, 0).unwrap().to_rfc3339();
+        assert_eq!(modo_para(&cfg, ahora, Some(&hoy), 100), LiveModo::Selectivo); // ya hecho hoy
+        let tarde = chrono::Local.with_ymd_and_hms(2026, 9, 16, 15, 0, 0).unwrap();
+        assert_eq!(modo_para(&cfg, tarde, None, 100), LiveModo::Selectivo);       // otra hora
+        cfg.erp.live_selective = false;
+        assert_eq!(modo_para(&cfg, tarde, Some(&hoy), 100), LiveModo::Completo);  // apagado
     }
 
     #[test]

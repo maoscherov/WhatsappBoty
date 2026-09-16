@@ -18,6 +18,11 @@ pub const IO_TIMEOUT_SECS: u64 = 15;
 pub enum Request {
     Status,
     SyncNow,
+    /// Pausa/reanuda los ciclos de sync (el servicio sigue; no pega al ERP).
+    /// Para cuando Observer está frágil, sin permisos de administrador.
+    SetPaused {
+        paused: bool,
+    },
     TestErp {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         url: Option<String>,
@@ -91,6 +96,9 @@ pub struct StatusReport {
     pub last_heartbeat_at: Option<String>,
     pub last_error: Option<String>,
     pub metrics: MetricsSnapshot,
+    /// Sync pausado desde el tray (0.3.2).
+    #[serde(default)]
+    pub paused: bool,
 }
 
 #[cfg(test)]

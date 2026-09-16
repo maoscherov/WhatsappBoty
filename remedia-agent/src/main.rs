@@ -92,7 +92,7 @@ fn main() -> anyhow::Result<()> {
             let token = de_previa("token", token, |c| c.token.clone())?;
             let erp = de_previa("erp", erp, |c| c.erp.base_url.clone())?;
             let branch = de_previa("branch", branch, |c| c.branch_id.clone())?;
-            install(&data_dir, token, erp, branch, remedia)
+            install(&data_dir, token, erp, branch, remedia, previa)
         }
         Cmd::Uninstall => {
             win::quit_trays();
@@ -144,7 +144,8 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
-fn install(data_dir: &std::path::Path, token: String, erp: String, branch: String, remedia: String) -> anyhow::Result<()> {
+fn install(data_dir: &std::path::Path, token: String, erp: String, branch: String, remedia: String,
+           previa: Option<Config>) -> anyhow::Result<()> {
     for (what, u) in [("--remedia", &remedia), ("--erp", &erp)] {
         if let Err(e) = remedia_agent::runtime::validate_url(u) {
             anyhow::bail!("{what}: {e}");
@@ -152,20 +153,26 @@ fn install(data_dir: &std::path::Path, token: String, erp: String, branch: Strin
     }
     let remedia = remedia.trim_end_matches('/').to_string();
     let erp = erp.trim_end_matches('/').to_string();
+    // Al actualizar se conserva el ajuste fino del ERP que la farmacia ya tenía
+    // (concurrencia, intervalo, pase selectivo): no se vuelve a los defaults.
+    let erp_prev = previa.as_ref().map(|c| c.erp.clone());
     let cfg = Config {
         branch_id: branch,
         remedia_url: remedia,
         token,
-        heartbeat_interval_secs: 300,
+        heartbeat_interval_secs: previa.as_ref().map(|c| c.heartbeat_interval_secs).unwrap_or(300),
         erp: ErpConfig {
             kind: "observer".into(),
             base_url: erp,
-            sync_interval_secs: 900,
-            max_concurrency: 4,
-            request_timeout_secs: 30,
-            daily_id_scan: false,
-            id_scan_max: 100_300,
-            live_enrich: true,
+            sync_interval_secs: erp_prev.as_ref().map(|e| e.sync_interval_secs).unwrap_or(900),
+            max_concurrency: erp_prev.as_ref().map(|e| e.max_concurrency).unwrap_or(4),
+            request_timeout_secs: erp_prev.as_ref().map(|e| e.request_timeout_secs).unwrap_or(30),
+            daily_id_scan: erp_prev.as_ref().map(|e| e.daily_id_scan).unwrap_or(false),
+            id_scan_max: erp_prev.as_ref().map(|e| e.id_scan_max).unwrap_or(100_300),
+            live_enrich: erp_prev.as_ref().map(|e| e.live_enrich).unwrap_or(true),
+            live_selective: erp_prev.as_ref().map(|e| e.live_selective).unwrap_or(true),
+            live_full_hour: erp_prev.as_ref().map(|e| e.live_full_hour).unwrap_or(3),
+            live_pause_ms: erp_prev.as_ref().map(|e| e.live_pause_ms).unwrap_or(50),
         },
         log: LogConfig { dir: data_dir.join("logs") },
     };

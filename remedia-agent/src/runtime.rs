@@ -15,6 +15,7 @@ use crate::metrics::{elapsed_ms, Metrics};
 use crate::remedia::ws::run_ws;
 use crate::remedia::RemediaClient;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -41,6 +42,8 @@ pub struct Runtime {
     sync_tx: mpsc::Sender<()>,
     ws: Mutex<Option<WsTask>>,
     shutdown: CancellationToken,
+    /// Sync pausado desde el tray (persiste en meta: sobrevive reinicios).
+    paused: AtomicBool,
 }
 
 impl Runtime {
@@ -61,6 +64,7 @@ impl Runtime {
             Arc::clone(&metrics),
         ));
         let (sync_tx, sync_rx) = mpsc::channel(1);
+        let paused = state.get_meta(crate::catalog::state::META_PAUSED).ok().flatten().as_deref() == Some("1");
         let rt = Arc::new(Runtime {
             data_dir: data_dir.to_path_buf(),
             config_path,
@@ -71,8 +75,23 @@ impl Runtime {
             sync_tx,
             ws: Mutex::new(None),
             shutdown,
+            paused: AtomicBool::new(paused),
         });
         Ok((rt, sync_rx))
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.paused.load(Ordering::Relaxed)
+    }
+
+    pub fn set_paused(&self, paused: bool) {
+        self.paused.store(paused, Ordering::Relaxed);
+        let _ = self.state.set_meta(crate::catalog::state::META_PAUSED, if paused { "1" } else { "0" });
+        if paused {
+            tracing::warn!("sincronización PAUSADA desde el tray: no se consulta el ERP hasta reanudar");
+        } else {
+            tracing::info!("sincronización reanudada desde el tray");
+        }
     }
 
     pub fn config(&self) -> Config {
@@ -127,6 +146,13 @@ impl Runtime {
                     Response { ok: true, warnings: vec!["Ya había una sincronización pedida".into()], ..Default::default() }
                 }
             }
+            Request::SetPaused { paused } => {
+                self.set_paused(paused);
+                if !paused {
+                    self.sync_now();   // reanudar = sincronizar ya
+                }
+                Response::ok()
+            }
             Request::TestErp { url } => self.test_erp(url.as_deref()).await,
             Request::TestRemedia { url, token } => self.test_remedia(url.as_deref(), token.as_deref()).await,
             Request::SetConfig { token, erp_url, remedia_url } => self.set_config(token, erp_url, remedia_url).await,
@@ -158,6 +184,7 @@ impl Runtime {
             last_heartbeat_at: get(META_LAST_HEARTBEAT)?,
             last_error,
             metrics: self.metrics.snapshot(),
+            paused: self.is_paused(),
         })
     }
 

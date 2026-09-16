@@ -121,7 +121,11 @@ pub async fn run_agent(data_dir: PathBuf, shutdown: CancellationToken) -> anyhow
 
     // Loop de sync: un ciclo ahora, después cada `sync_interval` o ante `sync_now`.
     loop {
-        run_cycle(&engine).await;
+        if rt.is_paused() {
+            info!("sincronización pausada desde el tray: ciclo omitido");
+        } else {
+            run_cycle(&engine).await;
+        }
         tokio::select! {
             _ = shutdown.cancelled() => break,
             _ = tokio::time::sleep(cfg.sync_interval()) => {}

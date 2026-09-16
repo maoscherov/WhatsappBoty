@@ -48,6 +48,7 @@ mod imp {
     pub enum JobKind {
         Refresh,
         SyncNow,
+        SetPaused,
         TestErp,
         ConfigTestRemedia,
         ConfigTestErp,
@@ -66,6 +67,8 @@ mod imp {
         _status: Vec<nwg::MenuItem>,
         _seps: Vec<nwg::MenuSeparator>,
         sync_now: nwg::MenuItem,
+        pause: nwg::MenuItem,
+        service_toggle: nwg::MenuItem,
         test_erp: nwg::MenuItem,
         detail: nwg::MenuItem,
         config: nwg::MenuItem,
@@ -240,6 +243,14 @@ mod imp {
                         Ok(r) => app.balloon("No se pudo pedir la sincronización", &r.error.unwrap_or_default()),
                         Err(e) => app.balloon("No se pudo pedir la sincronización", &e.to_string()),
                     },
+                    JobKind::SetPaused => {
+                        match job.result {
+                            Ok(r) if r.ok => app.balloon("Remedia Agent", "Listo. El estado se actualiza en unos segundos."),
+                            Ok(r) => app.balloon("No se pudo cambiar la pausa", &r.error.unwrap_or_default()),
+                            Err(e) => app.balloon("No se pudo cambiar la pausa", &e.to_string()),
+                        }
+                        App::spawn_job(app, JobKind::Refresh, Request::Status);
+                    }
                     JobKind::TestErp => App::show_test_erp(app, job.result),
                     JobKind::ConfigTestRemedia | JobKind::ConfigTestErp | JobKind::ConfigSave => {
                         let refresh = {
@@ -312,6 +323,7 @@ mod imp {
             let report = self.report.borrow();
             let lines = state::menu_lines(report.as_ref(), now);
             let running = report.is_some();
+            let paused = report.as_ref().is_some_and(|r| r.paused);
             drop(report);
 
             let mut menu = nwg::Menu::default();
@@ -333,6 +345,15 @@ mod imp {
                 Ok(it)
             };
             let sync_now = item("Sincronizar ahora", running)?;
+            let pause = item(
+                if paused { "Reanudar sincronización" } else { "Pausar sincronización (no toca el ERP)" },
+                running,
+            )?;
+            let service_toggle = item(
+                if running { "Detener el servicio… (pide permisos de administrador)" }
+                else { "Iniciar el servicio… (pide permisos de administrador)" },
+                true,
+            )?;
             let test_erp = item("Probar conexión con el ERP", running)?;
             let detail = item("Ver detalle…", true)?;
             let config = item("Configuración…", running)?;
@@ -343,7 +364,7 @@ mod imp {
             seps.push(sep2);
             let exit = item("Salir del icono (el servicio sigue)", true)?;
 
-            Ok(TrayMenu { _menu: menu, _status: status, _seps: seps, sync_now, test_erp, detail, config, logs, exit })
+            Ok(TrayMenu { _menu: menu, _status: status, _seps: seps, sync_now, pause, service_toggle, test_erp, detail, config, logs, exit })
         }
 
         fn show_menu(app: &Rc<App>) {
@@ -369,6 +390,8 @@ mod imp {
         fn on_menu(app: &Rc<App>, handle: nwg::ControlHandle) {
             enum Action {
                 SyncNow,
+                Pause,
+                ServiceToggle,
                 TestErp,
                 Detail,
                 Config,
@@ -380,6 +403,10 @@ mod imp {
                 let Some(m) = m.as_ref() else { return };
                 if handle == m.sync_now {
                     Action::SyncNow
+                } else if handle == m.pause {
+                    Action::Pause
+                } else if handle == m.service_toggle {
+                    Action::ServiceToggle
                 } else if handle == m.test_erp {
                     Action::TestErp
                 } else if handle == m.detail {
@@ -396,6 +423,25 @@ mod imp {
             };
             match action {
                 Action::SyncNow => App::spawn_job(app, JobKind::SyncNow, Request::SyncNow),
+                Action::Pause => {
+                    let paused = app.report.borrow().as_ref().is_some_and(|r| r.paused);
+                    App::spawn_job(app, JobKind::SetPaused, Request::SetPaused { paused: !paused });
+                }
+                Action::ServiceToggle => {
+                    // Detener/iniciar el servicio de Windows requiere elevación:
+                    // se pide por UAC con Start-Process -Verb RunAs (sc.exe).
+                    let running = app.report.borrow().is_some();
+                    let verbo = if running { "stop" } else { "start" };
+                    let comando = format!("Start-Process sc.exe -ArgumentList '{verbo} RemediaAgent' -Verb RunAs -Wait");
+                    let _ = std::process::Command::new("powershell.exe")
+                        .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &comando])
+                        .spawn();
+                    app.balloon(
+                        "Remedia Agent",
+                        if running { "Se pidió detener el servicio. Aceptá el permiso de Windows si aparece." }
+                        else { "Se pidió iniciar el servicio. Aceptá el permiso de Windows si aparece." },
+                    );
+                }
                 Action::TestErp => App::spawn_job(app, JobKind::TestErp, Request::TestErp { url: None }),
                 Action::Detail => App::show_detail(app),
                 Action::Config => App::show_config(app),

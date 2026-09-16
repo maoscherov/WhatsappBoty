@@ -40,6 +40,18 @@ pub struct ErpConfig {
     /// cero (hallazgo 11/9). Apagarlo vuelve al dato del lote tal cual.
     #[serde(default = "d_true")]
     pub live_enrich: bool,
+    /// Pase de verdad SELECTIVO (0.3.2): por ciclo se releen solo los productos
+    /// con stock o precio en la última lectura buena y los nunca vistos; el
+    /// barrido completo, una vez por día a `live_full_hour`. Baja la carga
+    /// sobre el ERP ~10 veces en horario de atención.
+    #[serde(default = "d_true")]
+    pub live_selective: bool,
+    /// Hora local (0-23) del barrido completo diario.
+    #[serde(default = "d_live_full_hour")]
+    pub live_full_hour: u8,
+    /// Pausa entre requests al ERP durante el pase de verdad (ms).
+    #[serde(default = "d_live_pause_ms")]
+    pub live_pause_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,6 +86,12 @@ fn d_id_scan_max() -> i64 {
 }
 fn d_true() -> bool {
     true
+}
+fn d_live_full_hour() -> u8 {
+    3
+}
+fn d_live_pause_ms() -> u64 {
+    50
 }
 fn d_log_dir() -> PathBuf {
     Config::default_data_dir().join("logs")
@@ -148,6 +166,9 @@ dir = "C:\\ProgramData\\RemediaAgent\\logs"
         assert!(!c.erp.daily_id_scan);
         assert_eq!(c.erp.id_scan_max, 100_300);
         assert!(c.erp.live_enrich);
+        assert!(c.erp.live_selective);
+        assert_eq!(c.erp.live_full_hour, 3);
+        assert_eq!(c.erp.live_pause_ms, 50);
         assert_eq!(c.heartbeat_interval_secs, 300);
         assert_eq!(c.log.dir, PathBuf::from(r"C:\ProgramData\RemediaAgent\logs"));
     }

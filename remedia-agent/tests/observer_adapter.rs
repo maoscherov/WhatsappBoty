@@ -128,6 +128,9 @@ async fn build_adapter_rejects_unknown_kind() {
         daily_id_scan: false,
         id_scan_max: 100,
         live_enrich: true,
+        live_selective: true,
+        live_full_hour: 3,
+        live_pause_ms: 50,
     };
     assert!(remedia_agent::erp::build_adapter(&cfg, Duration::from_secs(1)).is_err());
 }

@@ -203,3 +203,30 @@ El contrato del lado agente está en
   individuales OK → reiniciar ServiciosGestion".
 - **`install` sin retipear**: `--token`, `--erp` y `--branch` se toman del
   `agent.toml` existente si se omiten. Actualizar = `agent.exe install`.
+
+## 0.3.2 (16/9) — pase de verdad selectivo
+
+Para no castigar a Observer (~14.000 requests por ciclo en 0.3.x), el pase de
+verdad pasa a ser **selectivo**: por ciclo relee solo los productos que tuvieron
+stock o precio en la última lectura buena (los que la farmacia trabaja) y los
+que nunca se verificaron; el resto queda como está en el servidor. El **barrido
+completo** corre una vez por día a `live_full_hour` (default 3 AM). Entre
+requests hay una pausa (`live_pause_ms`, default 50 ms). El estado "live" (qué
+se vio y qué está activo) vive en `state.sqlite`, tabla `live`.
+
+```toml
+[erp]
+live_selective = true    # false = todos los productos en cada ciclo (0.3.1)
+live_full_hour = 3
+live_pause_ms = 50
+max_concurrency = 2      # recomendado mientras Observer esté frágil
+sync_interval_secs = 1800
+```
+
+Además en 0.3.2: el icono de la bandeja es la **R de Remedia** con el punto de
+estado (verde/amarillo/rojo/gris) abajo a la derecha; el menú suma **Pausar /
+Reanudar sincronización** (el servicio sigue, pero no consulta el ERP — para
+cuando Observer está frágil; persiste entre reinicios, el icono queda amarillo)
+y **Detener / Iniciar el servicio…** (pide permisos de administrador por UAC,
+usa `sc stop|start RemediaAgent`). Al actualizar con `install`, se conservan
+los ajustes finos del ERP (`max_concurrency`, `sync_interval_secs`, `live_*`).
