@@ -2646,3 +2646,144 @@ async def test_set_pending_limpia_espera_eleccion():
     await ss.save("549", s)
     await ss.set_pending("549", sku_id="B", sku_nombre="Koleston", precio=9555.28)
     assert "_espera_eleccion" not in await ss.get("549")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Feedback piloto 16/9 (filas 47, 48, 49, 54, 56, 59, 61)
+# ══════════════════════════════════════════════════════════════════════════════
+class TestFeedback16Sep:
+
+    # ── 56: pedir una persona con las frases de esta farmacia ─────────────────
+    @pytest.mark.parametrize("txt", ["derivame", "derivame por favor", "quiero atención personalizada",
+                                     "pasame con el equipo", "me podés derivar a atención personalizada?"])
+    def test_pide_humano_frases_farmacia(self, txt):
+        assert ch.pide_humano(txt) is True
+
+    @pytest.mark.parametrize("txt", ["quiero ibuprofeno", "el equipo de fútbol", "hola"])
+    def test_pide_humano_no_dispara(self, txt):
+        assert ch.pide_humano(txt) is False
+
+    # ── 54: anular el pedido en cualquier estado ──────────────────────────────
+    @pytest.mark.parametrize("txt", ["quiero anular el pedido", "cancelá la compra", "anulalo",
+                                     "cancelar", "dejá sin efecto el pedido", "no lo voy a comprar, anulá todo"])
+    def test_pide_cancelar(self, txt):
+        assert ch.pide_cancelar_pedido(txt) is True
+
+    @pytest.mark.parametrize("txt", ["no cancelo nada", "quiero ibuprofeno", "cancelación de la tarjeta",
+                                     "me anularon la receta en la obra social y necesito otra cosa"])
+    def test_no_pide_cancelar(self, txt):
+        assert ch.pide_cancelar_pedido(txt) is False
+
+    # ── 59: obras sociales ────────────────────────────────────────────────────
+    def test_pregunta_obra_social_detecta(self):
+        assert ch.pregunta_obra_social("trabajan con OSDE?") == "osde"
+        assert ch.pregunta_obra_social("¿aceptan Amur?") == "amur"
+        assert ch.pregunta_obra_social("tienen convenio con Swiss Medical") == "swiss medical"
+        assert ch.pregunta_obra_social("con qué obras sociales trabajan?") == ""
+        # Nombre no conocido pero en la lista de la farmacia
+        assert ch.pregunta_obra_social("atienden Mutual Carcarañá?", ["Mutual Carcarañá"]) == "Mutual Carcarañá"
+
+    @pytest.mark.parametrize("txt", ["quiero ibuprofeno", "hola", "cuánto sale el aveno", "gracias"])
+    def test_pregunta_obra_social_no_dispara(self, txt):
+        assert ch.pregunta_obra_social(txt) is None
+
+    def test_responder_obra_social_lista(self):
+        cfg = {"obras_sociales": "AMUR, PAMI\nMutual Carcarañá"}
+        si, ofrece = ch.responder_obra_social("amur", cfg)
+        assert "Sí" in si and "AMUR" in si and ofrece is False
+        no, ofrece = ch.responder_obra_social("osde", cfg)
+        assert "no tenemos convenio" in no and "osde" in no and ofrece is True
+        lista, _ = ch.responder_obra_social("", cfg)
+        assert "AMUR, PAMI, Mutual Carcarañá" in lista
+
+    def test_responder_obra_social_sin_lista_no_afirma(self):
+        txt, ofrece = ch.responder_obra_social("osde", {})
+        assert "equipo" in txt and ofrece is True
+        assert "Sí" not in txt
+
+    def test_responder_obra_social_mensajes_config(self):
+        cfg = {"obras_sociales": "AMUR", "obras_sociales_si_message": "Con {obra_social} sí."}
+        assert ch.responder_obra_social("amur", cfg)[0] == "Con AMUR sí."
+
+    # ── 61: bonos de laboratorio ──────────────────────────────────────────────
+    def test_pregunta_bono(self):
+        assert ch.pregunta_bono("trabajan el bono de Cassará?") == "Cassará"
+        assert ch.pregunta_bono("aceptan bonos Cepage") == "Cepage"
+        assert ch.pregunta_bono("trabajan bonos?") == ""
+        assert ch.pregunta_bono("quiero un ibuprofeno") is None
+
+    def test_responder_bono_por_foto(self):
+        cfg = {"bonos_laboratorios": "Cassará, Cepage"}
+        txt, trab = ch.responder_bono("Cassara", cfg, nombre="Mariela", por_foto=True)
+        assert trab is True and "Cassará" in txt and "Mariela" in txt
+        assert "$" not in txt
+        txt, trab = ch.responder_bono("Bagó", cfg, nombre="", por_foto=True)
+        assert trab is False and "confirmar" in txt
+        assert "{nombre}" not in txt
+
+    def test_responder_bono_por_texto(self):
+        cfg = {"bonos_laboratorios": "Cassará"}
+        txt, trab = ch.responder_bono("cassará", cfg)
+        assert trab and "foto" in txt.lower()
+        txt, trab = ch.responder_bono("", cfg)
+        assert not trab and "equipo" in txt
+
+    # ── 48: farmacéutico tras venta libre por síntoma ─────────────────────────
+    def test_agregar_oferta_farmaceutico(self):
+        out = ch.agregar_oferta_farmaceutico("Te puedo ofrecer Tafirol $1.200", {})
+        assert "farmacéutico" in out and out.startswith("Te puedo ofrecer")
+        ya = "Te ofrezco X. Si querés hablás con el farmacéutico."
+        assert ch.agregar_oferta_farmaceutico(ya, {}) == ya
+        assert ch.agregar_oferta_farmaceutico("Hola", {"sintoma_farmaceutico_message": " "}) == "Hola"
+
+    def test_acepta_farmaceutico(self):
+        assert ch.acepta_farmaceutico("farmacéutico") and ch.acepta_farmaceutico("Dale, con el farmaceutico")
+        assert not ch.acepta_farmaceutico("sí")
+
+    # ── 47: confirmar nombrando otro producto no confirma ─────────────────────
+    def test_entidad_contradice_pendiente(self):
+        assert ch.entidad_contradice_pendiente("bayaspirina", "Curflex Plus Com X30") is True
+        assert ch.entidad_contradice_pendiente("curflex", "Curflex Plus Com X30") is False
+        assert ch.entidad_contradice_pendiente("curflex x 30", "Curflex Plus Com X30") is False
+        assert ch.entidad_contradice_pendiente("curflex x 60", "Curflex Plus Com X30") is True
+        assert ch.entidad_contradice_pendiente(None, "Curflex") is False
+        assert ch.entidad_contradice_pendiente("curflex", None) is False
+
+    # ── 5: lo que no se entiende, se deriva ───────────────────────────────────
+    def test_debe_derivar_desconocido(self):
+        assert ch.debe_derivar_desconocido("desconocido", None, False, {}) is True
+        assert ch.debe_derivar_desconocido("desconocido", "aveno", False, {}) is False
+        assert ch.debe_derivar_desconocido("desconocido", None, True, {}) is False
+        assert ch.debe_derivar_desconocido("saludo", None, False, {}) is False
+        assert ch.debe_derivar_desconocido("desconocido", None, False, {"desconocido_mode": "responder"}) is False
+
+    # ── 49: no repetir "requiere receta" al derivar ───────────────────────────
+    async def test_derivar_receta_sin_repetir(self):
+        from app.services.session_service import SessionService
+        ss = SessionService("redis://127.0.0.1:1")
+        await ss.set_pending("548", sku_id="X1", sku_nombre="Ibuprofeno 600", precio=100.0,
+                             cantidad=1, opciones=[])
+        await ss.add_message("548", "assistant", "El Ibuprofeno 600 requiere receta 🩺, sale $100.")
+
+        class _FakeSku:
+            def get_by_id(self, sku_id):
+                return type("S", (), {"requiere_receta": "si"})()
+
+        msg = await ch.derivar_si_receta(_FakeSku(), ss, {"receta_mode": "conservador"}, "548", "X1",
+                                         nombre="Juan")
+        assert msg.startswith("Dale Juan, te paso")
+        assert "receta" not in msg.lower()
+
+    def test_receta_ya_mencionada(self):
+        assert ch.receta_ya_mencionada([{"role": "assistant", "content": "lleva receta"}]) is True
+        assert ch.receta_ya_mencionada([{"role": "assistant", "content": "lleva receta"},
+                                        {"role": "user", "content": "anotalo"}]) is True
+        assert ch.receta_ya_mencionada([{"role": "assistant", "content": "sale $100"}]) is False
+        assert ch.receta_ya_mencionada([]) is False
+
+    def test_defaults_config_nuevos(self):
+        from app.services import config_service as cs
+        defaults = getattr(cs, "DEFAULTS", None) or getattr(cs, "_DEFAULTS", None) or cs.DEFAULT_CONFIG
+        for k in ("obras_sociales", "bonos_laboratorios", "sintoma_farmaceutico_message",
+                  "desconocido_mode", "no_entendi_derivar_message", "bono_recibido_message"):
+            assert k in defaults

@@ -44,6 +44,9 @@ from app.services.metrics_store import get_metrics_store
 from app.services.checkout_helper import (
     confirmar_pedido, resolver_entrega, capturar_direccion,
     match_retiro, match_envio, pide_humano, derivar_si_receta, afirma_envio,
+    pide_cancelar_pedido, pregunta_obra_social, responder_obra_social, parsear_lista,
+    pregunta_bono, responder_bono, agregar_oferta_farmaceutico, acepta_farmaceutico,
+    entidad_contradice_pendiente, debe_derivar_desconocido,
     quiere_cambiar_direccion, extraer_direccion_de, contiene_link, pide_pago_manual,
     necesita_receta, pide_foto, quitar_frases_de_espera, pide_receta_nube,
     pregunta_descuento, aplicar_descuento_socio, pide_todos, texto_deictico,
@@ -649,6 +652,26 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 img = await deps["image"].analizar(image_bytes, mime)
                 _steps["vision_ms"] = int((_time.perf_counter() - _ti) * 1000)
 
+                # Bono de laboratorio (feedback 61, 16/9): antes caía como
+                # receta y el bot cotizaba renglón por renglón. Se contesta si
+                # trabajamos ese laboratorio (lista del backoffice) y se deriva.
+                if img["tipo"] == "bono":
+                    _intencion = "imagen_bono"
+                    await deps["session"].set_estado(phone, "operador", motivo="bono_foto")
+                    _socio_bn = deps["socios"].find_by_phone(phone)
+                    _nombre_bn = (_socio_bn.get("nombre", "").split() or [""])[0] if _socio_bn else ""
+                    _cfg_bn = await deps["config"].get_all()
+                    respuesta, _trab = responder_bono(img.get("items", ""), _cfg_bn,
+                                                      nombre=_nombre_bn, por_foto=True)
+                    logger.info(f"Bono por foto: lab={img.get('items')!r} trabajado={_trab}")
+                    _ts = _time.perf_counter()
+                    await deps["wa"].send_text(phone, respuesta)
+                    _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
+                    if not _img_ref:
+                        await deps["session"].add_message(phone, "user", "[bono recibido]")
+                    await deps["session"].add_message(phone, "assistant", respuesta)
+                    continue
+
                 # Receta, credencial o comprobante → derivar a una persona
                 # (nunca vender automático; un pago solo lo confirma un humano)
                 if img["tipo"] in ("receta", "credencial", "comprobante"):
@@ -991,6 +1014,71 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 await deps["session"].add_message(phone, "assistant", respuesta)
                 continue
 
+            # ── Aceptó hablar con el farmacéutico ofrecido (feedback 48) ─────
+            if session.get("farmaceutico_ofrecido"):
+                _s_fo = await deps["session"].get(phone)
+                _s_fo.pop("farmaceutico_ofrecido", None)
+                await deps["session"].save(phone, _s_fo)
+                if acepta_farmaceutico(texto):
+                    _intencion = "derivado_farmaceutico"
+                    await deps["session"].set_estado(phone, "operador", motivo="farmaceutico")
+                    _saludo = f"Dale {_nombre_socio}, " if _nombre_socio else "Dale, "
+                    respuesta = f"{_saludo}te paso con el farmacéutico. En un momento te contacta 🙌"
+                    _ts = _time.perf_counter()
+                    await deps["wa"].send_text(phone, respuesta)
+                    _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
+                    await deps["session"].add_message(phone, "user", texto)
+                    await deps["session"].add_message(phone, "assistant", respuesta)
+                    continue
+
+            # ── Anular/cancelar el pedido, en cualquier estado (feedback 54) ─
+            # Antes sólo se entendía dentro del flujo de entrega; fuera de él
+            # el bot volvía a buscar el producto ("requiere receta...").
+            if pide_cancelar_pedido(texto):
+                _intencion = "pedido_cancelado"
+                await deps["session"].clear_pending(phone)
+                _s_cx = await deps["session"].get(phone)
+                for _k in ("derivacion_ofrecida", "_espera_eleccion", "farmaceutico_ofrecido"):
+                    _s_cx.pop(_k, None)
+                await deps["session"].save(phone, _s_cx)
+                respuesta = "Listo, cancelamos el pedido."
+                _ts = _time.perf_counter()
+                await deps["wa"].send_text(phone, respuesta)
+                _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
+                await deps["session"].add_message(phone, "user", texto)
+                await deps["session"].add_message(phone, "assistant", respuesta)
+                continue
+
+            # ── Obras sociales / bonos: respuesta fija por lista (feedback 59, 61)
+            # El modelo contestaba de memoria (sí a OSDE, no a AMUR, al revés).
+            _cfg_os = await deps["config"].get_all()
+            _os_preg = pregunta_obra_social(texto, parsear_lista(_cfg_os.get("obras_sociales", "")))
+            _bono_preg = pregunta_bono(texto) if _os_preg is None else None
+            if _os_preg is not None or _bono_preg is not None:
+                if _os_preg is not None:
+                    _intencion = "consulta_obra_social"
+                    respuesta, _ofrece = responder_obra_social(_os_preg, _cfg_os)
+                    logger.info(f"Obra social consultada: {_os_preg!r} → ofrece_derivacion={_ofrece}")
+                else:
+                    _intencion = "consulta_bono"
+                    _socio_ob = deps["socios"].find_by_phone(phone)
+                    _nombre_ob = (_socio_ob.get("nombre", "").split() or [""])[0] if _socio_ob else ""
+                    respuesta, _trab = responder_bono(_bono_preg, _cfg_os, nombre=_nombre_ob)
+                    _ofrece = False
+                    if not _trab:
+                        # Laboratorio fuera de la lista: lo confirma una persona.
+                        await deps["session"].set_estado(phone, "operador", motivo="bono")
+                if _ofrece:
+                    _s_os = await deps["session"].get(phone)
+                    _s_os["derivacion_ofrecida"] = f"obra social {_os_preg or ''}".strip()[:60]
+                    await deps["session"].save(phone, _s_os)
+                _ts = _time.perf_counter()
+                await deps["wa"].send_text(phone, respuesta)
+                _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
+                await deps["session"].add_message(phone, "user", texto)
+                await deps["session"].add_message(phone, "assistant", respuesta)
+                continue
+
             # ── Estado: eligiendo modo de entrega (retiro / envío) ───────────
             if session.get("estado") == "esperando_entrega" and session.get("pending_sku_id"):
                 texto_lower = texto.lower().strip()
@@ -1204,6 +1292,17 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                                      "o preferís cambiar algo?")
                         logger.info(f"Confirmación bloqueada (mensaje arranca con 'no'): {texto[:40]!r}")
 
+                    # Nombra un producto que NO es el pendiente ("quiero el
+                    # curflex x 30" con Curflex Plus pendiente): no confirma,
+                    # es otro pedido — saltaba directo a la entrega (feedback 47).
+                    if confirmacion is True and sku_index is None and \
+                            entidad_contradice_pendiente(_entidad_nueva, session.get("pending_sku_nombre")):
+                        confirmacion = None
+                        if _intencion not in INTENCIONES_CON_SKU:
+                            _intencion = "pedido"
+                        logger.info(f"Confirmación bloqueada: nombra otro producto {_entidad_nueva!r} "
+                                    f"≠ {session.get('pending_sku_nombre')!r}")
+
                     # ── Paso 1: Si el usuario seleccionó una opción de la lista existente,
                     #    actualizar pending ANTES de evaluar confirmacion/cambio.
                     #    Esto resuelve "el 1 puede ser?" → seleccionar opción 1 sin buscar de nuevo.
@@ -1350,9 +1449,11 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
             # Base de conocimiento (RAG): preguntas generales sin producto →
             # responder con la info de la farmacia si hay algo relevante.
             _general = intencion == "desconocido" or (intencion == "consulta_abierta" and not entidad)
+            _tuvo_kb = False
             if _general and deps["rag"].enabled():
                 _kb = await deps["rag"].kb_search(texto, n=3)
                 if _kb:
+                    _tuvo_kb = True
                     _kb_txt = "\n\n".join(f"{d['titulo']}: {d['contenido']}".strip(": ") for d in _kb)
                     _ir_kb = await deps["intent"].procesar(
                         mensaje=texto,
@@ -1361,6 +1462,24 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                         contexto_kb=_kb_txt,
                     )
                     respuesta = _ir_kb.get("respuesta") or respuesta
+
+            # Lo que no se entiende se deriva (pedido de la farmacia 16/9):
+            # sin producto ni info de la base, una persona resuelve mejor que
+            # un "¿en qué te puedo ayudar?" en el aire.
+            _cfg_dk = await deps["config"].get_all()
+            if debe_derivar_desconocido(intencion, entidad, _tuvo_kb, _cfg_dk):
+                _intencion = "desconocido_derivado"
+                await deps["session"].set_estado(phone, "operador", motivo="no_entendido")
+                respuesta = _cfg_dk.get("no_entendi_derivar_message") or (
+                    "No estoy seguro de haberte entendido 🙏 Te paso con alguien del equipo "
+                    "que sigue con vos desde acá.")
+                logger.info(f"Desconocido derivado: {texto[:60]!r}")
+                _ts = _time.perf_counter()
+                await deps["wa"].send_text(phone, respuesta)
+                _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
+                await deps["session"].add_message(phone, "user", texto)
+                await deps["session"].add_message(phone, "assistant", respuesta)
+                continue
 
             # Derivar postventa a humano
             if intencion == "cambio_postventa":
@@ -1568,6 +1687,13 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                             deps["wa"], phone, resultados_sku,
                             producto_elegido, solicita_imagen, send_images_cfg,
                         )
+                        # Pedido por síntoma (feedback 48): tras ofrecer venta
+                        # libre, dejar a mano al farmacéutico.
+                        if intent_result.get("por_sintoma"):
+                            respuesta = agregar_oferta_farmaceutico(respuesta, _cfg_desc)
+                            _s_fo = await deps["session"].get(phone)
+                            _s_fo["farmaceutico_ofrecido"] = True
+                            await deps["session"].save(phone, _s_fo)
 
                 # Productos ADICIONALES del mismo mensaje ("...y unas gomitas y
                 # caramelos"): se buscan POR SEPARADO y su disponibilidad se

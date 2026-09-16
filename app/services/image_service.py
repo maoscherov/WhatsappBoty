@@ -6,6 +6,7 @@ que intent_service: si el proveedor primario falla (ej. sin crédito), cae al ot
 
 analizar() clasifica el tipo de imagen para que el webhook decida:
   - receta / credencial  → derivar a una persona (no vender automáticamente)
+  - bono                 → responder si se trabaja ese laboratorio y derivar (nunca cotizar)
   - producto             → seguir el flujo normal con el nombre extraído
   - otro                 → pedir que lo escriba
 """
@@ -26,10 +27,15 @@ _VISION_MODELS = {"anthropic": "claude-haiku-4-5-20251001", "openai": "gpt-4o"}
 _PROMPT = (
     "Analizá esta imagen enviada a una farmacia por WhatsApp y clasificala.\n"
     "Respondé SOLO con un JSON (sin texto extra) con este esquema:\n"
-    '{"tipo": "receta|credencial|comprobante|producto|otro", "items": "nombres separados por coma o vacío"}\n\n'
+    '{"tipo": "receta|bono|credencial|comprobante|producto|otro", "items": "nombres separados por coma o vacío"}\n\n'
     "- receta: es una receta o prescripción médica: manuscrita, impresa, o una "
     "captura de pantalla de una receta electrónica (app o portal de una obra "
     "social/prepaga con medicamentos recetados).\n"
+    "- bono: es un bono/cupón de descuento de un LABORATORIO (Cassará, Cepage, "
+    "Elea, Bagó, Roemmers...) para canjear en farmacia: suele tener el logo del "
+    "laboratorio, casilleros para marcar productos y un porcentaje o precio "
+    "bonificado. NO es una receta médica. En items poné SOLO el nombre del "
+    "laboratorio (ej: 'Cassará').\n"
     "- credencial: es una credencial/carnet de obra social o prepaga (PAMI, IOMA, etc.).\n"
     "- comprobante: es un comprobante de pago — transferencia bancaria, captura "
     "de una billetera virtual (Mercado Pago, etc.) o ticket/recibo de pago.\n"
@@ -147,7 +153,7 @@ class ImageService:
         except json.JSONDecodeError:
             return None
         tipo = str(data.get("tipo", "otro")).lower().strip()
-        if tipo not in ("receta", "credencial", "comprobante", "producto", "otro"):
+        if tipo not in ("receta", "bono", "credencial", "comprobante", "producto", "otro"):
             tipo = "otro"
         return {"tipo": tipo, "items": str(data.get("items", "")).strip()}
 

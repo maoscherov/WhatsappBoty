@@ -129,6 +129,50 @@ DEFAULTS: dict[str, str] = {
         "Justo me fijé y no nos queda stock de {producto}. "
         "¿Querés que lo consultemos con el equipo?"
     ),
+    # Feedback piloto 16/9 (fila 59): convenios con obras sociales. La lista la
+    # carga la farmacia (coma o renglón por obra social); la respuesta es fija,
+    # nunca la redacta el modelo (dijo "sí" a OSDE, "no" a AMUR, al revés).
+    "obras_sociales": "",
+    "obras_sociales_si_message": "Sí, trabajamos con {obra_social} 🙂 ¿Qué necesitás?",
+    "obras_sociales_no_message": (
+        "Por ahora no tenemos convenio con {obra_social}. ¿Querés que lo consulte "
+        "con el equipo por si hay alguna forma?"
+    ),
+    "obras_sociales_lista_message": "Trabajamos con: {lista}. ¿Con cuál sería?",
+    "obras_sociales_sin_lista_message": (
+        "Eso lo confirma el equipo. ¿Querés que te pase con alguien para que lo vea con vos?"
+    ),
+    # Fila 61: bonos de laboratorio (Cassará, Cepage...). Lista de
+    # laboratorios cuyos bonos se aceptan; la foto de un bono no se cotiza,
+    # se deriva. {laboratorio} {nombre}.
+    "bonos_laboratorios": "",
+    "bono_recibido_message": (
+        "¡Hola {nombre}! Sí, trabajamos los bonos de {laboratorio} 🙌 Te paso con "
+        "alguien del equipo que lo gestiona con vos."
+    ),
+    "bono_no_reconocido_message": (
+        "¡Hola {nombre}! Recibí tu bono 🙌 Te paso con alguien del equipo para "
+        "confirmar si lo trabajamos."
+    ),
+    "bono_consulta_si_message": (
+        "Sí, trabajamos los bonos de {laboratorio} 🙂 Mandame la foto del bono y te "
+        "paso con alguien del equipo que lo gestiona."
+    ),
+    "bono_consulta_no_message": (
+        "Eso lo confirma el equipo: te paso con alguien para que lo vea con vos 🙂"
+    ),
+    # Fila 48: pedido por síntoma ("algo para la gripe") → tras ofrecer venta
+    # libre, dejar a mano al farmacéutico. Vacío = apagado.
+    "sintoma_farmaceutico_message": (
+        "Si preferís, decime \"farmacéutico\" y te paso con el nuestro para que te oriente."
+    ),
+    # Lo que el bot no entiende se deriva ("derivar") en vez de improvisar
+    # ("responder" = comportamiento anterior).
+    "desconocido_mode": "derivar",
+    "no_entendi_derivar_message": (
+        "No estoy seguro de haberte entendido 🙏 Te paso con alguien del equipo "
+        "que sigue con vos desde acá."
+    ),
     "sin_stock_ofrecer_message": (
         "No me figura disponible en este momento 🙏 ¿Querés que lo consulte "
         "con el equipo para conseguírtelo o encargarlo?"

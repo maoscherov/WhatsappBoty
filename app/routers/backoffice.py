@@ -705,6 +705,19 @@ class ConfigUpdate(BaseModel):
     receta_recibida_message: str | None = None   # respuesta del bot al recibir una receta
     comprobante_recibido_message: str | None = None   # acuse al recibir un comprobante de pago
     imagen_no_reconocida_message: str | None = None   # imagen que el bot no reconoce → deriva
+    obras_sociales: str | None = None            # lista (coma/renglón) de obras sociales con convenio
+    obras_sociales_si_message: str | None = None       # {obra_social}
+    obras_sociales_no_message: str | None = None       # {obra_social}
+    obras_sociales_lista_message: str | None = None    # {lista}
+    obras_sociales_sin_lista_message: str | None = None
+    bonos_laboratorios: str | None = None        # lista de laboratorios cuyos bonos se aceptan
+    bono_recibido_message: str | None = None           # foto de bono, lab en la lista ({laboratorio} {nombre})
+    bono_no_reconocido_message: str | None = None      # foto de bono, lab fuera de la lista ({nombre})
+    bono_consulta_si_message: str | None = None        # pregunta por texto, lab en la lista
+    bono_consulta_no_message: str | None = None        # pregunta por texto, lab fuera de la lista
+    sintoma_farmaceutico_message: str | None = None    # cierre tras ofrecer venta libre por síntoma
+    desconocido_mode: str | None = None          # "derivar" | "responder"
+    no_entendi_derivar_message: str | None = None
     pedido_listo_retiro_message: str | None = None    # aviso "preparado" para retiro
     pedido_listo_envio_message: str | None = None     # aviso "preparado" para envío a domicilio
     contexto_reinicio_minutos: str | None = None  # pausa que arranca charla nueva ("0" = nunca)

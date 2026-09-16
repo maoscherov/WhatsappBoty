@@ -87,6 +87,12 @@ _HUMANO = [
     r"\bcon alguien\b",
     r"\batenci[oó]n humana\b",
     r"\bquiero hablar con\b",
+    # Feedback 56 (15/9): "derivame", "atención personalizada" (así la llama
+    # la farmacia en sus mensajes y los clientes la repiten) y "pasame con el
+    # equipo" no matcheaban y el bot repetía el mensaje de sin stock.
+    r"\bderiv(a|ame|arme|ar|anme|alo)\b",
+    r"\batenci[oó]n personalizada\b",
+    r"\b(hablar|pasame|pas[aá]s|pasar|paso|comunicar\w*|comunicame)\b.{0,20}\bequipo\b",
 ]
 
 
@@ -445,14 +451,29 @@ async def derivar_si_receta(sku_svc, session_svc, cfg: dict, phone: str, sku_id:
             return None
         # Hand-off limpio: sin producto pendiente (no se puede vender) y en
         # modo operador. Así no queda un pending que re-dispare la derivación.
+        # Feedback 49 (5/9): si el turno anterior ya le dijimos que lleva
+        # receta y ahora pide que se lo anotemos, "te derivo" alcanza —
+        # repetir "requiere receta" suena a que no lo escuchamos.
+        _ya_dicho = receta_ya_mencionada(_s.get("history") or [])
         await session_svc.clear_pending(phone)
         await session_svc.set_estado(phone, "operador", motivo="receta")
+        if _ya_dicho:
+            inicio = f"Dale {nombre}, te" if nombre else "Dale, te"
+            return f"{inicio} paso con alguien del equipo para gestionarlo con vos. ¡En un momento te contactamos!"
         inicio = f"{nombre}, ese" if nombre else "Ese"
         return (
             f"{inicio} producto requiere receta 🩺. Te paso con alguien del equipo "
             "para gestionarlo con vos. ¡En un momento te contactamos!"
         )
     return None
+
+
+def receta_ya_mencionada(history: list) -> bool:
+    """True si el último mensaje del bot ya avisó que el producto lleva receta."""
+    for m in reversed(history or []):
+        if m.get("role") == "assistant":
+            return "receta" in (m.get("content") or "").lower()
+    return False
 
 
 def aplicar_descuento_socio(resultados: list[dict], phone: str, cfg: dict,
@@ -946,3 +967,220 @@ async def capturar_direccion(
         payment_svc, session_svc, phone, session, "envio", direccion
     )
     return respuesta, "pedido_confirmado"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Feedback piloto 16/9 (filas 47, 48, 54, 59, 61): cancelación, obras sociales,
+# bonos, farmacéutico por síntoma, confirmación con producto distinto.
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── 54: "anular el pedido" en cualquier estado ────────────────────────────────
+# Antes "cancelar" sólo se entendía dentro del flujo de entrega; fuera de él
+# el bot lo tomaba como consulta nueva y volvía a buscar el producto.
+_CANCELAR_VERBO = r"\b(anul\w*|cancel\w*|dar de baja|d[ée] de baja|dejalo|dej[aá] sin efecto)\b"
+_CANCELAR_OBJ = r"\b(pedido|compra|orden|encargo|todo|eso|esto|lo)\b"
+_NO_CANCELA = [r"\bno\s+(lo\s+)?(anul|cancel)", r"\bcancelaci[oó]n de (la )?tarjeta\b"]
+
+
+def pide_cancelar_pedido(t: str) -> bool:
+    """True si el cliente pide anular/cancelar el pedido (en cualquier estado)."""
+    s = (t or "").strip().lower()
+    if not s or any(re.search(p, s) for p in _NO_CANCELA):
+        return False
+    if not re.search(_CANCELAR_VERBO, s):
+        return False
+    # Verbo + objeto en la misma frase, o un mensaje corto que es sólo el pedido.
+    return bool(re.search(_CANCELAR_OBJ, s)) or len(s.split()) <= 3
+
+
+def parsear_lista(valor: str) -> list[str]:
+    """Lista configurable en el backoffice: separada por coma, ; o salto de línea."""
+    return [x.strip() for x in re.split(r"[,;\n]+", valor or "") if x.strip()]
+
+
+def _norm(s: str) -> str:
+    s = (s or "").lower()
+    for a, b in (("á", "a"), ("é", "e"), ("í", "i"), ("ó", "o"), ("ú", "u"), ("ü", "u")):
+        s = s.replace(a, b)
+    return re.sub(r"[^a-z0-9ñ ]+", " ", s).strip()
+
+
+def _en_lista(nombre: str, lista: list[str]) -> Optional[str]:
+    """Devuelve el ítem de la lista que corresponde a `nombre` (tolerante), o None."""
+    n = _norm(nombre)
+    if not n:
+        return None
+    for item in lista:
+        i = _norm(item)
+        if not i:
+            continue
+        if n == i or n in i or i in n:
+            return item
+        # "swiss" vs "swiss medical": primera palabra de 4+ letras coincide
+        p, q = n.split()[0], i.split()[0]
+        if len(p) >= 4 and p == q:
+            return item
+    return None
+
+
+# ── 59: obras sociales — el modelo contestaba de memoria (dijo sí a OSDE) ──────
+_OS_CONOCIDAS = [
+    "osde", "pami", "ioma", "swiss medical", "galeno", "medife", "medifé", "omint",
+    "sancor", "sancor salud", "federada", "jerarquicos", "jerárquicos", "osecac", "ospe",
+    "osprera", "ospecon", "osuthgra", "ospim", "osdepym", "accord", "prevencion salud",
+    "prevención salud", "amur", "apross", "iapos", "osep", "ipross", "iosfa", "obsba",
+    "osseg", "ospat", "osplad", "union personal", "unión personal", "medicus",
+    "hospital italiano", "hominis", "luis pasteur", "avalian", "aca salud", "osfatun",
+    "ospia", "osmata", "osde binario", "scis", "prensa", "andar", "boreal",
+]
+_OS_GENERICO = r"\b(obras?\s*sociales?|prepagas?|mutual(es)?|convenios?|cobertura)\b"
+_OS_VERBO = r"\b(trabaj\w*|acept\w*|atiend\w*|atend\w*|tom\w*|recib\w*|tienen|tenes|tenés|hay|est[aá]n|convenio|cobertura|descuento)\b"
+
+
+def pregunta_obra_social(t: str, lista_cfg: list[str] | None = None) -> Optional[str]:
+    """
+    Detecta una pregunta del tipo "¿trabajan con OSDE?" / "¿aceptan mi obra
+    social?". Devuelve el nombre de la obra social mencionada, "" si la
+    pregunta es genérica ("¿con qué obras sociales trabajan?"), o None si el
+    mensaje no es sobre eso.
+    """
+    s = (t or "").strip()
+    if not s:
+        return None
+    n = _norm(s)
+    conocidas = list(_OS_CONOCIDAS) + [x for x in (lista_cfg or []) if x]
+    mencionada = None
+    for os_ in sorted(conocidas, key=len, reverse=True):
+        if re.search(rf"\b{re.escape(_norm(os_))}\b", n):
+            mencionada = os_
+            break
+    generico = bool(re.search(_OS_GENERICO, n))
+    if not mencionada and not generico:
+        return None
+    if not re.search(_OS_VERBO, n) and "?" not in s:
+        return None
+    # Datos propios del socio ("mi obra social es X, ¿me cubre?") también
+    # cuentan como consulta de convenio.
+    if mencionada:
+        return mencionada
+    # Genérico: intentar extraer un nombre propio después de "con"
+    m = re.search(r"\bcon\s+(la\s+|el\s+)?([A-ZÁÉÍÓÚ][\wÁÉÍÓÚáéíóú\.]{1,25}(?:\s+[A-ZÁÉÍÓÚ][\wáéíóú]{1,25})?)", s)
+    if m and _norm(m.group(2)) not in ("obra", "obras", "prepaga", "mutual"):
+        return m.group(2)
+    return ""
+
+
+def responder_obra_social(mencionada: str, cfg: dict) -> tuple[str, bool]:
+    """
+    Respuesta determinista sobre convenios: nunca la redacta el modelo.
+    Devuelve (texto, ofrece_derivacion). Con la lista vacía en config, no se
+    afirma nada: se deriva la consulta al equipo.
+    """
+    lista = parsear_lista(cfg.get("obras_sociales", ""))
+    if not lista:
+        return (cfg.get("obras_sociales_sin_lista_message")
+                or "Eso lo confirma el equipo. ¿Querés que te pase con alguien para que lo vea con vos?"), True
+    if not mencionada:
+        return (cfg.get("obras_sociales_lista_message")
+                or "Trabajamos con: {lista}. ¿Con cuál sería?").replace("{lista}", ", ".join(lista)), False
+    hit = _en_lista(mencionada, lista)
+    if hit:
+        return (cfg.get("obras_sociales_si_message")
+                or "Sí, trabajamos con {obra_social} 🙂 ¿Qué necesitás?").replace("{obra_social}", hit), False
+    return (cfg.get("obras_sociales_no_message")
+            or "Por ahora no tenemos convenio con {obra_social}. ¿Querés que lo consulte con el "
+               "equipo por si hay alguna forma?").replace("{obra_social}", mencionada.strip()), True
+
+
+# ── 61: bonos de laboratorio — la foto se cotizaba renglón por renglón ─────────
+_BONO_RE = r"\bbono(s)?\b"
+
+
+def pregunta_bono(t: str) -> Optional[str]:
+    """
+    "¿trabajan el bono de Cassará?" → "Cassará"; "¿trabajan bonos?" → "";
+    None si el mensaje no habla de bonos.
+    """
+    s = (t or "").strip()
+    if not re.search(_BONO_RE, s, re.IGNORECASE):
+        return None
+    m = re.search(r"\bbonos?\s+(de\s+|del\s+)?(?:laboratorio\s+)?([A-Za-zÁÉÍÓÚáéíóúñ][\wÁÉÍÓÚáéíóúñ\-]{2,30})",
+                  s, re.IGNORECASE)
+    if m:
+        lab = m.group(2)
+        if _norm(lab) not in ("que", "para", "con", "los", "las", "una", "uno", "este", "esta",
+                              "mi", "tu", "descuento", "laboratorio", "medicamento", "medicamentos"):
+            return lab
+    return ""
+
+
+def laboratorio_trabajado(lab: str, cfg: dict) -> Optional[str]:
+    """El laboratorio de la lista configurada que corresponde a `lab`, o None."""
+    return _en_lista(lab or "", parsear_lista(cfg.get("bonos_laboratorios", "")))
+
+
+def responder_bono(lab: str, cfg: dict, nombre: str = "", por_foto: bool = False) -> tuple[str, bool]:
+    """
+    Respuesta sobre bonos: (texto, trabajado). Se deriva SIEMPRE (lo gestiona
+    una persona); lo que cambia es si afirmamos que lo trabajamos.
+    """
+    hit = laboratorio_trabajado(lab, cfg)
+    if hit:
+        if por_foto:
+            txt = cfg.get("bono_recibido_message") or (
+                "¡Hola {nombre}! Sí, trabajamos los bonos de {laboratorio} 🙌 Te paso con "
+                "alguien del equipo que lo gestiona con vos.")
+        else:
+            txt = cfg.get("bono_consulta_si_message") or (
+                "Sí, trabajamos los bonos de {laboratorio} 🙂 Mandame la foto del bono y te "
+                "paso con alguien del equipo que lo gestiona.")
+        return personalizar_nombre(txt.replace("{laboratorio}", hit), nombre), True
+    if por_foto:
+        txt = cfg.get("bono_no_reconocido_message") or (
+            "¡Hola {nombre}! Recibí tu bono 🙌 Te paso con alguien del equipo para "
+            "confirmar si lo trabajamos.")
+    else:
+        txt = cfg.get("bono_consulta_no_message") or (
+            "Eso lo confirma el equipo: te paso con alguien para que lo vea con vos 🙂")
+    return personalizar_nombre(txt, nombre), False
+
+
+# ── 48b: pedido por síntoma → dejar a mano el farmacéutico ─────────────────────
+def agregar_oferta_farmaceutico(respuesta: str, cfg: dict) -> str:
+    extra = cfg.get("sintoma_farmaceutico_message") or (
+        "Si preferís, decime \"farmacéutico\" y te paso con el nuestro para que te oriente.")
+    if not extra.strip() or "farmac" in (respuesta or "").lower():
+        return respuesta
+    return f"{(respuesta or '').rstrip()}\n\n{extra}"
+
+
+def acepta_farmaceutico(t: str) -> bool:
+    return bool(re.search(r"\bfarmac[eé]utic[oa]s?\b", t or "", re.IGNORECASE))
+
+
+# ── 47: confirmar con un producto distinto en el mensaje no confirma ──────────
+def entidad_contradice_pendiente(entidad: Optional[str], pending_nombre: Optional[str]) -> bool:
+    """
+    "quiero el curflex x 30" con Curflex Plus pendiente: el cliente nombra un
+    producto y no coincide con el pendiente → NO es una confirmación, es otro
+    pedido (feedback 47: saltaba a "¿cómo lo querés recibir?").
+    """
+    if not entidad or not pending_nombre:
+        return False
+    from app.services.sku_service import nombre_coincide, numeros_de
+    if not nombre_coincide(entidad, pending_nombre):
+        return True
+    # Mismo nombre pero distinta presentación numérica ("x 30" vs "x 60").
+    n_ent, n_pend = set(numeros_de(entidad)), set(numeros_de(pending_nombre))
+    return bool(n_ent and n_pend and not (n_ent & n_pend))
+
+
+# ── 5: lo que no se entiende, se deriva ────────────────────────────────────────
+def debe_derivar_desconocido(intencion: str, entidad: Optional[str], tuvo_kb: bool, cfg: dict) -> bool:
+    """
+    Con intención "desconocido", sin producto y sin nada en la base de
+    conocimiento, el bot no tiene con qué responder: mejor una persona que un
+    "¿en qué te puedo ayudar?" en el aire (pedido de la farmacia, 16/9).
+    """
+    modo = (cfg.get("desconocido_mode") or "derivar").strip().lower()
+    return modo == "derivar" and intencion == "desconocido" and not (entidad or "").strip() and not tuvo_kb
