@@ -32,8 +32,15 @@ ON CONFLICT (branch_id, external_id) DO UPDATE SET
     rubro = EXCLUDED.rubro,
     subrubro = EXCLUDED.subrubro,
     therapeutic_actions = EXCLUDED.therapeutic_actions,
-    price = EXCLUDED.price,
-    stock = EXCLUDED.stock,
+    -- Defensa 15/9: precio NULL sobre un producto que ya tenía precio es la
+    -- firma de un dato NO leído (el agente no pudo verificar en vivo y mandó
+    -- los ceros del lote), no de un agotado real (que conserva el precio).
+    -- Se conservan precio y stock anteriores; el hash nuevo se guarda igual,
+    -- así el próximo dato real entra sin trabas.
+    price = CASE WHEN EXCLUDED.price IS NULL AND catalog_items.price IS NOT NULL
+                 THEN catalog_items.price ELSE EXCLUDED.price END,
+    stock = CASE WHEN EXCLUDED.price IS NULL AND catalog_items.price IS NOT NULL
+                 THEN catalog_items.stock ELSE EXCLUDED.stock END,
     visible = EXCLUDED.visible,
     active = EXCLUDED.active,
     requiere_receta = EXCLUDED.requiere_receta,

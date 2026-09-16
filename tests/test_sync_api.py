@@ -164,6 +164,35 @@ class TestSyncCatalog:
         assert flags["r2"] == "no"     # whitelist OTC blindada
         assert flags["r3"] == "no"
 
+    async def test_precio_null_no_pisa_un_precio_previo(self, client, db, branch_token):
+        """Caso real 15/9: Observer degradado, el pase de verdad no pudo leer el
+        Aveno F65 y el agente mandó los ceros del lote → $32.409/stock 2 pasó a
+        $0/0. Precio NULL sobre un producto con precio conserva precio y stock;
+        el dato real siguiente sí actualiza."""
+        await client.post("/v1/sync/catalog",
+                          json=_batch([_item("aveno", n=31, price="32409.09", stock=2)]),
+                          headers=_auth(branch_token))
+        r = await client.post("/v1/sync/catalog",
+                              json=_batch([_item("aveno", n=32, price=None, stock=0)]),
+                              headers=_auth(branch_token))
+        assert r.json()["upserted"] == 1            # el hash nuevo se guarda igual
+        row = await db.fetchrow(
+            "SELECT price::text AS price, stock, hash FROM catalog_items WHERE external_id = 'aveno'")
+        assert row["price"] == "32409.09" and row["stock"] == 2
+        assert row["hash"] == _hash(32)
+        # Un agotado REAL (precio presente, stock 0) sí se aplica
+        await client.post("/v1/sync/catalog",
+                          json=_batch([_item("aveno", n=33, price="32409.09", stock=0)]),
+                          headers=_auth(branch_token))
+        row = await db.fetchrow("SELECT stock FROM catalog_items WHERE external_id = 'aveno'")
+        assert row["stock"] == 0
+        # Y un producto que nunca tuvo precio puede seguir sin precio
+        await client.post("/v1/sync/catalog",
+                          json=_batch([_item("nuevo", n=34, price=None, stock=0)]),
+                          headers=_auth(branch_token))
+        row = await db.fetchrow("SELECT price FROM catalog_items WHERE external_id = 'nuevo'")
+        assert row["price"] is None
+
     async def test_precio_null_no_es_gratis(self, client, db, branch_token):
         r = await client.post("/v1/sync/catalog",
                               json=_batch([_item("sinprecio", n=21, price=None)]),
