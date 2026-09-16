@@ -128,8 +128,10 @@ async fn handle_lookup_times_out_per_request() {
     let cfg = config(&erp.uri());
     let adapter = build_adapter(&cfg.erp, Duration::from_secs(5)).unwrap();
     let t0 = std::time::Instant::now();
-    let (items, missing) = handle_lookup(adapter.as_ref(), vec!["1".into()], vec![], Duration::from_millis(300), 4).await;
+    let (items, missing, failed) = handle_lookup(adapter.as_ref(), vec!["1".into()], vec![], Duration::from_millis(300), 4).await;
     assert!(items.is_empty());
-    assert_eq!(missing, vec!["1"]);
+    // Timeout = no se pudo consultar: va a `failed`, no a `missing` (0.3.1).
+    assert!(missing.is_empty());
+    assert_eq!(failed, vec!["1"]);
     assert!(t0.elapsed() < Duration::from_secs(2), "{:?}", t0.elapsed());
 }

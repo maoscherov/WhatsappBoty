@@ -187,3 +187,19 @@ Los endpoints `/v1/sync/catalog`, `/v1/sync/full-manifest`,
 [`2026-09-08-remedia-sync-server-design.md`](../docs/superpowers/specs/2026-09-08-remedia-sync-server-design.md).
 El contrato del lado agente está en
 [`src/remedia/client.rs`](src/remedia/client.rs) / [`src/remedia/ws.rs`](src/remedia/ws.rs).
+
+## 0.3.1 (15/9) — no pisar con ceros, `missing` ≠ `failed`, diagnóstico
+
+- **Lo no verificado no se envía.** Si la lectura en vivo de un producto falla
+  (ERP degradado), el producto se **excluye del lote** y va al manifiesto con su
+  hash anterior: el servidor conserva el último valor bueno. Hasta 0.3.0 se
+  mandaban los ceros del lote y pisaban precio/stock reales (incidente 15/9,
+  Aveno F65 y OFF Defense a $0).
+- **Bisección de tandas de CB**: una tanda que el ERP rechaza con 500 se parte
+  en mitades hasta aislar el CB que rompe (menos productos "sin verificar").
+- **`lookup_result` separa `missing` (no existe) de `failed` (no se pudo
+  consultar)**; el servidor trata `failed` como desconocido y sigue con su cache.
+- **"Probar conexión" distingue** "ERP caído" de "API de lotes rota, consultas
+  individuales OK → reiniciar ServiciosGestion".
+- **`install` sin retipear**: `--token`, `--erp` y `--branch` se toman del
+  `agent.toml` existente si se omiten. Actualizar = `agent.exe install`.

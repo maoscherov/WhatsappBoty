@@ -22,15 +22,16 @@ struct Cli {
 enum Cmd {
     /// Escribe agent.toml, registra el servicio RemediaAgent (arranque automático) y lo inicia
     Install {
-        /// Token de la sucursal emitido por Remedia
+        /// Token de la sucursal emitido por Remedia. Al actualizar se puede
+        /// omitir: se reutiliza el del agent.toml existente.
         #[arg(long)]
-        token: String,
-        /// Base de la API del ERP, p. ej. http://192.168.1.156:60064
+        token: Option<String>,
+        /// Base de la API del ERP, p. ej. http://192.168.1.156:60064 (omitible al actualizar)
         #[arg(long)]
-        erp: String,
-        /// Identificador de la sucursal, p. ej. farmacia-xxx
+        erp: Option<String>,
+        /// Identificador de la sucursal, p. ej. farmacia-xxx (omitible al actualizar)
         #[arg(long)]
-        branch: String,
+        branch: Option<String>,
         /// Base de la API de Remedia, solo el servidor (sin /bo/...)
         #[arg(long, default_value = "https://cerca.remedia.ar")]
         remedia: String,
@@ -75,6 +76,22 @@ fn main() -> anyhow::Result<()> {
     match cli.cmd {
         Cmd::Install { token, erp, branch, remedia, data_dir } => {
             let data_dir = service::resolve_data_dir(data_dir);
+            // Actualización: lo que no se pasa se toma del agent.toml ya
+            // instalado (así no hay que retipear el token cada versión).
+            let previa = Config::load(&data_dir.join(CONFIG_FILE)).ok();
+            let de_previa = |campo: &str, v: Option<String>, f: fn(&Config) -> String| -> anyhow::Result<String> {
+                match (v, &previa) {
+                    (Some(v), _) => Ok(v),
+                    (None, Some(c)) => {
+                        println!("--{campo} omitido: se reutiliza el de {}", data_dir.join(CONFIG_FILE).display());
+                        Ok(f(c))
+                    }
+                    (None, None) => anyhow::bail!("falta --{campo} y no hay un agent.toml previo en {}", data_dir.display()),
+                }
+            };
+            let token = de_previa("token", token, |c| c.token.clone())?;
+            let erp = de_previa("erp", erp, |c| c.erp.base_url.clone())?;
+            let branch = de_previa("branch", branch, |c| c.branch_id.clone())?;
             install(&data_dir, token, erp, branch, remedia)
         }
         Cmd::Uninstall => {

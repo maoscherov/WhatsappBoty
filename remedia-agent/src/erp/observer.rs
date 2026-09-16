@@ -143,10 +143,42 @@ impl ErpAdapter for ObserverAdapter {
         Ok(FetchResult { productos: out, lotes })
     }
 
+    /// "Probar conexión": lee el lote 1 y, si falla con error HTTP, prueba la
+    /// consulta individual para distinguir "ERP caído" de "API de lotes rota"
+    /// (incidente 15/9: el lote daba 500 y las consultas por id andaban — el
+    /// remedio es reiniciar ServiciosGestion, no el agente).
     async fn probe(&self) -> Result<Probe, ErpError> {
-        match self.fetch_lote(1).await? {
-            Some(l) => Ok(Probe { productos: l.productos.len(), cantidad_lotes: l.cantidad_lotes }),
-            None => Ok(Probe::default()),
+        match self.fetch_lote(1).await {
+            Ok(Some(l)) => Ok(Probe { productos: l.productos.len(), cantidad_lotes: l.cantidad_lotes }),
+            Ok(None) => Ok(Probe::default()),
+            Err(e @ (ErpError::Unreachable(_) | ErpError::NotAuthorized)) => Err(e),
+            Err(e) => {
+                // ¿Responde la consulta individual? 200 o 404 = el endpoint vive.
+                let mut individual_ok = false;
+                for id in [1i64, 2, 3] {
+                    match self.lookup_by_id(id).await {
+                        Ok(_) => {
+                            individual_ok = true;
+                            break;
+                        }
+                        Err(ErpError::Unreachable(_)) | Err(ErpError::NotAuthorized) => break,
+                        Err(_) => continue,
+                    }
+                }
+                let detalle = if individual_ok {
+                    "La API de LOTES de Observer falla pero las consultas individuales responden: \
+                     hay que reiniciar el servicio ServiciosGestion en el servidor de Observer. \
+                     El agente no puede sincronizar hasta entonces."
+                } else {
+                    "Observer no responde ni por lotes ni por consulta individual: el servicio \
+                     ServiciosGestion está caído o a medio arrancar."
+                };
+                Err(match e {
+                    ErpError::Http(s, body) => ErpError::Http(s, format!("{detalle} ({body})")),
+                    ErpError::Decode(m) => ErpError::Decode(format!("{detalle} ({m})")),
+                    otro => otro,
+                })
+            }
         }
     }
 

@@ -48,43 +48,55 @@ pub enum Outbound {
     LookupResult {
         req_id: String,
         items: Vec<CatalogItem>,
+        /// El ERP dijo que NO existe (404 / no vino en la respuesta).
         missing: Vec<String>,
+        /// No se pudo consultar (timeout, 5xx): desconocido, NO "sin stock".
+        /// Hasta 0.3.0 iba mezclado en `missing` (incidente 11/9).
+        #[serde(default)]
+        failed: Vec<String>,
     },
     Ping,
     Pong,
 }
 
 /// Resuelve `barcodes` (en tandas de hasta 20) e `ids` (en paralelo acotado)
-/// contra el ERP con timeout por request. `missing` lista lo que no se encontró
-/// o falló, con los ids como string.
+/// contra el ERP con timeout por request. Devuelve `(items, missing, failed)`:
+/// `missing` = el ERP dijo que no existe; `failed` = no se pudo consultar
+/// (timeout / error), con ids y CB como string.
 pub async fn handle_lookup(
     erp: &dyn ErpAdapter,
     barcodes: Vec<String>,
     ids: Vec<i64>,
     timeout: Duration,
     max_concurrency: usize,
-) -> (Vec<CatalogItem>, Vec<String>) {
+) -> (Vec<CatalogItem>, Vec<String>, Vec<String>) {
     let mut items: Vec<CatalogItem> = Vec::new();
     let mut missing: Vec<String> = Vec::new();
+    let mut failed: Vec<String> = Vec::new();
 
     for chunk in barcodes.chunks(BARCODES_PER_REQUEST) {
         let found = match tokio::time::timeout(timeout, erp.lookup_by_barcodes(chunk)).await {
-            Ok(Ok(v)) => v,
+            Ok(Ok(v)) => Some(v),
             Ok(Err(e)) => {
                 warn!(error = %e, "lookup por CB falló");
-                Vec::new()
+                None
             }
             Err(_) => {
                 warn!("lookup por CB: timeout de {timeout:?}");
-                Vec::new()
+                None
             }
         };
-        for cb in chunk {
-            if !found.iter().any(|p| p.codigo_barras.iter().any(|c| c == cb)) {
-                missing.push(cb.clone());
+        match found {
+            Some(found) => {
+                for cb in chunk {
+                    if !found.iter().any(|p| p.codigo_barras.iter().any(|c| c == cb)) {
+                        missing.push(cb.clone());
+                    }
+                }
+                items.extend(found.iter().map(CatalogItem::from_dto));
             }
+            None => failed.extend(chunk.iter().cloned()),
         }
-        items.extend(found.iter().map(CatalogItem::from_dto));
     }
 
     // Lookups por id en paralelo acotado por semáforo. Se usa `join_all` sobre
@@ -111,15 +123,15 @@ pub async fn handle_lookup(
             Ok(Ok(None)) => missing.push(id.to_string()),
             Ok(Err(e)) => {
                 warn!(id, error = %e, "lookup por id falló");
-                missing.push(id.to_string());
+                failed.push(id.to_string());
             }
             Err(_) => {
                 warn!(id, "lookup por id: timeout");
-                missing.push(id.to_string());
+                failed.push(id.to_string());
             }
         }
     }
-    (items, missing)
+    (items, missing, failed)
 }
 
 /// Loop de conexión. Termina solo cuando `shutdown` se cancela.
@@ -233,11 +245,11 @@ async fn connect_and_serve(
                             Inbound::Lookup { req_id, barcodes, ids } => {
                                 debug!(req_id, barcodes = barcodes.len(), ids = ids.len(), "lookup");
                                 let t = Instant::now();
-                                let (items, missing) = handle_lookup(
+                                let (items, missing, failed) = handle_lookup(
                                     erp.as_ref(), barcodes, ids, LOOKUP_TIMEOUT, cfg.erp.max_concurrency,
                                 ).await;
                                 metrics.record_lookup(elapsed_ms(t));
-                                let out = Outbound::LookupResult { req_id, items, missing };
+                                let out = Outbound::LookupResult { req_id, items, missing, failed };
                                 tx.send(Message::Text(serde_json::to_string(&out)?)).await?;
                             }
                         }
@@ -270,8 +282,9 @@ mod tests {
     #[test]
     fn serializes_outbound_ops() {
         assert_eq!(serde_json::to_string(&Outbound::Ping).unwrap(), r#"{"op":"ping"}"#);
-        let v = serde_json::to_value(Outbound::LookupResult { req_id: "a".into(), items: vec![], missing: vec!["1".into()] }).unwrap();
+        let v = serde_json::to_value(Outbound::LookupResult { req_id: "a".into(), items: vec![], missing: vec!["1".into()], failed: vec!["2".into()] }).unwrap();
         assert_eq!(v["op"], "lookup_result");
         assert_eq!(v["missing"][0], "1");
+        assert_eq!(v["failed"][0], "2");
     }
 }

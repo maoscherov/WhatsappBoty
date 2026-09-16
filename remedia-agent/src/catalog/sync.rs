@@ -55,6 +55,18 @@ pub struct SyncReport {
     pub sent_batches: usize,
     pub queued_batches: usize,
     pub flushed_batches: usize,
+    /// Productos cuyo dato en vivo no se pudo leer: NO se envían (el servidor
+    /// conserva el último valor bueno). Incidente 15/9: se mandaban los ceros
+    /// del lote y pisaban precio/stock reales.
+    pub sin_verificar: usize,
+}
+
+/// Resultado del pase de verdad: lo verificado (o sin nada que verificar) y
+/// lo que quedó sin poder leerse en vivo.
+#[derive(Debug, Default)]
+pub struct EnrichOutcome {
+    pub productos: Vec<ProductoDTO>,
+    pub sin_verificar: Vec<ProductoDTO>,
 }
 
 /// El adapter del ERP y el cliente de Remedia son intercambiables en caliente
@@ -145,14 +157,16 @@ impl SyncEngine {
         }
         report.erp_status = "ok".into();
 
-        let productos = self.enrich_live(fetched.productos).await;
-        let items = merge_items(&productos, &extra);
-        report.fetched = items.len();
+        let outcome = self.enrich_live(fetched.productos).await;
+        report.sin_verificar = outcome.sin_verificar.len();
+        let items = merge_items(&outcome.productos, &extra);
+        report.fetched = items.len() + outcome.sin_verificar.len();
 
         let known = self.state.known_hashes()?;
         let delta: Vec<CatalogItem> = compute_delta(&items, &known).into_iter().cloned().collect();
         report.changed = delta.len();
-        info!(fetched = items.len(), changed = delta.len(), lotes = fetched.lotes, "catálogo leído");
+        info!(fetched = report.fetched, changed = delta.len(), sin_verificar = report.sin_verificar,
+              lotes = fetched.lotes, "catálogo leído");
 
         let (sent, queued) = self.push_items(delta, "delta").await?;
         report.sent_batches = sent;
@@ -264,17 +278,28 @@ impl SyncEngine {
         })?;
         // Mismos datos (y hashes) que el delta: si no, el manifiesto pediría
         // reenviar todo lo corregido en cada corrida.
-        let productos = self.enrich_live(fetched.productos).await;
-        let items = merge_items(&productos, &[]);
-        let current: HashSet<&str> = items.iter().map(|i| i.external_id.as_str()).collect();
+        let outcome = self.enrich_live(fetched.productos).await;
+        let items = merge_items(&outcome.productos, &[]);
+        let known = self.state.known_hashes()?;
+        // Lo que no se pudo verificar en vivo va al manifiesto con su hash
+        // ANTERIOR (así el servidor no lo desactiva ni pide reenviarlo); si
+        // nunca se envió, se omite y entrará en un ciclo sano.
+        let mut entries: Vec<ManifestEntry> = items
+            .iter()
+            .map(|i| ManifestEntry { external_id: i.external_id.clone(), hash: i.hash.clone() })
+            .collect();
+        for p in &outcome.sin_verificar {
+            let id = p.id_producto.to_string();
+            if let Some(h) = known.get(&id) {
+                entries.push(ManifestEntry { external_id: id, hash: h.clone() });
+            }
+        }
+        let current: HashSet<String> = entries.iter().map(|e| e.external_id.clone()).collect();
 
         let manifest = FullManifest {
             branch_id: self.cfg.branch_id.clone(),
             generated_at: now_rfc3339(),
-            items: items
-                .iter()
-                .map(|i| ManifestEntry { external_id: i.external_id.clone(), hash: i.hash.clone() })
-                .collect(),
+            items: entries,
         };
         let resp = self
             .remedia()
@@ -282,11 +307,9 @@ impl SyncEngine {
             .await
             .map_err(|e| anyhow::anyhow!("full-manifest: {e}"))?;
 
-        let stale: Vec<String> = self
-            .state
-            .known_hashes()?
+        let stale: Vec<String> = known
             .into_keys()
-            .filter(|id| !current.contains(id.as_str()))
+            .filter(|id| !current.contains(id))
             .collect();
         if !stale.is_empty() {
             info!(count = stale.len(), "productos que ya no están en el ERP, se podan del estado local");
@@ -349,17 +372,20 @@ impl SyncEngine {
     /// min por ciclo, dentro del intervalo de 15. Best-effort: lo que falla
     /// conserva el dato del lote; ERP inalcanzable o 401 aborta y devuelve el
     /// lote tal cual. `erp.live_enrich = false` lo apaga.
-    pub async fn enrich_live(&self, productos: Vec<ProductoDTO>) -> Vec<ProductoDTO> {
+    pub async fn enrich_live(&self, productos: Vec<ProductoDTO>) -> EnrichOutcome {
         if !self.cfg.erp.live_enrich || productos.is_empty() {
-            return productos;
+            return EnrichOutcome { productos, sin_verificar: Vec::new() };
         }
         let t = Instant::now();
         let erp = self.erp();
         let sem = Arc::new(tokio::sync::Semaphore::new(self.cfg.erp.max_concurrency.max(1)));
         let mut live: HashMap<i64, ProductoDTO> = HashMap::with_capacity(productos.len());
-        let mut fallidos = 0usize;
+        let mut cb_fallidos = 0usize;
+        let mut abortado = false;
 
-        // 1) Por código de barras, de a LIVE_CB_CHUNK.
+        // 1) Por código de barras, de a LIVE_CB_CHUNK, con bisección: una tanda
+        //    que el ERP rechaza (500) se parte en mitades hasta aislar el CB
+        //    que rompe, así casi todo se resuelve por la vía barata.
         let cbs: Vec<String> = productos.iter().flat_map(|p| p.codigo_barras.iter().cloned()).collect();
         let mut tasks = tokio::task::JoinSet::new();
         for chunk in cbs.chunks(LIVE_CB_CHUNK) {
@@ -368,67 +394,93 @@ impl SyncEngine {
             let chunk = chunk.to_vec();
             tasks.spawn(async move {
                 let _permit = sem.acquire_owned().await.expect("semaphore");
-                erp.lookup_by_barcodes(&chunk).await
+                lookup_cb_bisect(erp.as_ref(), chunk).await
             });
         }
         let cb_calls = tasks.len();
         while let Some(res) = tasks.join_next().await {
             match res {
-                Ok(Ok(found)) => {
+                Ok(Ok((found, fallidos))) => {
+                    cb_fallidos += fallidos.len();
                     for p in found {
                         live.insert(p.id_producto, p);
                     }
                 }
-                Ok(Err(e @ (ErpError::Unreachable(_) | ErpError::NotAuthorized))) => {
-                    tasks.abort_all();
-                    warn!(error = %e, "pase de verdad abortado (CB): se usa el dato del lote");
-                    return productos;
-                }
                 Ok(Err(e)) => {
-                    fallidos += 1;
-                    warn!(error = %e, "pase de verdad: tanda de CB omitida");
+                    // Unreachable / NotAuthorized: el ERP no está. Nada de lo
+                    // que falte se verifica → nada de eso se envía.
+                    tasks.abort_all();
+                    warn!(error = %e, "pase de verdad abortado (CB): lo no verificado no se envía");
+                    abortado = true;
+                    break;
                 }
-                Err(_) => fallidos += 1,
+                Err(_) => cb_fallidos += 1,
             }
         }
 
-        // 2) Los que no aparecieron (sin CB, o CB compartido): por id.
+        // 2) Los que no aparecieron (sin CB, CB compartido o tanda rota): por id.
         let faltan: Vec<i64> = productos
             .iter()
             .map(|p| p.id_producto)
             .filter(|id| !live.contains_key(id))
             .collect();
-        let id_calls = faltan.len();
-        let mut tasks = tokio::task::JoinSet::new();
-        for id in faltan {
-            let erp = Arc::clone(&erp);
-            let sem = Arc::clone(&sem);
-            tasks.spawn(async move {
-                let _permit = sem.acquire_owned().await.expect("semaphore");
-                erp.lookup_by_id(id).await
-            });
-        }
-        while let Some(res) = tasks.join_next().await {
-            match res {
-                Ok(Ok(Some(p))) => {
-                    live.insert(p.id_producto, p);
+        let id_calls = if abortado { 0 } else { faltan.len() };
+        let mut id_fallidos: HashSet<i64> = HashSet::new();
+        if abortado {
+            id_fallidos.extend(faltan.iter().copied());
+        } else {
+            let mut tasks = tokio::task::JoinSet::new();
+            for id in faltan {
+                let erp = Arc::clone(&erp);
+                let sem = Arc::clone(&sem);
+                tasks.spawn(async move {
+                    let _permit = sem.acquire_owned().await.expect("semaphore");
+                    (id, erp.lookup_by_id(id).await)
+                });
+            }
+            let mut pendientes: HashSet<i64> = HashSet::new();
+            while let Some(res) = tasks.join_next().await {
+                match res {
+                    Ok((_, Ok(Some(p)))) => {
+                        live.insert(p.id_producto, p);
+                    }
+                    Ok((_, Ok(None))) => {}   // el ERP dice que no existe: queda el lote
+                    Ok((id, Err(e @ (ErpError::Unreachable(_) | ErpError::NotAuthorized)))) => {
+                        tasks.abort_all();
+                        warn!(error = %e, "pase de verdad abortado (id): lo no verificado no se envía");
+                        id_fallidos.insert(id);
+                        abortado = true;
+                        break;
+                    }
+                    Ok((id, Err(_))) => {
+                        id_fallidos.insert(id);
+                    }
+                    Err(_) => {}
                 }
-                Ok(Ok(None)) => {}
-                Ok(Err(e @ (ErpError::Unreachable(_) | ErpError::NotAuthorized))) => {
-                    tasks.abort_all();
-                    warn!(error = %e, "pase de verdad abortado (id): se aplica lo obtenido hasta acá");
-                    break;
+                let _ = &mut pendientes;
+            }
+            if abortado {
+                // Todo lo que no llegó a verificarse queda como no verificado.
+                for p in &productos {
+                    if !live.contains_key(&p.id_producto) {
+                        id_fallidos.insert(p.id_producto);
+                    }
                 }
-                Ok(Err(_)) | Err(_) => fallidos += 1,
             }
         }
 
-        let (out, corregidos) = apply_live(productos, &live);
+        let (out, corregidos, sin_verificar) = apply_live(productos, &live, &id_fallidos);
+        if !sin_verificar.is_empty() {
+            warn!(
+                sin_verificar = sin_verificar.len(),
+                "pase de verdad: productos sin dato en vivo NO se envían (el servidor conserva el último bueno)"
+            );
+        }
         info!(
-            cb_calls, id_calls, en_vivo = live.len(), corregidos, fallidos,
-            ms = elapsed_ms(t), "pase de verdad terminado"
+            cb_calls, id_calls, en_vivo = live.len(), corregidos, cb_fallidos,
+            sin_verificar = sin_verificar.len(), ms = elapsed_ms(t), "pase de verdad terminado"
         );
-        out
+        EnrichOutcome { productos: out, sin_verificar }
     }
 
     /// Barrido `GET /api/productos/{id}` por rango `1..=id_scan_max` con
@@ -481,22 +533,61 @@ impl SyncEngine {
 }
 
 /// Reemplaza cada DTO del lote por su versión en vivo (mismo `idProducto`).
-/// Devuelve `(productos, corregidos)`: cuántos cambiaron de precio o stock.
-pub fn apply_live(productos: Vec<ProductoDTO>, live: &HashMap<i64, ProductoDTO>) -> (Vec<ProductoDTO>, usize) {
+/// Devuelve `(productos, corregidos, sin_verificar)`: los que están en
+/// `fallidos` (su lectura en vivo falló) se separan — no se envían, porque
+/// mandarlos con los ceros del lote pisaría el dato bueno del servidor
+/// (incidente 15/9).
+pub fn apply_live(
+    productos: Vec<ProductoDTO>,
+    live: &HashMap<i64, ProductoDTO>,
+    fallidos: &HashSet<i64>,
+) -> (Vec<ProductoDTO>, usize, Vec<ProductoDTO>) {
     let mut corregidos = 0usize;
-    let out = productos
-        .into_iter()
-        .map(|p| match live.get(&p.id_producto) {
+    let mut out = Vec::with_capacity(productos.len());
+    let mut sin_verificar = Vec::new();
+    for p in productos {
+        match live.get(&p.id_producto) {
             Some(v) => {
                 if v.stock_sucursal != p.stock_sucursal || v.precio != p.precio {
                     corregidos += 1;
                 }
-                v.clone()
+                out.push(v.clone());
             }
-            None => p,
-        })
-        .collect();
-    (out, corregidos)
+            None if fallidos.contains(&p.id_producto) => sin_verificar.push(p),
+            None => out.push(p),
+        }
+    }
+    (out, corregidos, sin_verificar)
+}
+
+/// Lookup por CB con bisección: si el ERP rechaza la tanda (HTTP 5xx / decode),
+/// se parte en mitades hasta aislar los CB que rompen. Devuelve
+/// `(encontrados, cbs_fallidos)`. Unreachable / NotAuthorized se propagan.
+pub fn lookup_cb_bisect<'a>(
+    erp: &'a dyn ErpAdapter,
+    chunk: Vec<String>,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(Vec<ProductoDTO>, Vec<String>), ErpError>> + Send + 'a>> {
+    Box::pin(async move {
+        match erp.lookup_by_barcodes(&chunk).await {
+            Ok(found) => Ok((found, Vec::new())),
+            Err(e @ (ErpError::Unreachable(_) | ErpError::NotAuthorized)) => Err(e),
+            Err(e) => {
+                if chunk.len() <= 1 {
+                    warn!(cb = ?chunk.first(), error = %e, "CB rechazado por el ERP");
+                    return Ok((Vec::new(), chunk));
+                }
+                let mitad = chunk.len() / 2;
+                let (a, b) = chunk.split_at(mitad);
+                let (fa, xa) = lookup_cb_bisect(erp, a.to_vec()).await?;
+                let (fb, xb) = lookup_cb_bisect(erp, b.to_vec()).await?;
+                let mut found = fa;
+                found.extend(fb);
+                let mut fallidos = xa;
+                fallidos.extend(xb);
+                Ok((found, fallidos))
+            }
+        }
+    })
 }
 
 fn hashes_of(items: &[CatalogItem]) -> Vec<(String, String)> {
@@ -551,14 +642,20 @@ mod tests {
             visibles_mismo_cb: None,
             baja: false,
         };
-        // Lote: todo en cero (bug real del ERP). En vivo: 1 con datos, 2 igual, 3 ausente.
-        let lote = vec![dto(1, 0.0, 0), dto(2, 0.0, 0), dto(3, 0.0, 0)];
+        // Lote: todo en cero (bug real del ERP). En vivo: 1 con datos, 2 igual,
+        // 3 ausente (el ERP dijo que no existe → queda el lote), 4 FALLÓ.
+        let lote = vec![dto(1, 0.0, 0), dto(2, 0.0, 0), dto(3, 0.0, 0), dto(4, 0.0, 0)];
         let live: HashMap<i64, ProductoDTO> = [(1, dto(1, 2.0, 32409)), (2, dto(2, 0.0, 0))].into();
-        let (out, corregidos) = apply_live(lote, &live);
+        let fallidos: HashSet<i64> = [4].into();
+        let (out, corregidos, sin_verificar) = apply_live(lote, &live, &fallidos);
         assert_eq!(corregidos, 1);
+        assert_eq!(out.len(), 3);
         assert_eq!(out[0].stock_sucursal, 2.0);
         assert_eq!(out[0].precio, Decimal::new(32409, 0));
-        assert_eq!(out[2].stock_sucursal, 0.0); // sin dato en vivo: queda el lote
+        assert_eq!(out[2].stock_sucursal, 0.0); // sin dato en vivo pero verificado ausente: queda el lote
+        // El 4 no se envía: mandarlo en cero pisaría el dato bueno del servidor (15/9).
+        assert_eq!(sin_verificar.len(), 1);
+        assert_eq!(sin_verificar[0].id_producto, 4);
     }
 
     #[test]

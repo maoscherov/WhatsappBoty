@@ -86,7 +86,7 @@ class TestLookup:
                 ws.send_json({"op": "lookup_result", "req_id": req["req_id"],
                               "items": [{"external_id": "77", "stock": 4,
                                          "price": "900.00"}],
-                              "missing": ["999"]})
+                              "missing": ["999"], "failed": ["555"]})
 
             hilo = threading.Thread(target=_agente)
             hilo.start()
@@ -101,6 +101,7 @@ class TestLookup:
             assert res is not None
             assert res.items[0]["external_id"] == "77"
             assert res.missing == ["999"]
+            assert res.failed == ["555"]      # agente 0.3.1: "no pude consultar" ≠ "no existe"
 
     def test_timeout_devuelve_none(self, client):
         with client.websocket_connect(

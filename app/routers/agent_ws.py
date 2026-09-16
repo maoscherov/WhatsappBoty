@@ -92,7 +92,8 @@ async def agent_ws(ws: WebSocket):
             elif op == "lookup_result":
                 registry.resolver_lookup(str(msg.get("req_id") or ""),
                                          msg.get("items") or [],
-                                         msg.get("missing") or [])
+                                         msg.get("missing") or [],
+                                         msg.get("failed") or [])
             else:
                 logger.info(f"WS {branch.branch_id}: op desconocida {op!r} ignorada")
     except (WebSocketDisconnect, asyncio.TimeoutError):

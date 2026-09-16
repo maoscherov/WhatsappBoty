@@ -21,7 +21,8 @@ logger = logging.getLogger(__name__)
 @dataclass
 class LookupResult:
     items: list = field(default_factory=list)      # CatalogItem dicts del ERP
-    missing: list = field(default_factory=list)    # barcodes/ids que no conoce
+    missing: list = field(default_factory=list)    # el ERP dijo que NO existen
+    failed: list = field(default_factory=list)     # no se pudieron consultar (agente 0.3.1+): desconocidos
 
 
 class AgentRegistry:
@@ -48,11 +49,14 @@ class AgentRegistry:
     def connected(self, branch_id: str) -> bool:
         return branch_id in self._conns
 
-    def resolver_lookup(self, req_id: str, items: list, missing: list):
+    def resolver_lookup(self, req_id: str, items: list, missing: list, failed: list | None = None):
         """Llamado por el handler del WS cuando llega un lookup_result."""
         fut = self._futures.pop(req_id, None)
         if fut and not fut.done():
-            fut.set_result(LookupResult(items=items or [], missing=missing or []))
+            if failed:
+                logger.warning(f"lookup {req_id}: el agente no pudo consultar {failed} (ERP)")
+            fut.set_result(LookupResult(items=items or [], missing=missing or [],
+                                        failed=list(failed or [])))
         else:
             logger.info(f"lookup_result tardío/desconocido descartado: {req_id}")
 
