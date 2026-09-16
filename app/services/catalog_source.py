@@ -70,12 +70,13 @@ async def resolver_branch_default(forzar: bool = False) -> Optional[str]:
         if db.available():
             rows = await db.fetch(
                 """
-                SELECT b.branch_id, COUNT(c.external_id) AS n
+                SELECT b.branch_id, COUNT(c.external_id) AS n, b.last_catalog_push_at
                 FROM branches b
                 JOIN catalog_items c ON c.branch_id = b.branch_id
                 WHERE b.activa
-                GROUP BY b.branch_id
+                GROUP BY b.branch_id, b.last_catalog_push_at
                 HAVING COUNT(c.external_id) > 0
+                ORDER BY b.last_catalog_push_at DESC NULLS LAST
                 """)
             ids = [r["branch_id"] for r in rows]
             if len(rows) == 1:
@@ -94,9 +95,15 @@ async def resolver_branch_default(forzar: bool = False) -> Optional[str]:
                         f"Hay {len(rows)} sucursales con catálogo ERP ({ids}) y no está "
                         f"DEFAULT_BRANCH_ID: el bot SIGUE con {previa}. Definí la variable.")
                 else:
+                    # Arranque frío con conflicto (15/9, segunda vez): sin previa,
+                    # caer al CSV dejó al bot con el catálogo de agosto. Se elige
+                    # la sucursal con el push más reciente — la que tiene un
+                    # agente vivo — y se grita para que se defina la variable.
+                    resultado = ids[0]
                     logger.error(
                         f"Hay {len(rows)} sucursales con catálogo ERP ({ids}) y no está "
-                        "DEFAULT_BRANCH_ID ni una previa: el bot usa el CSV. Definí la variable.")
+                        f"DEFAULT_BRANCH_ID: el bot usa {resultado} (último push más "
+                        "reciente). Definí la variable.")
 
     _cache["branch_id"] = resultado
     _cache["at"] = time.time()

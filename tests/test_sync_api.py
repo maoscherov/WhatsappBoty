@@ -358,18 +358,26 @@ class TestFuenteCatalogo:
         body["branch_id"] = "farmacia-correa"
         await client.post("/v1/sync/catalog", json=body, headers=_auth(tok2))
 
-    async def test_dos_sucursales_sin_previa_ni_override_es_csv(
+    async def test_dos_sucursales_sin_previa_elige_el_push_mas_reciente(
             self, client, db, branch_token, monkeypatch):
+        """Arranque frío con conflicto (15/9, segunda vez): caer al CSV dejó al
+        bot con el catálogo de agosto. Sin previa ni override se elige la
+        sucursal con el último push más reciente (la del agente vivo)."""
         import app.services.catalog_source as cs
-        await self._segunda_sucursal(client, branch_token)
+        await self._segunda_sucursal(client, branch_token)   # correa recibe el último push
         async def _erp():
             return "erp"
         monkeypatch.setattr(cs, "fuente_configurada", _erp)
         cs.invalidar_cache()
         cs._cache["branch_id"] = None
         monkeypatch.setitem(cs.estado_recarga, "branch_id", None)
-        assert await cs.resolver_branch_default(forzar=True) is None
+        assert await cs.resolver_branch_default(forzar=True) == "farmacia-correa"
         assert sorted(cs._conflicto) == ["farmacia-correa", BRANCH]
+        # y con un push posterior de la farmacia, en frío se elige la farmacia
+        await db.execute("UPDATE branches SET last_catalog_push_at = now() + interval '1 minute' "
+                         "WHERE branch_id = $1", BRANCH)
+        cs._cache["branch_id"] = None
+        assert await cs.resolver_branch_default(forzar=True) == BRANCH
 
     async def test_dos_sucursales_mantiene_la_que_venia(
             self, client, db, branch_token, monkeypatch):
