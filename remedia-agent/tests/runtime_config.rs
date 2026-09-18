@@ -146,3 +146,29 @@ async fn set_config_saves_unreachable_erp_with_warning() {
     let r = rt.handle(Request::SetConfig { token: None, erp_url: None, remedia_url: None }).await;
     assert!(!r.ok);
 }
+
+/// 0.3.4: pedir pausa despierta al loop de sync para cortar el ciclo EN CURSO.
+#[tokio::test]
+async fn pausa_despierta_al_loop_y_reanudar_no() {
+    let dir = tempfile::tempdir().unwrap();
+    let erp = MockServer::start().await;
+    let rem = remedia(200).await;
+    write_config(dir.path(), &erp.uri(), &rem.uri());
+    let (rt, _rx) = build(dir.path());
+
+    let pausa = rt.pausa_pedida();
+    tokio::pin!(pausa);
+    pausa.as_mut().enable();
+    rt.set_paused(true);
+    tokio::time::timeout(std::time::Duration::from_millis(500), &mut pausa)
+        .await
+        .expect("la pausa tiene que despertar al loop de sync");
+    assert!(rt.is_paused());
+
+    // Reanudar NO interrumpe nada.
+    let otra = rt.pausa_pedida();
+    tokio::pin!(otra);
+    otra.as_mut().enable();
+    rt.set_paused(false);
+    assert!(tokio::time::timeout(std::time::Duration::from_millis(200), &mut otra).await.is_err());
+}

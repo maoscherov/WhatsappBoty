@@ -363,3 +363,26 @@ async fn live_enrich_can_be_turned_off() {
         .count();
     assert_eq!(vivos, 0);
 }
+
+/// 0.3.4: el ciclo es cancelable. Con el ERP colgado (30 s por request),
+/// soltar el futuro del ciclo tiene que volver enseguida — es lo que hace el
+/// loop del servicio al detenerse o pausarse. Antes había que esperar a que la
+/// pasada terminara y Windows daba error 1061.
+#[tokio::test]
+async fn ciclo_cancelable_con_erp_colgado() {
+    let erp = MockServer::start().await;
+    Mock::given(wiremock::matchers::any())
+        .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(30)))
+        .mount(&erp).await;
+    let remedia = remedia_ok().await;
+    let e = engine(&erp.uri(), &remedia.uri(), "");
+
+    let t0 = std::time::Instant::now();
+    tokio::select! {
+        _ = remedia_agent::service::run_cycle(&e) => panic!("el ciclo no debería terminar con el ERP colgado"),
+        _ = tokio::time::sleep(Duration::from_millis(300)) => {}
+    }
+    assert!(t0.elapsed() < Duration::from_secs(2), "cancelar el ciclo tardó {:?}", t0.elapsed());
+    // Nada se envió a Remedia: un ciclo cortado no publica datos a medias.
+    assert!(received_batches(&remedia).await.is_empty());
+}

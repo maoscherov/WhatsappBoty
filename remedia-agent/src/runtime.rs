@@ -44,6 +44,10 @@ pub struct Runtime {
     shutdown: CancellationToken,
     /// Sync pausado desde el tray (persiste en meta: sobrevive reinicios).
     paused: AtomicBool,
+    /// Despierta al loop de sync cuando se pide pausa, para cortar el ciclo EN
+    /// CURSO (0.3.4): antes la pausa recién aplicaba al ciclo siguiente y una
+    /// pasada completa de media hora seguía pegándole al ERP.
+    pause_notify: tokio::sync::Notify,
 }
 
 impl Runtime {
@@ -76,6 +80,7 @@ impl Runtime {
             ws: Mutex::new(None),
             shutdown,
             paused: AtomicBool::new(paused),
+            pause_notify: tokio::sync::Notify::new(),
         });
         Ok((rt, sync_rx))
     }
@@ -84,10 +89,18 @@ impl Runtime {
         self.paused.load(Ordering::Relaxed)
     }
 
+    /// Futuro que se completa cuando se pide pausa. Llamar a `enable()` sobre
+    /// el futuro pineado ANTES de chequear `is_paused()` para no perder un
+    /// aviso que llegue entre el chequeo y el `select!`.
+    pub fn pausa_pedida(&self) -> tokio::sync::futures::Notified<'_> {
+        self.pause_notify.notified()
+    }
+
     pub fn set_paused(&self, paused: bool) {
         self.paused.store(paused, Ordering::Relaxed);
         let _ = self.state.set_meta(crate::catalog::state::META_PAUSED, if paused { "1" } else { "0" });
         if paused {
+            self.pause_notify.notify_waiters();
             tracing::warn!("sincronización PAUSADA desde el tray: no se consulta el ERP hasta reanudar");
         } else {
             tracing::info!("sincronización reanudada desde el tray");

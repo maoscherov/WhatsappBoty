@@ -249,3 +249,18 @@ el barrido completo de las 3 AM menos de media hora. Al actualizar con
 50, escritos por el instalador) se migra a los nuevos; cualquier otro valor
 elegido por la farmacia se respeta. `agent.toml` se lee al arrancar el servicio:
 un cambio a mano necesita reiniciarlo.
+
+## 0.3.4 — detener y pausar cortan el ciclo en curso
+
+Hasta 0.3.3 el servicio solo atendía la orden de detenerse *entre* ciclos. Con
+una pasada completa en marcha (media hora) Windows devolvía el error 1061 al
+detenerlo, `install` abortaba con "el servicio no se detuvo a tiempo" y el
+botón **Pausar** del tray recién aplicaba al ciclo siguiente.
+
+- El ciclo de sync es cancelable: detener el servicio o pausar lo interrumpe
+  en el próximo punto de espera (menos de un segundo con `live_pause_ms`). Los
+  requests en vuelo se abortan. Es seguro: el estado vive en SQLite y el envío
+  es por hashes, el ciclo siguiente retoma.
+- El servicio reporta `StopPending` con tiempo estimado al SCM.
+- `install`: si el servicio anterior no para en 15 s, cierra su proceso por PID
+  y continúa (necesario para actualizar desde <= 0.3.3 con un ciclo en curso).

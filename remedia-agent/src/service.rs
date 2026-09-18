@@ -121,10 +121,29 @@ pub async fn run_agent(data_dir: PathBuf, shutdown: CancellationToken) -> anyhow
 
     // Loop de sync: un ciclo ahora, después cada `sync_interval` o ante `sync_now`.
     loop {
+        // El ciclo es CANCELABLE (0.3.4): detener el servicio o pausar desde el
+        // tray corta la sincronización en curso en el próximo punto de espera
+        // (con la pausa entre requests, menos de un segundo). Antes había que
+        // esperar a que terminara la pasada — media hora — y Windows devolvía
+        // el error 1061 al intentar detener el servicio. Soltar el futuro
+        // aborta los requests en vuelo (JoinSet) y es seguro: el estado es
+        // SQLite y el envío al servidor es por hashes, el próximo ciclo retoma.
+        let pausa = rt.pausa_pedida();
+        tokio::pin!(pausa);
+        pausa.as_mut().enable();
         if rt.is_paused() {
             info!("sincronización pausada desde el tray: ciclo omitido");
         } else {
-            run_cycle(&engine).await;
+            tokio::select! {
+                _ = run_cycle(&engine) => {}
+                _ = shutdown.cancelled() => {
+                    warn!("ciclo de sync interrumpido: el servicio se está deteniendo");
+                    break;
+                }
+                _ = &mut pausa => {
+                    warn!("ciclo de sync interrumpido por pausa desde el tray");
+                }
+            }
         }
         tokio::select! {
             _ = shutdown.cancelled() => break,
@@ -223,8 +242,26 @@ pub mod win {
 
         let shutdown = CancellationToken::new();
         let sd = shutdown.clone();
+        // El handler necesita el handle para reportar StopPending, y el handle
+        // sale de registrar el handler: se comparte por un OnceLock.
+        let handle_slot: std::sync::Arc<OnceLock<service_control_handler::ServiceStatusHandle>> =
+            std::sync::Arc::new(OnceLock::new());
+        let slot = std::sync::Arc::clone(&handle_slot);
         let handle = match service_control_handler::register(SERVICE_NAME, move |control| match control {
             ServiceControl::Stop | ServiceControl::Shutdown => {
+                // "Deteniendo" con tiempo estimado: sin esto el panel de
+                // Servicios daba error 1061 si el cierre tardaba.
+                if let Some(h) = slot.get() {
+                    let _ = h.set_service_status(ServiceStatus {
+                        service_type: ServiceType::OWN_PROCESS,
+                        current_state: ServiceState::StopPending,
+                        controls_accepted: ServiceControlAccept::empty(),
+                        exit_code: ServiceExitCode::Win32(0),
+                        checkpoint: 1,
+                        wait_hint: Duration::from_secs(20),
+                        process_id: None,
+                    });
+                }
                 sd.cancel();
                 ServiceControlHandlerResult::NoError
             }
@@ -237,6 +274,7 @@ pub mod win {
                 return;
             }
         };
+        let _ = handle_slot.set(handle);
 
         let status = |state: ServiceState, code: u32| ServiceStatus {
             service_type: ServiceType::OWN_PROCESS,
@@ -295,7 +333,27 @@ pub mod win {
             }
             std::thread::sleep(Duration::from_millis(500));
         }
-        anyhow::bail!("el servicio no se detuvo a tiempo")
+        // No paró en 15 s (versiones <= 0.3.3 no cortan un ciclo en curso): se
+        // mata el proceso por PID. Es seguro — estado en SQLite, envío por
+        // hashes — y evita que una actualización quede trabada (caso 18/9).
+        let pid = service.query_status()?.process_id;
+        match pid {
+            Some(pid) if pid != 0 => {
+                println!("El servicio no se detuvo a tiempo: se cierra el proceso {pid}.");
+                let _ = std::process::Command::new("taskkill")
+                    .args(["/F", "/PID", &pid.to_string()])
+                    .output();
+            }
+            _ => anyhow::bail!("el servicio no se detuvo a tiempo y no se pudo obtener su PID"),
+        }
+        for _ in 0..20 {
+            if service.query_status()?.current_state == ServiceState::Stopped {
+                std::thread::sleep(Duration::from_millis(500));
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        anyhow::bail!("el servicio no se detuvo ni cerrando su proceso")
     }
 
     /// Registra el servicio (arranque automático, cuenta NetworkService) y lo
