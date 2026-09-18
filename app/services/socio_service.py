@@ -112,6 +112,27 @@ class SocioService:
 
         logger.info(f"Padrón de socios cargado: {self.total} socios desde {p}")
 
+    def buscar_por_nombre(self, q: str, limit: int = 50) -> list[dict]:
+        """Socios cuyo nombre/apellido contiene todas las palabras de `q`
+        (sin tildes ni mayúsculas). Para el buscador de conversaciones."""
+        import unicodedata as _ud
+
+        def _plano(s: str) -> str:
+            return "".join(c for c in _ud.normalize("NFD", (s or "").lower())
+                           if _ud.category(c) != "Mn")
+
+        palabras = [p for p in _plano(q).split() if len(p) >= 2 and not p.isdigit()]
+        if not palabras:
+            return []
+        out = []
+        for s in self._socios:
+            texto = _plano(f"{s.get('nombre', '')} {s.get('apellido', '')}")
+            if all(p in texto for p in palabras):
+                out.append(s)
+                if len(out) >= limit:
+                    break
+        return out
+
     def find_by_phone(self, phone: str) -> Optional[dict]:
         """Busca un socio por número de WhatsApp (matching por sufijo)."""
         digitos = _solo_digitos(phone)

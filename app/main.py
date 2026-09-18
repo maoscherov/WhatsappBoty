@@ -198,6 +198,8 @@ async def _cerrar_sesiones_inactivas():
                     else:
                         try:
                             await wa.send_text(phone, texto_cierre)
+                            from app.services.message_store import guardar_historico
+                            await guardar_historico(phone, "assistant", texto_cierre)
                         except Exception as e:
                             logger.warning(f"No se pudo avisar cierre a {phone}: {e}")
                 await session_svc.delete(phone)
@@ -217,6 +219,8 @@ async def _cerrar_sesiones_inactivas():
                         try:
                             await wa.send_text(phone, aviso)
                             await session_svc.add_message(phone, "assistant", aviso)
+                            from app.services.message_store import guardar_historico
+                            await guardar_historico(phone, "assistant", aviso)
                         except Exception as e:
                             logger.warning(f"No se pudo avisar la reanudación a {phone}: {e}")
                     logger.info(f"Conversación devuelta al bot tras {libre_min} min sin atender: {phone}")
@@ -229,6 +233,8 @@ async def _cerrar_sesiones_inactivas():
                     try:
                         await wa.send_text(phone, hr_msg)
                         await session_svc.add_message(phone, "assistant", hr_msg)
+                        from app.services.message_store import guardar_historico
+                        await guardar_historico(phone, "assistant", hr_msg)
                         logger.info(f"Aviso de demora enviado a {phone} ({hr_min} min derivada)")
                     except Exception as e:
                         logger.warning(f"No se pudo avisar demora a {phone}: {e}")

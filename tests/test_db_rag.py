@@ -269,3 +269,74 @@ async def test_kpis_conversacionales(db):
     assert k["interacciones_promedio"] == 2.0
     assert k["emocionalidad"]["negativo"] == 50.0
     assert k["derivaciones_por_causal"][0]["causal"] == "saldo"
+
+
+# ── Historial de conversaciones del backoffice (18/9) ───────────────────────────
+async def test_history_trae_los_ultimos_y_pagina(db):
+    """Antes traía los PRIMEROS N (ASC LIMIT): con mucha historia se veía lo
+    más viejo. Ahora los últimos N en orden cronológico, paginando hacia atrás."""
+    store = MessageStore(db)
+    for i in range(1, 11):
+        await store.save("549333", "user" if i % 2 else "assistant", f"m{i}")
+
+    ult = await store.history("549333", limit=4)
+    assert [m["content"] for m in ult] == ["m7", "m8", "m9", "m10"]
+    assert all(set(m) >= {"id", "role", "content", "autor", "media", "ts"} for m in ult)
+
+    ant = await store.history("549333", limit=4, before_id=ult[0]["id"])
+    assert [m["content"] for m in ant] == ["m3", "m4", "m5", "m6"]
+    primeras = await store.history("549333", limit=4, before_id=ant[0]["id"])
+    assert [m["content"] for m in primeras] == ["m1", "m2"]
+    assert await store.contar("549333") == 10
+
+
+async def test_history_operador_con_autor_y_foto(db):
+    store = MessageStore(db)
+    await store.save("549444", "user", "📷 /media/chat/abc123")
+    await store.save("549444", "operator", "Hola, soy Claudia de la farmacia", autor="Claudia")
+    await store.save("549444", "assistant", "respuesta del bot")
+
+    h = await store.history("549444")
+    assert h[0]["media"] == "/media/chat/abc123" and h[0]["role"] == "user"
+    assert h[1]["role"] == "operator" and h[1]["autor"] == "Claudia" and h[1]["media"] is None
+    assert h[2]["autor"] is None
+
+
+async def test_conversaciones_busca_por_texto_y_por_socio(db):
+    from app.services.metrics_store import MetricsStore
+    store = MessageStore(db)
+    await store.save("5493415550001", "user", "hola, tenés Aveno infantil?")
+    await store.save("5493415550001", "assistant", "Sí, sale $32.409")
+    await store.save("5493415550002", "user", "cuánto sale el dove?")
+    await store.save("5493415550003", "user", "necesito ibuprofeno")
+    m = MetricsStore(db)
+
+    # Por texto del mensaje: entra la conversación entera, con el fragmento
+    por_texto = await m.conversaciones(days=7, q="aveno")
+    assert [c["phone"] for c in por_texto] == ["5493415550001"]
+    assert por_texto[0]["mensajes"] == 2               # conteo de toda la charla
+    assert "Aveno" in por_texto[0]["coincidencia"]
+
+    # Por nombre de socio: quien llama resuelve el padrón a sufijos de teléfono
+    por_socio = await m.conversaciones(days=7, q="muff", sufijos_tel=["3415550003"])
+    assert [c["phone"] for c in por_socio] == ["5493415550003"]
+    assert por_socio[0]["coincidencia"] is None
+
+    # Por teléfono sigue funcionando; sin q no hay coincidencia
+    assert [c["phone"] for c in await m.conversaciones(days=7, q="50002")] == ["5493415550002"]
+    todas = await m.conversaciones(days=7)
+    assert len(todas) == 3 and all(c["coincidencia"] is None for c in todas)
+
+
+def test_socio_buscar_por_nombre(tmp_path):
+    from app.services.socio_service import SocioService
+    p = tmp_path / "padron.csv"
+    p.write_text("APELLIDO,NOMBRE,DNI,SOCIO,CELULAR,DOMICILIO\n"
+                 "Muff,Claudia,20111222,4001,3415550001,Mitre 100\n"
+                 "Pérez,José María,20333444,4002,3415550002,Salta 200\n",
+                 encoding="utf-8")
+    svc = SocioService(str(p))
+    assert [s["celular"] for s in svc.buscar_por_nombre("claudia")] == ["3415550001"]
+    assert [s["celular"] for s in svc.buscar_por_nombre("perez jose")] == ["3415550002"]
+    assert svc.buscar_por_nombre("aveno") == []
+    assert svc.buscar_por_nombre("3415") == []      # solo números: no es un nombre

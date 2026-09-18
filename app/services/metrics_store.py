@@ -599,37 +599,56 @@ class MetricsStore:
                 "derivaciones": [],
                 "propuestos": ["nps_csat", "emocionalidad"]}
 
-    async def conversaciones(self, days: int = 30, q: str = "", limit: int = 50) -> list[dict]:
+    async def conversaciones(self, days: int = 30, q: str = "", limit: int = 50,
+                             sufijos_tel: Optional[list[str]] = None) -> list[dict]:
         """
         Conversaciones históricas desde Postgres (tabla messages): una fila por
         teléfono con actividad en el rango, con conteo y último mensaje.
-        `q` filtra por teléfono (contiene).
+        `q` busca en el teléfono Y en el texto de los mensajes; `sufijos_tel`
+        suma los teléfonos de los socios cuyo nombre coincide con `q` (el
+        padrón no vive en la base: lo resuelve quien llama). Cuando el match
+        es por texto, `coincidencia` trae el fragmento encontrado.
         """
         if not self._db.available():
             return []
         try:
-            filtro_q = "AND phone LIKE $2" if q else ""
-            args = [days] + ([f"%{q}%"] if q else []) + [limit]
-            limit_idx = 3 if q else 2
+            args: list = [days]
+            filtro_q = ""
+            sel_match = "NULL::text AS coincidencia"
+            if q:
+                args.append(f"%{q}%")
+                conds = ["phone LIKE $2", "content ILIKE $2"]
+                if sufijos_tel:
+                    args.append([f"%{s}" for s in sufijos_tel])
+                    conds.append(f"phone LIKE ANY(${len(args)})")
+                # El filtro va en HAVING: la conversación entra si ALGÚN mensaje
+                # matchea, pero los conteos siguen siendo de toda la charla.
+                filtro_q = "HAVING " + " OR ".join(f"BOOL_OR({c})" for c in conds)
+                sel_match = ("(ARRAY_AGG(content ORDER BY created_at DESC) "
+                             "FILTER (WHERE content ILIKE $2))[1] AS coincidencia")
+            args.append(limit)
             rows = await self._db.fetch(f"""
                 SELECT phone,
                        COUNT(*)                                          AS mensajes,
                        COUNT(*) FILTER (WHERE role = 'user')             AS mensajes_cliente,
                        MIN(created_at)                                   AS primera_actividad,
                        MAX(created_at)                                   AS ultima_actividad,
-                       (ARRAY_AGG(content ORDER BY created_at DESC))[1]  AS ultimo_mensaje
+                       (ARRAY_AGG(content ORDER BY created_at DESC))[1]  AS ultimo_mensaje,
+                       {sel_match}
                 FROM messages
-                WHERE created_at >= now() - make_interval(days => $1) {filtro_q}
+                WHERE created_at >= now() - make_interval(days => $1)
                 GROUP BY phone
+                {filtro_q}
                 ORDER BY MAX(created_at) DESC
-                LIMIT ${limit_idx}
+                LIMIT ${len(args)}
             """, *args)
             return [
                 {"phone": r["phone"], "mensajes": r["mensajes"],
                  "mensajes_cliente": r["mensajes_cliente"],
                  "primera_actividad": r["primera_actividad"].isoformat(),
                  "ultima_actividad": r["ultima_actividad"].isoformat(),
-                 "ultimo_mensaje": (r["ultimo_mensaje"] or "")[:100]}
+                 "ultimo_mensaje": (r["ultimo_mensaje"] or "")[:100],
+                 "coincidencia": (r["coincidencia"] or "")[:160] or None}
                 for r in rows
             ]
         except Exception as e:

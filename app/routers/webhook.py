@@ -649,6 +649,12 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     pass
                 if _img_ref:
                     await deps["session"].add_message(phone, "user", _img_ref)
+                    # También al historial permanente (la foto vence a los 7
+                    # días, pero queda constancia de que el cliente la mandó).
+                    try:
+                        await deps["msgs"].save(phone, "user", _img_ref)
+                    except Exception:
+                        pass
 
                 img = await deps["image"].analizar(image_bytes, mime)
                 _steps["vision_ms"] = int((_time.perf_counter() - _ti) * 1000)

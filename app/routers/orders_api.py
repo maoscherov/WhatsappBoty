@@ -195,6 +195,9 @@ async def mark_preparado(order_id: str, request: Request, _=Depends(_auth)):
 
     msg = armar_mensaje_pedido_listo(order, cfg, pickup_text)
     sent = await wa.send_text(order["phone"], msg, simulate_typing=False)
+    if sent:
+        from app.services.message_store import guardar_historico
+        await guardar_historico(order["phone"], "assistant", msg)
     logger.info(f"Aviso de pedido listo ({order.get('tipo_entrega') or 'retiro'}) "
                 f"enviado a {order['phone']}: {sent}")
 

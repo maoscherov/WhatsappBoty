@@ -759,6 +759,7 @@ async def bo_config_update(body: ConfigUpdate, _=Depends(_auth)):
 
 class OperatorMessage(BaseModel):
     text: str
+    agente: str | None = None   # nombre del operador, para el historial
 
 
 @router.post("/session/{phone}/takeover")
@@ -881,6 +882,9 @@ async def bo_paylink(body: PaylinkIn, _=Depends(_auth)):
             enviado = await wa.send_text(body.phone, mensaje)
             if enviado:
                 await session_svc.add_message(body.phone, "assistant", mensaje)
+                from app.services.message_store import guardar_historico
+                await guardar_historico(body.phone, "operator", mensaje,
+                                        autor=getattr(body, "agente", None) or (await get_session_service(settings.redis_url).get(body.phone)).get("agente"))
         return {"ok": True, "link": None, "detalle": nombre, "total": total,
                 "enviado": enviado, "mensaje": mensaje, "cotizacion": cotizacion,
                 "modo": "cotizar", "delegado": body.delegar}
@@ -921,6 +925,9 @@ async def bo_paylink(body: PaylinkIn, _=Depends(_auth)):
         enviado = await wa.send_text(body.phone, mensaje)
         if enviado:
             await get_session_service(settings.redis_url).add_message(body.phone, "assistant", mensaje)
+            from app.services.message_store import guardar_historico
+            await guardar_historico(body.phone, "operator", mensaje,
+                                    autor=getattr(body, "agente", None) or (await get_session_service(settings.redis_url).get(body.phone)).get("agente"))
 
     return {"ok": True, "link": link, "detalle": nombre_cant, "total": total,
             "enviado": enviado, "mensaje": mensaje, "cotizacion": cotizacion}
@@ -1166,21 +1173,43 @@ async def bo_conversaciones(_=Depends(_auth), days: int = Query(30, ge=1, le=365
     """
     from app.services.metrics_store import get_metrics_store
     settings = get_settings()
-    convs = await get_metrics_store(get_db(settings.database_url)).conversaciones(days, q.strip(), limit)
+    q = q.strip()
+    # Búsqueda por nombre de socio: el padrón no está en la base, así que se
+    # resuelve acá a sufijos de teléfono (10 dígitos) y se suman al filtro.
+    sufijos: list[str] = []
+    if q:
+        try:
+            socios = get_socio_service(settings.socios_path).buscar_por_nombre(q)
+            sufijos = [s["celular"][-10:] for s in socios if s.get("celular")]
+        except Exception:
+            sufijos = []
+    convs = await get_metrics_store(get_db(settings.database_url)).conversaciones(
+        days, q, limit, sufijos_tel=sufijos)
     for c in convs:
         c["nombre"] = _nombre_socio(c["phone"])
     return {"available": get_db(settings.database_url).available(), "conversaciones": convs}
 
 
 @router.get("/history/{phone}")
-async def bo_history(phone: str, _=Depends(_auth), limit: int = Query(200, le=1000)):
-    """Historial completo de la conversación desde Postgres (persistente)."""
+async def bo_history(phone: str, _=Depends(_auth), limit: int = Query(200, ge=1, le=1000),
+                     before_id: int | None = Query(None)):
+    """
+    Historial de la conversación desde Postgres (persistente): los ÚLTIMOS
+    `limit` mensajes en orden cronológico. `before_id` = id del mensaje más
+    viejo ya mostrado, para "cargar anteriores". Cada mensaje trae id, role
+    (user | assistant | operator), autor (operador), media (foto) y ts.
+    """
     settings = get_settings()
     db = get_db(settings.database_url)
     if not db.available():
-        return {"available": False, "messages": []}
+        return {"available": False, "messages": [], "total": 0, "hay_anteriores": False}
     store = get_message_store(db)
-    return {"available": True, "messages": await store.history(phone, limit)}
+    mensajes = await store.history(phone, limit, before_id=before_id)
+    total = await store.contar(phone)
+    hay_anteriores = len(mensajes) == limit and (
+        await store.history(phone, 1, before_id=mensajes[0]["id"]) != [])
+    return {"available": True, "phone": phone, "nombre": _nombre_socio(phone),
+            "total": total, "hay_anteriores": hay_anteriores, "messages": mensajes}
 
 
 # ── RAG: indexación y estado ────────────────────────────────────────────────────
@@ -1295,4 +1324,10 @@ async def bo_send_message(phone: str, body: OperatorMessage, _=Depends(_auth)):
     if not sent:
         raise HTTPException(status_code=502, detail="Error enviando mensaje por WhatsApp")
     await session_svc.add_message(phone, "operator", body.text.strip())
+    # Historial permanente: sin esto, tras una derivación el histórico mostraba
+    # al cliente hablando solo (los mensajes del operador vivían solo en Redis).
+    from app.services.message_store import guardar_historico
+    # Si el front no manda el nombre, vale quien tomó la conversación.
+    _autor = body.agente or (await session_svc.get(phone)).get("agente")
+    await guardar_historico(phone, "operator", body.text.strip(), autor=_autor)
     return {"status": "ok", "sent": True}

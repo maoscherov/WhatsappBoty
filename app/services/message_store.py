@@ -15,24 +15,39 @@ class MessageStore:
     def __init__(self, db):
         self._db = db
 
-    async def save(self, phone: str, role: str, content: str):
+    async def save(self, phone: str, role: str, content: str, autor: Optional[str] = None):
         if not content:
             return
         await self._db.execute(
-            "INSERT INTO messages (phone, role, content) VALUES ($1, $2, $3)",
-            phone, role, content,
+            "INSERT INTO messages (phone, role, content, autor) VALUES ($1, $2, $3, $4)",
+            phone, role, content, (autor or None),
         )
 
-    async def history(self, phone: str, limit: int = 200) -> list[dict]:
-        rows = await self._db.fetch(
-            "SELECT role, content, created_at FROM messages "
-            "WHERE phone = $1 ORDER BY created_at ASC LIMIT $2",
-            phone, limit,
-        )
-        return [
-            {"role": r["role"], "content": r["content"], "ts": r["created_at"].isoformat()}
-            for r in rows
-        ]
+    async def history(self, phone: str, limit: int = 200,
+                      before_id: Optional[int] = None) -> list[dict]:
+        """
+        Los ÚLTIMOS `limit` mensajes del teléfono, en orden cronológico. Antes
+        traía los primeros 200 (ASC LIMIT): en un cliente con mucha historia se
+        veía lo más viejo y se cortaba lo reciente. `before_id` pagina hacia
+        atrás ("cargar anteriores").
+        """
+        if before_id:
+            rows = await self._db.fetch(
+                "SELECT id, role, content, autor, created_at FROM messages "
+                "WHERE phone = $1 AND id < $2 ORDER BY id DESC LIMIT $3",
+                phone, int(before_id), limit,
+            )
+        else:
+            rows = await self._db.fetch(
+                "SELECT id, role, content, autor, created_at FROM messages "
+                "WHERE phone = $1 ORDER BY id DESC LIMIT $2",
+                phone, limit,
+            )
+        return [mensaje_a_dict(r) for r in reversed(rows)]
+
+    async def contar(self, phone: str) -> int:
+        rows = await self._db.fetch("SELECT COUNT(*) AS n FROM messages WHERE phone = $1", phone)
+        return int(rows[0]["n"]) if rows else 0
 
     async def recurrencia(self, phone: str) -> dict:
         """
@@ -70,6 +85,37 @@ class MessageStore:
             {"phone": r["phone"], "ultimo": r["content"], "ts": r["created_at"].isoformat()}
             for r in rows
         ]
+
+
+_MEDIA_PREFIX = "📷 /media/chat/"
+
+
+def mensaje_a_dict(r) -> dict:
+    """Fila de `messages` → dict del backoffice. Las fotos del cliente se
+    guardan como "📷 /media/chat/{id}": se exponen en `media` para que la
+    pantalla las muestre como imagen (el archivo vence a los 7 días)."""
+    content = r["content"] or ""
+    media = None
+    if content.startswith(_MEDIA_PREFIX):
+        media = content[len("📷 "):].strip()
+    return {"id": r["id"], "role": r["role"], "content": content,
+            "autor": r["autor"], "media": media, "ts": r["created_at"].isoformat()}
+
+
+async def guardar_historico(phone: str, role: str, content: str, autor: Optional[str] = None) -> None:
+    """
+    Guarda un mensaje en el historial permanente desde cualquier punto de envío
+    (operador, cotización, pedido listo, avisos automáticos). Best-effort: el
+    historial nunca puede romper un envío.
+    """
+    try:
+        from app.config import get_settings
+        from app.services.db import get_db
+        db = get_db(get_settings().database_url)
+        if db.available():
+            await get_message_store(db).save(phone, role, content, autor)
+    except Exception as e:
+        logger.debug(f"historial: no se pudo guardar mensaje de {phone}: {e}")
 
 
 _instance: Optional[MessageStore] = None
