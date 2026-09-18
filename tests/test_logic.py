@@ -1635,6 +1635,61 @@ class TestCuentaCorriente:
         assert not pide_cuenta_corriente("cuánto sale el ibupirac")
         assert not pide_cuenta_corriente("te cuento que necesito algo")
 
+    def test_matcher_con_tildes(self):
+        """Caso real 18/9 (Mauricio): "Anótamelo en la cuenta" no matcheaba."""
+        from app.services.checkout_helper import pide_cuenta_corriente
+        assert pide_cuenta_corriente("Anótamelo en la cuenta")
+        assert pide_cuenta_corriente("anotámelo en mi cuenta")
+        assert pide_cuenta_corriente("Cárgalo a la cuenta")
+
+    def test_pide_anotar(self):
+        from app.services.checkout_helper import pide_anotar
+        for t in ("anotalo", "Anotámelo", "Anótamelo", "me lo anotás?", "apuntalo", "anotá eso"):
+            assert pide_anotar(t), t
+        for t in ("anotá mi dirección", "anotame el teléfono", "ya lo tengo anotado",
+                  "quiero ibuprofeno", "hola"):
+            assert not pide_anotar(t), t
+
+    def test_entrega_ya_elegida(self):
+        from app.services.checkout_helper import entrega_ya_elegida
+        assert entrega_ya_elegida({"tipo_entrega": "retiro"}) == ("retiro", None)
+        assert entrega_ya_elegida({"tipo_entrega": "envio", "direccion_envio": "16 de enero 9279"}) \
+            == ("envio", "16 de enero 9279")
+        assert entrega_ya_elegida({"tipo_entrega": "envio", "direccion_envio": ""}) is None
+        assert entrega_ya_elegida({"tipo_entrega": None}) is None
+        assert entrega_ya_elegida({}) is None
+
+    async def test_cc_con_link_enviado_cierra_directo(self, monkeypatch):
+        """Caso real 18/9: link ya enviado con envío y dirección → pide cuenta
+        corriente → se cierra con esos datos y avisa que el link no hace falta."""
+        from app.services import checkout_helper as chh
+        from app.services.session_service import SessionService
+        ss = SessionService("redis://127.0.0.1:1")
+        ph = "5493415550099"
+        await ss.set_pending(ph, sku_id="S1", sku_nombre="Curitas Aposit x 20", precio=2545.89,
+                             cantidad=1, opciones=[])
+        await ss.set_entrega(ph, "envio", "16 de enero 9279")
+        await ss.set_estado(ph, "esperando_pago")
+        s = await ss.get(ph)
+        s["pago_metodo"] = "cuenta_corriente"
+        await ss.save(ph, s)
+
+        async def _sin_freno(*a, **k):
+            return None, None
+        monkeypatch.setattr(chh, "_chequear_stock_vivo", _sin_freno)
+
+        class _Pay:
+            async def crear_link(self, **k):
+                raise AssertionError("con cuenta corriente no se genera link")
+
+        resp, link = await chh.crear_link_y_responder(_Pay(), ss, ph, await ss.get(ph),
+                                                      "envio", "16 de enero 9279")
+        assert link is None
+        assert "cuenta corriente" in resp and "16 de enero 9279" in resp
+        assert "No hace falta que uses el link" in resp
+        fin = await ss.get(ph)
+        assert fin["estado"] == "pedido_confirmado" and "pago_metodo" not in fin
+
     async def test_socio_habilitado_por_default(self, tmp_path):
         from app.services.checkout_helper import habilitado_cc
         socios = self._padron(tmp_path)

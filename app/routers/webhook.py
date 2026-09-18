@@ -44,6 +44,7 @@ from app.services.metrics_store import get_metrics_store
 from app.services.checkout_helper import (
     confirmar_pedido, resolver_entrega, capturar_direccion,
     match_retiro, match_envio, pide_humano, derivar_si_receta, afirma_envio,
+    pide_anotar, entrega_ya_elegida, crear_link_y_responder,
     pide_cancelar_pedido, pregunta_obra_social, responder_obra_social, parsear_lista,
     pregunta_bono, responder_bono, agregar_oferta_farmaceutico, acepta_farmaceutico,
     entidad_contradice_pendiente, debe_derivar_desconocido,
@@ -890,7 +891,10 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
             # ── Cuenta corriente (minuta 79): socio activo → habilitada sin
             # derivar. No-socios, excepciones o tope superado caen a los
             # bloques de pago manual de abajo (una persona lo coordina).
-            if pide_cuenta_corriente(texto):
+            # "Anotalo" a secas cuenta como cuenta corriente SOLO con un pedido
+            # en curso (así lo piden los socios; fuera de contexto es ambiguo).
+            _hay_pedido_cc = bool(session.get("pending_sku_id") or session.get("pending_items"))
+            if pide_cuenta_corriente(texto) or (_hay_pedido_cc and pide_anotar(texto)):
                 _items_cc = session.get("pending_items") or []
                 if _items_cc:
                     _monto_cc = sum(i["precio"] * i.get("cantidad", 1) for i in _items_cc)
@@ -903,7 +907,15 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     _s_cc = await deps["session"].get(phone)
                     _s_cc["pago_metodo"] = "cuenta_corriente"
                     await deps["session"].save(phone, _s_cc)
-                    if session.get("pending_sku_id") or _items_cc:
+                    _entrega_cc = entrega_ya_elegida(session)
+                    if (session.get("pending_sku_id") or _items_cc) and _entrega_cc:
+                        # Ya eligió retiro/envío (y dio la dirección): se
+                        # cierra directo, sin volver a preguntar (caso 18/9).
+                        _s_cc2 = await deps["session"].get(phone)
+                        respuesta, _ = await crear_link_y_responder(
+                            deps["payment"], deps["session"], phone, _s_cc2,
+                            _entrega_cc[0], _entrega_cc[1])
+                    elif session.get("pending_sku_id") or _items_cc:
                         await deps["session"].set_estado(phone, "esperando_entrega")
                         respuesta = ("¡Dale! Te lo cargamos a tu cuenta corriente 🙌 " +
                                      pregunta_entrega(_cfg_pm, saludo=False))

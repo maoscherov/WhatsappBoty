@@ -191,7 +191,47 @@ def pide_cuenta_corriente(t: str) -> bool:
     (pide_pago_manual sigue matcheando "cuenta corriente" como red de
     seguridad para no-socios y excepciones, que sí van a una persona).
     """
-    return any(re.search(p, t, re.IGNORECASE) for p in _CUENTA_CORRIENTE)
+    # Sin tildes: "Anótamelo en la cuenta" / "anotámelo" no matcheaban el
+    # patrón "anot[aá]" y el modelo improvisaba "no puedo anotarlo" (caso real
+    # 18/9, Mauricio, socio).
+    s = _sin_tildes(t)
+    return any(re.search(p, s, re.IGNORECASE) for p in _CUENTA_CORRIENTE)
+
+
+def _sin_tildes(t: str) -> str:
+    s = t or ""
+    for a, b in (("á", "a"), ("é", "e"), ("í", "i"), ("ó", "o"), ("ú", "u"),
+                 ("Á", "A"), ("É", "E"), ("Í", "I"), ("Ó", "O"), ("Ú", "U")):
+        s = s.replace(a, b)
+    return s
+
+
+_ANOTAR = r"\b(anot[ae](?!d)\w*|apunt[ae](?!d)\w*)\b"   # "anotado" no es un pedido
+_ANOTAR_OTRA_COSA = r"\b(direccion|domicilio|telefono|numero|nombre|receta|mail|correo)\b"
+
+
+def pide_anotar(t: str) -> bool:
+    """
+    "Anotalo", "anotámelo", "me lo anotás": así piden cuenta corriente los
+    socios de la mutual, sin decir "cuenta" (feedback 29, 42, 49). SOLO vale
+    como cuenta corriente con un pedido en curso — lo decide quien llama.
+    """
+    s = _sin_tildes(t).lower()
+    return bool(re.search(_ANOTAR, s)) and not re.search(_ANOTAR_OTRA_COSA, s)
+
+
+def entrega_ya_elegida(session: dict) -> Optional[tuple[str, Optional[str]]]:
+    """
+    (tipo_entrega, direccion) si el cliente ya eligió cómo recibir el pedido
+    en curso, o None. Evita volver a preguntar retiro/envío y la dirección
+    cuando cambia el medio de pago con el link ya enviado (caso real 18/9).
+    """
+    tipo = session.get("tipo_entrega")
+    if tipo == "retiro":
+        return "retiro", None
+    if tipo == "envio" and (session.get("direccion_envio") or "").strip():
+        return "envio", session["direccion_envio"]
+    return None
 
 
 async def habilitado_cc(phone: str, cfg: dict, socio_svc, monto: float = 0.0) -> Optional[dict]:
@@ -654,7 +694,8 @@ async def _chequear_stock_vivo(session: dict, phone: str, session_svc,
 
 async def _cerrar_venta_cc(session_svc, phone: str, session: dict,
                            tipo_entrega: str, direccion: Optional[str],
-                           total: float, costo_envio: float = 0.0) -> str:
+                           total: float, costo_envio: float = 0.0,
+                           link_previo: bool = False) -> str:
     """
     Cierra una venta con CUENTA CORRIENTE: crea el pedido (pago="cuenta_corriente",
     entra al backoffice como cualquier pedido pagado, con código de retiro) y
@@ -709,6 +750,9 @@ async def _cerrar_venta_cc(session_svc, phone: str, session: dict,
 
     code = order.get("pickup_code", "")
     envio_line = f" (incluye ${costo_envio:,.0f} de envío)" if costo_envio > 0 else ""
+    # Si ya le habíamos mandado un link de pago, que no lo use: pagaría dos veces.
+    link_line = ("\n\nNo hace falta que uses el link de pago que te mandé antes."
+                 if link_previo else "")
     if tipo_entrega == "envio":
         dir_txt = f" a *{direccion}*" if direccion else " a tu domicilio"
         return (
@@ -716,13 +760,13 @@ async def _cerrar_venta_cc(session_svc, phone: str, session: dict,
             f"*{nombre}* — ${total:,.2f}{envio_line}\n"
             f"🚚 Te lo enviamos{dir_txt}. Nos comunicamos para coordinar la entrega.\n"
             f"📋 Código de pedido: *{code}*\n\n"
-            f"¡Muchas gracias! 💊"
+            f"¡Muchas gracias! 💊{link_line}"
         )
     return (
         f"✅ *¡Listo! Quedó cargado a tu cuenta corriente* 🙌\n\n"
         f"*{nombre}* — ${total:,.2f}\n"
         f"🔑 *Tu código de retiro es: {code}*\n\n"
-        f"Presentalo al retirar. ¡Muchas gracias! 💊"
+        f"Presentalo al retirar. ¡Muchas gracias! 💊{link_line}"
     )
 
 
@@ -814,7 +858,8 @@ async def crear_link_y_responder(
     if session.get("pago_metodo") == "cuenta_corriente":
         respuesta_cc = await _cerrar_venta_cc(
             session_svc, phone, session, tipo_entrega, direccion,
-            total=total, costo_envio=_costo_envio)
+            total=total, costo_envio=_costo_envio,
+            link_previo=session.get("estado") == "esperando_pago")
         return respuesta_cc, None
 
     link, err = await payment_svc.crear_link(
