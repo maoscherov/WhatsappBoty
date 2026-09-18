@@ -83,8 +83,8 @@ heartbeat_interval_secs = 300   # opcional
 [erp]
 kind = "observer"
 base_url = "http://192.168.1.156:60064"
-sync_interval_secs = 900        # opcional, default 900
-max_concurrency = 4             # opcional, máximo recomendado contra el ERP
+sync_interval_secs = 1800       # opcional, default 1800 (0.3.3; antes 900)
+max_concurrency = 1             # opcional, default 1 (0.3.3; antes 4) — 4 es el máximo
 request_timeout_secs = 30       # opcional
 daily_id_scan = false           # ver "Pendiente" más abajo
 id_scan_max = 100300            # rango del barrido por ID
@@ -211,15 +211,15 @@ verdad pasa a ser **selectivo**: por ciclo relee solo los productos que tuvieron
 stock o precio en la última lectura buena (los que la farmacia trabaja) y los
 que nunca se verificaron; el resto queda como está en el servidor. El **barrido
 completo** corre una vez por día a `live_full_hour` (default 3 AM). Entre
-requests hay una pausa (`live_pause_ms`, default 50 ms). El estado "live" (qué
+requests hay una pausa (`live_pause_ms`, default 500 ms desde 0.3.3). El estado "live" (qué
 se vio y qué está activo) vive en `state.sqlite`, tabla `live`.
 
 ```toml
 [erp]
 live_selective = true    # false = todos los productos en cada ciclo (0.3.1)
 live_full_hour = 3
-live_pause_ms = 50
-max_concurrency = 2      # recomendado mientras Observer esté frágil
+live_pause_ms = 500
+max_concurrency = 1
 sync_interval_secs = 1800
 ```
 
@@ -230,3 +230,22 @@ cuando Observer está frágil; persiste entre reinicios, el icono queda amarillo
 y **Detener / Iniciar el servicio…** (pide permisos de administrador por UAC,
 usa `sc stop|start RemediaAgent`). Al actualizar con `install`, se conservan
 los ajustes finos del ERP (`max_concurrency`, `sync_interval_secs`, `live_*`).
+
+## 0.3.3 — defaults conservadores
+
+Tras el incidente del 15/9 (el endpoint de lote de Observer quedó en 500 hasta
+reiniciar `ServiciosGestion`; la carga del agente es la causa más probable:
+~3.000 requests cada 15 minutos con 4 hilos), los defaults pasan a:
+
+| Clave | Antes | 0.3.3 |
+|---|---|---|
+| `sync_interval_secs` | 900 | 1800 |
+| `max_concurrency` | 4 | 1 |
+| `live_pause_ms` | 50 | 500 |
+
+Con eso el pase selectivo (~300 requests) tarda unos 2-3 minutos a ~2 req/s, y
+el barrido completo de las 3 AM menos de media hora. Al actualizar con
+`install`, un `agent.toml` que tenga exactamente los valores viejos (900 / 4 /
+50, escritos por el instalador) se migra a los nuevos; cualquier otro valor
+elegido por la farmacia se respeta. `agent.toml` se lee al arrancar el servicio:
+un cambio a mano necesita reiniciarlo.

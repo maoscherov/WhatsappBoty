@@ -155,7 +155,11 @@ fn install(data_dir: &std::path::Path, token: String, erp: String, branch: Strin
     let erp = erp.trim_end_matches('/').to_string();
     // Al actualizar se conserva el ajuste fino del ERP que la farmacia ya tenía
     // (concurrencia, intervalo, pase selectivo): no se vuelve a los defaults.
-    let erp_prev = previa.as_ref().map(|c| c.erp.clone());
+    let erp_prev = previa.as_ref().map(|c| {
+        let mut e = c.erp.clone();
+        e.migrar_defaults_viejos();
+        e
+    });
     let cfg = Config {
         branch_id: branch,
         remedia_url: remedia,
@@ -164,15 +168,15 @@ fn install(data_dir: &std::path::Path, token: String, erp: String, branch: Strin
         erp: ErpConfig {
             kind: "observer".into(),
             base_url: erp,
-            sync_interval_secs: erp_prev.as_ref().map(|e| e.sync_interval_secs).unwrap_or(900),
-            max_concurrency: erp_prev.as_ref().map(|e| e.max_concurrency).unwrap_or(4),
+            sync_interval_secs: erp_prev.as_ref().map(|e| e.sync_interval_secs).unwrap_or(remedia_agent::config::DEFAULT_SYNC_INTERVAL_SECS),
+            max_concurrency: erp_prev.as_ref().map(|e| e.max_concurrency).unwrap_or(remedia_agent::config::DEFAULT_MAX_CONCURRENCY),
             request_timeout_secs: erp_prev.as_ref().map(|e| e.request_timeout_secs).unwrap_or(30),
             daily_id_scan: erp_prev.as_ref().map(|e| e.daily_id_scan).unwrap_or(false),
             id_scan_max: erp_prev.as_ref().map(|e| e.id_scan_max).unwrap_or(100_300),
             live_enrich: erp_prev.as_ref().map(|e| e.live_enrich).unwrap_or(true),
             live_selective: erp_prev.as_ref().map(|e| e.live_selective).unwrap_or(true),
             live_full_hour: erp_prev.as_ref().map(|e| e.live_full_hour).unwrap_or(3),
-            live_pause_ms: erp_prev.as_ref().map(|e| e.live_pause_ms).unwrap_or(50),
+            live_pause_ms: erp_prev.as_ref().map(|e| e.live_pause_ms).unwrap_or(remedia_agent::config::DEFAULT_LIVE_PAUSE_MS),
         },
         log: LogConfig { dir: data_dir.join("logs") },
     };

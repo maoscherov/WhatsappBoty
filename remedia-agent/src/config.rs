@@ -66,6 +66,31 @@ impl Default for LogConfig {
     }
 }
 
+/// Defaults conservadores (0.3.3, tras el incidente del 15/9): un request a la
+/// vez, 500 ms entre requests del pase de verdad y un ciclo cada 30 minutos.
+/// Observer atiende el mostrador; el agente no puede competirle.
+pub const DEFAULT_SYNC_INTERVAL_SECS: u64 = 1800;
+pub const DEFAULT_MAX_CONCURRENCY: usize = 1;
+pub const DEFAULT_LIVE_PAUSE_MS: u64 = 500;
+
+impl ErpConfig {
+    /// Al actualizar se conserva el ajuste fino de la farmacia, salvo los
+    /// valores que son exactamente los defaults agresivos de 0.3.2 y
+    /// anteriores (900 s / 4 hilos / 50 ms): esos nadie los eligió, los
+    /// escribió el instalador, y se migran a los nuevos.
+    pub fn migrar_defaults_viejos(&mut self) {
+        if self.sync_interval_secs == 900 {
+            self.sync_interval_secs = DEFAULT_SYNC_INTERVAL_SECS;
+        }
+        if self.max_concurrency == 4 {
+            self.max_concurrency = DEFAULT_MAX_CONCURRENCY;
+        }
+        if self.live_pause_ms == 50 {
+            self.live_pause_ms = DEFAULT_LIVE_PAUSE_MS;
+        }
+    }
+}
+
 fn d_heartbeat() -> u64 {
     300
 }
@@ -73,10 +98,10 @@ fn d_kind() -> String {
     "observer".into()
 }
 fn d_sync_interval() -> u64 {
-    900
+    DEFAULT_SYNC_INTERVAL_SECS
 }
 fn d_concurrency() -> usize {
-    4
+    DEFAULT_MAX_CONCURRENCY
 }
 fn d_timeout() -> u64 {
     30
@@ -91,7 +116,7 @@ fn d_live_full_hour() -> u8 {
     3
 }
 fn d_live_pause_ms() -> u64 {
-    50
+    DEFAULT_LIVE_PAUSE_MS
 }
 fn d_log_dir() -> PathBuf {
     Config::default_data_dir().join("logs")
@@ -160,17 +185,42 @@ dir = "C:\\ProgramData\\RemediaAgent\\logs"
         let c = Config::from_toml(SAMPLE).unwrap();
         assert_eq!(c.branch_id, "farmacia-xxx");
         assert_eq!(c.erp.kind, "observer");
-        assert_eq!(c.erp.sync_interval_secs, 900);
-        assert_eq!(c.erp.max_concurrency, 4);
+        assert_eq!(c.erp.sync_interval_secs, 1800);
+        assert_eq!(c.erp.max_concurrency, 1);
         assert_eq!(c.erp.request_timeout_secs, 30);
         assert!(!c.erp.daily_id_scan);
         assert_eq!(c.erp.id_scan_max, 100_300);
         assert!(c.erp.live_enrich);
         assert!(c.erp.live_selective);
         assert_eq!(c.erp.live_full_hour, 3);
-        assert_eq!(c.erp.live_pause_ms, 50);
+        assert_eq!(c.erp.live_pause_ms, 500);
         assert_eq!(c.heartbeat_interval_secs, 300);
         assert_eq!(c.log.dir, PathBuf::from(r"C:\ProgramData\RemediaAgent\logs"));
+    }
+
+    #[test]
+    fn migra_defaults_viejos_y_respeta_lo_elegido() {
+        let s = SAMPLE.replace(
+            "base_url = \"http://192.168.1.156:60064\"",
+            "base_url = \"http://192.168.1.156:60064\"
+sync_interval_secs = 900
+max_concurrency = 4
+live_pause_ms = 50",
+        );
+        let mut c = Config::from_toml(&s).unwrap();
+        c.erp.migrar_defaults_viejos();
+        assert_eq!((c.erp.sync_interval_secs, c.erp.max_concurrency, c.erp.live_pause_ms), (1800, 1, 500));
+
+        let s = SAMPLE.replace(
+            "base_url = \"http://192.168.1.156:60064\"",
+            "base_url = \"http://192.168.1.156:60064\"
+sync_interval_secs = 600
+max_concurrency = 2
+live_pause_ms = 1000",
+        );
+        let mut c = Config::from_toml(&s).unwrap();
+        c.erp.migrar_defaults_viejos();
+        assert_eq!((c.erp.sync_interval_secs, c.erp.max_concurrency, c.erp.live_pause_ms), (600, 2, 1000));
     }
 
     #[test]

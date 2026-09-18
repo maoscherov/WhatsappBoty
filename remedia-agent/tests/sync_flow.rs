@@ -21,6 +21,7 @@ token = "tok"
 [erp]
 kind = "observer"
 base_url = "{erp_uri}"
+live_pause_ms = 0
 request_timeout_secs = 5
 {extra}
 "#
