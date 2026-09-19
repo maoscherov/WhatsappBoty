@@ -452,6 +452,10 @@ class SessionService:
         for phone, session in await self.list_all():
             if session.get("estado") != "operador" or session.get("agente"):
                 continue
+            # Llegó con el bot apagado a propósito: no se le devuelve al bot
+            # por inactividad, la libera una persona (19/9).
+            if session.get("derivada_motivo") == "bot_apagado":
+                continue
             derivada = session.get("derivada_at")
             if derivada and now - float(derivada) >= threshold_secs:
                 out.append(phone)

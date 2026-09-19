@@ -187,6 +187,13 @@ async def _cerrar_sesiones_inactivas():
             # Vacío = cerrar SIN avisar (no cae al mensaje general: el aviso
             # de vencimiento del link se sacó a pedido — 20/8).
             mensaje_pago = cfg.get("inactivity_close_message_pago") or ""
+            # Bot apagado desde el backoffice: ningún aviso automático sale
+            # (ni cierre, ni reanudación, ni demora). Las sesiones se cierran
+            # igual por inactividad, en silencio.
+            from app.services.checkout_helper import bot_encendido
+            _bot_on = bot_encendido(cfg)
+            if not _bot_on:
+                mensaje = mensaje_pago = ""
             for phone, session in await session_svc.inactivas(minutos * 60, minutos_pago * 60):
                 con_link = session.get("estado") == "esperando_pago"
                 texto_cierre = mensaje_pago if con_link else mensaje
@@ -210,7 +217,7 @@ async def _cerrar_sesiones_inactivas():
             # Devolver al bot las derivaciones que nadie tomó (0 = desactivado).
             # Sin gente atendiendo, una conversación derivada queda muda: es
             # preferible que el bot siga ayudando.
-            libre_min = int(cfg.get("auto_liberar_minutos") or 0)
+            libre_min = int(cfg.get("auto_liberar_minutos") or 0) if _bot_on else 0
             if libre_min > 0:
                 aviso = cfg.get("auto_liberar_message") or ""
                 for phone in await session_svc.derivadas_sin_atender(libre_min * 60):
@@ -226,7 +233,7 @@ async def _cerrar_sesiones_inactivas():
                     logger.info(f"Conversación devuelta al bot tras {libre_min} min sin atender: {phone}")
 
             # Aviso de demora en derivaciones (0 = desactivado)
-            hr_min = int(cfg.get("handoff_reminder_minutes") or 0)
+            hr_min = int(cfg.get("handoff_reminder_minutes") or 0) if _bot_on else 0
             hr_msg = cfg.get("handoff_reminder_message") or ""
             if hr_min > 0 and hr_msg:
                 for phone in await session_svc.derivadas_para_aviso(hr_min * 60):

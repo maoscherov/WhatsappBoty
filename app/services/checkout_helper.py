@@ -855,6 +855,30 @@ async def crear_link_y_responder(
     # Cuenta corriente (minuta 79): mismo checkout que el link, pero sin pago
     # online — el pedido entra directo al backoffice y la farmacia registra el
     # saldo en su sistema contable (estado cc_cargado, aparte).
+    if session.get("pago_metodo") == "efectivo":
+        # Efectivo con envío solo si la farmacia lo habilitó: que un cadete
+        # cobre en la puerta es otra operatoria.
+        if tipo_entrega == "envio" and not _flag(_cfg, "efectivo_con_envio", False):
+            _s_ef = await session_svc.get(phone)
+            if _s_ef.get("_efectivo_envio_avisado"):
+                # Ya se le avisó y eligió envío igual: sigue con link de pago.
+                _s_ef.pop("pago_metodo", None)
+                _s_ef.pop("_efectivo_envio_avisado", None)
+                await session_svc.save(phone, _s_ef)
+            else:
+                _s_ef["_efectivo_envio_avisado"] = True
+                await session_svc.save(phone, _s_ef)
+                await session_svc.set_estado(phone, "esperando_entrega")
+                return (_cfg.get("efectivo_solo_retiro_message") or (
+                    "El pago en efectivo es solo retirando en la sucursal. ¿Lo pasás a "
+                    "retirar, o preferís *envío* pagando con tarjeta?")), None
+        else:
+            respuesta_ef = await _cerrar_venta_efectivo(
+                session_svc, phone, session, tipo_entrega, direccion,
+                total=total, costo_envio=_costo_envio, cfg=_cfg,
+                link_previo=session.get("estado") == "esperando_pago")
+            return respuesta_ef, None
+
     if session.get("pago_metodo") == "cuenta_corriente":
         respuesta_cc = await _cerrar_venta_cc(
             session_svc, phone, session, tipo_entrega, direccion,
@@ -1229,3 +1253,137 @@ def debe_derivar_desconocido(intencion: str, entidad: Optional[str], tuvo_kb: bo
     """
     modo = (cfg.get("desconocido_mode") or "derivar").strip().lower()
     return modo == "derivar" and intencion == "desconocido" and not (entidad or "").strip() and not tuvo_kb
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Pago en EFECTIVO (19/9): mismo esquema que cuenta corriente — el pedido entra
+# al backoffice sin link de pago — pero el cobro queda PENDIENTE hasta que la
+# farmacia lo marca como cobrado. Apagado por default (efectivo_enabled).
+# ══════════════════════════════════════════════════════════════════════════════
+_EFECTIVO = [
+    r"\befectivo\b", r"\bcash\b", r"\ben mano\b", r"\bcontado\b",
+    r"\bpag\w+\b.{0,30}\b(sucursal|local|farmacia|caja|mostrador|retir\w+|recib\w+|ah[ií]|all[aá])\b",
+    r"\b(retir\w+|sucursal|recib\w+)\b.{0,30}\bpag\w+",
+    r"\bcontra\s*(entrega|reembolso)\b",
+]
+_NO_EFECTIVO = [r"\bno\s+(tengo|uso|manejo|quiero)\s+efectivo\b", r"\bsin\s+efectivo\b"]
+
+
+def _flag(cfg: dict, clave: str, default: bool) -> bool:
+    v = cfg.get(clave)
+    if v is None or str(v).strip() == "":
+        return default
+    return str(v).strip().lower() == "true"
+
+
+def pide_efectivo(t: str) -> bool:
+    """True si el cliente pide pagar en efectivo / al retirar / al recibir."""
+    s = _sin_tildes(t).lower()
+    if any(re.search(p, s) for p in _NO_EFECTIVO):
+        return False
+    return any(re.search(p, s) for p in _EFECTIVO)
+
+
+def habilitado_efectivo(phone: str, cfg: dict, socio_svc, monto: float = 0.0) -> bool:
+    """
+    ¿Se le puede tomar el pedido en efectivo? False si la función está apagada
+    (default), si es solo para socios y no lo es, o si supera el tope
+    (efectivo_tope_monto, 0 = sin tope). Cuando da False, el pedido cae al
+    flujo de pago manual de siempre (derivar / solo tarjeta).
+    """
+    if not _flag(cfg, "efectivo_enabled", False):
+        return False
+    if _flag(cfg, "efectivo_solo_socios", False):
+        try:
+            if not (socio_svc and socio_svc.find_by_phone(phone)):
+                return False
+        except Exception:
+            return False
+    try:
+        tope = float(cfg.get("efectivo_tope_monto") or 0)
+    except (TypeError, ValueError):
+        tope = 0.0
+    return not (tope > 0 and monto > tope)
+
+
+async def _cerrar_venta_efectivo(session_svc, phone: str, session: dict,
+                                 tipo_entrega: str, direccion: Optional[str],
+                                 total: float, costo_envio: float = 0.0,
+                                 cfg: Optional[dict] = None, link_previo: bool = False) -> str:
+    """
+    Cierra una venta a pagar en EFECTIVO: crea el pedido (pago="efectivo", cobro
+    pendiente) y devuelve la confirmación. A diferencia de cuenta corriente NO
+    se registra como pago aprobado: la plata todavía no entró.
+    """
+    from app.config import get_settings as _gs
+    from app.services.order_service import get_order_service
+    settings = _gs()
+    cfg = cfg or {}
+
+    items = session.get("pending_items") or []
+    if len(items) > 1:
+        sku_id = "MULTI"
+        nombre = " + ".join(
+            i["nombre"] + (f" x{i.get('cantidad', 1)}" if i.get("cantidad", 1) > 1 else "")
+            for i in items)
+        cantidad = 1
+    else:
+        sku_id = session.get("pending_sku_id") or ""
+        cantidad = int(session.get("pending_cantidad") or 1)
+        nombre = (session.get("pending_sku_nombre") or "tu pedido") + \
+                 (f" x{cantidad}" if cantidad > 1 else "")
+
+    order = await get_order_service(settings.redis_url).create(
+        phone=phone, sku_id=sku_id, sku_nombre=nombre, cantidad=cantidad, total=total,
+        mp_payment_id="", tipo_entrega=tipo_entrega, direccion_envio=direccion,
+        pago="efectivo",
+    )
+    logger.info(f"Pedido en efectivo: {order['order_id']} phone={phone} total=${total:,.2f}")
+
+    try:
+        from app.services.db import get_db as _gdb
+        from app.services.metrics_store import get_metrics_store as _gmet
+        await _gmet(_gdb(settings.database_url)).evento(
+            "pedido_efectivo", phone=phone, dato=tipo_entrega, monto=total, ref=order["order_id"])
+    except Exception as e:
+        logger.debug(f"evento pedido_efectivo: {e}")
+
+    await session_svc.set_entrega(phone, tipo_entrega, direccion)
+    await session_svc.set_estado(phone, "pedido_confirmado")
+    _s_fin = await session_svc.get(phone)
+    _s_fin.pop("_efectivo_envio_avisado", None)
+    if _s_fin.pop("pago_metodo", None) is not None or True:
+        await session_svc.save(phone, _s_fin)
+
+    try:
+        horas = int(float(cfg.get("efectivo_horas_reserva") or 0))
+    except (TypeError, ValueError):
+        horas = 0
+    plazo = f" Tenés {horas} hs para pasar a buscarlo." if horas > 0 and tipo_entrega != "envio" else ""
+    envio_line = f" (incluye ${costo_envio:,.0f} de envío)" if costo_envio > 0 else ""
+    if tipo_entrega == "envio":
+        plantilla = cfg.get("efectivo_envio_message") or (
+            "✅ *¡Listo! Tomamos tu pedido* 🙌\n\n"
+            "*{producto}* — ${total}{envio}\n"
+            "🚚 Te lo enviamos a *{direccion}* y lo pagás en efectivo al recibirlo.\n"
+            "📋 Código de pedido: *{codigo}*\n\n¡Muchas gracias! 💊")
+    else:
+        plantilla = cfg.get("efectivo_retiro_message") or (
+            "✅ *¡Listo! Tomamos tu pedido* 🙌\n\n"
+            "*{producto}* — ${total}\n"
+            "💵 Lo pagás en efectivo al retirar.{plazo}\n"
+            "🔑 *Tu código de retiro es: {codigo}*\n\n¡Muchas gracias! 💊")
+    msg = (plantilla.replace("{producto}", nombre).replace("{total}", f"{total:,.2f}")
+           .replace("{envio}", envio_line).replace("{plazo}", plazo)
+           .replace("{direccion}", direccion or "tu domicilio")
+           .replace("{codigo}", str(order.get("pickup_code", ""))))
+    if link_previo:
+        msg += "\n\nNo hace falta que uses el link de pago que te mandé antes."
+    return msg
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Interruptor global del bot (19/9): apagado, no responde NADA automático.
+# ══════════════════════════════════════════════════════════════════════════════
+def bot_encendido(cfg: dict) -> bool:
+    return _flag(cfg, "bot_enabled", True)

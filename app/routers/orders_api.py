@@ -91,7 +91,7 @@ async def export_orders(_=Depends(_auth), pago: str = Query(None),
     w = _csv.writer(buf, lineterminator="\n")
     w.writerow(["fecha", "pedido", "telefono", "producto", "cantidad", "total",
                 "pago", "entrega", "direccion", "estado", "codigo",
-                "cc_cargado", "cc_cargado_por", "agente"])
+                "cc_cargado", "cc_cargado_por", "cobrado", "cobrado_por", "agente"])
     for o in orders:
         w.writerow([
             o.get("created_at", ""), o.get("order_id", ""), o.get("phone", ""),
@@ -100,7 +100,10 @@ async def export_orders(_=Depends(_auth), pago: str = Query(None),
             o.get("direccion_envio") or "", o.get("estado", ""),
             o.get("pickup_code", ""),
             "si" if o.get("cc_cargado_at") else "no",
-            o.get("cc_cargado_por") or "", o.get("agente") or "",
+            o.get("cc_cargado_por") or "",
+            # Cobrado: online y cta. cte. nacen cobrados; efectivo, al marcarlo.
+            "si" if (o.get("cobrado_at") or (o.get("pago") or "online") != "efectivo") else "no",
+            o.get("cobrado_por") or "", o.get("agente") or "",
         ])
     return PlainTextResponse(
         buf.getvalue(), media_type="text/csv",
@@ -166,6 +169,9 @@ def armar_mensaje_pedido_listo(order: dict, cfg: dict, pickup_text: str = "") ->
             "Presentá este código y te lo entregamos. ¡Te esperamos! 💊"
         )
 
+    if (order.get("pago") or "") == "efectivo" and not order.get("cobrado_at"):
+        plantilla += "\n\n💵 Recordá que lo abonás en efectivo."
+
     return (plantilla
             .replace("{producto}", producto)
             .replace("{total}", f"{float(order.get('total') or 0):,.2f}")
@@ -214,6 +220,22 @@ async def mark_retirado(order_id: str, request: Request, _=Depends(_auth)):
     if not order:
         raise HTTPException(status_code=404, detail="Pedido no encontrado")
 
+    return order
+
+
+@router.patch("/{order_id}/cobrado")
+async def mark_cobrado(order_id: str, request: Request, _=Depends(_auth)):
+    """La farmacia cobró un pedido en efectivo (19/9)."""
+    settings = get_settings()
+    svc = get_order_service(settings.redis_url)
+    agente = await _agente_del_body(request)
+    order = await svc.get(order_id)
+    if not order:
+        raise HTTPException(status_code=404, detail="Pedido no encontrado")
+    if (order.get("pago") or "online") != "efectivo":
+        raise HTTPException(status_code=409, detail="Solo los pedidos en efectivo se marcan como cobrados")
+    order = await svc.mark_cobrado(order_id, agente=agente)
+    logger.info(f"Pedido {order_id} marcado como cobrado (efectivo) por {agente or '?'}")
     return order
 
 

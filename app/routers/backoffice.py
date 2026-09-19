@@ -683,6 +683,14 @@ class ConfigUpdate(BaseModel):
     live_sin_stock_message: str | None = None    # freno por stock en vivo (ERP)
     cc_enabled: str | None = None                # "true"/"false" — pago con cuenta corriente
     cc_tope_monto: str | None = None             # tope por pedido, "0" = sin tope
+    efectivo_enabled: str | None = None          # "true"/"false" — pago en efectivo
+    efectivo_solo_socios: str | None = None      # "true" = solo socios del padrón
+    efectivo_con_envio: str | None = None        # "true" = también con envío a domicilio
+    efectivo_tope_monto: str | None = None       # tope por pedido, "0" = sin tope
+    efectivo_horas_reserva: str | None = None    # plazo informado para retirar ("0" = no se informa)
+    efectivo_retiro_message: str | None = None   # {producto} {total} {codigo} {plazo}
+    efectivo_envio_message: str | None = None    # {producto} {total} {codigo} {direccion} {envio}
+    efectivo_solo_retiro_message: str | None = None  # aviso cuando pide efectivo con envío y no está habilitado
     catalogo_fuente: str | None = None           # "erp" | "csv" — de dónde lee el bot el catálogo
     rag_sku_min_score: str | None = None         # umbral del fallback semántico (0-1)
     sin_stock_derivar_message: str | None = None
@@ -727,6 +735,42 @@ class ConfigUpdate(BaseModel):
     socio_discount_info_message: str | None = None   # respuesta fija con descuento activo ({pct})
     socio_discount_off_message: str | None = None    # respuesta fija con descuento apagado
     derivadas_poll_seconds: str | None = None    # intervalo de polleo de /bo/derivadas
+
+
+class BotSwitch(BaseModel):
+    enabled: bool
+    agente: str | None = None
+
+
+@router.get("/bot")
+async def bo_bot_get(_=Depends(_auth)):
+    """Estado del interruptor global del bot."""
+    settings = get_settings()
+    cfg = await get_config_service(settings.redis_url).get_all()
+    from app.services.checkout_helper import bot_encendido
+    return {"enabled": bot_encendido(cfg),
+            "cambiado_por": cfg.get("bot_cambiado_por") or None,
+            "cambiado_at": cfg.get("bot_cambiado_at") or None}
+
+
+@router.post("/bot")
+async def bo_bot_set(body: BotSwitch, _=Depends(_auth)):
+    """
+    Enciende/apaga el bot para TODA la farmacia. Apagado, no responde nada
+    automático: los mensajes entran a la cola de derivadas (motivo
+    bot_apagado) para que los conteste una persona. Al reencender, esas
+    conversaciones siguen en manos del operador hasta que las libere.
+    """
+    from datetime import datetime, timezone
+    settings = get_settings()
+    cfg_svc = get_config_service(settings.redis_url)
+    ahora = datetime.now(timezone.utc).isoformat()
+    for k, v in (("bot_enabled", "true" if body.enabled else "false"),
+                 ("bot_cambiado_por", (body.agente or "").strip()[:60]),
+                 ("bot_cambiado_at", ahora)):
+        await cfg_svc.set(k, v)
+    logger.warning(f"BOT {'ENCENDIDO' if body.enabled else 'APAGADO'} por {body.agente or '?'}")
+    return {"enabled": body.enabled, "cambiado_por": body.agente or None, "cambiado_at": ahora}
 
 
 @router.get("/config")

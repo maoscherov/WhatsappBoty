@@ -231,6 +231,18 @@ class OrderService:
         await self._save(order)
         return order
 
+    async def mark_cobrado(self, order_id: str, agente: Optional[str] = None) -> Optional[dict]:
+        """La farmacia cobró un pedido en efectivo. Independiente del ciclo
+        pendiente→preparado→retirado (se puede cobrar al entregar)."""
+        order = await self.get(order_id)
+        if not order:
+            return None
+        order["cobrado_at"]  = _now_epoch()
+        order["cobrado_por"] = agente or order.get("cobrado_por")
+        self._asignar_si_libre(order, agente)
+        await self._save(order)
+        return order
+
     async def mark_retirado(self, order_id: str, agente: Optional[str] = None) -> Optional[dict]:
         order = await self.get(order_id)
         if not order:

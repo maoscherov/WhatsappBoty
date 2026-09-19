@@ -92,6 +92,37 @@ DEFAULTS: dict[str, str] = {
     # (/bo/cc/excepciones). Tope 0 = sin tope.
     "cc_enabled": "true",
     "cc_tope_monto": "0",
+    # Pago en EFECTIVO (19/9): el pedido entra al backoffice sin link y el
+    # cobro queda pendiente ("Marcar cobrado"). Apagado por default: hasta
+    # encenderlo, "efectivo" sigue el flujo de pago manual (derivar/solo tarjeta).
+    "efectivo_enabled": "false",
+    "efectivo_solo_socios": "false",     # "true" = solo socios del padrón
+    "efectivo_con_envio": "false",       # "true" = también con envío (paga al recibir)
+    "efectivo_tope_monto": "0",          # tope por pedido, 0 = sin tope
+    "efectivo_horas_reserva": "24",      # plazo que se informa para retirarlo (0 = no se informa)
+    # Placeholders: {producto} {total} {codigo} {plazo} / {direccion} {envio}
+    "efectivo_retiro_message": (
+        "✅ *¡Listo! Tomamos tu pedido* 🙌\n\n"
+        "*{producto}* — ${total}\n"
+        "💵 Lo pagás en efectivo al retirar.{plazo}\n"
+        "🔑 *Tu código de retiro es: {codigo}*\n\n¡Muchas gracias! 💊"
+    ),
+    "efectivo_envio_message": (
+        "✅ *¡Listo! Tomamos tu pedido* 🙌\n\n"
+        "*{producto}* — ${total}{envio}\n"
+        "🚚 Te lo enviamos a *{direccion}* y lo pagás en efectivo al recibirlo.\n"
+        "📋 Código de pedido: *{codigo}*\n\n¡Muchas gracias! 💊"
+    ),
+    "efectivo_solo_retiro_message": (
+        "El pago en efectivo es solo retirando en la sucursal. ¿Lo pasás a "
+        "retirar, o preferís *envío* pagando con tarjeta?"
+    ),
+    # Interruptor global del bot: "false" = no responde nada automático; los
+    # mensajes entran a la cola de derivadas (motivo bot_apagado) para que los
+    # conteste una persona. Se cambia con POST /bo/bot (registra quién y cuándo).
+    "bot_enabled": "true",
+    "bot_cambiado_por": "",
+    "bot_cambiado_at": "",
     # Fuente del catálogo (11/9): "erp" = Postgres sincronizado por el agente
     # de la sucursal (gana si hay datos); "csv" = forzar el CSV viejo.
     "catalogo_fuente": "erp",

@@ -2842,3 +2842,202 @@ class TestFeedback16Sep:
         for k in ("obras_sociales", "bonos_laboratorios", "sintoma_farmaceutico_message",
                   "desconocido_mode", "no_entendi_derivar_message", "bono_recibido_message"):
             assert k in defaults
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Pago en efectivo + interruptor global del bot (19/9)
+# ══════════════════════════════════════════════════════════════════════════════
+class TestEfectivo:
+
+    def _padron(self, tmp_path):
+        from app.services.socio_service import SocioService
+        p = tmp_path / "padron.csv"
+        p.write_text("APELLIDO,NOMBRE,DNI,SOCIO,CELULAR,DOMICILIO\n"
+                     "Muff,Claudia,20111222,4001,3415550001,Mitre 100\n", encoding="utf-8")
+        return SocioService(str(p))
+
+    @pytest.mark.parametrize("txt", ["lo pago en efectivo", "en efectivo", "pago cuando retiro",
+                                     "lo pago en la sucursal", "pago al recibirlo",
+                                     "contra entrega", "de contado"])
+    def test_pide_efectivo(self, txt):
+        assert ch.pide_efectivo(txt) is True
+
+    @pytest.mark.parametrize("txt", ["no tengo efectivo", "quiero ibuprofeno", "con tarjeta",
+                                     "por transferencia", "hola"])
+    def test_no_pide_efectivo(self, txt):
+        assert ch.pide_efectivo(txt) is False
+
+    def test_apagado_por_default(self, tmp_path):
+        assert ch.habilitado_efectivo("5493415550001", {}, self._padron(tmp_path), 1000) is False
+
+    def test_habilitado_para_todos(self, tmp_path):
+        cfg = {"efectivo_enabled": "true"}
+        socios = self._padron(tmp_path)
+        assert ch.habilitado_efectivo("5493415550001", cfg, socios, 1000) is True
+        assert ch.habilitado_efectivo("5490000000000", cfg, socios, 1000) is True
+
+    def test_solo_socios(self, tmp_path):
+        cfg = {"efectivo_enabled": "true", "efectivo_solo_socios": "true"}
+        socios = self._padron(tmp_path)
+        assert ch.habilitado_efectivo("5493415550001", cfg, socios, 1000) is True
+        assert ch.habilitado_efectivo("5490000000000", cfg, socios, 1000) is False
+
+    def test_tope(self, tmp_path):
+        cfg = {"efectivo_enabled": "true", "efectivo_tope_monto": "5000"}
+        socios = self._padron(tmp_path)
+        assert ch.habilitado_efectivo("5493415550001", cfg, socios, 6000) is False
+        assert ch.habilitado_efectivo("5493415550001", cfg, socios, 4000) is True
+
+    async def _sesion_con_pedido(self, ph):
+        from app.services.session_service import SessionService
+        ss = SessionService("redis://127.0.0.1:1")
+        await ss.set_pending(ph, sku_id="S1", sku_nombre="Curitas x 20", precio=2500.0,
+                             cantidad=1, opciones=[])
+        s = await ss.get(ph)
+        s["pago_metodo"] = "efectivo"
+        await ss.save(ph, s)
+        return ss
+
+    def _parchar(self, monkeypatch, cfg):
+        from app.services import checkout_helper as chh
+
+        async def _sin_freno(*a, **k):
+            return None, None
+        monkeypatch.setattr(chh, "_chequear_stock_vivo", _sin_freno)
+
+        class _Cfg:
+            async def get_all(self):
+                return cfg
+        import app.services.config_service as cs
+        monkeypatch.setattr(cs, "get_config_service", lambda *_a, **_k: _Cfg())
+
+    class _Pay:
+        def __init__(self):
+            self.llamado = False
+
+        async def crear_link(self, **k):
+            self.llamado = True
+            return "https://pago/abc", None
+
+    class _FakeRedisOrd:
+        def __init__(self): self.kv = {}; self.idx = []
+        async def setex(self, k, ttl, v): self.kv[k] = v
+        async def zadd(self, key, mapping): self.idx.extend(mapping.keys())
+        async def zrevrange(self, key, a, b): return list(reversed(self.idx))[a:b + 1]
+        async def mget(self, keys): return [self.kv.get(k) for k in keys]
+        async def get(self, k): return self.kv.get(k)
+
+    def _ordenes_fake(self, monkeypatch):
+        import app.services.order_service as omod
+        svc = omod.OrderService("redis://127.0.0.1:1")
+        svc._redis = self._FakeRedisOrd()
+        monkeypatch.setattr(omod, "_instance", svc)
+        return svc
+
+    async def test_retiro_crea_pedido_sin_link_y_cobro_pendiente(self, monkeypatch):
+        from app.services import checkout_helper as chh
+        ordenes = self._ordenes_fake(monkeypatch)
+        self._parchar(monkeypatch, {"efectivo_enabled": "true", "efectivo_horas_reserva": "48"})
+        ph = "5493415550201"
+        ss = await self._sesion_con_pedido(ph)
+        pay = self._Pay()
+        resp, link = await chh.crear_link_y_responder(pay, ss, ph, await ss.get(ph), "retiro", None)
+        assert link is None and pay.llamado is False
+        assert "efectivo al retirar" in resp and "48 hs" in resp and "código de retiro" in resp
+        assert "reserv" not in resp.lower()          # regla: el bot no habla de reservas
+        fin = await ss.get(ph)
+        assert fin["estado"] == "pedido_confirmado" and "pago_metodo" not in fin
+        orders = [o for o in await ordenes.list_all() if o["phone"] == ph]
+        assert orders and orders[-1]["pago"] == "efectivo" and not orders[-1].get("cobrado_at")
+
+    async def test_envio_no_habilitado_avisa_y_despues_sigue_con_link(self, monkeypatch):
+        from app.services import checkout_helper as chh
+        self._parchar(monkeypatch, {"efectivo_enabled": "true"})
+        ph = "5493415550202"
+        ss = await self._sesion_con_pedido(ph)
+        pay = self._Pay()
+        resp, link = await chh.crear_link_y_responder(pay, ss, ph, await ss.get(ph),
+                                                      "envio", "Mitre 100")
+        assert link is None and pay.llamado is False
+        assert "solo retirando" in resp
+        assert (await ss.get(ph))["estado"] == "esperando_entrega"
+        # Insiste con envío: se abandona el efectivo y sale el link normal.
+        resp2, link2 = await chh.crear_link_y_responder(pay, ss, ph, await ss.get(ph),
+                                                        "envio", "Mitre 100")
+        assert pay.llamado is True and link2 == "https://pago/abc"
+        assert "pago_metodo" not in (await ss.get(ph))
+
+    async def test_envio_habilitado_cierra_en_efectivo(self, monkeypatch):
+        from app.services import checkout_helper as chh
+        self._ordenes_fake(monkeypatch)
+        self._parchar(monkeypatch, {"efectivo_enabled": "true", "efectivo_con_envio": "true"})
+        ph = "5493415550203"
+        ss = await self._sesion_con_pedido(ph)
+        pay = self._Pay()
+        resp, link = await chh.crear_link_y_responder(pay, ss, ph, await ss.get(ph),
+                                                      "envio", "Mitre 100")
+        assert link is None and pay.llamado is False
+        assert "Mitre 100" in resp and "al recibirlo" in resp
+
+    async def test_mark_cobrado(self):
+        from app.services.order_service import OrderService
+        svc = OrderService("redis://127.0.0.1:1")
+        svc._redis = self._FakeRedisOrd()
+        o = await svc.create(phone="549EF", sku_id="S1", sku_nombre="X", cantidad=1, total=100.0,
+                             mp_payment_id="", tipo_entrega="retiro", direccion_envio=None,
+                             pago="efectivo")
+        assert not o.get("cobrado_at")
+        o2 = await svc.mark_cobrado(o["order_id"], agente="Claudia")
+        assert o2["cobrado_at"] and o2["cobrado_por"] == "Claudia"
+        assert await svc.mark_cobrado("no-existe") is None
+
+    def test_pedido_listo_recuerda_efectivo(self):
+        from app.routers.orders_api import armar_mensaje_pedido_listo
+        base = {"sku_nombre": "Curitas", "cantidad": 1, "total": 100, "pickup_code": "AB12",
+                "tipo_entrega": "retiro"}
+        assert "efectivo" in armar_mensaje_pedido_listo({**base, "pago": "efectivo"}, {})
+        assert "efectivo" not in armar_mensaje_pedido_listo({**base, "pago": "efectivo",
+                                                             "cobrado_at": 1}, {})
+        assert "efectivo" not in armar_mensaje_pedido_listo(base, {})
+
+
+class TestBotApagado:
+
+    def test_bot_encendido_default_y_flag(self):
+        assert ch.bot_encendido({}) is True
+        assert ch.bot_encendido({"bot_enabled": "true"}) is True
+        assert ch.bot_encendido({"bot_enabled": "false"}) is False
+        assert ch.bot_encendido({"bot_enabled": ""}) is True
+
+    async def test_recibir_con_bot_apagado_guarda_y_deriva_sin_responder(self):
+        from app.routers.webhook import _recibir_con_bot_apagado
+        from app.services.session_service import SessionService
+        ss = SessionService("redis://127.0.0.1:1")
+
+        class _Wa:
+            enviados = []
+
+            async def send_text(self, *a, **k):
+                self.enviados.append(a)
+                return True
+
+        wa = _Wa()
+        deps = {"session": ss, "wa": wa}
+        await _recibir_con_bot_apagado(deps, "549BOT1", "hola, tenés ibuprofeno?")
+        await _recibir_con_bot_apagado(deps, "549BOT1", "hola??")
+        s = await ss.get("549BOT1")
+        assert s["estado"] == "operador" and s["derivada_motivo"] == "bot_apagado"
+        assert [m["content"] for m in s["history"]] == ["hola, tenés ibuprofeno?", "hola??"]
+        assert wa.enviados == []
+
+    async def test_bot_apagado_no_se_autolibera(self):
+        from app.services.session_service import SessionService
+        ss = SessionService("redis://127.0.0.1:1")
+        await ss.set_estado("549BOT2", "operador", motivo="bot_apagado")
+        await ss.set_estado("549BOT3", "operador", motivo="sin_stock")
+        for ph in ("549BOT2", "549BOT3"):
+            s = await ss.get(ph)
+            s["derivada_at"] = 1.0          # hace muchísimo
+            await ss.save(ph, s)
+        libres = await ss.derivadas_sin_atender(60)
+        assert "549BOT3" in libres and "549BOT2" not in libres

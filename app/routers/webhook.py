@@ -45,6 +45,7 @@ from app.services.checkout_helper import (
     confirmar_pedido, resolver_entrega, capturar_direccion,
     match_retiro, match_envio, pide_humano, derivar_si_receta, afirma_envio,
     pide_anotar, entrega_ya_elegida, crear_link_y_responder,
+    pide_efectivo, habilitado_efectivo, bot_encendido,
     pide_cancelar_pedido, pregunta_obra_social, responder_obra_social, parsear_lista,
     pregunta_bono, responder_bono, agregar_oferta_farmaceutico, acepta_farmaceutico,
     entidad_contradice_pendiente, debe_derivar_desconocido,
@@ -72,6 +73,20 @@ def _lock_for(phone: str) -> "_asyncio.Lock":
         lk = _asyncio.Lock()
         _phone_locks[phone] = lk
     return lk
+
+async def _recibir_con_bot_apagado(deps: dict, phone: str, contenido: str) -> None:
+    """
+    Bot apagado desde el backoffice: el mensaje se guarda y la conversación
+    entra a la cola de derivadas (motivo bot_apagado). No se envía nada.
+    El historial permanente lo escribe el `finally` del webhook.
+    """
+    session = await deps["session"].get(phone)
+    if session.get("estado") != "operador":
+        await deps["session"].set_estado(phone, "operador", motivo="bot_apagado")
+    if contenido:
+        await deps["session"].add_message(phone, "user", contenido)
+    logger.info(f"Bot apagado: mensaje de {phone} guardado sin responder")
+
 
 INTENCIONES_CON_SKU = {"consulta_precio", "consulta_stock", "pedido", "consulta_abierta"}
 import re as _re
@@ -602,6 +617,11 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
 
             texto = msg["text"]
 
+            # Interruptor global (19/9): con el bot apagado no sale NINGÚN
+            # mensaje automático — ni del modelo, ni textos fijos, ni "fuera de
+            # horario". El mensaje se guarda y entra a la cola de derivadas.
+            _bot_off = not bot_encendido(await deps["config"].get_all())
+
             # Audio con transcripción de Kapso: ya viene resuelto, no hace falta
             # descargar ni pasar por Whisper.
             if msg_type == "audio" and msg.get("texto_transcripto"):
@@ -617,11 +637,17 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     _steps["transcripcion_ms"] = int((_time.perf_counter() - _ta) * 1000)
                     _audio_prov_used = _s.audio_provider or "groq"
                     if not texto:
-                        await deps["wa"].send_text(phone, "No pude escuchar bien el audio. ¿Me lo mandás por texto?")
-                        continue
+                        if _bot_off:
+                            texto = "[audio que no se pudo transcribir]"
+                        else:
+                            await deps["wa"].send_text(phone, "No pude escuchar bien el audio. ¿Me lo mandás por texto?")
+                            continue
                 else:
-                    await deps["wa"].send_text(phone, "No pude procesar el audio. ¿Me lo mandás por texto?")
-                    continue
+                    if _bot_off:
+                        texto = "[audio que no se pudo descargar]"
+                    else:
+                        await deps["wa"].send_text(phone, "No pude procesar el audio. ¿Me lo mandás por texto?")
+                        continue
 
             # Imagen → clasificar (receta/credencial derivan; producto sigue el flujo)
             if msg_type == "image" and (msg.get("image_id") or msg.get("media_url")):
@@ -631,6 +657,10 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 else:
                     image_bytes = await deps["wa"].download_image(msg["image_id"])
                 if not image_bytes:
+                    if _bot_off:
+                        await _recibir_con_bot_apagado(deps, phone, texto or "[imagen que no se pudo descargar]")
+                        _intencion = "bot_apagado"
+                        continue
                     await deps["wa"].send_text(phone, "No pude procesar la imagen. ¿Me lo escribís?")
                     continue
                 mime = msg.get("image_mime_type", "image/jpeg")
@@ -655,6 +685,14 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                         await deps["msgs"].save(phone, "user", _img_ref)
                     except Exception:
                         pass
+
+                if _bot_off:
+                    # La foto ya quedó guardada para el operador: no se
+                    # clasifica ni se responde.
+                    await _recibir_con_bot_apagado(
+                        deps, phone, texto or ("" if _img_ref else "[imagen recibida]"))
+                    _intencion = "bot_apagado"
+                    continue
 
                 img = await deps["image"].analizar(image_bytes, mime)
                 _steps["vision_ms"] = int((_time.perf_counter() - _ti) * 1000)
@@ -768,6 +806,11 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
 
             if not texto.strip():
                 _skip_record = True
+                continue
+
+            if _bot_off:
+                await _recibir_con_bot_apagado(deps, phone, texto)
+                _intencion = "bot_apagado"
                 continue
 
             session = await deps["session"].get(phone)
@@ -897,6 +940,42 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
             # ── Cuenta corriente (minuta 79): socio activo → habilitada sin
             # derivar. No-socios, excepciones o tope superado caen a los
             # bloques de pago manual de abajo (una persona lo coordina).
+            # ── Efectivo (19/9): igual que cuenta corriente, el pedido entra
+            # sin link; el cobro queda pendiente en el backoffice. Apagado o
+            # fuera de condiciones → cae al pago manual de abajo, como siempre.
+            if pide_efectivo(texto):
+                _items_ef = session.get("pending_items") or []
+                if _items_ef:
+                    _monto_ef = sum(i["precio"] * i.get("cantidad", 1) for i in _items_ef)
+                else:
+                    _monto_ef = float(session.get("pending_precio") or 0) * \
+                        int(session.get("pending_cantidad") or 1)
+                if habilitado_efectivo(phone, _cfg_pm, deps["socios"], _monto_ef):
+                    _intencion = "efectivo"
+                    _s_ef = await deps["session"].get(phone)
+                    _s_ef["pago_metodo"] = "efectivo"
+                    _s_ef.pop("_efectivo_envio_avisado", None)
+                    await deps["session"].save(phone, _s_ef)
+                    _entrega_ef = entrega_ya_elegida(session)
+                    if (session.get("pending_sku_id") or _items_ef) and _entrega_ef:
+                        _s_ef2 = await deps["session"].get(phone)
+                        respuesta, _ = await crear_link_y_responder(
+                            deps["payment"], deps["session"], phone, _s_ef2,
+                            _entrega_ef[0], _entrega_ef[1])
+                    elif session.get("pending_sku_id") or _items_ef:
+                        await deps["session"].set_estado(phone, "esperando_entrega")
+                        respuesta = ("¡Dale! Lo pagás en efectivo 💵 " +
+                                     pregunta_entrega(_cfg_pm, saludo=False))
+                    else:
+                        respuesta = ("¡Dale! Cuando armemos tu pedido lo dejamos para pagar "
+                                     "en efectivo 💵 Contame qué necesitás.")
+                    _ts = _time.perf_counter()
+                    await deps["wa"].send_text(phone, respuesta)
+                    _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
+                    await deps["session"].add_message(phone, "user", texto)
+                    await deps["session"].add_message(phone, "assistant", respuesta)
+                    continue
+
             # "Anotalo" a secas cuenta como cuenta corriente SOLO con un pedido
             # en curso (así lo piden los socios; fuera de contexto es ambiguo).
             _hay_pedido_cc = bool(session.get("pending_sku_id") or session.get("pending_items"))
