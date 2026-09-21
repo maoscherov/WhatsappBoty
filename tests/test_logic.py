@@ -3041,3 +3041,71 @@ class TestBotApagado:
             await ss.save(ph, s)
         libres = await ss.derivadas_sin_atender(60)
         assert "549BOT3" in libres and "549BOT2" not in libres
+
+
+# ── Alternativas sin precio y "no me figura" duplicado (caso real 19/9) ─────────
+class TestAlternativasSinPrecio:
+    _REAL = ("No me figura disponible el Actron 500 en este momento. Sin embargo, tengo otras "
+             "presentaciones de Actron que podrían interesarte, como el Actron 600 Rápida Acción "
+             "en cápsulas blandas. ¿Te gustaría más información sobre alguna de estas opciones?")
+
+    def test_quita_el_cierre_vago_del_caso_real(self):
+        out = ch.quitar_cierres_vagos(self._REAL)
+        assert "más información" not in out and "?" not in out
+        assert out.endswith("cápsulas blandas.")
+
+    @pytest.mark.parametrize("cierre", [
+        "¿Te gustaría considerar esta opción?",
+        "¿Querés que te cuente más sobre alguno?",
+        "¿Te interesa alguna de estas opciones?",
+        "¿Te gustaría saber más?",
+    ])
+    def test_quita_variantes(self, cierre):
+        assert ch.quitar_cierres_vagos(f"Tengo el Tafirol a $1.200. {cierre}") == "Tengo el Tafirol a $1.200."
+
+    @pytest.mark.parametrize("txt", [
+        "Tengo el Tafirol a $1.200. ¿Te sirve?",
+        "¿Cuál preferís?",
+        "¿Lo retirás o te lo enviamos?",
+        "¿Querés que lo consulte con el equipo para conseguírtelo o encargarlo?",
+    ])
+    def test_no_toca_preguntas_utiles(self, txt):
+        assert ch.quitar_cierres_vagos(txt) == txt
+
+    def test_nunca_devuelve_vacio(self):
+        assert ch.quitar_cierres_vagos("¿Te gustaría más información?") == "¿Te gustaría más información?"
+
+    def test_ya_dice_no_disponible(self):
+        for t in ("No me figura disponible el Actron 500", "Justo no tengo stock", "no lo tenemos",
+                  "está sin stock", "No contamos con ese producto"):
+            assert ch.ya_dice_no_disponible(t), t
+        assert not ch.ya_dice_no_disponible("Tengo el Actron 600 a $4.770")
+
+    def test_solo_la_pregunta(self):
+        oferta = ("No me figura disponible en este momento 🙏 ¿Querés que lo consulte "
+                  "con el equipo para conseguírtelo o encargarlo?")
+        assert ch.solo_la_pregunta(oferta).startswith("¿Querés que lo consulte")
+        assert "No me figura" not in ch.solo_la_pregunta(oferta)
+        assert ch.solo_la_pregunta("Texto sin pregunta") == "Texto sin pregunta"
+
+    def test_alternativas_solo_vendibles_y_con_precio(self):
+        res = [
+            {"sku_id": "1", "nombre": "Actron 600 RA x10", "precio": 4770.0, "vendible": True, "estado": "disponible"},
+            {"sku_id": "2", "nombre": "Actron 400", "precio": 0, "vendible": True, "estado": "disponible"},
+            {"sku_id": "3", "nombre": "Actron Plus", "precio": 5000.0, "vendible": False, "estado": "sin_stock"},
+            {"sku_id": "4", "nombre": "Actron Mujer", "precio": 5100.0, "vendible": True, "estado": "disponible"},
+        ]
+        alts = ch.alternativas_con_precio(res)
+        assert [a["sku_id"] for a in alts] == ["1", "4"]
+        assert ch.alternativas_con_precio(res, maximo=1) == alts[:1]
+        assert ch.alternativas_con_precio([]) == []
+
+    def test_texto_alternativas_lo_reconoce_el_matcher_de_precios(self):
+        """La lista que arma el sistema tiene que pasar la regla 'un producto
+        solo está ofrecido si su precio aparece en la respuesta'."""
+        alts = [{"sku_id": "1", "nombre": "Actron 600 RA x10", "precio": 4770.0},
+                {"sku_id": "4", "nombre": "Actron Mujer", "precio": 18057.61, "requiere_receta": "si"}]
+        t = ch.texto_alternativas(alts)
+        assert ch.productos_con_precio(t, alts) == alts
+        assert "requiere receta" in t and "Decime el nombre o el número" in t
+        assert "¿Te sirve?" in ch.texto_alternativas(alts[:1])

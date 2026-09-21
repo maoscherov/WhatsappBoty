@@ -46,6 +46,8 @@ from app.services.checkout_helper import (
     match_retiro, match_envio, pide_humano, derivar_si_receta, afirma_envio,
     pide_anotar, entrega_ya_elegida, crear_link_y_responder,
     pide_efectivo, habilitado_efectivo, bot_encendido,
+    quitar_cierres_vagos, ya_dice_no_disponible, solo_la_pregunta,
+    alternativas_con_precio, texto_alternativas,
     pide_cancelar_pedido, pregunta_obra_social, responder_obra_social, parsear_lista,
     pregunta_bono, responder_bono, agregar_oferta_farmaceutico, acepta_farmaceutico,
     entidad_contradice_pendiente, debe_derivar_desconocido,
@@ -1739,6 +1741,30 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     else:
                         logger.info(f"Sin producto ofrecido para {entidad!r} "
                                     f"({len(resultados_sku)} resultados descartados)")
+
+                    # El modelo no puso NINGÚN precio pero hay productos que se
+                    # pueden vender (caso 19/9, "actron 500" → nombró el Actron
+                    # 600 sin precio): los lista el sistema con el precio real
+                    # y quedan como opciones, en vez de caer a "no me figura".
+                    if not _matches and not producto_elegido \
+                            and intencion in ("pedido", "consulta_precio", "consulta_stock"):
+                        _alts = alternativas_con_precio(resultados_sku)
+                        if _alts:
+                            respuesta = (quitar_cierres_vagos(respuesta) + "\n\n"
+                                         + texto_alternativas(_alts)).strip()
+                            await deps["session"].set_pending(
+                                phone=phone, sku_id=_alts[0]["sku_id"],
+                                sku_nombre=_alts[0]["nombre"], precio=_alts[0]["precio"],
+                                cantidad=cantidad, opciones=_alts,
+                            )
+                            if len(_alts) > 1:
+                                _s_al = await deps["session"].get(phone)
+                                _s_al["_espera_eleccion"] = True
+                                await deps["session"].save(phone, _s_al)
+                            _opciones_ofrecidas = True   # no agregar "no me figura"
+                            _intencion = "alternativas_ofrecidas"
+                            logger.info(f"{len(_alts)} alternativas listadas por el sistema "
+                                        f"para {entidad!r}")
                     # Solo se marca como pendiente (comprable) si es VENDIBLE.
                     # Si es sin stock / sin precio, no entra al flujo de compra —
                     # Claude ya respondió ofreciendo las alternativas disponibles.
@@ -1856,10 +1882,16 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     elif _modo_ss == "preguntar":
                         _intencion = "sin_stock_ofrecido"
                         _oferta = _cfg_ss.get("sin_stock_ofrecer_message") or ""
-                        # Si Claude ya ofreció consultarlo, no repetirlo.
+                        # Una sola pregunta al final: fuera el cierre vago del modelo.
+                        respuesta = quitar_cierres_vagos(respuesta)
+                        # Si Claude ya ofreció consultarlo, no repetirlo. Y si ya
+                        # dijo que no está disponible, se agrega SOLO la pregunta
+                        # (antes salía "No me figura disponible" dos veces).
                         if _oferta and not any(k in (respuesta or "").lower()
                                                for k in ("consult", "encarg", "equipo")):
-                            respuesta = f"{respuesta}\n\n{_oferta}".strip()
+                            _agregar = solo_la_pregunta(_oferta) if ya_dice_no_disponible(respuesta) \
+                                else _oferta
+                            respuesta = f"{respuesta}\n\n{_agregar}".strip()
                         _s = await deps["session"].get(phone)
                         _s["derivacion_ofrecida"] = entidad or texto[:60]
                         await deps["session"].save(phone, _s)

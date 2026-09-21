@@ -1387,3 +1387,74 @@ async def _cerrar_venta_efectivo(session_svc, phone: str, session: dict,
 # ══════════════════════════════════════════════════════════════════════════════
 def bot_encendido(cfg: dict) -> bool:
     return _flag(cfg, "bot_enabled", True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Alternativas sin precio y "no me figura" duplicado (caso real 19/9, "tenés
+# actron 500": el modelo nombró el Actron 600 sin precio, cerró con "¿te
+# gustaría más información?" y el sistema le pegó debajo OTRO "No me figura
+# disponible" con otra pregunta).
+# ══════════════════════════════════════════════════════════════════════════════
+_CIERRE_VAGO = re.compile(
+    r"(?:^|(?<=[.!?…\n]))\s*¿[^?¿]*\b("
+    r"m[aá]s\s+informaci[oó]n|"
+    r"te\s+gustar[ií]a\s+(considerar|saber|conocer|ver|que\s+te)|"
+    r"quer[eé]s\s+(saber|conocer|que\s+te\s+(cuente|pase|detalle))|"
+    r"te\s+interesa(r[ií]a)?\s+(alguna|alguno|conocer|saber)|"
+    r"alguna\s+de\s+estas\s+opciones"
+    r")\b[^?¿]*\?",
+    re.IGNORECASE,
+)
+
+
+def quitar_cierres_vagos(texto: str) -> str:
+    """Saca preguntas de cierre que no llevan a nada ("¿Te gustaría más
+    información sobre alguna de estas opciones?"). Si el resultado queda
+    vacío, devuelve el original."""
+    limpio = _CIERRE_VAGO.sub(" ", texto or "")
+    limpio = re.sub(r"[ \t]{2,}", " ", limpio)
+    limpio = re.sub(r"\s*\n\s*\n\s*\n+", "\n\n", limpio).strip()
+    return limpio if limpio else (texto or "")
+
+
+_NO_DISPONIBLE = re.compile(
+    r"\bno\s+(me\s+)?(figura|aparece)\b|\bno\s+(lo\s+|la\s+)?ten(go|emos)\b|"
+    r"\bsin\s+stock\b|\bno\s+(est[aá]|hay)\s+disponible\b|\bno\s+contamos\b",
+    re.IGNORECASE,
+)
+
+
+def ya_dice_no_disponible(texto: str) -> bool:
+    return bool(_NO_DISPONIBLE.search(texto or ""))
+
+
+def solo_la_pregunta(oferta: str) -> str:
+    """De "No me figura disponible 🙏 ¿Querés que lo consulte...?" deja solo la
+    pregunta, para no repetir lo que el modelo ya dijo."""
+    i = (oferta or "").find("¿")
+    return (oferta[i:] if i >= 0 else (oferta or "")).strip()
+
+
+def alternativas_con_precio(resultados: list[dict], maximo: int = 3) -> list[dict]:
+    """Resultados que se pueden vender (con stock y precio), para listarlos
+    cuando el modelo los nombró sin precio."""
+    out = []
+    for r in resultados or []:
+        try:
+            precio = float(r.get("precio") or 0)
+        except (TypeError, ValueError):
+            precio = 0.0
+        if r.get("vendible", True) and precio > 0 and r.get("estado", "disponible") == "disponible":
+            out.append(r)
+        if len(out) >= maximo:
+            break
+    return out
+
+
+def texto_alternativas(alternativas: list[dict]) -> str:
+    lineas = []
+    for a in alternativas:
+        receta = " (requiere receta)" if a.get("requiere_receta") == "si" else ""
+        lineas.append(f"• {a['nombre']} — ${float(a['precio']):,.2f}{receta}")
+    cierre = "¿Te sirve?" if len(alternativas) == 1 else "¿Te sirve alguno? Decime el nombre o el número."
+    return "Lo que tengo disponible:\n" + "\n".join(lineas) + "\n\n" + cierre
