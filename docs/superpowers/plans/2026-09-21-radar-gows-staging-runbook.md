@@ -9,7 +9,7 @@ Todos los nombres de variables están verificados contra la documentación de WA
 - Un segundo contenedor de WAHA, motor **GOWS**, misma versión que el actual (2026.8.2).
 - Separado de la instancia que tiene tu línea personal: otro servicio, otro volumen, otra clave.
 - Endurecido para uso de solo lectura.
-- Con historial sin límite en la primera vinculación, para medir hasta dónde llega GOWS.
+- Con el límite de historial de 90 días en la primera vinculación, para medir completitud y si WhatsApp respeta el límite. Una segunda vinculación sin límite es opcional.
 
 ## Por qué un contenedor aparte
 
