@@ -7,6 +7,7 @@ GET /bo/session/{phone} → detalle completo de una sesión
 """
 
 import logging
+import re
 import statistics
 from fastapi import APIRouter, HTTPException, Query, Depends, UploadFile, File, Header
 from pathlib import Path
@@ -575,9 +576,116 @@ async def bo_socios_info(_=Depends(_auth)):
     settings = get_settings()
     try:
         svc = get_socio_service(settings.socios_path)
-        return {"total": svc.total, "path": settings.socios_path}
+        return {"total": svc.total, "path": settings.socios_path,
+                "reporte_carga": svc.reporte_carga}
     except Exception as e:
         return {"total": 0, "error": str(e)}
+
+
+@router.get("/socios")
+async def bo_socios_list(_=Depends(_auth), q: str = Query(""), page: int = Query(1, ge=1),
+                         page_size: int = Query(50, ge=1, le=200),
+                         incluir_sensibles: bool = Query(False)):
+    """
+    Listado paginado del padrón para el buscador del backoffice. `q` busca en
+    nombre, apellido, N° de socio y celular. Por privacidad, DNI y domicilio
+    solo viajan con `?incluir_sensibles=true`.
+    """
+    from app.services.cc_service import get_cc_service
+    settings = get_settings()
+    svc = get_socio_service(settings.socios_path)
+    cc = get_cc_service(settings.redis_url)
+
+    q = q.strip()
+    if q:
+        import unicodedata as _ud
+
+        def _plano(s: str) -> str:
+            return "".join(c for c in _ud.normalize("NFD", (s or "").lower())
+                           if _ud.category(c) != "Mn")
+
+        q_digitos = re.sub(r"\D", "", q)
+        candidatos = svc.buscar_por_nombre(q)
+        if not candidatos:
+            # buscar_por_nombre descarta términos numéricos: cubrir búsqueda
+            # por N° de socio y celular (original o normalizado) acá.
+            q_plano = _plano(q)
+            for s in svc._socios:
+                if (q_plano and q_plano in _plano(s.get("nro_socio", ""))) or \
+                   (q_digitos and (q_digitos in (s.get("celular") or "") or
+                                   q_digitos in re.sub(r"\D", "", s.get("celular_original") or ""))):
+                    candidatos.append(s)
+    else:
+        candidatos = list(svc._socios)
+
+    total = len(candidatos)
+    inicio = (page - 1) * page_size
+    pagina = candidatos[inicio:inicio + page_size]
+
+    out = []
+    for s in pagina:
+        item = {
+            "nombre": s.get("nombre"),
+            "apellido": s.get("apellido"),
+            "nro_socio": s.get("nro_socio"),
+            "celular": s.get("celular"),
+            "celular_original": s.get("celular_original"),
+            "cc_excepcion": await cc.es_excepcion(s),
+        }
+        if incluir_sensibles:
+            item["dni"] = s.get("dni")
+            item["domicilio"] = s.get("domicilio")
+        out.append(item)
+
+    return {"total": total, "page": page, "page_size": page_size, "socios": out}
+
+
+@router.get("/socios/export.csv")
+async def bo_socios_export(_=Depends(_auth), q: str = Query("")):
+    """CSV completo (sin paginar) del padrón filtrado por `q`, sin datos
+    sensibles (DNI, domicilio)."""
+    import csv
+    import io
+    from fastapi.responses import StreamingResponse
+    from app.services.cc_service import get_cc_service
+
+    settings = get_settings()
+    svc = get_socio_service(settings.socios_path)
+    cc = get_cc_service(settings.redis_url)
+
+    q = q.strip()
+    if q:
+        import unicodedata as _ud
+
+        def _plano(s: str) -> str:
+            return "".join(c for c in _ud.normalize("NFD", (s or "").lower())
+                           if _ud.category(c) != "Mn")
+
+        q_digitos = re.sub(r"\D", "", q)
+        candidatos = svc.buscar_por_nombre(q)
+        if not candidatos:
+            q_plano = _plano(q)
+            for s in svc._socios:
+                if (q_plano and q_plano in _plano(s.get("nro_socio", ""))) or \
+                   (q_digitos and (q_digitos in (s.get("celular") or "") or
+                                   q_digitos in re.sub(r"\D", "", s.get("celular_original") or ""))):
+                    candidatos.append(s)
+    else:
+        candidatos = list(svc._socios)
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["nombre", "apellido", "nro_socio", "celular", "celular_original", "cc_excepcion"])
+    for s in candidatos:
+        writer.writerow([
+            s.get("nombre"), s.get("apellido"), s.get("nro_socio"),
+            s.get("celular"), s.get("celular_original"),
+            "si" if await cc.es_excepcion(s) else "no",
+        ])
+    buf.seek(0)
+    return StreamingResponse(
+        iter([buf.getvalue()]), media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=socios.csv"})
 
 
 @router.get("/socios/check/{phone}")
@@ -637,7 +745,8 @@ async def bo_socios_import(file: UploadFile = File(...), _=Depends(_auth)):
         settings.socios_path = str(dest)
         # Copia en Redis para sobrevivir deploys (fs efímero de Railway)
         await get_blob_store(settings.redis_url).save("socios", content, suffix)
-        return {"status": "ok", "total": svc.total, "path": str(dest)}
+        return {"status": "ok", "total": svc.total, "path": str(dest),
+                "reporte_carga": svc.reporte_carga}
     except HTTPException:
         raise
     except Exception as e:

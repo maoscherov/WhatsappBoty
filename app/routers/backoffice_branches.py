@@ -199,3 +199,35 @@ async def bo_catalog_extras(external_id: str, body: ExtrasIn, _=Depends(_auth)):
         branch, external_id, **campos)
     get_catalog_refresher().schedule(branch, {external_id})
     return {"ok": True}
+
+
+# ── "¿Qué ve el bot?" — vista previa de stock (22/9) ─────────────────────────
+
+@router.get("/sku/stock")
+async def bo_sku_stock(_=Depends(_auth), q: str = Query(..., min_length=2),
+                       vivo: bool = Query(False), phone: str = Query("")):
+    """
+    Corre la misma cadena que el bot antes de ofrecer (buscar → verificar en
+    vivo lo dudoso → filtrar por stock → descuento de socio) y devuelve, por
+    producto, el dato del cache, el del ERP si se consultó, y si lo ofrecería.
+    `vivo=true` fuerza la consulta al ERP de todos los resultados: pega al
+    ERP, usarlo a demanda (botón), no en cada tecla. `phone` aplica el
+    descuento que vería ese socio.
+    """
+    from app.services.config_service import get_config_service
+    from app.services.sku_service import get_sku_service
+    from app.services.socio_service import get_socio_service
+    from app.services.stock_preview import vista_previa_stock
+
+    settings = get_settings()
+    cfg = await get_config_service(settings.redis_url).get_all()
+    socios = None
+    if phone:
+        try:
+            socios = get_socio_service(settings.socios_path)
+        except Exception:
+            socios = None
+    return await vista_previa_stock(
+        q, get_sku_service(settings.sku_csv_path), cfg, phone=phone, vivo=vivo,
+        socio_svc=socios, timeout=settings.live_lookup_timeout_s,
+    )

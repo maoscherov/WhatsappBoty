@@ -1829,6 +1829,243 @@ class TestCuentaCorriente:
         assert r.text.splitlines()[0].startswith("fecha,pedido,telefono")
 
 
+class TestPadronCelulares:
+    """
+    Normalización de celulares del padrón: los socios se cargan con
+    celulares escritos de cualquier forma (con característica interurbana,
+    con "15" local, con o sin código de área) y tienen que matchear contra
+    el número de WhatsApp entrante (549341XXXXXXX).
+    """
+
+    def _padron(self, tmp_path, filas: str):
+        from app.services.socio_service import SocioService
+        p = tmp_path / "padron.csv"
+        p.write_text("APELLIDO,NOMBRE,DNI,SOCIO,CELULAR,DOMICILIO\n" + filas, encoding="utf-8")
+        return SocioService(str(p))
+
+    # ── normalizar_celular: cada regla ──────────────────────────────────────
+
+    def test_directo_10_digitos(self):
+        from app.services.socio_service import normalizar_celular
+        assert normalizar_celular("3415894583") == "3415894583"
+
+    def test_con_0_interurbano_y_15(self):
+        from app.services.socio_service import normalizar_celular
+        assert normalizar_celular("0341 15-5894583") == "3415894583"
+
+    def test_con_mas_codigo_pais_y_9(self):
+        from app.services.socio_service import normalizar_celular
+        assert normalizar_celular("+54 9 341 589-4583") == "3415894583"
+
+    def test_local_con_15_y_area_default(self):
+        from app.services.socio_service import normalizar_celular
+        assert normalizar_celular("155894583", area_default="341") == "3415894583"
+
+    def test_local_sin_15_ni_area_con_area_default(self):
+        from app.services.socio_service import normalizar_celular
+        assert normalizar_celular("5894583", area_default="341") == "3415894583"
+
+    def test_11_area_2_digitos(self):
+        from app.services.socio_service import normalizar_celular
+        # "11 15 4567 8901" → único candidato posible es área de 2 dígitos (11)
+        assert normalizar_celular("11 15 4567 8901") == "1145678901"
+
+    def test_ambiguo_area_2_y_4_coinciden(self):
+        """
+        12 dígitos donde tanto el área de 2 como la de 4 dígitos matchean un
+        "15" después (dos "15" consecutivos: "99" + "15" + "15" + resto) —
+        caso real de ambigüedad, se marca "ambiguo" en el reporte aunque acá
+        el resultado numérico coincida para ambos largos.
+        """
+        from app.services.socio_service import analizar_celular
+        r = analizar_celular("991515678901")
+        assert r["normalizado"] == "9915678901"
+        assert r["regla"] == "ambiguo"
+
+    def test_basura_es_invalido(self):
+        from app.services.socio_service import normalizar_celular
+        assert normalizar_celular("abc") is None
+        assert normalizar_celular("") is None
+        assert normalizar_celular("123") is None
+
+    def test_sin_area_default_no_arma_local(self):
+        from app.services.socio_service import normalizar_celular
+        assert normalizar_celular("5894583") is None
+        assert normalizar_celular("155894583") is None
+
+    def test_analizar_celular_regla_y_original(self):
+        from app.services.socio_service import analizar_celular
+        r = analizar_celular("0341 15-5894583", area_default="341")
+        assert r["normalizado"] == "3415894583"
+        assert r["original"] == "0341 15-5894583"
+        assert r["regla"] == "sin_15"
+
+        r_directo = analizar_celular("3415894583")
+        assert r_directo["regla"] == "directo"
+
+        r_area_default = analizar_celular("5894583", area_default="341")
+        assert r_area_default["regla"] == "area_default"
+
+        r_invalido = analizar_celular("xx")
+        assert r_invalido["normalizado"] is None
+        assert r_invalido["regla"] == "invalido"
+
+    # ── find_by_phone contra distintos formatos del padrón ──────────────────
+
+    def test_find_by_phone_contra_formatos_variados(self, tmp_path):
+        svc = self._padron(tmp_path,
+            "Muff,Claudia,20111222,4001,0341 15-5894583,Mitre 100\n"
+            "Gomez,Ana,20333444,4002,3415550002,San Martin 200\n"
+            "Diaz,Juan,20555666,4003,155550003,Belgrano 300\n")
+        assert svc.total == 3
+        assert svc.find_by_phone("5493415894583")["apellido"] == "Muff"
+        assert svc.find_by_phone("543415550002")["apellido"] == "Gomez"
+        # el celular local con "15" se completó con el área default (341)
+        assert svc.find_by_phone("5493415550003")["apellido"] == "Diaz"
+
+    def test_find_by_phone_entrante_sin_54(self, tmp_path):
+        svc = self._padron(tmp_path, "Muff,Claudia,20111222,4001,3415894583,Mitre 100\n")
+        assert svc.find_by_phone("3415894583")["apellido"] == "Muff"
+        assert svc.find_by_phone("15894583")["apellido"] == "Muff"  # fallback sufijo 8
+
+    def test_find_by_phone_no_matchea(self, tmp_path):
+        svc = self._padron(tmp_path, "Muff,Claudia,20111222,4001,3415894583,Mitre 100\n")
+        assert svc.find_by_phone("5491122223333") is None
+
+    # ── reporte_carga ────────────────────────────────────────────────────────
+
+    def test_reporte_carga_conteos_y_ejemplos(self, tmp_path):
+        svc = self._padron(tmp_path,
+            "Muff,Claudia,20111222,4001,0341 15-5894583,Mitre 100\n"   # se normaliza
+            "Gomez,Ana,20333444,4002,3415550002,San Martin 200\n"      # ya directo
+            "Diaz,Juan,20555666,4003,123,Belgrano 300\n"               # inválido
+        )
+        rep = svc.reporte_carga
+        assert rep["total_filas"] == 3
+        assert rep["cargados"] == 2
+        assert rep["normalizados"] == 1
+        assert len(rep["sin_celular_valido"]) == 1
+        assert rep["sin_celular_valido"][0]["apellido"] == "Diaz"
+        assert rep["sin_celular_valido"][0]["celular"] == "123"
+
+    def test_reporte_carga_duplicados(self, tmp_path):
+        svc = self._padron(tmp_path,
+            "Muff,Claudia,20111222,4001,3415550001,Mitre 100\n"
+            "Muff,Roberto,20111333,4004,3415550001,Mitre 100\n"   # mismo celular
+        )
+        assert svc.total == 2
+        assert svc.reporte_carga["duplicados"] == ["3415550001"]
+
+    def test_reporte_carga_area_unica_no_es_ambiguo(self, tmp_path):
+        svc = self._padron(tmp_path,
+            "Perez,Luis,20777888,4005,341155894583,Rioja 400\n"  # 12 dígitos, área3 único
+        )
+        assert svc.total == 1
+        assert svc.reporte_carga["ambiguos"] == []  # área única, no ambiguo
+        assert svc._socios[0]["celular"] == "3415894583"
+
+    def test_reporte_carga_marca_ambiguos(self, tmp_path):
+        svc = self._padron(tmp_path,
+            "Ramos,Sol,20999000,4006,991515678901,Rioja 500\n"  # área 2 y 4 ambas matchean
+        )
+        assert svc.total == 1
+        assert len(svc.reporte_carga["ambiguos"]) == 1
+        assert svc.reporte_carga["ambiguos"][0]["apellido"] == "Ramos"
+        assert svc._socios[0]["celular"] == "9915678901"
+
+    def test_celular_original_se_conserva(self, tmp_path):
+        svc = self._padron(tmp_path, "Muff,Claudia,20111222,4001,0341 15-5894583,Mitre 100\n")
+        socio = svc._socios[0]
+        assert socio["celular"] == "3415894583"
+        assert socio["celular_original"] == "0341 15-5894583"
+
+    # ── endpoints del backoffice ──────────────────────────────────────────────
+
+    def test_smoke_import_app(self):
+        import app.main  # noqa: F401
+
+    def test_endpoint_socios_info_incluye_reporte(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        from app.main import app
+        import app.config as config_mod
+        import app.services.socio_service as sm
+
+        p = tmp_path / "padron.csv"
+        p.write_text("APELLIDO,NOMBRE,DNI,SOCIO,CELULAR,DOMICILIO\n"
+                     "Muff,Claudia,20111222,4001,3415550001,Mitre 100\n", encoding="utf-8")
+
+        settings = config_mod.get_settings()
+        monkeypatch.setattr(settings, "socios_path", str(p))
+        monkeypatch.setattr(sm, "_instance", None)
+
+        r = TestClient(app).get("/bo/socios/info")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["total"] == 1
+        assert "reporte_carga" in body
+        assert body["reporte_carga"]["cargados"] == 1
+
+    def test_endpoint_socios_list_busca_y_pagina(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        from app.main import app
+        import app.config as config_mod
+        import app.services.socio_service as sm
+
+        p = tmp_path / "padron.csv"
+        p.write_text(
+            "APELLIDO,NOMBRE,DNI,SOCIO,CELULAR,DOMICILIO\n"
+            "Muff,Claudia,20111222,4001,3415550001,Mitre 100\n"
+            "Gomez,Ana,20333444,4002,3415550002,San Martin 200\n",
+            encoding="utf-8")
+
+        settings = config_mod.get_settings()
+        monkeypatch.setattr(settings, "socios_path", str(p))
+        monkeypatch.setattr(sm, "_instance", None)
+
+        client = TestClient(app)
+
+        r = client.get("/bo/socios", params={"q": "Claudia"})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["total"] == 1
+        assert body["socios"][0]["apellido"] == "Muff"
+        assert body["socios"][0]["celular"] == "3415550001"
+        assert "dni" not in body["socios"][0]           # sin sensibles por default
+        assert "cc_excepcion" in body["socios"][0]
+
+        r_todos = client.get("/bo/socios", params={"page": 1, "page_size": 1})
+        assert r_todos.status_code == 200
+        assert r_todos.json()["total"] == 2
+        assert len(r_todos.json()["socios"]) == 1
+
+        r_sens = client.get("/bo/socios", params={"q": "Claudia", "incluir_sensibles": "true"})
+        assert r_sens.json()["socios"][0]["dni"] == "20111222"
+
+    def test_endpoint_socios_export_csv(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        from app.main import app
+        import app.config as config_mod
+        import app.services.socio_service as sm
+
+        p = tmp_path / "padron.csv"
+        p.write_text(
+            "APELLIDO,NOMBRE,DNI,SOCIO,CELULAR,DOMICILIO\n"
+            "Muff,Claudia,20111222,4001,3415550001,Mitre 100\n",
+            encoding="utf-8")
+
+        settings = config_mod.get_settings()
+        monkeypatch.setattr(settings, "socios_path", str(p))
+        monkeypatch.setattr(sm, "_instance", None)
+
+        r = TestClient(app).get("/bo/socios/export.csv")
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("text/csv")
+        lineas = r.text.splitlines()
+        assert lineas[0] == "nombre,apellido,nro_socio,celular,celular_original,cc_excepcion"
+        assert "Muff" in lineas[1]
+        assert "dni" not in r.text.lower().split("\n")[0]
+
+
 class TestComprobanteImagen:
     """Minuta 79 acción 8: comprobante de pago por foto → acuse + derivación;
     imagen no reconocida → derivación (antes se trababa pidiendo texto)."""

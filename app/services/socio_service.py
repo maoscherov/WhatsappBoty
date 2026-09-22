@@ -7,10 +7,13 @@ Carga un padrón (CSV o XLSX importado por backoffice) con columnas:
 Permite identificar al cliente por su número de WhatsApp para que el bot
 lo salude por nombre y lo trate como socio reconocido.
 
-Matching de teléfono: los números de WA llegan como 549341XXXXXXX y el padrón
-tiene el formato local (341XXXXXXX). Se comparan los últimos 10 dígitos
-(área + número), con fallback a 8 dígitos por si el padrón viene sin código
-de área.
+Matching de teléfono: los números de WA llegan como 549341XXXXXXX. El celular
+del padrón (con el formato que sea: con/sin 0, con/sin 9, con/sin +54, con/sin
+"15", con/sin código de área) se normaliza a 10 dígitos (área + número) con
+`normalizar_celular`, usando `socios_area_default` como área para los
+celulares locales cargados sin área. El entrante se normaliza igual y se
+busca por esos 10 dígitos, con fallback al matching por sufijo de 10 y de 8
+dígitos (compatibilidad con padrones ya cargados).
 
 PRIVACIDAD: al contexto de Claude solo se pasa nombre y N° de socio.
 DNI y domicilio se cargan pero NUNCA entran al prompt.
@@ -40,6 +43,87 @@ def _solo_digitos(valor) -> str:
     return re.sub(r"\D", "", str(valor or ""))
 
 
+def analizar_celular(valor: str, area_default: str = "") -> dict:
+    """
+    Interpreta un celular argentino escrito de cualquier forma habitual
+    (con/sin 0, con/sin 9, con/sin +54, con/sin "15", con/sin código de área)
+    y lo reduce a 10 dígitos (área + número).
+
+    Devuelve {"normalizado": str|None, "original": str, "regla": ...} —
+    "regla" documenta qué transformación se aplicó, para el reporte de carga:
+      - "directo":       ya eran 10 dígitos (a lo sumo se sacó 54/9).
+      - "sin_0":         se sacó un 0 inicial y quedó en 10 dígitos.
+      - "sin_15":        eran 12 dígitos, se identificó el "15" tras el área
+                         (código de área único, sin ambigüedad).
+      - "ambiguo":       12 dígitos con más de un largo de área posible; se
+                         eligió el de 3 dígitos (el más común, Rosario 341).
+      - "area_default":  número local (6 a 9 dígitos) al que se le antepuso
+                         el área por defecto.
+      - "invalido":      no se pudo interpretar.
+    """
+    original = str(valor or "").strip()
+    digitos = _solo_digitos(valor)
+    area_default = _solo_digitos(area_default)
+
+    sin_0 = False
+
+    # 1) Prefijo "54" (código de país) y, si tras sacarlo quedan 11 dígitos
+    #    que empiezan con "9" (celular), sacar también el "9".
+    if digitos.startswith("54"):
+        digitos = digitos[2:]
+    if len(digitos) == 11 and digitos.startswith("9"):
+        digitos = digitos[1:]
+
+    # 2) Un solo "0" inicial (característica interurbana).
+    if digitos.startswith("0"):
+        digitos = digitos[1:]
+        sin_0 = True
+
+    def _resultado(normalizado, regla):
+        return {"normalizado": normalizado, "original": original, "regla": regla}
+
+    if len(digitos) == 12:
+        # El "15" quedó pegado después del código de área. Los códigos de
+        # área argentinos tienen 2, 3 o 4 dígitos y área+número siempre
+        # suman 10 — probar los tres largos y ver cuál tiene "15" justo
+        # después del área.
+        candidatos = {}
+        for area_len in (2, 3, 4):
+            area = digitos[:area_len]
+            resto = digitos[area_len:]
+            if resto[:2] == "15":
+                candidatos[area_len] = area + resto[2:]
+        if not candidatos:
+            return _resultado(None, "invalido")
+        if len(candidatos) == 1:
+            return _resultado(next(iter(candidatos.values())), "sin_15")
+        # Ambiguo: preferir el área de 3 dígitos (la más común).
+        elegido = candidatos.get(3) or next(iter(candidatos.values()))
+        return _resultado(elegido, "ambiguo")
+
+    if len(digitos) == 10:
+        return _resultado(digitos, "sin_0" if sin_0 else "directo")
+
+    if len(digitos) in (8, 9) and area_default:
+        target = 10 - len(area_default)
+        if len(digitos) == target:
+            return _resultado(area_default + digitos, "area_default")
+        if digitos.startswith("15") and len(digitos) - 2 == target:
+            return _resultado(area_default + digitos[2:], "area_default")
+        return _resultado(None, "invalido")
+
+    if len(digitos) in (6, 7) and area_default:
+        if len(area_default) + len(digitos) == 10:
+            return _resultado(area_default + digitos, "area_default")
+        return _resultado(None, "invalido")
+
+    return _resultado(None, "invalido")
+
+
+def normalizar_celular(valor: str, area_default: str = "") -> Optional[str]:
+    return analizar_celular(valor, area_default)["normalizado"]
+
+
 class SocioService:
     def __init__(self, path: str):
         self._path = path
@@ -48,6 +132,10 @@ class SocioService:
         self._por_tel_10: dict[str, dict] = {}
         self._por_tel_8: dict[str, dict] = {}
         self._por_dni: dict[str, dict] = {}
+        self.reporte_carga: dict = {
+            "total_filas": 0, "cargados": 0, "normalizados": 0,
+            "sin_celular_valido": [], "ambiguos": [], "duplicados": [],
+        }
         self._load()
 
     @property
@@ -91,26 +179,69 @@ class SocioService:
         self._por_tel_8.clear()
         self._por_dni.clear()
 
+        from app.config import get_settings
+        try:
+            area_default = get_settings().socios_area_default or "341"
+        except Exception:
+            area_default = "341"
+
+        sin_celular_valido: list[dict] = []
+        ambiguos: list[dict] = []
+        normalizados = 0
+        contador_tel: dict[str, int] = {}
+
         for _, row in df.iterrows():
-            celular = _solo_digitos(row.get(colmap["celular"]))
-            if len(celular) < 8:
+            raw_cel = row.get(colmap["celular"])
+            nombre = str(row.get(colmap["nombre"]) or "").strip().title()
+            apellido = str(row.get(colmap.get("apellido"), "") or "").strip().title()
+            analisis = analizar_celular(raw_cel, area_default)
+            celular = analisis["normalizado"]
+
+            if not celular:
+                if len(sin_celular_valido) < 20:
+                    sin_celular_valido.append({
+                        "apellido": apellido, "nombre": nombre,
+                        "celular": analisis["original"],
+                    })
                 continue
+
+            if analisis["regla"] == "ambiguo" and len(ambiguos) < 20:
+                ambiguos.append({
+                    "apellido": apellido, "nombre": nombre,
+                    "celular": analisis["original"],
+                })
+            if _solo_digitos(raw_cel) != celular:
+                normalizados += 1
+
             socio = {
-                "nombre": str(row.get(colmap["nombre"]) or "").strip().title(),
-                "apellido": str(row.get(colmap.get("apellido"), "") or "").strip().title(),
+                "nombre": nombre,
+                "apellido": apellido,
                 "nro_socio": str(row.get(colmap.get("socio"), "") or "").strip(),
                 # DNI y domicilio se guardan para el backoffice, NO para el prompt
                 "dni": _solo_digitos(row.get(colmap.get("dni"), "")),
                 "domicilio": str(row.get(colmap.get("domicilio"), "") or "").strip(),
                 "celular": celular,
+                "celular_original": analisis["original"],
             }
             self._socios.append(socio)
-            self._por_tel_10[celular[-10:]] = socio
+            self._por_tel_10[celular] = socio
             self._por_tel_8[celular[-8:]] = socio
             if socio["dni"]:
                 self._por_dni[socio["dni"]] = socio
+            contador_tel[celular] = contador_tel.get(celular, 0) + 1
 
-        logger.info(f"Padrón de socios cargado: {self.total} socios desde {p}")
+        self.reporte_carga = {
+            "total_filas": len(df),
+            "cargados": len(self._socios),
+            "normalizados": normalizados,
+            "sin_celular_valido": sin_celular_valido,
+            "ambiguos": ambiguos,
+            "duplicados": [t for t, c in contador_tel.items() if c > 1][:20],
+        }
+
+        logger.info(f"Padrón de socios cargado: {self.total} socios desde {p} "
+                    f"({normalizados} normalizados, "
+                    f"{len(self.reporte_carga['sin_celular_valido'])} sin celular válido)")
 
     def buscar_por_nombre(self, q: str, limit: int = 50) -> list[dict]:
         """Socios cuyo nombre/apellido contiene todas las palabras de `q`
@@ -134,7 +265,12 @@ class SocioService:
         return out
 
     def find_by_phone(self, phone: str) -> Optional[dict]:
-        """Busca un socio por número de WhatsApp (matching por sufijo)."""
+        """Busca un socio por número de WhatsApp: primero normalizando el
+        entrante a 10 dígitos (área + número), con fallback al matching por
+        sufijo de 10 y de 8 dígitos (padrón cargado sin código de área)."""
+        normalizado = normalizar_celular(phone)
+        if normalizado and normalizado in self._por_tel_10:
+            return self._por_tel_10[normalizado]
         digitos = _solo_digitos(phone)
         if len(digitos) >= 10 and digitos[-10:] in self._por_tel_10:
             return self._por_tel_10[digitos[-10:]]
