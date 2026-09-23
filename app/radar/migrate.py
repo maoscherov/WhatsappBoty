@@ -31,3 +31,7 @@ def _config(ini: str, url: str) -> Config:
 
 def migrar_resultados(migrator_url: str) -> None:
     command.upgrade(_config("alembic_radar.ini", migrator_url), "head")
+
+
+def migrar_fuente(fuente_url: str) -> None:
+    command.upgrade(_config("alembic_fuente.ini", fuente_url), "head")

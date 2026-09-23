@@ -20,8 +20,11 @@ import psycopg2
 import pytest
 
 from app.radar.constantes import TENANT_KIS
+from app.radar.contexto import RadarContexto
 from app.radar.db import RadarDB
-from app.radar.migrate import migrar_resultados
+from app.radar.fuente import FuenteStore
+from app.radar.migrate import migrar_fuente, migrar_resultados
+from app.radar.settings import RadarSettings
 
 ROLES_SQL = """
     CREATE ROLE radar_migrator LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
@@ -50,14 +53,17 @@ def radar_urls():
     cur = su.cursor()
     cur.execute(ROLES_SQL)
     cur.execute("CREATE DATABASE radar_test OWNER radar_migrator")
+    cur.execute("CREATE DATABASE radar_fuente_test OWNER radar_migrator")
     su.close()
 
     urls = {
         "super": info.get_uri(database="radar_test"),
         "migrator": info.get_uri(user="radar_migrator", database="radar_test"),
         "app": info.get_uri(user="radar_app", database="radar_test"),
+        "fuente": info.get_uri(user="radar_migrator", database="radar_fuente_test"),
     }
     migrar_resultados(urls["migrator"])
+    migrar_fuente(urls["fuente"])
     yield urls
     try:
         srv.cleanup()
@@ -86,3 +92,23 @@ async def radar_db(radar_urls):
     await db.connect()
     yield db
     await db.close()
+
+
+@pytest.fixture
+async def radar_ctx(radar_db, radar_urls, tmp_path):
+    fuente = FuenteStore(radar_urls["fuente"])
+    await fuente.connect()
+    rs = RadarSettings(
+        _env_file=None,
+        database_url=radar_urls["app"],
+        migrator_database_url=radar_urls["migrator"],
+        fuente_database_url=radar_urls["fuente"],
+        cookie_secret="secreto-de-test-de-32-caracteres!",
+        cookie_secure=False,
+        public_base_url="http://testserver",
+        mailer="memoria",
+        secrets_dir=str(tmp_path / "secretos"),
+    )
+    ctx = RadarContexto(settings=rs, db=radar_db, fuente=fuente)
+    yield ctx
+    await fuente.close()

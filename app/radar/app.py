@@ -1,23 +1,64 @@
 """
 App de Radar (APP_MODE=radar). Misma imagen que el bot, routers distintos,
 sin CORS (la cookie de sesión es same-origin).
+
+A diferencia del bot, una migración fallida o una base inaccesible IMPIDEN el
+arranque: RLS depende del esquema y no hay modo degradado que valga.
 """
 
+import asyncio
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
 from app.middleware import log_errores
+from app.radar.contexto import RadarContexto
+from app.radar.db import RadarDB
+from app.radar.fuente import FuenteStore
+from app.radar.migrate import migrar_fuente, migrar_resultados
 from app.radar.routers import health
 from app.radar.settings import RadarSettings, get_radar_settings
+
+logger = logging.getLogger("app.radar")
+
+OBLIGATORIAS = ("database_url", "migrator_database_url", "fuente_database_url", "cookie_secret")
+MIN_COOKIE_SECRET = 32
+
+
+def validar_settings(rs: RadarSettings) -> None:
+    faltantes = [n for n in OBLIGATORIAS if not getattr(rs, n)]
+    if faltantes:
+        raise RuntimeError("Faltan variables RADAR_: " + ", ".join(faltantes))
+    if len(rs.cookie_secret) < MIN_COOKIE_SECRET:
+        raise RuntimeError(f"RADAR_COOKIE_SECRET: mínimo {MIN_COOKIE_SECRET} caracteres aleatorios")
+
+
+async def construir_contexto(rs: RadarSettings) -> RadarContexto:
+    db = RadarDB(rs.database_url)
+    await db.connect()
+    fuente = FuenteStore(rs.fuente_database_url)
+    await fuente.connect()
+    return RadarContexto(settings=rs, db=db, fuente=fuente)
 
 
 @asynccontextmanager
 async def _lifespan_radar(app: FastAPI):
+    rs: RadarSettings = app.state.radar_settings
+    logging.basicConfig(level="INFO")
+    propio = app.state.radar is None
+    if propio:
+        validar_settings(rs)
+        await asyncio.wait_for(asyncio.to_thread(migrar_resultados, rs.migrator_database_url), timeout=60)
+        await asyncio.wait_for(asyncio.to_thread(migrar_fuente, rs.fuente_database_url), timeout=60)
+        app.state.radar = await construir_contexto(rs)
+    logger.info("Radar arrancó: almacén de fuente %s", app.state.radar.fuente.almacen)
     yield
+    if propio:
+        await app.state.radar.cerrar()
 
 
-def crear_app_radar(rs: RadarSettings | None = None, contexto=None) -> FastAPI:
+def crear_app_radar(rs: RadarSettings | None = None, contexto: RadarContexto | None = None) -> FastAPI:
     rs = rs or get_radar_settings()
     app = FastAPI(title="Radar", version="0.1.0", lifespan=_lifespan_radar)
     app.state.radar_settings = rs

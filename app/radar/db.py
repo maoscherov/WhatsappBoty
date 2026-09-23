@@ -76,3 +76,11 @@ class RadarDB:
         async with self.pool.acquire() as con:
             async with con.transaction():
                 yield con
+
+    async def salud(self) -> dict:
+        try:
+            async with self.sin_tenant() as con:
+                await con.fetchval("SELECT 1")
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": type(e).__name__}

@@ -36,9 +36,10 @@ def test_modo_invalido_no_arranca():
         crear_app(Settings(_env_file=None, app_mode="otro"))
 
 
-async def test_health_radar_dice_modo():
+async def test_health_radar_sin_contexto_dice_arrancando():
     app = crear_app(Settings(_env_file=None, app_mode="radar"))
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as c:
         r = await c.get("/health")
-    assert r.status_code == 200
+    assert r.status_code == 503
+    assert r.json()["status"] == "arrancando"
     assert r.json()["modo"] == "radar"
