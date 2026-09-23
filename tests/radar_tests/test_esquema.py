@@ -169,3 +169,35 @@ async def test_support_grants_maximo_72_horas(radar_db):
     with pytest.raises(asyncpg.CheckViolationError):
         async with radar_db.tenant_tx(a) as con:
             await con.execute("INSERT INTO support_grants (otorgado_por, expires_at) VALUES ($1, now() + interval '80 hours')", u)
+
+
+async def test_grant_update_no_alcanza_columnas_de_identidad(radar_db):
+    """El GRANT UPDATE por columna (no RLS) protege id, email, user_id y rol
+    de sesión: radar_app no tiene privilegio de columna, no importa el
+    WHERE. RLS solo filtra filas; esto filtra columnas."""
+    a = await crear_tenant_directo(radar_db, "A")
+    u = await crear_usuario(radar_db, a, "dueno@cliente.com", "dueno")
+    la = await crear_linea_directa(radar_db, a)
+    async with radar_db.tenant_tx(a) as con:
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            await con.execute("UPDATE lines SET id = gen_random_uuid() WHERE id = $1", la)
+    async with radar_db.tenant_tx(a) as con:
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            await con.execute("UPDATE users SET email = 'otro@cliente.com' WHERE id = $1", u)
+    async with radar_db.tenant_tx(a) as con:
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            await con.execute("UPDATE memberships SET user_id = $1 WHERE user_id = $1", u)
+    async with radar_db.tenant_tx(a) as con:
+        await con.execute(
+            "INSERT INTO sessions (user_id, rol, token_hash, expires_at) "
+            "VALUES ($1, 'dueno', $2, now() + interval '1 hour')", u, "cd34" * 16)
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            await con.execute("UPDATE sessions SET rol = 'soporte' WHERE user_id = $1", u)
+
+
+async def test_membership_admin_solo_en_tenant_kis_tambien_al_actualizar(radar_db):
+    a = await crear_tenant_directo(radar_db, "A")
+    u = await crear_usuario(radar_db, a, "dueno@cliente.com", "dueno")
+    with pytest.raises(asyncpg.CheckViolationError):
+        async with radar_db.tenant_tx(a) as con:
+            await con.execute("UPDATE memberships SET rol = 'admin' WHERE user_id = $1", u)
