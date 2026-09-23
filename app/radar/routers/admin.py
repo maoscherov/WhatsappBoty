@@ -7,7 +7,7 @@ auditado.
 
 import uuid
 from decimal import Decimal
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
@@ -21,6 +21,8 @@ from app.radar.fuente import ALMACENES_DISPONIBLES
 from app.radar.lineas import AlmacenNoDisponible, crear_linea, resolver_valores_linea
 from app.radar.links import EmailInvalido, enviar_link, normalizar_email
 from app.radar.parametros import ValorInvalido, perfil_por_rubro, propuesta_para_perfil
+from app.radar.parametros_service import (CambioRechazado, a_json, cambiar_parametros_linea, cambiar_parametros_tenant,
+                                          proponer_parametros_linea, proponer_parametros_tenant)
 
 router = APIRouter(prefix="/radar/admin", tags=["radar-admin"])
 _RUBRO = r"^[a-z_]{1,40}$"
@@ -146,3 +148,49 @@ async def reenviar_invitacion(tenant_id: uuid.UUID, body: InvitacionIn, request:
     enviada = await enviar_link(ctx, tenant_id=tenant_id, user_id=user_id, email=email,
                                 proposito="invitacion", ip=ip_de(request))
     return {"enviada": enviada}
+
+
+@router.put("/tenants/{tenant_id}/lineas/{line_id}/parametros")
+async def cambiar_linea_admin(tenant_id: uuid.UUID, line_id: uuid.UUID, body: dict[str, Any], request: Request,
+                              admin: Sesion = Depends(requiere_rol("admin"))):
+    """Cualquier sentido. Un valor más laxo sobre una línea viva no se aplica:
+    responde 409 y deja la PROPUESTA guardada (§2.1: los fija un admin de KIS;
+    el dueño la acepta con su consentimiento). El 409 sale del tenant_tx con
+    rollback, por eso la propuesta se guarda en una transacción propia."""
+    ctx = contexto(request)
+    ip = ip_de(request)
+    try:
+        async with ctx.db.tenant_tx(tenant_id) as con:
+            finales = await cambiar_parametros_linea(
+                con, tenant_id=tenant_id, line_id=line_id, nuevos=body, actor_user_id=admin.user_id,
+                actor_rol=admin.rol, ip=ip, solo_endurecer=False)
+    except CambioRechazado as e:
+        if e.status == 409:
+            async with ctx.db.tenant_tx(tenant_id) as con:
+                await proponer_parametros_linea(
+                    con, tenant_id=tenant_id, line_id=line_id, propuesta={n: body[n] for n in e.detalle["parametros"]},
+                    actor_user_id=admin.user_id, actor_rol=admin.rol, ip=ip)
+        raise HTTPException(status_code=e.status, detail=e.detalle)
+    return a_json(finales)
+
+
+@router.put("/tenants/{tenant_id}/parametros")
+async def cambiar_tenant_admin(tenant_id: uuid.UUID, body: dict[str, Any], request: Request,
+                               admin: Sesion = Depends(requiere_rol("admin"))):
+    ctx = contexto(request)
+    ip = ip_de(request)
+    try:
+        async with ctx.db.tenant_tx(tenant_id) as con:
+            if await con.fetchval("SELECT count(*) FROM tenants WHERE id = $1 AND NOT es_kis", tenant_id) == 0:
+                raise HTTPException(status_code=404, detail="tenant inexistente")
+            finales = await cambiar_parametros_tenant(
+                con, tenant_id=tenant_id, nuevos=body, actor_user_id=admin.user_id, actor_rol=admin.rol,
+                ip=ip, solo_endurecer=False)
+    except CambioRechazado as e:
+        if e.status == 409:
+            async with ctx.db.tenant_tx(tenant_id) as con:
+                await proponer_parametros_tenant(
+                    con, tenant_id=tenant_id, propuesta={n: body[n] for n in e.detalle["parametros"]},
+                    actor_user_id=admin.user_id, actor_rol=admin.rol, ip=ip)
+        raise HTTPException(status_code=e.status, detail=e.detalle)
+    return a_json(finales)
