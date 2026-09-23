@@ -99,3 +99,18 @@ def test_radar_no_usa_el_db_del_bot():
     raiz = pathlib.Path(__file__).resolve().parents[2] / "app" / "radar"
     for archivo in raiz.rglob("*.py"):
         assert "app.services.db" not in archivo.read_text(encoding="utf-8"), archivo
+
+
+async def test_radar_app_no_puede_marcarse_es_kis(radar_db):
+    a = await _crear_tenant(radar_db, "A")
+    with pytest.raises(asyncpg.exceptions.InsufficientPrivilegeError):
+        async with radar_db.tenant_tx(a) as con:
+            await con.execute("UPDATE tenants SET es_kis = TRUE WHERE id = $1", a)
+
+
+async def test_radar_app_actualiza_nombre_de_su_tenant(radar_db):
+    a = await _crear_tenant(radar_db, "A")
+    async with radar_db.tenant_tx(a) as con:
+        assert await con.execute("UPDATE tenants SET nombre = 'A2' WHERE id = $1", a) == "UPDATE 1"
+    async with radar_db.tenant_tx(a) as con:
+        assert await con.fetchval("SELECT nombre FROM tenants WHERE id = $1", a) == "A2"

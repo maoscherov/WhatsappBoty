@@ -70,7 +70,12 @@ def upgrade() -> None:
     op.execute(politica_por_tenant("tenants", columna="id"))
     op.execute("""
         -- radar_app solo lee y actualiza SU tenant. Crear y listar es de radar_admin.
-        GRANT SELECT, UPDATE ON tenants TO radar_app;
+        -- UPDATE por columna: nunca id, es_kis ni created_at (un tenant no puede
+        -- volverse KIS).
+        GRANT SELECT ON tenants TO radar_app;
+        GRANT UPDATE (nombre, rubro, perfil_de_datos, retencion_fichas_meses,
+                      retener_fragmentos, ia_habilitada, via_llm,
+                      parametros_propuestos, updated_at) ON tenants TO radar_app;
         GRANT SELECT, INSERT ON tenants TO radar_admin;
         CREATE POLICY tenants_admin ON tenants FOR ALL TO radar_admin
             USING (true) WITH CHECK (true);
