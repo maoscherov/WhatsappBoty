@@ -55,6 +55,9 @@ async def enviar_link(ctx: RadarContexto, *, tenant_id: uuid.UUID, user_id: uuid
     """Crea un login_token y manda el mail. False si el usuario superó el límite."""
     duracion = INVITACION if proposito == "invitacion" else LINK_MAGICO
     async with ctx.db.tenant_tx(tenant_id) as con:
+        # Serializa los pedidos del mismo usuario hasta el commit: sin esto, una
+        # ráfaga concurrente cuenta antes de que los demás inserten y pasa el tope.
+        await con.execute("SELECT pg_advisory_xact_lock(hashtext($1::text))", str(user_id))
         recientes = await con.fetchval(
             "SELECT count(*) FROM login_tokens WHERE user_id = $1 AND created_at > now() - $2::interval",
             user_id, VENTANA_PEDIDOS)

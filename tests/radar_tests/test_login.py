@@ -175,3 +175,51 @@ async def test_si_falla_un_tenant_el_otro_recibe_su_link(cliente, radar_ctx, mon
         r = await cliente.post("/radar/login", json={"email": "dueno@cliente.com"})
         assert r.status_code == 202
     assert {_link(m)[0] for m in mailer.enviados} == {str(b)} and len(mailer.enviados) == 2
+
+
+async def test_limite_de_links_con_pedidos_concurrentes(radar_ctx, monkeypatch):
+    """Revisión final: el tope por usuario se serializa (advisory lock); una
+    ráfaga simultánea no lo supera. Para forzar la carrera, cada pedido espera
+    (hasta 0,3 s) a los demás justo después de contar: sin lock, todos cuentan
+    0 y todos insertan; con lock, el resto espera en Postgres y el conteo ve
+    los tokens ya confirmados."""
+    import asyncio
+    from contextlib import asynccontextmanager
+
+    from app.radar.auth import MAX_PEDIDOS_LOGIN
+    from app.radar.links import enviar_link
+    a = await crear_tenant_directo(radar_ctx.db, "A")
+    u = await crear_usuario(radar_ctx.db, a, "dueno@cliente.com", "dueno")
+    n = MAX_PEDIDOS_LOGIN + 1                    # el pool de test tiene 5 conexiones
+    barrera = asyncio.Barrier(n)
+    tx_real = radar_ctx.db.tenant_tx
+
+    class ConLenta:
+        def __init__(self, con):
+            self._con = con
+
+        def __getattr__(self, nombre):
+            return getattr(self._con, nombre)
+
+        async def fetchval(self, sql, *args):
+            valor = await self._con.fetchval(sql, *args)
+            if "count(*) FROM login_tokens" in sql:
+                try:
+                    await asyncio.wait_for(barrera.wait(), 0.3)
+                except (asyncio.TimeoutError, asyncio.BrokenBarrierError):
+                    pass
+            return valor
+
+    @asynccontextmanager
+    async def tx_lenta(tenant_id):
+        async with tx_real(tenant_id) as con:
+            yield ConLenta(con)
+
+    monkeypatch.setattr(radar_ctx.db, "tenant_tx", tx_lenta)
+    resultados = await asyncio.gather(*[
+        enviar_link(radar_ctx, tenant_id=a, user_id=u, email="dueno@cliente.com", proposito="login", ip=None)
+        for _ in range(n)])
+    monkeypatch.undo()
+    assert sum(resultados) == MAX_PEDIDOS_LOGIN
+    async with radar_ctx.db.tenant_tx(a) as con:
+        assert await con.fetchval("SELECT count(*) FROM login_tokens WHERE user_id = $1", u) == MAX_PEDIDOS_LOGIN
