@@ -106,7 +106,7 @@ async def proponer_parametros_tenant(con: asyncpg.Connection, *, tenant_id: uuid
     valores = {n: validar(n, v) for n, v in propuesta.items()}
     await con.execute(
         "UPDATE tenants SET parametros_propuestos = COALESCE(parametros_propuestos, '{}'::jsonb) || $2::jsonb, "
-        "updated_at = now() WHERE id = $1",
+        "parametros_propuestos_at = now(), updated_at = now() WHERE id = $1",
         tenant_id, json.dumps(a_json(valores)))
     await _auditar_propuesta(con, tenant_id=tenant_id, objeto_id=tenant_id, tipo_objeto="tenant", ambito="tenant",
                              actor_user_id=actor_user_id, actor_rol=actor_rol, ip=ip, valores=valores)
@@ -124,7 +124,10 @@ async def consumir_propuesta_linea(con: asyncpg.Connection, line_id: uuid.UUID, 
 async def consumir_propuesta_tenant(con: asyncpg.Connection, tenant_id: uuid.UUID, nombres: list[str]) -> None:
     await con.execute(
         "UPDATE tenants SET parametros_propuestos = "
-        "NULLIF(COALESCE(parametros_propuestos, '{}'::jsonb) - $2::text[], '{}'::jsonb) WHERE id = $1",
+        "NULLIF(COALESCE(parametros_propuestos, '{}'::jsonb) - $2::text[], '{}'::jsonb), "
+        # consumida entera: sin propuesta vigente, ningún consentimiento previo cuenta
+        "parametros_propuestos_at = CASE WHEN NULLIF(COALESCE(parametros_propuestos, '{}'::jsonb) - $2::text[], "
+        "'{}'::jsonb) IS NULL THEN NULL ELSE parametros_propuestos_at END WHERE id = $1",
         tenant_id, nombres)
 
 
@@ -135,7 +138,9 @@ async def lineas_vivas_sin_consentir(con: asyncpg.Connection, valores_tenant: di
         WHERE l.estado = 'vinculada' AND NOT EXISTS (
             SELECT 1 FROM consents c
             WHERE c.id = (SELECT c2.id FROM consents c2 WHERE c2.line_id = l.id ORDER BY c2.created_at DESC LIMIT 1)
-              AND c.opciones->'parametros_tenant' @> $1::jsonb)
+              AND c.opciones->'parametros_tenant' @> $1::jsonb
+              -- solo un consentimiento posterior a la propuesta vigente (NULL: ninguno)
+              AND c.created_at >= (SELECT t.parametros_propuestos_at FROM tenants t WHERE t.id = l.tenant_id))
         ORDER BY l.created_at
         """,
         json.dumps(valores_tenant, default=str))

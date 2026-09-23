@@ -57,6 +57,9 @@ def upgrade() -> None:
             -- tenant con líneas vivas (§2.1); la consume el consentimiento del dueño.
             parametros_propuestos  JSONB NULL
                                    CHECK (parametros_propuestos IS NULL OR jsonb_typeof(parametros_propuestos) = 'object'),
+            -- Cuándo se fijó la propuesta vigente: solo cuentan los consentimientos
+            -- posteriores (una fila nueva en consents por propuesta, §2.1).
+            parametros_propuestos_at TIMESTAMPTZ NULL,
             created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
             updated_at             TIMESTAMPTZ NOT NULL DEFAULT now()
         );
@@ -75,7 +78,7 @@ def upgrade() -> None:
         GRANT SELECT ON tenants TO radar_app;
         GRANT UPDATE (nombre, rubro, perfil_de_datos, retencion_fichas_meses,
                       retener_fragmentos, ia_habilitada, via_llm,
-                      parametros_propuestos, updated_at) ON tenants TO radar_app;
+                      parametros_propuestos, parametros_propuestos_at, updated_at) ON tenants TO radar_app;
         GRANT SELECT, INSERT ON tenants TO radar_admin;
         CREATE POLICY tenants_admin ON tenants FOR ALL TO radar_admin
             USING (true) WITH CHECK (true);

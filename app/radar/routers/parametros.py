@@ -57,9 +57,12 @@ def _validar_parciales(parciales: dict, permitidos: list[str]) -> dict:
 
 async def _tenant_ya_consentido(con, line_id: uuid.UUID, propuesta_t: dict) -> dict:
     """Valores de la propuesta de tenant vigente que el último consentimiento
-    de esta línea ya aceptó."""
+    de esta línea ya aceptó, siempre que sea posterior a esa propuesta (un
+    consentimiento viejo no vale para una propuesta nueva)."""
     crudo = await con.fetchval(
-        "SELECT opciones->'parametros_tenant' FROM consents WHERE line_id = $1 ORDER BY created_at DESC LIMIT 1",
+        "SELECT c.opciones->'parametros_tenant' FROM consents c "
+        "WHERE c.id = (SELECT c2.id FROM consents c2 WHERE c2.line_id = $1 ORDER BY c2.created_at DESC LIMIT 1) "
+        "AND c.created_at >= (SELECT t.parametros_propuestos_at FROM tenants t WHERE t.id = c.tenant_id)",
         line_id)
     previos = json.loads(crudo) if crudo else {}
     return {n: validar(n, v) for n, v in propuesta_t.items()
