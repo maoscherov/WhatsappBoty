@@ -20,7 +20,7 @@ from app.radar.constantes import TENANT_KIS
 from app.radar.contexto import contexto
 from app.radar.fuente import ALMACENES_DISPONIBLES
 from app.radar.lineas import AlmacenNoDisponible, crear_linea, resolver_valores_linea
-from app.radar.links import EmailInvalido, enviar_link, normalizar_email
+from app.radar.links import EmailInvalido, enviar_link_seguro, normalizar_email
 from app.radar.parametros import ValorInvalido, perfil_por_rubro, propuesta_para_perfil
 from app.radar.parametros_service import (CambioRechazado, a_json, cambiar_parametros_linea, cambiar_parametros_tenant,
                                           proponer_parametros_linea, proponer_parametros_tenant)
@@ -146,8 +146,8 @@ async def reenviar_invitacion(tenant_id: uuid.UUID, body: InvitacionIn, request:
         await auditoria.registrar(con, tenant_id=tenant_id, actor_user_id=admin.user_id, actor_rol=admin.rol,
                                   accion="invitacion_reenviada", tipo_objeto="user", objeto_id=user_id,
                                   ip=ip_de(request))
-    enviada = await enviar_link(ctx, tenant_id=tenant_id, user_id=user_id, email=email,
-                                proposito="invitacion", ip=ip_de(request))
+    enviada = await enviar_link_seguro(ctx, tenant_id=tenant_id, user_id=user_id, email=email,
+                                       proposito="invitacion", ip=ip_de(request))
     return {"enviada": enviada}
 
 

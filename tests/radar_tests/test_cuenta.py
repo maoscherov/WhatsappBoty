@@ -108,3 +108,16 @@ async def test_solo_el_dueno_administra_usuarios(cliente, radar_ctx):
         assert (await cliente.get("/radar/api/usuarios")).status_code == 403
         assert (await cliente.post("/radar/api/usuarios", json={"email": "x@cliente.com", "rol": "lector"})).status_code == 403
         assert (await cliente.put(f"/radar/api/usuarios/{d}/rol", json={"rol": "lector"})).status_code == 403
+
+
+async def test_invitacion_con_mailer_que_falla(cliente, radar_ctx, monkeypatch):
+    """Revisión final: el usuario ya quedó creado; un fallo del mail da 201 con
+    invitacion_enviada false, no un 500."""
+    from .helpers import MailerQueFalla
+    a, d, l1, _ = await _tenant_con_dueno(radar_ctx)
+    await entrar(cliente, radar_ctx, a, d, "dueno")
+    monkeypatch.setattr(radar_ctx, "mailer", MailerQueFalla())
+    r = await cliente.post("/radar/api/usuarios", json={"email": "gestor@cliente.com", "nombre": "Gus", "rol": "gestor"})
+    assert r.status_code == 201 and r.json()["invitacion_enviada"] is False
+    async with radar_ctx.db.tenant_tx(a) as con:
+        assert await con.fetchval("SELECT count(*) FROM users WHERE email = 'gestor@cliente.com'") == 1

@@ -11,7 +11,7 @@ from app.radar import auditoria
 from app.radar.auth import Sesion, ip_de, requiere_rol, revocar_sesiones_de, sesion_actual
 from app.radar.contexto import contexto
 from app.radar.lineas import linea_json, listar_lineas
-from app.radar.links import EmailInvalido, enviar_link, normalizar_email
+from app.radar.links import EmailInvalido, enviar_link_seguro, normalizar_email
 
 router = APIRouter(prefix="/radar/api", tags=["radar-cuenta"])
 
@@ -89,8 +89,8 @@ async def invitar_usuario(body: InvitacionUsuarioIn, request: Request,
         await auditoria.registrar(con, tenant_id=sesion.tenant_id, actor_user_id=sesion.user_id, actor_rol=sesion.rol,
                                   accion="usuario_invitado", tipo_objeto="user", objeto_id=user_id, ip=ip,
                                   detalle={"rol_nuevo": body.rol})
-    enviada = await enviar_link(ctx, tenant_id=sesion.tenant_id, user_id=user_id, email=email,
-                                proposito="invitacion", ip=ip)
+    enviada = await enviar_link_seguro(ctx, tenant_id=sesion.tenant_id, user_id=user_id, email=email,
+                                       proposito="invitacion", ip=ip)
     return {"user_id": str(user_id), "invitacion_enviada": enviada}
 
 

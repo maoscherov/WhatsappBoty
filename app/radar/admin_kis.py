@@ -15,7 +15,7 @@ from app.radar.auth import Sesion
 from app.radar.constantes import TENANT_KIS
 from app.radar.contexto import RadarContexto
 from app.radar.lineas import crear_linea, resolver_valores_linea
-from app.radar.links import enviar_link, normalizar_email
+from app.radar.links import enviar_link, enviar_link_seguro, normalizar_email
 from app.radar.parametros import DE_TENANT, iniciales, propuesta_para_perfil, validar
 from app.radar.secrets import crear_k_tenant, destruir_k_tenant
 
@@ -93,7 +93,7 @@ async def crear_tenant_con_dueno(ctx: RadarContexto, *, actor: Sesion, ip: Optio
     except Exception:
         destruir_k_tenant(ctx.secretos, tenant_id)
         raise
-    enviada = await enviar_link(ctx, tenant_id=tenant_id, user_id=user_id, email=email, proposito="invitacion", ip=ip)
+    enviada = await enviar_link_seguro(ctx, tenant_id=tenant_id, user_id=user_id, email=email, proposito="invitacion", ip=ip)
     if enviada:
         async with ctx.db.tenant_tx(tenant_id) as con:
             await eventos_producto.registrar_evento(con, tenant_id=tenant_id, evento="invitacion_enviada",

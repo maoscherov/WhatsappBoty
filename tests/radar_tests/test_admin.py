@@ -197,3 +197,19 @@ async def test_script_crear_admin_imprime_el_link(radar_urls, tmp_path, monkeypa
         get_radar_settings.cache_clear()
     salida = capsys.readouterr().out
     assert "https://radar.test/radar/login/canjear?t=00000000-0000-0000-0000-000000000001#k=" in salida
+
+
+async def test_alta_y_reenvio_con_mailer_que_falla(cliente, radar_ctx, monkeypatch):
+    """Revisión final: el alta ya quedó hecha; un fallo del mail no la vuelve un
+    500, se informa con invitacion_enviada/enviada = false."""
+    from .helpers import MailerQueFalla
+    await _admin(cliente, radar_ctx)
+    monkeypatch.setattr(radar_ctx, "mailer", MailerQueFalla())
+    r = await cliente.post("/radar/admin/tenants", json=ALTA)
+    assert r.status_code == 201 and r.json()["invitacion_enviada"] is False
+    tid = uuid.UUID(r.json()["tenant_id"])
+    async with radar_ctx.db.tenant_tx(tid) as con:
+        assert await con.fetchval("SELECT count(*) FROM users") == 1
+        assert await con.fetchval("SELECT count(*) FROM product_events WHERE evento = 'invitacion_enviada'") == 0
+    r = await cliente.post(f"/radar/admin/tenants/{tid}/invitaciones", json={"email": "dueno@farmacia.com"})
+    assert r.status_code == 202 and r.json() == {"enviada": False}
