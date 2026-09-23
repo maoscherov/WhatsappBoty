@@ -1,12 +1,13 @@
 # Radar de conversaciones — onboarding por QR y primer dashboard
 
-**Estado:** propuesta de diseño, sin implementar · **Fecha:** 2026-09-21 · **Nombre de trabajo:** "Radar" · **Revisión:** v5.1
+**Estado:** propuesta de diseño, sin implementar · **Fecha:** 2026-09-21 · **Nombre de trabajo:** "Radar" · **Revisión:** v5.2
 
 Historial de revisiones:
 
 - **v2**: revisión adversarial con cinco lentes (fidelidad al código, factibilidad WAHA, privacidad/legales, producto/métricas, API de Claude).
 - **v3**: sonda real de historial y primeras decisiones de producto.
 - **v4**: duración del vínculo configurable y modelo por línea.
+- **v5.2**: suma la **Consola KIS** (D10): KIS vincula líneas, ve estado y sincronización de todas, y sus métricas agregadas.
 - **v5.1**: verificación de la v5 con la lente de un vínculo de meses. Define la retención con los valores iniciales, la purga por línea, la reconciliación sin leer chats excluidos, el costo de IA en régimen y la capacidad del servidor WAHA.
 - **v5**: consolida todo después de la aclaración de que **eliminar la fuente es una política opcional, no una regla del diseño**. El segundo escaneo y la sesión sin store salen del flujo principal y pasan a ser un modo opcional de segunda etapa.
 
@@ -22,6 +23,7 @@ Historial de revisiones:
 | D6 | La **duración del vínculo es configurable en días; 0 significa permanente**. | `duracion_vinculo_dias` por línea. No hay un segundo escaneo en el flujo principal, y la sesión de WAHA tiene store durante todo el vínculo. |
 | D7 | **Eliminar los datos fuente es una política opcional**, configurable en días. | `retencion_fuente_dias` por línea; 0 = no se eliminan mientras la línea siga dada de alta, tenga o no un vínculo vivo. No condiciona el resto del diseño. |
 | D8 | Cuando esa política está activa, se acepta que el **drill-down muestre fichas sin texto** para lo ya purgado. | Los fragmentos de evidencia son un parámetro aparte, apagado por defecto. |
+| D10 | Hay una **Consola KIS**, de uso exclusivo de KIS (sin partners ni revendedores), para vincular líneas y operar. | §3.1. El backend de Radar automatiza todo el ciclo con WAHA por API; solo escanear el QR es manual. Entra primero en el tramo 2. |
 | D9 | La **retención de las fichas por conversación es configurable**, 12 meses en principio. | `retencion_fichas_meses` por tenant. Aplica a las conversaciones cuyo texto ya no existe. |
 
 Convenciones usadas en todo el documento:
@@ -446,6 +448,39 @@ Estados de la pantalla:
 
 Contenido: §4 y §5.
 
+### 3.1 Consola KIS (D10)
+
+Uso exclusivo de admins de KIS. Todo lo que hace contra WAHA lo hace el backend por API; ninguna clave de WAHA llega al navegador.
+
+**C1 — Líneas**
+
+- Tabla de todas las líneas de todos los clientes: cliente, línea (enmascarada), estado de la línea (`vinculada`, `sin_vinculo`, `de_baja`), estado de la sesión WAHA, `observado_hasta`, último mensaje recibido, cobertura de la sincronización (provisoria / estable, %), huecos abiertos, salud de la cuenta, worker de WAHA, gasto de IA del mes contra el tope.
+- Semáforo: verde (`WORKING` con tráfico), amarillo (sincronizando, sospecha de silencio, cobertura < 90 %), rojo (caída, `FAILED`, restricción, worker lleno).
+- Filtros por estado y por cliente. Se refresca sola (polling cada 15 s o eventos del servidor).
+
+**C2 — Vincular línea**
+
+1. Elegir cliente y línea, o crearlos (alta del tramo 1).
+2. **Consentimiento asistido.** Se muestra el texto de P2 con los parámetros de la línea. El admin marca "El titular leyó y aceptó en esta sesión", indica el modo (presencial / videollamada) y el nombre de quien aceptó. Queda en `consents` con `cargado_por` = el admin y `modo = asistido`, y se envía copia por email al dueño. Sin esto no se crea la sesión.
+3. **Profundidad** (si el motor es NOWEB) y botón "Generar QR".
+4. El backend elige worker por capacidad, crea la sesión, verifica la configuración y muestra el QR con cuenta regresiva, rotación automática, reintento y código de vinculación, igual que P3.
+5. **Estado en vivo en la misma pantalla:** `STARTING` → `SCAN_QR_CODE` → `WORKING` (con confirmación del número enmascarado) → pasada de conteo → selección de chats (P4, que el admin puede hacer junto al dueño o dejar para el dueño) → importación con progreso → cobertura estable.
+6. Al terminar: link al tablero de la línea y email de invitación al dueño.
+
+El QR se muestra solo en esta pantalla, solo mientras dura el intento, nunca se loguea ni se manda por mensaje.
+
+**C3 — Métricas de la línea**
+
+- El tablero de §4 en modo agregado: KPI medidos, KPI estimados, hallazgos y cobertura.
+- **Sin conversaciones ni fragmentos**: el drill-down muestra solo conteos. Ver conversaciones sigue requiriendo el permiso temporal de Soporte KIS que otorga el dueño (§4.4).
+
+**C4 — Acciones de operación** (cada una auditada)
+
+- Reconectar (nuevo QR), desconectar, desconectar y borrar todo (con doble confirmación), reintentar sincronización, re-analizar la línea (con costo estimado a la vista), mover de worker (re-escaneo coordinado).
+- Bloqueadas mientras haya una restricción de cuenta activa, según §3 "Estados especiales".
+
+**Permisos.** Solo el rol `admin` del tenant KIS. Todas las vistas y acciones pasan por las funciones `SECURITY DEFINER` del tramo 1 y quedan en `access_audit_log`.
+
 ### Estados especiales
 
 | Situación | Detección | Experiencia |
@@ -559,6 +594,7 @@ Contenido: §4 y §5.
 | Lector | Solo números. Sin fragmentos, respuestas típicas ni hallazgos con citas. |
 | Soporte KIS | Sin acceso a contenido por defecto. El Dueño lo otorga desde el panel, con vencimiento de 24–72 h, visible para el cliente y auditado. |
 | Comercial KIS | Solo agregados que el cliente comparte. |
+| Admin KIS (Consola, §3.1) | Todas las líneas: estado, sincronización y métricas agregadas. Sin conversaciones salvo con permiso de Soporte otorgado por el dueño. |
 
 - El modelo de usuarios es **único para Radar y Remedia**:
   - `plan-multitenant.md` es una propuesta sin implementar, y Radar construye `tenants/users/memberships` por primera vez.
@@ -1245,7 +1281,7 @@ El motor se elige con los cinco criterios de §6.2. Los alimentan los puntos 2, 
 **MVP**, en orden de construcción. Cada tramo es entregable:
 
 1. **Despliegue y acceso**: despliegue propio, almacén de fuente separado, clave `k_tenant` en gestor de secretos, tenants y **líneas con sus parámetros**, alta por invitación, usuarios, roles, link mágico, RLS efectiva, `consents`, auditoría sin identificadores.
-2. **Vínculo**: gestor de sesiones WAHA con verificación posterior a la creación y **admisión por capacidad del worker**, P1–P3, estados de la línea, reconexión, detección de sesión muda, salud de la cuenta, servicio WAHA endurecido y **job de fin de vínculo**.
+2. **Vínculo y Consola KIS**: primero la Consola (§3.1: C1 líneas, C2 vincular con estado en vivo, C4 acciones), después la pantalla P3 del cliente sobre el mismo backend; gestor de sesiones WAHA con verificación posterior a la creación y **admisión por capacidad del worker**, P1–P3, estados de la línea, reconexión, detección de sesión muda, salud de la cuenta, servicio WAHA endurecido y **job de fin de vínculo**.
 3. **Ingesta**: webhook con filtro de exclusión, pasada de conteo, backfill en pasadas, reconciliación en dos pasos con `observado_hasta`, P4.
 4. **Medido**: E0, KPI 1–5, bandeja de pendientes en vivo, P5. *Primer valor sin IA; único valor para el perfil `sensible`.*
 5. **IA**: E1–E4, KPI 6, 7 y 9, hallazgos, drill-down con evidencia, corrección, revisión guiada, lote nocturno por línea y tope mensual de IA. KPI 8 y 10 se calculan en la misma llamada y **se muestran solo al alcanzar su umbral de datos**.
