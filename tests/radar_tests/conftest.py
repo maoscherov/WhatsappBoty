@@ -33,8 +33,9 @@ ROLES_SQL = """
     GRANT radar_admin TO radar_migrator;
 """
 
-# Orden de TRUNCATE: hijas antes que padres. Se amplía en la Task 6.
-TABLAS = ["tenants"]
+# Orden de TRUNCATE: hijas antes que padres.
+TABLAS = ["product_events", "access_audit_log", "support_grants", "consents", "sessions",
+          "login_tokens", "memberships", "lines", "users", "tenants"]
 
 
 @pytest.fixture(scope="session")
