@@ -10,11 +10,12 @@ from decimal import Decimal
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from app.radar import auditoria
 from app.radar.admin_kis import crear_tenant_con_dueno
-from app.radar.auth import Sesion, ip_de, requiere_rol
+from app.radar.auth import Sesion, emitir_sesion, ip_de, requiere_rol, set_cookie_sesion
 from app.radar.constantes import TENANT_KIS
 from app.radar.contexto import contexto
 from app.radar.fuente import ALMACENES_DISPONIBLES
@@ -175,6 +176,7 @@ async def cambiar_linea_admin(tenant_id: uuid.UUID, line_id: uuid.UUID, body: di
 
 
 @router.put("/tenants/{tenant_id}/parametros")
+
 async def cambiar_tenant_admin(tenant_id: uuid.UUID, body: dict[str, Any], request: Request,
                                admin: Sesion = Depends(requiere_rol("admin"))):
     ctx = contexto(request)
@@ -194,3 +196,25 @@ async def cambiar_tenant_admin(tenant_id: uuid.UUID, body: dict[str, Any], reque
                     actor_user_id=admin.user_id, actor_rol=admin.rol, ip=ip)
         raise HTTPException(status_code=e.status, detail=e.detalle)
     return a_json(finales)
+
+
+@router.post("/tenants/{tenant_id}/sesion-soporte")
+async def sesion_soporte(tenant_id: uuid.UUID, request: Request, admin: Sesion = Depends(requiere_rol("admin"))):
+    """Con un grant vigente, emite una sesión de ese tenant con rol `soporte`
+    que vence con el grant. Reemplaza la cookie de admin: para volver a
+    /radar/admin hay que pedir un link mágico de nuevo."""
+    ctx = contexto(request)
+    ip = ip_de(request)
+    async with ctx.db.tenant_tx(tenant_id) as con:
+        grant = await con.fetchrow(
+            "SELECT id, expires_at, expires_at - now() AS resta FROM support_grants "
+            "WHERE revocado_at IS NULL AND expires_at > now() ORDER BY expires_at DESC LIMIT 1")
+        if grant is None:
+            raise HTTPException(status_code=403, detail={"error": "sin_grant"})
+        token = await emitir_sesion(con, tenant_id=tenant_id, user_id=admin.user_id, rol="soporte", ip=ip,
+                                    duracion=grant["resta"])
+        await auditoria.registrar(con, tenant_id=tenant_id, actor_user_id=admin.user_id, actor_rol="admin",
+                                  accion="acceso_soporte", tipo_objeto="support_grant", objeto_id=grant["id"], ip=ip)
+    resp = JSONResponse({"tenant_id": str(tenant_id), "rol": "soporte", "expires_at": grant["expires_at"].isoformat()})
+    set_cookie_sesion(resp, ctx, tenant_id, token, max_age=int(grant["resta"].total_seconds()))
+    return resp
