@@ -73,3 +73,15 @@ async def enviar_link(ctx: RadarContexto, *, tenant_id: uuid.UUID, user_id: uuid
         para=email, asunto=asunto.format(tenant=nombre_tenant),
         texto=cuerpo.format(tenant=nombre_tenant, url=url), huella=huella_token(token)))
     return True
+
+
+async def enviar_link_seguro(ctx: RadarContexto, *, tenant_id: uuid.UUID, user_id: uuid.UUID, email: str,
+                             proposito: Literal["login", "invitacion"], ip: Optional[str]) -> bool:
+    """enviar_link que nunca lanza: si falla (base o mailer) loguea el error SIN
+    email ni token y devuelve False. Para que un fallo no corte a otros tenants
+    ni convierta un alta ya hecha en un 500."""
+    try:
+        return await enviar_link(ctx, tenant_id=tenant_id, user_id=user_id, email=email, proposito=proposito, ip=ip)
+    except Exception as e:
+        logger.warning("link no enviado (%s): tenant %s user %s: %s", proposito, tenant_id, user_id, type(e).__name__)
+        return False

@@ -8,9 +8,10 @@ POST /radar/logout         revoca la sesión
 
 import base64
 import hashlib
+import logging
 import uuid
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
@@ -18,9 +19,11 @@ from app.radar import auditoria, eventos_producto
 from app.radar.auth import (Sesion, borrar_cookie_sesion, emitir_sesion, hash_token, ip_de,
                             revocar_sesion, sesion_actual, set_cookie_sesion, token_valido)
 from app.radar.contexto import contexto
-from app.radar.links import EmailInvalido, enviar_link, normalizar_email
+from app.radar.contexto import RadarContexto
+from app.radar.links import EmailInvalido, enviar_link_seguro, normalizar_email
 
 router = APIRouter(prefix="/radar", tags=["radar-login"])
+logger = logging.getLogger("app.radar.login")
 
 
 class PedidoLogin(BaseModel):
@@ -28,19 +31,28 @@ class PedidoLogin(BaseModel):
 
 
 @router.post("/login", status_code=202)
-async def pedir_link(pedido: PedidoLogin, request: Request):
-    ctx = contexto(request)
+async def pedir_link(pedido: PedidoLogin, request: Request, tareas: BackgroundTasks):
+    """Responde 202 enseguida, sin buscar el email: la búsqueda y los mails van
+    en segundo plano, así ni el tiempo ni un fallo del mailer revelan si existe."""
     try:
         email = normalizar_email(pedido.email)
     except EmailInvalido:
         return {"ok": True}
-    async with ctx.db.sin_tenant() as con:
-        filas = await con.fetch("SELECT user_id, tenant_id FROM radar_auth_usuarios_por_email($1)", email)
-    ip = ip_de(request)
-    for f in filas:
-        await enviar_link(ctx, tenant_id=f["tenant_id"], user_id=f["user_id"], email=email,
-                          proposito="login", ip=ip)
+    tareas.add_task(_mandar_links, contexto(request), email, ip_de(request))
     return {"ok": True}
+
+
+async def _mandar_links(ctx: RadarContexto, email: str, ip) -> None:
+    """Un link por tenant donde exista el email; el fallo de uno no corta a los demás."""
+    try:
+        async with ctx.db.sin_tenant() as con:
+            filas = await con.fetch("SELECT user_id, tenant_id FROM radar_auth_usuarios_por_email($1)", email)
+    except Exception as e:
+        logger.warning("pedido de login no procesado: %s", type(e).__name__)
+        return
+    for f in filas:
+        await enviar_link_seguro(ctx, tenant_id=f["tenant_id"], user_id=f["user_id"], email=email,
+                                 proposito="login", ip=ip)
 
 
 # Único script de la página: copia el token del fragmento (#k=...) al campo

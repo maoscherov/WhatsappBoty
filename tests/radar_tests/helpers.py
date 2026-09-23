@@ -52,3 +52,17 @@ async def crear_linea_directa(db: RadarDB, tenant_id: uuid.UUID, nombre: str = "
         if estado != "sin_vinculo":
             await con.execute("UPDATE lines SET estado = $2 WHERE id = $1", lid, estado)
     return lid
+
+
+class MailerQueFalla:
+    """Mailer que lanza para los mails cuyo asunto contiene `falla_si` (todos si
+    es ""), y guarda el resto como MemoryMailer."""
+
+    def __init__(self, falla_si: str = ""):
+        self.falla_si = falla_si
+        self.enviados = []
+
+    async def enviar(self, mail) -> None:
+        if self.falla_si in mail.asunto:
+            raise RuntimeError("proveedor de mail caído")
+        self.enviados.append(mail)

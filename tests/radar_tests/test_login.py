@@ -148,3 +148,30 @@ async def test_logout_revoca_la_sesion(cliente, radar_ctx):
     async with radar_ctx.db.tenant_tx(a) as con:
         assert await con.fetchval("SELECT count(*) FROM sessions WHERE revoked_at IS NOT NULL") == 1
         assert await con.fetchval("SELECT count(*) FROM access_audit_log WHERE accion = 'sesion_cerrada'") == 1
+
+
+async def test_mailer_que_falla_no_cambia_la_respuesta(cliente, radar_ctx, monkeypatch, caplog):
+    """Revisión final: 202 siempre, exista o no el email, aunque el mail falle;
+    el log no lleva email ni token."""
+    from .helpers import MailerQueFalla
+    monkeypatch.setattr(radar_ctx, "mailer", MailerQueFalla())
+    a = await crear_tenant_directo(radar_ctx.db, "A")
+    await crear_usuario(radar_ctx.db, a, "dueno@cliente.com", "dueno")
+    for email in ("dueno@cliente.com", "nadie@cliente.com"):
+        r = await cliente.post("/radar/login", json={"email": email})
+        assert r.status_code == 202 and r.json() == {"ok": True}
+    assert "dueno@cliente.com" not in caplog.text and "#k=" not in caplog.text
+
+
+async def test_si_falla_un_tenant_el_otro_recibe_su_link(cliente, radar_ctx, monkeypatch):
+    from .helpers import MailerQueFalla
+    mailer = MailerQueFalla(falla_si="Radar de A")
+    monkeypatch.setattr(radar_ctx, "mailer", mailer)
+    a = await crear_tenant_directo(radar_ctx.db, "A")
+    b = await crear_tenant_directo(radar_ctx.db, "B")
+    await crear_usuario(radar_ctx.db, a, "dueno@cliente.com", "dueno")
+    await crear_usuario(radar_ctx.db, b, "dueno@cliente.com", "lector")
+    for _ in range(2):   # en algún orden, A falla antes que B
+        r = await cliente.post("/radar/login", json={"email": "dueno@cliente.com"})
+        assert r.status_code == 202
+    assert {_link(m)[0] for m in mailer.enviados} == {str(b)} and len(mailer.enviados) == 2
