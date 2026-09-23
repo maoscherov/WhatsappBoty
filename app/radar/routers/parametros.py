@@ -5,6 +5,7 @@ una línea viva (§2.1, §3 P2). El consentimiento acepta lo que un admin de
 KIS propuso (parametros_propuestos); no es un canal para aflojar solo.
 """
 
+import json
 import uuid
 from typing import Any
 
@@ -52,6 +53,17 @@ def _validar_parciales(parciales: dict, permitidos: list[str]) -> dict:
         return {n: validar(n, v) for n, v in parciales.items()}
     except ValorInvalido as e:
         raise HTTPException(status_code=422, detail={"error": "valor_invalido", "detalle": str(e)})
+
+
+async def _tenant_ya_consentido(con, line_id: uuid.UUID, propuesta_t: dict) -> dict:
+    """Valores de la propuesta de tenant vigente que el último consentimiento
+    de esta línea ya aceptó."""
+    crudo = await con.fetchval(
+        "SELECT opciones->'parametros_tenant' FROM consents WHERE line_id = $1 ORDER BY created_at DESC LIMIT 1",
+        line_id)
+    previos = json.loads(crudo) if crudo else {}
+    return {n: validar(n, v) for n, v in propuesta_t.items()
+            if n in previos and coincide_con_propuesta(propuesta_t, n, validar(n, previos[n]))}
 
 
 @router.get("/lineas/{line_id}/parametros")
@@ -118,7 +130,11 @@ async def consentir(line_id: uuid.UUID, body: ConsentimientoIn, request: Request
             if sin_propuesta:
                 raise HTTPException(status_code=422, detail={"error": "sin_propuesta", "parametros": sin_propuesta})
             finales_l = {**{n: fila[n] for n in DE_LINEA}, **nuevos_linea}
-            finales_t = {**(await leer_parametros_tenant(con, sesion.tenant_id)), **nuevos_tenant}
+            # Un consentimiento nuevo reemplaza al anterior como "el último" de la
+            # línea: arrastra los valores propuestos de tenant que el anterior ya
+            # aceptaba, para no volver a dejar la línea pendiente (ciclo).
+            ya_consentidos = await _tenant_ya_consentido(con, line_id, propuesta_t)
+            finales_t = {**(await leer_parametros_tenant(con, sesion.tenant_id)), **ya_consentidos, **nuevos_tenant}
             opciones = {"parametros_linea": a_json(finales_l), "parametros_tenant": a_json(finales_t)}
             cid = await registrar_consentimiento(con, tenant_id=sesion.tenant_id, line_id=line_id, user_id=sesion.user_id,
                                                  version=body.version_texto, opciones=opciones, ip=ip)

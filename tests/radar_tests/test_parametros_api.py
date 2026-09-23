@@ -251,3 +251,30 @@ async def test_cambiar_parametros_tenant_inexistente_da_404(radar_ctx):
             await cambiar_parametros_tenant(con, tenant_id=otro, nuevos={"ia_habilitada": False}, actor_user_id=None,
                                             actor_rol="admin", ip=None, solo_endurecer=False)
     assert e.value.status == 404 and e.value.detalle == {"error": "tenant_inexistente"}
+
+
+async def test_consentimiento_de_linea_posterior_no_borra_el_de_tenant(cliente, radar_ctx):
+    """Revisión Task 12: l1 acepta el tenant más laxo y después consiente un
+    cambio de línea; no debe volver a quedar pendiente del tenant (ciclo)."""
+    a, d, l1, adm = await _base(radar_ctx, estado="vinculada")
+    l2 = await crear_linea_directa(radar_ctx.db, a, "Norte", estado="vinculada")
+    await entrar(cliente, radar_ctx, a, d, "dueno")
+    assert (await cliente.put("/radar/api/cuenta/parametros", json={"ia_habilitada": False})).status_code == 200
+    assert (await cliente.put(f"/radar/api/lineas/{l1}/parametros", json={"duracion_vinculo_dias": 30})).status_code == 200
+    await entrar(cliente, radar_ctx, TENANT_KIS, adm, "admin")
+    assert (await cliente.put(f"/radar/admin/tenants/{a}/parametros", json={"ia_habilitada": True})).status_code == 409
+    await entrar(cliente, radar_ctx, a, d, "dueno")
+    r = await cliente.post(f"/radar/api/lineas/{l1}/consentimientos", json=dict(CONSENT, parametros_tenant={"ia_habilitada": True}))
+    assert r.status_code == 201 and r.json()["lineas_pendientes"] == [str(l2)]
+
+    await entrar(cliente, radar_ctx, TENANT_KIS, adm, "admin")
+    assert (await cliente.put(f"/radar/admin/tenants/{a}/lineas/{l1}/parametros",
+                              json={"duracion_vinculo_dias": 0})).status_code == 409
+    await entrar(cliente, radar_ctx, a, d, "dueno")
+    r = await cliente.post(f"/radar/api/lineas/{l1}/consentimientos", json=dict(CONSENT, parametros_linea={"duracion_vinculo_dias": 0}))
+    assert r.status_code == 201
+
+    r = await cliente.post(f"/radar/api/lineas/{l2}/consentimientos", json=dict(CONSENT, parametros_tenant={"ia_habilitada": True}))
+    assert r.status_code == 201 and r.json()["tenant_aplicado"] is True and r.json()["lineas_pendientes"] == []
+    async with radar_ctx.db.tenant_tx(a) as con:
+        assert await con.fetchval("SELECT ia_habilitada FROM tenants") is True
