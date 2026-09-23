@@ -60,3 +60,19 @@ pytest -k rag                    # solo RAG
 
 Los tests de DB usan `pgserver` (Postgres embebido con pgvector) y embeddings
 fake determinísticos, así corren sin conexión ni claves externas.
+
+## Radar (APP_MODE=radar)
+
+Radar es un despliegue aparte con la misma imagen. Sus migraciones viven en
+`migrations_radar/` (tabla `alembic_version_radar`) y `migrations_fuente/`
+(`alembic_version_fuente`); **no** corren en el arranque del bot y nunca
+tocan `DATABASE_URL`.
+
+```bash
+python -m pytest tests/radar_tests -q      # pgserver + roles reales de RLS
+alembic -c alembic_radar.ini -x url=postgresql://... upgrade head   # a mano, si hace falta
+```
+
+Los tests crean `radar_migrator`, `radar_app` y `radar_admin` en el Postgres
+embebido y conectan como `radar_app`: sin eso los tests de RLS no probarían
+nada. Ver `docs/radar-despliegue.md`.
