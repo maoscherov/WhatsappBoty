@@ -18,7 +18,9 @@ import tempfile
 import asyncpg
 import psycopg2
 import pytest
+from httpx import ASGITransport, AsyncClient
 
+from app.radar.app import crear_app_radar
 from app.radar.constantes import TENANT_KIS
 from app.radar.contexto import RadarContexto
 from app.radar.db import RadarDB
@@ -116,3 +118,10 @@ async def radar_ctx(radar_db, radar_urls, tmp_path):
                         secretos=FileSecretStore(rs.secrets_dir), mailer=MemoryMailer())
     yield ctx
     await fuente.close()
+
+
+@pytest.fixture
+async def cliente(radar_ctx):
+    app = crear_app_radar(radar_ctx.settings, contexto=radar_ctx)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as c:
+        yield c

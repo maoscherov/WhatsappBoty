@@ -58,6 +58,46 @@ def test_set_cookie_sesion_emite_secure_httponly_y_samesite():
     assert f"max-age={int(auth.SESION.total_seconds())}" in sc
 
 
+def test_borrar_cookie_sesion_emite_los_mismos_atributos_que_set_cookie_sesion():
+    class Ctx:
+        settings = RadarSettings(_env_file=None, cookie_secret=SECRETO, cookie_secure=True)
+    resp = Response()
+    auth.borrar_cookie_sesion(resp, Ctx())
+    sc = resp.headers["set-cookie"].lower()
+    assert "secure" in sc and "httponly" in sc and "samesite=lax" in sc and "path=/radar" in sc
+
+
+async def test_sesion_actual_401_sin_cookie_o_con_cookie_invalida(radar_ctx):
+    def _request(headers=()):
+        scope = {"type": "http", "method": "GET", "path": "/", "headers": list(headers), "query_string": b"",
+                 "client": ("127.0.0.1", 1234),
+                 "app": type("A", (), {"state": type("S", (), {"radar": radar_ctx})()})()}
+        return Request(scope)
+
+    with pytest.raises(Exception) as exc:
+        await auth.sesion_actual(_request())
+    assert exc.value.status_code == 401
+
+    claro, _ = auth.generar_token()
+    valor = auth.armar_cookie(radar_ctx.settings.cookie_secret, uuid.uuid4(), claro)
+    with pytest.raises(Exception) as exc2:
+        await auth.sesion_actual(_request([(b"cookie", f"{auth.COOKIE}={valor}".encode())]))
+    assert exc2.value.status_code == 401
+
+
+async def test_requiere_rol_403_si_el_rol_no_alcanza():
+    sesion_lector = auth.Sesion(id=uuid.uuid4(), tenant_id=uuid.uuid4(), user_id=uuid.uuid4(), rol="lector",
+                                email="l@cliente.com", lineas_permitidas=None, es_kis=False)
+    dep = auth.requiere_rol("admin", "dueno")
+    with pytest.raises(Exception) as exc:
+        await dep(sesion=sesion_lector)
+    assert exc.value.status_code == 403
+
+    sesion_dueno = auth.Sesion(id=uuid.uuid4(), tenant_id=uuid.uuid4(), user_id=uuid.uuid4(), rol="dueno",
+                               email="d@cliente.com", lineas_permitidas=None, es_kis=False)
+    assert await dep(sesion=sesion_dueno) is sesion_dueno
+
+
 async def test_emitir_resolver_y_revocar(radar_db):
     a = await crear_tenant_directo(radar_db, "A")
     u = await crear_usuario(radar_db, a, "dueno@cliente.com", "dueno")

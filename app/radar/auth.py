@@ -179,5 +179,6 @@ def set_cookie_sesion(response: Response, ctx: RadarContexto, tenant_id: uuid.UU
     )
 
 
-def borrar_cookie_sesion(response: Response) -> None:
-    response.delete_cookie(COOKIE, path="/radar")
+def borrar_cookie_sesion(response: Response, ctx: RadarContexto) -> None:
+    response.delete_cookie(COOKIE, path="/radar", httponly=True, secure=ctx.settings.cookie_secure,
+                           samesite="lax")

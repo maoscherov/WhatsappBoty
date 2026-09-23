@@ -2,7 +2,25 @@
 
 import uuid
 
+from app.radar.auth import COOKIE, armar_cookie, emitir_sesion
 from app.radar.db import RadarDB
+
+# Dominio con el que hay que setear una cookie A MANO en el cliente httpx con
+# base_url="http://testserver". http.cookiejar trata un host sin punto como
+# "testserver.local": una cookie con domain="testserver" NUNCA se manda, y una
+# sin domain convive con la que el servidor setea (Set-Cookie queda bajo
+# "testserver.local") y cliente.cookies.get() lanza CookieConflict. Con el host
+# efectivo, la del servidor reemplaza a la manual. Verificado con httpx 0.27/0.28.
+DOMINIO_COOKIE = "testserver.local"
+
+
+async def entrar(cliente, ctx, tenant_id: uuid.UUID, user_id: uuid.UUID, rol: str) -> None:
+    """Deja al cliente httpx con una cookie de sesión válida (sin pasar por el email)."""
+    async with ctx.db.tenant_tx(tenant_id) as con:
+        token = await emitir_sesion(con, tenant_id=tenant_id, user_id=user_id, rol=rol, ip="127.0.0.1")
+    cliente.cookies.clear()
+    cliente.cookies.set(COOKIE, armar_cookie(ctx.settings.cookie_secret, tenant_id, token),
+                        domain=DOMINIO_COOKIE, path="/radar")
 
 
 async def crear_tenant_directo(db: RadarDB, nombre: str = "Farmacia Test", rubro: str = "farmacia",
