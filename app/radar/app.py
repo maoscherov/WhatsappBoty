@@ -16,8 +16,10 @@ from app.middleware import log_errores
 from app.radar.contexto import RadarContexto
 from app.radar.db import RadarDB
 from app.radar.fuente import FuenteStore
+from app.radar.mailer import construir_mailer
 from app.radar.migrate import migrar_fuente, migrar_resultados
 from app.radar.routers import health
+from app.radar.secrets import FileSecretStore
 from app.radar.settings import RadarSettings, get_radar_settings
 
 logger = logging.getLogger("app.radar")
@@ -39,7 +41,8 @@ async def construir_contexto(rs: RadarSettings) -> RadarContexto:
     await db.connect()
     fuente = FuenteStore(rs.fuente_database_url)
     await fuente.connect()
-    return RadarContexto(settings=rs, db=db, fuente=fuente)
+    return RadarContexto(settings=rs, db=db, fuente=fuente,
+                         secretos=FileSecretStore(rs.secrets_dir), mailer=construir_mailer(rs.mailer))
 
 
 @asynccontextmanager

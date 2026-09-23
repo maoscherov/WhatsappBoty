@@ -23,7 +23,9 @@ from app.radar.constantes import TENANT_KIS
 from app.radar.contexto import RadarContexto
 from app.radar.db import RadarDB
 from app.radar.fuente import FuenteStore
+from app.radar.mailer import MemoryMailer
 from app.radar.migrate import migrar_fuente, migrar_resultados
+from app.radar.secrets import FileSecretStore
 from app.radar.settings import RadarSettings
 
 ROLES_SQL = """
@@ -110,6 +112,7 @@ async def radar_ctx(radar_db, radar_urls, tmp_path):
         mailer="memoria",
         secrets_dir=str(tmp_path / "secretos"),
     )
-    ctx = RadarContexto(settings=rs, db=radar_db, fuente=fuente)
+    ctx = RadarContexto(settings=rs, db=radar_db, fuente=fuente,
+                        secretos=FileSecretStore(rs.secrets_dir), mailer=MemoryMailer())
     yield ctx
     await fuente.close()

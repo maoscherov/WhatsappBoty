@@ -10,6 +10,8 @@ from fastapi import HTTPException, Request
 
 from app.radar.db import RadarDB
 from app.radar.fuente import FuenteStore
+from app.radar.mailer import Mailer
+from app.radar.secrets import SecretStore
 from app.radar.settings import RadarSettings
 
 
@@ -18,6 +20,8 @@ class RadarContexto:
     settings: RadarSettings
     db: RadarDB
     fuente: FuenteStore
+    secretos: SecretStore
+    mailer: Mailer
 
     async def cerrar(self) -> None:
         await self.db.close()
