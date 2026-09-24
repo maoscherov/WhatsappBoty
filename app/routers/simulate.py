@@ -3,6 +3,7 @@ Endpoint de simulación para testing sin WhatsApp real.
 POST /simulate  →  procesa un mensaje y devuelve la respuesta del bot.
 """
 
+from app.services.socio_service import nombre_de_pila
 import logging
 import re
 import time as _time
@@ -96,7 +97,7 @@ async def simulate(req: SimulateRequest):
     session = await session_svc.get(req.phone)
     _ctx_socio = socio_svc.contexto_para_prompt(req.phone)
     _sd = socio_svc.find_by_phone(req.phone)
-    _nombre_socio = (_sd.get("nombre", "").split() or [""])[0] if _sd else ""
+    _nombre_socio = nombre_de_pila(_sd)
     texto = req.message.strip()
     productos_encontrados: list[dict] = []
     link_pago = None

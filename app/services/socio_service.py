@@ -35,8 +35,75 @@ _COLUMN_ALIASES = {
     "dni":       {"dni", "documento"},
     "socio":     {"socio", "nro socio", "nro_socio", "numero socio", "n socio"},
     "celular":   {"celular", "telefono", "tel", "movil", "whatsapp"},
-    "domicilio": {"domicilio", "direccion"},
+    "domicilio": {"domicilio", "direccion", "calle", "domicilio particular", "direccion particular",
+                  "domicilio real", "domic", "calle y numero", "calle y nro", "dir"},
 }
+
+
+def _clave_columna(col) -> str:
+    """Encabezado normalizado: minúsculas, sin tildes, sin °/./_ extra.
+    Antes "DIRECCIÓN" (con tilde) no se reconocía y la columna se ignoraba
+    sin avisar (caso 24/9: a una socia se le pidió el domicilio)."""
+    import unicodedata
+    s = unicodedata.normalize("NFD", str(col).strip().lower())
+    s = "".join(ch for ch in s if unicodedata.category(ch) != "Mn")
+    s = s.replace("°", "").replace("º", "").replace(".", "").replace("_", " ")
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _celda(row, col) -> str:
+    """Valor de una celda como texto; las vacías de Excel/CSV llegan como NaN
+    y str(NaN) daba "nan" (un domicilio "Nan")."""
+    if col is None:
+        return ""
+    v = row.get(col)
+    if v is None:
+        return ""
+    try:
+        import math
+        if isinstance(v, float) and math.isnan(v):
+            return ""
+    except Exception:
+        pass
+    s = str(v).strip()
+    return "" if s.lower() in ("nan", "none", "null") else s
+
+
+def nombre_de_pila(socio: Optional[dict], orden: str = "") -> str:
+    """
+    Nombre para saludar. Muchos padrones traen en la columna nombre el nombre
+    completo con el apellido adelante ("Muff Claudia Beatriz"): tomar la
+    primera palabra saludaba por el apellido (caso real 24/9).
+      - "Apellido, Nombre" → lo que va después de la coma.
+      - Con columna apellido → se sacan sus palabras y queda la primera.
+      - Sin apellido y varias palabras → según `orden` (socios_orden_nombre):
+        "apellido_nombre" (default) toma la segunda, "nombre_apellido" la primera.
+    """
+    if not socio:
+        return ""
+    nombre = (socio.get("nombre") or "").strip()
+    apellido = (socio.get("apellido") or "").strip()
+    if not nombre:
+        return ""
+    if "," in nombre:
+        despues = nombre.split(",", 1)[1].strip()
+        if despues:
+            return despues.split()[0].title()
+    toks = nombre.split()
+    ap = {t.lower() for t in apellido.replace(",", " ").split()}
+    if ap:
+        resto = [t for t in toks if t.lower() not in ap]
+        return (resto[0] if resto else toks[0]).title()
+    if len(toks) >= 2:
+        if not orden:
+            try:
+                from app.config import get_settings
+                orden = get_settings().socios_orden_nombre
+            except Exception:
+                orden = "apellido_nombre"
+        if orden != "nombre_apellido":
+            return toks[1].title()
+    return toks[0].title()
 
 
 def _solo_digitos(valor) -> str:
@@ -135,6 +202,8 @@ class SocioService:
         self.reporte_carga: dict = {
             "total_filas": 0, "cargados": 0, "normalizados": 0,
             "sin_celular_valido": [], "ambiguos": [], "duplicados": [],
+            "columnas_reconocidas": {}, "columnas_ignoradas": [], "con_domicilio": 0,
+            "nombre_con_apellido": 0, "nombre_con_apellido_ejemplos": [],
         }
         self._load()
 
@@ -163,11 +232,12 @@ class SocioService:
         # Normalizar nombres de columna y mapear por alias
         colmap = {}
         for col in df.columns:
-            key = str(col).strip().lower().replace("°", "").replace(".", "")
+            key = _clave_columna(col)
             for campo, aliases in _COLUMN_ALIASES.items():
-                if key in aliases:
+                if key in aliases and campo not in colmap:
                     colmap[campo] = col
                     break
+        columnas_ignoradas = [str(c) for c in df.columns if c not in colmap.values()]
 
         faltantes = {"nombre", "celular"} - set(colmap)
         if faltantes:
@@ -189,11 +259,14 @@ class SocioService:
         ambiguos: list[dict] = []
         normalizados = 0
         contador_tel: dict[str, int] = {}
+        con_domicilio = 0
+        nombre_con_apellido: list[dict] = []
+        nombre_con_apellido_total = 0
 
         for _, row in df.iterrows():
             raw_cel = row.get(colmap["celular"])
-            nombre = str(row.get(colmap["nombre"]) or "").strip().title()
-            apellido = str(row.get(colmap.get("apellido"), "") or "").strip().title()
+            nombre = _celda(row, colmap["nombre"]).title()
+            apellido = _celda(row, colmap.get("apellido")).title()
             analisis = analizar_celular(raw_cel, area_default)
             celular = analisis["normalizado"]
 
@@ -216,13 +289,22 @@ class SocioService:
             socio = {
                 "nombre": nombre,
                 "apellido": apellido,
-                "nro_socio": str(row.get(colmap.get("socio"), "") or "").strip(),
+                "nro_socio": _celda(row, colmap.get("socio")),
                 # DNI y domicilio se guardan para el backoffice, NO para el prompt
-                "dni": _solo_digitos(row.get(colmap.get("dni"), "")),
-                "domicilio": str(row.get(colmap.get("domicilio"), "") or "").strip(),
+                "dni": _solo_digitos(_celda(row, colmap.get("dni"))),
+                "domicilio": _celda(row, colmap.get("domicilio")),
                 "celular": celular,
                 "celular_original": analisis["original"],
             }
+            socio["nombre_pila"] = nombre_de_pila(socio)
+            if socio["domicilio"]:
+                con_domicilio += 1
+            if socio["apellido"] and nombre and nombre.split() and \
+                    nombre.split()[0].lower() in {t.lower() for t in socio["apellido"].split()}:
+                if len(nombre_con_apellido) < 20:
+                    nombre_con_apellido.append({"nombre": nombre, "apellido": socio["apellido"],
+                                                "saluda_como": socio["nombre_pila"]})
+                nombre_con_apellido_total += 1
             self._socios.append(socio)
             self._por_tel_10[celular] = socio
             self._por_tel_8[celular[-8:]] = socio
@@ -237,6 +319,12 @@ class SocioService:
             "sin_celular_valido": sin_celular_valido,
             "ambiguos": ambiguos,
             "duplicados": [t for t, c in contador_tel.items() if c > 1][:20],
+            # Calidad de columnas (24/9): domicilio ignorado y nombre con apellido
+            "columnas_reconocidas": {k: str(v) for k, v in colmap.items()},
+            "columnas_ignoradas": columnas_ignoradas,
+            "con_domicilio": con_domicilio,
+            "nombre_con_apellido": nombre_con_apellido_total,
+            "nombre_con_apellido_ejemplos": nombre_con_apellido,
         }
 
         logger.info(f"Padrón de socios cargado: {self.total} socios desde {p} "
@@ -296,7 +384,11 @@ class SocioService:
         socio = self.find_by_phone(phone)
         if not socio:
             return None
-        partes = [f"Nombre: {socio['nombre']} {socio['apellido']}".strip()]
+        # El nombre de pila va aparte: con "Nombre: Muff Claudia Beatriz Muff"
+        # el modelo saludaba por el apellido (24/9).
+        partes = [f"Nombre de pila (para saludar): {socio.get('nombre_pila') or nombre_de_pila(socio)}"]
+        if socio.get("apellido"):
+            partes.append(f"Apellido: {socio['apellido']}")
         if socio["nro_socio"]:
             partes.append(f"N° de socio: {socio['nro_socio']}")
         return " | ".join(partes)

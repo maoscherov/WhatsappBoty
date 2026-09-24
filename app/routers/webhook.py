@@ -15,6 +15,7 @@ Flujo por mensaje:
   8. Guardar historial en Redis
 """
 
+from app.services.socio_service import nombre_de_pila
 import logging
 import time as _time
 from datetime import datetime, timezone as _tz
@@ -757,7 +758,7 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     _intencion = "imagen_bono"
                     await deps["session"].set_estado(phone, "operador", motivo="bono_foto")
                     _socio_bn = deps["socios"].find_by_phone(phone)
-                    _nombre_bn = (_socio_bn.get("nombre", "").split() or [""])[0] if _socio_bn else ""
+                    _nombre_bn = nombre_de_pila(_socio_bn)
                     _cfg_bn = await deps["config"].get_all()
                     respuesta, _trab = responder_bono(img.get("items", ""), _cfg_bn,
                                                       nombre=_nombre_bn, por_foto=True)
@@ -802,7 +803,7 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     # del flujo normal nunca corre: se resuelve acá con el
                     # placeholder {nombre} (padrón de socios, caso real 4/9).
                     _socio_rc = deps["socios"].find_by_phone(phone)
-                    _nombre_rc = (_socio_rc.get("nombre", "").split() or [""])[0] if _socio_rc else ""
+                    _nombre_rc = nombre_de_pila(_socio_rc)
                     if img["tipo"] == "receta":
                         # Configurable (receta_recibida_message): promete la
                         # validación en ~10 min, en línea con el SLA de 15.
@@ -844,7 +845,7 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     await deps["session"].set_estado(phone, "operador",
                                                      motivo="imagen_no_reconocida")
                     _socio_inr = deps["socios"].find_by_phone(phone)
-                    _nombre_inr = (_socio_inr.get("nombre", "").split() or [""])[0] if _socio_inr else ""
+                    _nombre_inr = nombre_de_pila(_socio_inr)
                     _cfg_inr = await deps["config"].get_all()
                     respuesta = personalizar_nombre(
                         _cfg_inr.get("imagen_no_reconocida_message") or (
@@ -878,7 +879,7 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                         _cfg_adj.get("imagen_no_reconocida_message") or (
                             "¡Hola {nombre}! Recibí tu archivo 🙌 Te paso con alguien del "
                             "equipo que lo mira y te ayuda."),
-                        (_soc_adj.get("nombre", "").split() or [""])[0] if _soc_adj else "")
+                        nombre_de_pila(_soc_adj))
                     respuesta = respuesta.replace("tu imagen", "tu archivo")
                     await deps["wa"].send_text(phone, respuesta)
                     await deps["session"].add_message(phone, "assistant", respuesta)
@@ -907,7 +908,7 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
             # Claude recibe nombre y N° de socio para saludar por nombre.
             _ctx_socio = deps["socios"].contexto_para_prompt(phone)
             _socio_data = deps["socios"].find_by_phone(phone)
-            _nombre_socio = (_socio_data.get("nombre", "").split() or [""])[0] if _socio_data else ""
+            _nombre_socio = nombre_de_pila(_socio_data)
             # Si el socio tiene descuento activo, los precios del catálogo YA
             # vienen bonificados: el modelo tiene que saberlo para aclararlo al
             # darlos, y para no volver a descontar por su cuenta.
@@ -1237,7 +1238,7 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 else:
                     _intencion = "consulta_bono"
                     _socio_ob = deps["socios"].find_by_phone(phone)
-                    _nombre_ob = (_socio_ob.get("nombre", "").split() or [""])[0] if _socio_ob else ""
+                    _nombre_ob = nombre_de_pila(_socio_ob)
                     respuesta, _trab = responder_bono(_bono_preg, _cfg_os, nombre=_nombre_ob)
                     _ofrece = False
                     if not _trab:

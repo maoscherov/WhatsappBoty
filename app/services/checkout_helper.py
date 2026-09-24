@@ -852,7 +852,11 @@ async def crear_link_y_responder(
     # que el bot dijo; si el ERP devuelve otro, se loguea.
     _precio_erp = None
     try:
-        _msg_freno, _precio_erp = await _chequear_stock_vivo(session, phone, session_svc, _cfg)
+        import time as _t
+        _recien = ((_t.time() - float(session.get("_stock_ok_at") or 0)) < 600
+                   and session.get("_stock_ok_para") == _clave_stock(session))
+        _msg_freno, _precio_erp = (None, None) if _recien else \
+            await _chequear_stock_vivo(session, phone, session_svc, _cfg)
         if _msg_freno:
             return _msg_freno, None
     except Exception as e:
@@ -943,6 +947,14 @@ async def crear_link_y_responder(
     return respuesta, link
 
 
+def _clave_stock(session: dict) -> str:
+    """Qué se verificó: el producto pendiente o los ítems del carrito."""
+    items = session.get("pending_items") or []
+    if items:
+        return ",".join(sorted(f"{i.get('sku_id')}x{i.get('cantidad', 1)}" for i in items))
+    return f"{session.get('pending_sku_id')}x{session.get('pending_cantidad', 1)}"
+
+
 async def confirmar_pedido(
     sku_svc, payment_svc, session_svc, socio_svc, cfg: dict, phone: str, session: dict,
     entrega: Optional[str] = None, nombre: str = "",
@@ -971,6 +983,26 @@ async def confirmar_pedido(
             "para gestionarlo con vos. ¡En un momento te contactamos!",
             "derivado_receta",
         )
+
+    # 1b. Stock EN VIVO antes de preguntar retiro/envío (caso real 24/9: se le
+    #     pidió la dirección y RECIÉN después se le dijo que no había stock).
+    #     El chequeo del final (al generar el link) queda como red de seguridad
+    #     y se saltea si este ya dio OK hace menos de 10 minutos.
+    try:
+        _freno, _ = await _chequear_stock_vivo(session, phone, session_svc, cfg)
+    except Exception as e:
+        logger.warning(f"Chequeo de stock al confirmar falló para {phone}: {e} — se sigue")
+        _freno = None
+    if _freno:
+        return _freno, "sin_stock_vivo"
+    try:
+        import time as _t
+        _s_ok = await session_svc.get(phone)
+        _s_ok["_stock_ok_at"] = _t.time()
+        _s_ok["_stock_ok_para"] = _clave_stock(_s_ok)
+        await session_svc.save(phone, _s_ok)
+    except Exception:
+        pass
 
     # 2. Envío habilitado
     if envio_enabled:

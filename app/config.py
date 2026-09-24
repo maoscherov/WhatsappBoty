@@ -29,7 +29,10 @@ class Settings(BaseSettings):
     env: str = "development"
     sku_csv_path: str = "data/catalogo_base.csv"
     socios_path: str = "data/socios.csv"      # padrón de socios (CSV o XLSX)
-    socios_area_default: str = "341"          # código de área para celulares locales sin área (Rosario)
+    socios_area_default: str = "341"
+    # Orden del nombre cuando el padrón NO tiene columna apellido y la columna
+    # nombre trae varias palabras: "apellido_nombre" (PEREZ JUAN) o "nombre_apellido".
+    socios_orden_nombre: str = "apellido_nombre"          # código de área para celulares locales sin área (Rosario)
     log_level: str = "INFO"
     bo_key: str = ""
     pickup_minutes: int = 30
