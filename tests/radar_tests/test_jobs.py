@@ -143,3 +143,18 @@ async def test_reclamo_concurrente_no_duplica(radar_db):
     assert len(primero) == 1 and len(segundo) == 1
     assert primero[0]["id"] != segundo[0]["id"]
     assert {primero[0]["tenant_id"], segundo[0]["tenant_id"]} == {t1, t2}
+
+
+async def test_fin_agotado_en_cerrando_se_reencola_al_programar_salud(radar_db, radar_urls):
+    """Final B2: un fin_vinculo 'fallido' deja el vínculo en 'cerrando'; la
+    próxima programación de salud lo vuelve a encolar (sin duplicar uno vivo)."""
+    t, k = await _link(radar_db, await crear_worker_directo(radar_db), estado="cerrando")
+    async with radar_db.tenant_tx(t) as con:
+        await con.execute("UPDATE links SET fin_causa = 'pedido_kis' WHERE id = $1", k)
+        jid = await cola.encolar(con, tipo="fin_vinculo", link_id=k, causa="pedido_kis")
+    await como_superusuario(radar_urls, "UPDATE jobs SET estado = 'fallido' WHERE id = $1", jid)
+    assert await cola.programar_salud(radar_db) == 1
+    assert await cola.programar_salud(radar_db) == 0
+    async with radar_db.tenant_tx(t) as con:
+        vivo = await con.fetchrow("SELECT tipo, causa FROM jobs WHERE link_id = $1 AND estado = 'pendiente'", k)
+    assert (vivo["tipo"], vivo["causa"]) == ("fin_vinculo", "pedido_kis")

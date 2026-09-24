@@ -251,8 +251,17 @@ def upgrade() -> None:
                     SELECT l.tenant_id, 'chequeo_salud', l.id FROM links l
                      WHERE l.estado IN ('creando', 'esperando_qr', 'vinculado', 'caido')
                     ON CONFLICT DO NOTHING
+                    RETURNING 1),
+                -- Revisión final B2: un fin_vinculo agotado ('fallido') deja el vínculo
+                -- en 'cerrando' y nada lo retomaba. Se re-encola cada vuelta, sin techo;
+                -- el índice parcial jobs_uno_vivo_por_link_y_tipo evita duplicar uno vivo.
+                fines AS (
+                    INSERT INTO jobs (tenant_id, tipo, link_id, causa)
+                    SELECT l.tenant_id, 'fin_vinculo', l.id, l.fin_causa FROM links l
+                     WHERE l.estado = 'cerrando'
+                    ON CONFLICT DO NOTHING
                     RETURNING 1)
-                SELECT count(*)::int FROM nuevos
+                SELECT (SELECT count(*)::int FROM nuevos) + (SELECT count(*)::int FROM fines)
             $f$;
         """,
     ))
