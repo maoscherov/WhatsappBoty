@@ -4,7 +4,7 @@
 
 **Goal:** Que un admin de KIS pueda vincular la línea de WhatsApp de un cliente desde la Consola (consentimiento asistido → QR → `WORKING`), ver el estado de todas las líneas con semáforo y operarlas (reconectar, desconectar, desconectar y borrar, marcar restricción), y que el dueño pueda hacer lo mismo con su línea desde P3; todo sobre un único gestor de sesiones WAHA con lista blanca de rutas, verificación posterior a la creación, clave de solo lectura por sesión, admisión por capacidad del worker, máquina de estados del vínculo alimentada por `session.status` y por un chequeo de salud cada 5 min, y un job idempotente de fin de vínculo (un único `DELETE`, borrado de claves y verificación 404; nunca `logout`).
 
-**Architecture:** Todo vive en el despliegue de Radar del tramo 1 (`APP_MODE=radar`). `app/radar/waha/` es el único paquete que habla con WAHA (cliente httpx con lista blanca, cuerpo de sesión de P3 y gestor del ciclo de vida); `app/radar/workers.py` es el único módulo que lee la clave admin de un worker, que vive en el `SecretStore` (`waha_admin:<worker_id>`), nunca en la base ni en el navegador. La migración `r0003` agrega `waha_workers`, `links`, `link_status_events` y `jobs` (todas con `tenant_id`, RLS forzada y acceso por `tenant_tx`) y las columnas del consentimiento asistido en `consents`. Lo que cruza tenants (ocupación de workers, listado de la Consola, reclamo de jobs, programación de chequeos) son funciones `SECURITY DEFINER` de `radar_admin`, como en el tramo 1. Un worker (`app/radar/worker.py`: embebido en el servicio web por defecto, o como proceso `python -m app.radar.worker`) consume la cola `jobs` con `FOR UPDATE SKIP LOCKED` (fin de vínculo y chequeo de salud). El receptor `POST /webhook/waha` verifica HMAC sha512 fail-closed; en este tramo solo aplica `session.status` y descarta los `message.*` sin persistir nada. La Consola y la pantalla del dueño son HTML estático + un único `radar.js`, servidos por Radar con CSP estricta.
+**Architecture:** Todo vive en el despliegue de Radar del tramo 1 (`APP_MODE=radar`). `app/radar/waha/` es el único paquete que habla con WAHA (cliente httpx con lista blanca, cuerpo de sesión de P3 y gestor del ciclo de vida); `app/radar/workers.py` es el único módulo que lee la clave admin de un worker, que vive en el `SecretStore` (`waha_admin:<worker_id>`), nunca en la base ni en el navegador. La migración `r0003` agrega `waha_workers`, `links`, `link_status_events` y `jobs` (todas con `tenant_id`, RLS forzada y acceso por `tenant_tx`) y las columnas del consentimiento asistido en `consents`. Lo que cruza tenants (ocupación de workers, listado de la Consola, reclamo de jobs, programación de chequeos) son funciones `SECURITY DEFINER` de `radar_admin`, como en el tramo 1. Un worker (`app/radar/worker.py`: embebido en el servicio web por defecto, o como proceso `python -m app.radar.worker`) consume la cola `jobs` con `FOR UPDATE SKIP LOCKED` (fin de vínculo, chequeo de salud y aviso de caída al dueño). El receptor `POST /webhook/waha` verifica HMAC sha512 fail-closed; en este tramo solo aplica `session.status` y descarta los `message.*` sin persistir nada. La Consola y la pantalla del dueño son HTML estático + un único `radar.js`, servidos por Radar con CSP estricta.
 
 **Tech Stack:** Python 3.12, FastAPI, asyncpg (SQL crudo), Alembic con SQL crudo (`migrations_radar/`), PostgreSQL ≥ 15 con RLS, httpx (`AsyncClient`; `MockTransport` en tests), pytest + pytest-asyncio (`asyncio_mode=auto`), pgserver, HTML + JavaScript sin dependencias.
 
@@ -35,6 +35,27 @@
 ---
 
 ## Decisiones de este plan
+
+> **Enmienda 2026-09-24.** El plan se escribió antes de que existiera el tramo 1; el preflight contra el código real (`app/radar/`, `migrations_radar/versions/r0001|r0002`, `tests/radar_tests/`) encontró 16 diferencias, corregidas acá antes de ejecutar:
+>
+> 1. **Routers en `app.py`** (Tasks 13–16): `crear_app_radar` no tiene una tupla de routers; cada tarea suma su módulo al `from app.radar.routers import …` y agrega `app.include_router(<módulo>.router)` después de `soporte`.
+> 2. **`test_esquema.py` tiene 14 tests**, no 12 (Task 2, "Esperado").
+> 3. **`waha_workers`**: `GRANT UPDATE` solo sobre `base_url, max_sesiones, disco_max_gb, disco_usado_gb, activo, updated_at` (Task 2, `UPDATES_POR_COLUMNA`).
+> 4. **`links`**: `GRANT UPDATE` solo sobre las columnas de estado y ciclo de vida; nunca `id, tenant_id, line_id, worker_id, consent_id, proveedor, session_name, engine, full_sync, creado_por, created_at` (Task 2).
+> 5. **`jobs`**: `GRANT UPDATE` solo sobre `estado, intentos, ejecutar_desde, bloqueado_hasta, ultimo_error, updated_at`; `radar_admin` conserva `SELECT, INSERT, UPDATE` (Task 2).
+> 6. **`lines.borrado_solicitado_at`**: r0003 agrega `GRANT UPDATE (borrado_solicitado_at) ON lines TO radar_app` (y lo revoca en el downgrade); sin eso "Desconectar y borrar todo" fallaba con `InsufficientPrivilegeError` (Task 2).
+> 7. **Tests que escriben columnas no actualizables** (`links.created_at`, `jobs.max_intentos`) pasan por el helper nuevo `como_superusuario(radar_urls, sql, *args)` (Tasks 2, 8 y 11), y `test_vinculos_esquema.py` suma `test_grant_update_no_alcanza_columnas_de_identidad` (Task 2).
+> 8. **`marcar_restriccion` sin vínculo responde `409 sin_vinculo`**, como dice la interfaz y como `pedir_fin` (Task 9, con test).
+> 9. **Los `CHECK` de `links.estado` y `links.fin_causa` se arman desde `ESTADOS_LINK` y `CAUSAS_FIN`** (Task 2), como r0002 hace con `TENANT_KIS_STR`.
+> 10. **Vínculo caído** (Estados especiales): `aplicar_status` encola un job nuevo `aviso_caida` cuando la caída sale de `vinculado` (nunca de `cerrando`, que la máquina ignora); `fin_vinculo.avisar_caida` manda el email al dueño con la fecha DD/MM de `caido_desde` (hora de Argentina) si el vínculo sigue caído; el worker lo despacha; `radar.js` muestra "Tu WhatsApp se desconectó el DD/MM" y el botón "Reconectar" (Tasks 2, 9, 10, 12, 15 y runbook de la 17).
+> 11. **`sin_capacidad` ya no promete email**: el texto pasa a "En este momento no hay lugar para una conexión nueva. Probá de nuevo más tarde o escribinos." (Task 15 y runbook de la 17). Avisar cuando se libere lugar queda como decisión abierta (Self-Review, (e) 7).
+> 12. **`reiniciar_qr` con restricción activa responde `409 restriccion_activa`** sin llamar a WAHA (Task 9, con test).
+> 13. **Vínculos huérfanos en `creando`**: `radar_jobs_programar_salud` incluye `creando` (Task 2); el chequeo de salud no toca uno de menos de 15 min y, pasados 15 min (`salud.CREANDO_HUERFANO`), lo pasa a `abortado` si la sesión no existe en WAHA o encola su fin con causa `qr_abandonado` si existe (Tasks 8 y 11, con tests).
+> 14. **El consentimiento asistido arrastra la propuesta de tenant ya aceptada**: `_tenant_ya_consentido` se mueve de `routers/parametros.py` a `parametros_service.tenant_ya_consentido` y lo usan los dos consentimientos (Task 14, con test).
+> 15. **Los mails nunca rompen una operación ya confirmada**: la copia del consentimiento asistido y los avisos de fin y de caída van con `try/except` (solo se loguea el tipo de error); `copia_enviada` refleja si salió y el evento `vinculo_cerrado` lleva `aviso_enviado` 0/1 (Tasks 10 y 14, con tests sobre `MailerQueFalla`).
+> 16. **Las rutas de línea de la Consola solo operan sobre un tenant cliente**: la dependencia `_tenant_cliente` responde `404 tenant_inexistente` si el tenant no existe o es el de KIS, como `admin.py` del tramo 1 (Task 14, con test).
+>
+> Conteos: los "Esperado" de las Tasks 2, 9, 10, 11, 12, 14 y 15 y el total de la Task 17 están actualizados. La decisión 15 (worker embebido) no cambia: sigue pendiente del OK del dueño porque §6.2 pide un proceso aparte.
 
 1. **Webhook con una clave HMAC global.** `RADAR_WAHA_WEBHOOK_HMAC_KEY` (32+ caracteres) firma los webhooks de todas las sesiones. Una clave por vínculo obligaría a leer `metadata` de un cuerpo todavía no verificado para elegir con qué clave verificarlo; con una global se verifica antes de parsear nada. La clave solo vive en Radar y en la configuración de sesiones del WAHA privado.
 2. **Cola de jobs propia.** El tramo 1 no trae cola. Se agrega la tabla `jobs` (sin contenido: tipo, `link_id`, causa, estado, intentos, `ejecutar_desde`, `bloqueado_hasta`, tipo de error) y la función `radar_jobs_reclamar(lote, lease_s)` (`SECURITY DEFINER`, `FOR UPDATE SKIP LOCKED`): reclama entre tenants desde una tabla sin contenido y recién después el worker entra a `tenant_tx(tenant_id)`, como pide §6.2. Hay un solo job pendiente o corriendo por `(link_id, tipo)` (índice único parcial). El chequeo de salud es recurrente: al terminar se reprograma a +5 min en la misma fila, así la tabla no crece con cada chequeo.
@@ -364,13 +385,23 @@ git commit -m "Radar tramo 2: configuracion de WAHA y vocabulario de auditoria d
 
 **Interfaces:**
 - Consumes: `politica_por_tenant`, `grants_app`, `definir_funcion_admin`, `TENANT_KIS_STR`, `TENANT_KIS`, `hash_texto` (tramo 1).
-- Produces: tablas `waha_workers`, `links`, `link_status_events`, `jobs`; columnas `consents.modo|cargado_por|modo_asistencia|aceptado_por_nombre` y `lines.borrado_solicitado_at`; funciones `radar_admin_ocupacion_workers() RETURNS TABLE (worker_id uuid, nombre text, base_url text, engine text, max_sesiones int, disco_max_gb numeric, disco_usado_gb numeric, activo bool, sesiones int)`, `radar_admin_consola_lineas() RETURNS TABLE (tenant_id uuid, tenant_nombre text, line_id uuid, line_nombre text, line_estado text, link_id uuid, link_estado text, waha_status text, numero_sufijo text, observado_hasta timestamptz, restriccion_hasta timestamptz, restriccion_sin_fecha bool, caido_desde timestamptz, ultimo_status_at timestamptz, engine text, worker_nombre text, worker_max_sesiones int, worker_sesiones int)`, `radar_jobs_reclamar(p_lote int, p_lease_s int) RETURNS TABLE (id uuid, tenant_id uuid, tipo text, link_id uuid, causa text, intentos int)`, `radar_jobs_programar_salud() RETURNS int`; helpers de test `crear_worker_directo(db, nombre="w1", engine="NOWEB", max_sesiones=50, disco_max_gb=10) -> uuid.UUID`, `crear_consentimiento_directo(db, tenant_id, line_id, user_id) -> uuid.UUID`, `crear_link_directo(db, tenant_id, line_id, worker_id, consent_id, estado="esperando_qr", caido_desde=None, restriccion_hasta=None) -> uuid.UUID`.
+- Produces: tablas `waha_workers`, `links`, `link_status_events`, `jobs`; columnas `consents.modo|cargado_por|modo_asistencia|aceptado_por_nombre` y `lines.borrado_solicitado_at`; funciones `radar_admin_ocupacion_workers() RETURNS TABLE (worker_id uuid, nombre text, base_url text, engine text, max_sesiones int, disco_max_gb numeric, disco_usado_gb numeric, activo bool, sesiones int)`, `radar_admin_consola_lineas() RETURNS TABLE (tenant_id uuid, tenant_nombre text, line_id uuid, line_nombre text, line_estado text, link_id uuid, link_estado text, waha_status text, numero_sufijo text, observado_hasta timestamptz, restriccion_hasta timestamptz, restriccion_sin_fecha bool, caido_desde timestamptz, ultimo_status_at timestamptz, engine text, worker_nombre text, worker_max_sesiones int, worker_sesiones int)`, `radar_jobs_reclamar(p_lote int, p_lease_s int) RETURNS TABLE (id uuid, tenant_id uuid, tipo text, link_id uuid, causa text, intentos int)`, `radar_jobs_programar_salud() RETURNS int` (incluye los vínculos en `creando`); `GRANT UPDATE` por columna (`UPDATES_POR_COLUMNA`) en `waha_workers`, `links` y `jobs`, y sobre `lines.borrado_solicitado_at`; helpers de test `como_superusuario(radar_urls, sql, *args)`, `crear_worker_directo(db, nombre="w1", engine="NOWEB", max_sesiones=50, disco_max_gb=10) -> uuid.UUID`, `crear_consentimiento_directo(db, tenant_id, line_id, user_id) -> uuid.UUID`, `crear_link_directo(db, tenant_id, line_id, worker_id, consent_id, estado="esperando_qr", caido_desde=None, restriccion_hasta=None) -> uuid.UUID`.
 
 - [ ] **Step 1: Helpers de test**
 
-En `tests/radar_tests/helpers.py`, sumar a los imports `from datetime import datetime`, `from typing import Optional`, `from app.radar.constantes import TENANT_KIS` y `from app.radar.consentimiento import hash_texto`, y agregar al final:
+En `tests/radar_tests/helpers.py`, sumar a los imports `import asyncpg`, `from datetime import datetime`, `from typing import Optional`, `from app.radar.constantes import TENANT_KIS` y `from app.radar.consentimiento import hash_texto`, y agregar al final:
 
 ```python
+async def como_superusuario(radar_urls: dict, sql: str, *args) -> None:
+    """Para tests: escribe columnas que radar_app no puede actualizar (created_at,
+    max_intentos). No sirve el migrator: con FORCE RLS no ve filas."""
+    con = await asyncpg.connect(radar_urls["super"])
+    try:
+        await con.execute(sql, *args)
+    finally:
+        await con.close()
+
+
 async def crear_worker_directo(db: RadarDB, nombre: str = "w1", engine: str = "NOWEB",
                                max_sesiones: int = 50, disco_max_gb: int = 10) -> uuid.UUID:
     async with db.tenant_tx(TENANT_KIS) as con:
@@ -421,7 +452,7 @@ import pytest
 from app.radar.constantes import TENANT_KIS
 
 from .helpers import (crear_consentimiento_directo, crear_link_directo, crear_linea_directa, crear_tenant_directo,
-                      crear_usuario, crear_worker_directo)
+                      crear_usuario, crear_worker_directo, como_superusuario)
 
 NUEVAS = ("waha_workers", "links", "link_status_events", "jobs")
 
@@ -545,13 +576,14 @@ async def test_radar_app_no_borra_vinculos_ni_jobs(radar_db):
                 await con.execute(sql)
 
 
-async def test_consola_devuelve_el_ultimo_vinculo_de_cada_linea(radar_db):
+async def test_consola_devuelve_el_ultimo_vinculo_de_cada_linea(radar_db, radar_urls):
     t, _, li, c = await _base(radar_db, "Farmacia A")
     w = await crear_worker_directo(radar_db)
     viejo = await crear_link_directo(radar_db, t, li, w, c, estado="caido")
-    async with radar_db.tenant_tx(t) as con:
-        await con.execute("UPDATE links SET estado = 'cerrado', created_at = now() - interval '1 day' WHERE id = $1",
-                          viejo)
+    # created_at no es actualizable por radar_app (y el migrator, con FORCE RLS,
+    # no ve filas): se envejece con el superusuario.
+    await como_superusuario(radar_urls, "UPDATE links SET estado = 'cerrado', "
+                                        "created_at = now() - interval '1 day' WHERE id = $1", viejo)
     nuevo = await crear_link_directo(radar_db, t, li, w, c, estado="vinculado",
                                      restriccion_hasta=datetime.now(timezone.utc) + timedelta(days=2))
     async with radar_db.sin_tenant() as con:
@@ -560,6 +592,26 @@ async def test_consola_devuelve_el_ultimo_vinculo_de_cada_linea(radar_db):
     f = filas[0]
     assert (f["tenant_nombre"], f["line_id"], f["link_id"], f["link_estado"]) == ("Farmacia A", li, nuevo, "vinculado")
     assert f["worker_nombre"] == "w1" and f["worker_sesiones"] == 1 and f["restriccion_hasta"] is not None
+
+
+async def test_grant_update_no_alcanza_columnas_de_identidad(radar_db):
+    t, _, li, c = await _base(radar_db)
+    w = await crear_worker_directo(radar_db)
+    k = await crear_link_directo(radar_db, t, li, w, c)
+    async with radar_db.tenant_tx(t) as con:          # lo que sí se actualiza
+        await con.execute("INSERT INTO jobs (tipo, link_id) VALUES ('fin_vinculo', $1)", k)
+        await con.execute("UPDATE jobs SET estado = 'corriendo', intentos = 1 WHERE link_id = $1", k)
+        await con.execute("UPDATE links SET estado = 'vinculado', numero_sufijo = '1234' WHERE id = $1", k)
+        await con.execute("UPDATE lines SET borrado_solicitado_at = now() WHERE id = $1", li)
+    async with radar_db.tenant_tx(TENANT_KIS) as con:
+        await con.execute("UPDATE waha_workers SET disco_usado_gb = 1 WHERE id = $1", w)
+    prohibidos = [(t, "UPDATE links SET line_id = line_id"), (t, "UPDATE links SET consent_id = consent_id"),
+                  (t, "UPDATE links SET session_name = session_name"), (t, "UPDATE jobs SET link_id = link_id"),
+                  (t, "UPDATE jobs SET tipo = tipo"), (TENANT_KIS, "UPDATE waha_workers SET engine = engine")]
+    for tenant, sql in prohibidos:
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            async with radar_db.tenant_tx(tenant) as con:
+                await con.execute(sql)
 ```
 
 En `tests/radar_tests/test_esquema.py`, reemplazar la constante por:
@@ -604,7 +656,7 @@ Create Date: 2026-09-23
 """
 from alembic import op
 
-from app.radar.constantes import TENANT_KIS_STR
+from app.radar.constantes import CAUSAS_FIN, ESTADOS_LINK, TENANT_KIS_STR
 from app.radar.rls_sql import definir_funcion_admin, grants_app, politica_por_tenant
 
 revision = "r0003"
@@ -614,11 +666,26 @@ depends_on = None
 
 # Sin DELETE en nada: vínculos, eventos y jobs son evidencia operativa.
 GRANTS = {
-    "waha_workers": "SELECT, INSERT, UPDATE",
-    "links": "SELECT, INSERT, UPDATE",
+    "waha_workers": "SELECT, INSERT",
+    "links": "SELECT, INSERT",
     "link_status_events": "SELECT, INSERT",
-    "jobs": "SELECT, INSERT, UPDATE",
+    "jobs": "SELECT, INSERT",
 }
+# Columnas actualizables por radar_app, con el criterio de r0002: nunca id,
+# tenant_id, identidad, FK de pertenencia ni created_at. El motor de un worker
+# no cambia (cambiarlo es un worker nuevo, §6.2); un vínculo no cambia de línea,
+# worker, consentimiento ni sesión; un job no cambia de tipo, link ni causa.
+UPDATES_POR_COLUMNA = {
+    "waha_workers": "base_url, max_sesiones, disco_max_gb, disco_usado_gb, activo, updated_at",
+    "links": ("estado, waha_status, qr_reinicios, key_id, numero_sufijo, conectado_at, caido_desde, "
+              "ultimo_status_at, ultimo_chequeo_at, observado_hasta, restriccion_hasta, restriccion_sin_fecha, "
+              "fin_causa, fin_resultado, desvinculo_confirmado, updated_at, cerrado_at"),
+    "jobs": "estado, intentos, ejecutar_desde, bloqueado_hasta, ultimo_error, updated_at",
+}
+# Listas de los CHECK derivadas de las constantes (como TENANT_KIS_STR en
+# r0002), para que el esquema y el código no se separen.
+_ESTADOS = "(" + ", ".join(f"'{e}'" for e in ESTADOS_LINK) + ")"
+_CAUSAS = "(" + ", ".join(f"'{c}'" for c in CAUSAS_FIN) + ")"
 # Estados en los que la sesión existe en WAHA y ocupa lugar en el worker.
 _CON_SESION = "('creando', 'esperando_qr', 'vinculado', 'caido', 'cerrando')"
 
@@ -663,8 +730,7 @@ def upgrade() -> None:
             session_name          TEXT NOT NULL UNIQUE CHECK (session_name ~ '^v_[0-9a-f]{12}$'),
             engine                TEXT NOT NULL CHECK (engine IN ('NOWEB', 'GOWS')),
             full_sync             BOOLEAN NOT NULL DEFAULT FALSE,
-            estado                TEXT NOT NULL DEFAULT 'creando' CHECK (estado IN
-                                  ('creando', 'esperando_qr', 'vinculado', 'caido', 'cerrando', 'cerrado', 'abortado')),
+            estado                TEXT NOT NULL DEFAULT 'creando' CHECK (estado IN """ + _ESTADOS + """),
             waha_status           TEXT NULL CHECK (waha_status ~ '^[A-Z_]{1,40}$'),
             qr_reinicios          INTEGER NOT NULL DEFAULT 0 CHECK (qr_reinicios BETWEEN 0 AND 3),
             key_id                TEXT NULL CHECK (key_id ~ '^[A-Za-z0-9_-]{1,80}$'),
@@ -677,8 +743,7 @@ def upgrade() -> None:
             observado_hasta       TIMESTAMPTZ NULL,
             restriccion_hasta     TIMESTAMPTZ NULL,
             restriccion_sin_fecha BOOLEAN NOT NULL DEFAULT FALSE,
-            fin_causa             TEXT NULL CHECK (fin_causa IN ('duracion', 'pedido_dueno', 'pedido_kis',
-                                  'caida_72h', 'migracion_api', 'baja', 'reemplazado', 'qr_abandonado')),
+            fin_causa             TEXT NULL CHECK (fin_causa IN """ + _CAUSAS + """),
             fin_resultado         JSONB NULL CHECK (fin_resultado IS NULL OR (
                                       jsonb_typeof(fin_resultado) = 'object'
                                       AND NOT jsonb_path_exists(fin_resultado,
@@ -708,7 +773,7 @@ def upgrade() -> None:
         CREATE TABLE jobs (
             id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             tenant_id       UUID NOT NULL DEFAULT radar_tenant_actual() REFERENCES tenants(id),
-            tipo            TEXT NOT NULL CHECK (tipo IN ('fin_vinculo', 'chequeo_salud')),
+            tipo            TEXT NOT NULL CHECK (tipo IN ('fin_vinculo', 'chequeo_salud', 'aviso_caida')),
             link_id         UUID NOT NULL REFERENCES links(id),
             causa           TEXT NULL CHECK (causa ~ '^[a-z_]{1,40}$'),
             estado          TEXT NOT NULL DEFAULT 'pendiente'
@@ -729,6 +794,12 @@ def upgrade() -> None:
     for tabla, privilegios in GRANTS.items():
         op.execute(politica_por_tenant(tabla))
         op.execute(grants_app(tabla, privilegios))
+        columnas = UPDATES_POR_COLUMNA.get(tabla)
+        if columnas:
+            op.execute(f"GRANT UPDATE ({columnas}) ON {tabla} TO radar_app;")
+    # Columna nueva de lines: el GRANT UPDATE por columna de r0002 no la incluye
+    # y sin esto "Desconectar y borrar todo" falla con InsufficientPrivilege.
+    op.execute("GRANT UPDATE (borrado_solicitado_at) ON lines TO radar_app;")
     op.execute("GRANT USAGE ON SEQUENCE link_status_events_id_seq TO radar_app;")
 
     # radar_admin lee entre tenants solo lo que necesitan las funciones de abajo.
@@ -813,7 +884,7 @@ def upgrade() -> None:
                 WITH nuevos AS (
                     INSERT INTO jobs (tenant_id, tipo, link_id)
                     SELECT l.tenant_id, 'chequeo_salud', l.id FROM links l
-                     WHERE l.estado IN ('esperando_qr', 'vinculado', 'caido')
+                     WHERE l.estado IN ('creando', 'esperando_qr', 'vinculado', 'caido')
                     ON CONFLICT DO NOTHING
                     RETURNING 1)
                 SELECT count(*)::int FROM nuevos
@@ -834,6 +905,7 @@ def downgrade() -> None:
         ALTER TABLE consents DROP CONSTRAINT IF EXISTS consents_asistido_completo,
             DROP COLUMN IF EXISTS aceptado_por_nombre, DROP COLUMN IF EXISTS modo_asistencia,
             DROP COLUMN IF EXISTS cargado_por, DROP COLUMN IF EXISTS modo;
+        REVOKE UPDATE (borrado_solicitado_at) ON lines FROM radar_app;
         ALTER TABLE lines DROP COLUMN IF EXISTS borrado_solicitado_at;
     """)
 ```
@@ -843,7 +915,7 @@ def downgrade() -> None:
 ```bash
 python -m pytest tests/radar_tests -q
 ```
-Esperado: todo verde; `test_vinculos_esquema.py` suma 11 y `test_esquema.py` sigue en 12 (con las tablas nuevas en `TABLAS_TENANT`, y `test_sin_columnas_de_conversacion_ni_identificadores_de_whatsapp` pasa sobre las columnas nuevas).
+Esperado: todo verde; `test_vinculos_esquema.py` suma 12 y `test_esquema.py` sigue en 14 (con las tablas nuevas en `TABLAS_TENANT`, y `test_sin_columnas_de_conversacion_ni_identificadores_de_whatsapp` pasa sobre las columnas nuevas).
 
 - [ ] **Step 6: Commit**
 
@@ -2479,8 +2551,8 @@ import uuid
 
 from app.radar import jobs as cola
 
-from .helpers import (crear_consentimiento_directo, crear_link_directo, crear_linea_directa, crear_tenant_directo,
-                      crear_usuario, crear_worker_directo)
+from .helpers import (como_superusuario, crear_consentimiento_directo, crear_link_directo, crear_linea_directa,
+                      crear_tenant_directo, crear_usuario, crear_worker_directo)
 
 
 async def _link(db, worker_id, estado="vinculado", nombre="A"):
@@ -2533,15 +2605,16 @@ async def test_lease_vencido_se_vuelve_a_reclamar(radar_db):
     assert otra_vez.id == jid and otra_vez.intentos == 2
 
 
-async def test_fallar_con_backoff_y_fallido_al_tope(radar_db):
+async def test_fallar_con_backoff_y_fallido_al_tope(radar_db, radar_urls):
     t, k = await _link(radar_db, await crear_worker_directo(radar_db))
     async with radar_db.tenant_tx(t) as con:
         jid = await cola.encolar(con, tipo="fin_vinculo", link_id=k)
     [job] = await cola.reclamar(radar_db)
     assert await cola.fallar(radar_db, job, RuntimeError("x")) == "pendiente"
     assert (await _job(radar_db, t, jid))["falta"].total_seconds() > 25
-    async with radar_db.tenant_tx(t) as con:
-        await con.execute("UPDATE jobs SET ejecutar_desde = now(), max_intentos = 2 WHERE id = $1", jid)
+    # max_intentos no es actualizable por radar_app (GRANT por columna de r0003).
+    await como_superusuario(radar_urls, "UPDATE jobs SET ejecutar_desde = now(), max_intentos = 2 WHERE id = $1",
+                            jid)
     [job] = await cola.reclamar(radar_db)
     assert await cola.fallar(radar_db, job, RuntimeError("x")) == "fallido"
 
@@ -2574,11 +2647,12 @@ async def test_programar_salud_solo_vinculos_vivos(radar_db):
     w = await crear_worker_directo(radar_db)
     t = await crear_tenant_directo(radar_db)
     u = await crear_usuario(radar_db, t, "dueno@cliente.com", "dueno")
-    for i, estado in enumerate(("esperando_qr", "vinculado", "caido", "cerrado")):
+    # 'creando' entra: un vínculo huérfano en 'creando' lo destraba el chequeo de salud.
+    for i, estado in enumerate(("creando", "esperando_qr", "vinculado", "caido", "cerrado")):
         li = await crear_linea_directa(radar_db, t, f"Línea {i}")
         c = await crear_consentimiento_directo(radar_db, t, li, u)
         await crear_link_directo(radar_db, t, li, w, c, estado=estado)
-    assert await cola.programar_salud(radar_db) == 3
+    assert await cola.programar_salud(radar_db) == 4
     assert await cola.programar_salud(radar_db) == 0
 
 
@@ -2717,7 +2791,7 @@ git commit -m "Radar tramo 2: cola de jobs en Postgres con SKIP LOCKED, lease y 
 
 **Interfaces:**
 - Consumes: `auditoria.registrar`, `eventos_producto.registrar_evento`, `jobs.encolar`, `normalizar_e164`, `TelefonoNoSoportado`, `transicion`, `Transicion`, `sufijo_de`, `restriccion_activa`, `ACTIVOS`, `VIVOS`, `MAX_REINICIOS_QR`, `SIN_EVENTOS_POLLING`, `PATRON_STATUS`, `cuerpo_sesion`, `nombre_sesion`, `crear_sesion_verificada`, `crear_clave_lectura`, `terminar_sesion`, `ConfigNoCoincide`, `WahaError`, `elegir_worker`, `leer_worker`, `cliente_de`, `SinCapacidad`, `ClaveAdminAusente`, `nombre_clave_lectura`.
-- Produces: `VinculoRechazado(Exception)` (`.status: int`, `.codigo: str`); `COLUMNAS_LINK`; `async ultimo_link(con, line_id) -> dict | None`; `estado_json(link, *, linea_nombre, tiene_consentimiento, ahora) -> dict` (claves `linea_nombre, tiene_consentimiento, link_id, estado, waha_status, qr_disponible, qr_vencido, passkey, reinicios_restantes, numero, restriccion_activa, restriccion_hasta, caido_desde, conectado_at, fin_causa, desvinculo_confirmado`); `async aplicar_status(con, *, tenant_id, link_id, waha_status: str, origen: str, me_id: str | None = None) -> dict` (`{aplicado, estado_anterior, estado, efectos}`); `async iniciar_vinculo(ctx, *, tenant_id, line_id, actor_user_id, actor_rol, ip, full_sync=False) -> dict`; `async estado_de_linea(ctx, *, tenant_id, line_id) -> dict`; `async qr_png(ctx, *, tenant_id, line_id) -> bytes`; `async reiniciar_qr(ctx, *, tenant_id, line_id, actor_user_id, actor_rol, ip) -> dict`; `async pedir_codigo(ctx, *, tenant_id, line_id, telefono, actor_user_id, actor_rol, ip) -> str`; `async pedir_fin(ctx, *, tenant_id, line_id, causa: Literal["pedido_kis","pedido_dueno"], borrar: bool, actor_user_id, actor_rol, ip) -> dict`; `async marcar_restriccion(ctx, *, tenant_id, line_id, hasta: datetime | None, actor_user_id, actor_rol, ip) -> dict`; `async levantar_restriccion(ctx, *, tenant_id, line_id, actor_user_id, actor_rol, ip) -> dict`. Códigos de `VinculoRechazado`: `404 linea_inexistente`, `409 linea_de_baja|sin_consentimiento|vinculo_activo|restriccion_activa|sin_qr|sin_reinicios|sin_vinculo`, `422 telefono_invalido`, `502 config_no_coincide|waha_error|codigo_no_disponible`, `404 qr_no_disponible`, `503 waha_sin_configurar|sin_capacidad`. Helpers de test `escenario_vinculable(ctx, nombre="Farmacia A") -> dict` (`tenant_id, dueno_id, dueno_email, line_id, consent_id`) y `vincular_de_prueba(ctx, waha, esc, *, working=True) -> dict` (`link_id, session_name`).
+- Produces: `VinculoRechazado(Exception)` (`.status: int`, `.codigo: str`); `COLUMNAS_LINK`; `async ultimo_link(con, line_id) -> dict | None`; `estado_json(link, *, linea_nombre, tiene_consentimiento, ahora) -> dict` (claves `linea_nombre, tiene_consentimiento, link_id, estado, waha_status, qr_disponible, qr_vencido, passkey, reinicios_restantes, numero, restriccion_activa, restriccion_hasta, caido_desde, conectado_at, fin_causa, desvinculo_confirmado`); `async aplicar_status(con, *, tenant_id, link_id, waha_status: str, origen: str, me_id: str | None = None) -> dict` (`{aplicado, estado_anterior, estado, efectos}`); `async iniciar_vinculo(ctx, *, tenant_id, line_id, actor_user_id, actor_rol, ip, full_sync=False) -> dict`; `async estado_de_linea(ctx, *, tenant_id, line_id) -> dict`; `async qr_png(ctx, *, tenant_id, line_id) -> bytes`; `async reiniciar_qr(ctx, *, tenant_id, line_id, actor_user_id, actor_rol, ip) -> dict`; `async pedir_codigo(ctx, *, tenant_id, line_id, telefono, actor_user_id, actor_rol, ip) -> str`; `async pedir_fin(ctx, *, tenant_id, line_id, causa: Literal["pedido_kis","pedido_dueno"], borrar: bool, actor_user_id, actor_rol, ip) -> dict`; `async marcar_restriccion(ctx, *, tenant_id, line_id, hasta: datetime | None, actor_user_id, actor_rol, ip) -> dict`; `async levantar_restriccion(ctx, *, tenant_id, line_id, actor_user_id, actor_rol, ip) -> dict`. Códigos de `VinculoRechazado`: `404 linea_inexistente`, `409 linea_de_baja|sin_consentimiento|vinculo_activo|restriccion_activa|sin_qr|sin_reinicios|sin_vinculo`, `422 telefono_invalido`, `502 config_no_coincide|waha_error|codigo_no_disponible`, `404 qr_no_disponible`, `503 waha_sin_configurar|sin_capacidad` (`sin_vinculo` es 409 tanto en `pedir_fin` como en `marcar_restriccion`; `reiniciar_qr` responde `409 restriccion_activa` sin llamar a WAHA). `aplicar_status` encola un job `aviso_caida` cuando el efecto `caida` sale de un vínculo `vinculado`. Helpers de test `escenario_vinculable(ctx, nombre="Farmacia A") -> dict` (`tenant_id, dueno_id, dueno_email, line_id, consent_id`) y `vincular_de_prueba(ctx, waha, esc, *, working=True) -> dict` (`link_id, session_name`).
 
 - [ ] **Step 1: Helpers de test**
 
@@ -2972,6 +3046,43 @@ async def test_marcar_y_levantar_restriccion(ctx_waha, waha):
     audit = await _fila(ctx_waha, esc, "SELECT count(*) AS n FROM access_audit_log "
                                        "WHERE accion IN ('restriccion_marcada', 'restriccion_levantada')")
     assert audit["n"] == 2
+    otro = await escenario_vinculable(ctx_waha, "Farmacia B")
+    e = await _rechazo(marcar_restriccion(ctx_waha, hasta=None, **_actor(otro)))
+    assert (e.status, e.codigo) == (409, "sin_vinculo")
+
+
+async def test_con_restriccion_activa_no_se_reinicia_el_qr(ctx_waha, waha):
+    esc = await escenario_vinculable(ctx_waha)
+    await _iniciar(ctx_waha, esc)
+    await marcar_restriccion(ctx_waha, hasta=datetime.now(timezone.utc) + timedelta(days=1), **_actor(esc))
+    waha.llamadas.clear()
+    e = await _rechazo(reiniciar_qr(ctx_waha, **_actor(esc)))
+    assert (e.status, e.codigo) == (409, "restriccion_activa")
+    assert not any(x.endswith("/restart") for x in waha.llamadas)
+    fila = await _fila(ctx_waha, esc, "SELECT qr_reinicios FROM links WHERE line_id = $1", esc["line_id"])
+    assert fila["qr_reinicios"] == 0
+
+
+async def test_caida_de_un_vinculado_encola_el_aviso_y_la_de_uno_que_cierra_no(ctx_waha, waha):
+    esc = await escenario_vinculable(ctx_waha)
+    v = await vincular_de_prueba(ctx_waha, waha, esc)
+    async with ctx_waha.db.tenant_tx(esc["tenant_id"]) as con:
+        r = await aplicar_status(con, tenant_id=esc["tenant_id"], link_id=v["link_id"], waha_status="FAILED",
+                                 origen="webhook")
+        await aplicar_status(con, tenant_id=esc["tenant_id"], link_id=v["link_id"], waha_status="FAILED",
+                             origen="webhook")                       # caído → caído: no repite el aviso
+    assert (r["estado_anterior"], r["estado"]) == ("vinculado", "caido")
+    avisos = await _fila(ctx_waha, esc, "SELECT count(*) AS n FROM jobs WHERE tipo = 'aviso_caida' "
+                                        "AND link_id = $1", v["link_id"])
+    assert avisos["n"] == 1
+    otro = await escenario_vinculable(ctx_waha, "Farmacia B")
+    w = await vincular_de_prueba(ctx_waha, waha, otro)
+    async with ctx_waha.db.tenant_tx(otro["tenant_id"]) as con:
+        await con.execute("UPDATE links SET estado = 'cerrando' WHERE id = $1", w["link_id"])
+        await aplicar_status(con, tenant_id=otro["tenant_id"], link_id=w["link_id"], waha_status="FAILED",
+                             origen="webhook")
+        n = await con.fetchval("SELECT count(*) FROM jobs WHERE tipo = 'aviso_caida' AND link_id = $1", w["link_id"])
+    assert n == 0
 ```
 
 - [ ] **Step 3: Correr y ver la falla**
@@ -3130,6 +3241,12 @@ async def aplicar_status(con: asyncpg.Connection, *, tenant_id: uuid.UUID, link_
     if "abandonar" in efectos:
         await con.execute("UPDATE links SET fin_causa = COALESCE(fin_causa, 'qr_abandonado') WHERE id = $1", link_id)
         await cola.encolar(con, tipo="fin_vinculo", link_id=link_id, causa="qr_abandonado")
+    if "caida" in efectos and link["estado"] == "vinculado":
+        # Estados especiales, "Vínculo caído": banner con fecha y email al dueño.
+        # El mail sale fuera de esta transacción, desde el job aviso_caida
+        # (fin_vinculo.avisar_caida). Un vínculo en `cerrando` nunca llega acá:
+        # la máquina de estados lo ignora.
+        await cola.encolar(con, tipo="aviso_caida", link_id=link_id)
     return {"aplicado": True, "estado_anterior": link["estado"], "estado": t.estado, "efectos": sorted(efectos)}
 
 
@@ -3267,6 +3384,12 @@ async def reiniciar_qr(ctx: RadarContexto, *, tenant_id: uuid.UUID, line_id: uui
     link = await _link_en_qr(ctx, tenant_id, line_id)
     if link["qr_reinicios"] >= MAX_REINICIOS_QR:
         raise VinculoRechazado(409, "sin_reinicios")
+    # Estados especiales, Restricción: mientras esté activa el sistema no
+    # reinicia la sesión (se puede marcar con el vínculo en esperando_qr).
+    async with ctx.db.tenant_tx(tenant_id) as con:
+        ahora = await con.fetchval("SELECT now()")
+    if restriccion_activa(link["restriccion_hasta"], link["restriccion_sin_fecha"], ahora):
+        raise VinculoRechazado(409, "restriccion_activa")
     try:
         worker = await leer_worker(ctx, link["worker_id"])
         async with cliente_de(ctx, worker) as cli:
@@ -3337,7 +3460,7 @@ async def marcar_restriccion(ctx: RadarContexto, *, tenant_id: uuid.UUID, line_i
     async with ctx.db.tenant_tx(tenant_id) as con:
         _, _, link, _ = await _leer_estado(con, line_id)
         if link is None:
-            raise VinculoRechazado(404, "sin_vinculo")
+            raise VinculoRechazado(409, "sin_vinculo")   # 409 como en pedir_fin: la línea existe
         await con.execute("UPDATE links SET restriccion_hasta = $2, restriccion_sin_fecha = ($2::timestamptz IS NULL), "
                           "updated_at = now() WHERE id = $1", link["id"], hasta)
         await auditoria.registrar(con, tenant_id=tenant_id, actor_user_id=actor_user_id, actor_rol=actor_rol,
@@ -3361,7 +3484,7 @@ async def levantar_restriccion(ctx: RadarContexto, *, tenant_id: uuid.UUID, line
 ```bash
 python -m pytest tests/radar_tests/test_vinculos.py -q
 ```
-Esperado: `15 passed`.
+Esperado: `17 passed`.
 
 - [ ] **Step 6: Commit**
 
@@ -3380,7 +3503,7 @@ git commit -m "Radar tramo 2: servicio de vinculos con consentimiento, admision,
 
 **Interfaces:**
 - Consumes: `Job`, `jobs.reclamar`, `jobs.encolar`, `terminar_sesion`, `leer_worker`, `cliente_de`, `nombre_clave_lectura`, `restriccion_activa`, `ACTIVOS`, `auditoria.registrar`, `eventos_producto.registrar_evento`, `Email`, `RadarContexto.mailer`, `pedir_fin`, `marcar_restriccion`, `aplicar_status`.
-- Produces: `FinIncompleto(RuntimeError)`; `ESPERA_START_S = 180.0`; `INTERVALO_START_S = 5.0`; `SIN_AVISO = ("reemplazado", "qr_abandonado")`; `ASUNTO_AVISO`, `TEXTO_AVISO`; `async ejecutar(ctx, job: Job, *, espera_start_s: float = ESPERA_START_S, intervalo_s: float = INTERVALO_START_S) -> Literal["hecho"]` (lanza `FinIncompleto` si la sesión no quedó borrada o quedan claves).
+- Produces: `FinIncompleto(RuntimeError)`; `ESPERA_START_S = 180.0`; `INTERVALO_START_S = 5.0`; `SIN_AVISO = ("reemplazado", "qr_abandonado")`; `ASUNTO_AVISO`, `TEXTO_AVISO`; `async ejecutar(ctx, job: Job, *, espera_start_s: float = ESPERA_START_S, intervalo_s: float = INTERVALO_START_S) -> Literal["hecho"]` (lanza `FinIncompleto` si la sesión no quedó borrada o quedan claves; un mail que falla no lo hace fallar y el evento `vinculo_cerrado` lleva `aviso_enviado` 0/1); `HORA_ARGENTINA`, `ASUNTO_CAIDA`, `TEXTO_CAIDA`; `async avisar_caida(ctx, job: Job) -> Literal["hecho"]` (handler del job `aviso_caida`: email al dueño con la fecha DD/MM de `caido_desde`, solo si el vínculo sigue `caido`).
 
 - [ ] **Step 1: Tests (fallan)**
 
@@ -3402,7 +3525,7 @@ from app.radar.fin_vinculo import FinIncompleto
 from app.radar.vinculos import aplicar_status, marcar_restriccion, pedir_fin
 from app.radar.workers import nombre_clave_lectura
 
-from .helpers import escenario_vinculable, vincular_de_prueba
+from .helpers import MailerQueFalla, escenario_vinculable, vincular_de_prueba
 
 
 async def _job_fin(ctx):
@@ -3517,6 +3640,51 @@ async def test_status_de_un_vinculo_que_cierra_se_ignora(ctx_waha, waha):
     assert r["aplicado"] is False
     link = await _fila(ctx_waha, esc, "SELECT estado FROM links WHERE id = $1", v["link_id"])
     assert link["estado"] == "cerrando"
+
+
+async def test_mail_que_falla_no_rompe_el_fin(ctx_waha, waha):
+    esc = await escenario_vinculable(ctx_waha)
+    v = await vincular_de_prueba(ctx_waha, waha, esc)
+    await _pedir(ctx_waha, esc)
+    ctx_waha.mailer = MailerQueFalla()
+    assert await fin_vinculo.ejecutar(ctx_waha, await _job_fin(ctx_waha)) == "hecho"
+    link = await _fila(ctx_waha, esc, "SELECT estado FROM links WHERE id = $1", v["link_id"])
+    assert link["estado"] == "cerrado"
+    ev = await _fila(ctx_waha, esc, "SELECT valores::text AS v FROM product_events WHERE evento = 'vinculo_cerrado'")
+    assert json.loads(ev["v"])["aviso_enviado"] == 0
+
+
+async def _caer(ctx, esc, v):
+    async with ctx.db.tenant_tx(esc["tenant_id"]) as con:
+        await aplicar_status(con, tenant_id=esc["tenant_id"], link_id=v["link_id"], waha_status="FAILED",
+                             origen="webhook")
+        await con.execute("UPDATE links SET caido_desde = '2026-09-20 15:00:00+00' WHERE id = $1", v["link_id"])
+    return next(j for j in await cola.reclamar(ctx.db) if j.tipo == "aviso_caida")
+
+
+async def test_aviso_de_caida_con_la_fecha(ctx_waha, waha):
+    esc = await escenario_vinculable(ctx_waha)
+    v = await vincular_de_prueba(ctx_waha, waha, esc)
+    job = await _caer(ctx_waha, esc, v)
+    antes = len(ctx_waha.mailer.enviados)
+    assert await fin_vinculo.avisar_caida(ctx_waha, job) == "hecho"
+    [mail] = ctx_waha.mailer.enviados[antes:]
+    assert mail.para == esc["dueno_email"] and "el 20/09" in mail.texto and "Reconectar" in mail.texto
+    assert "4567" not in mail.texto
+
+
+async def test_aviso_de_caida_no_sale_si_ya_reconecto_ni_rompe_si_falla_el_mail(ctx_waha, waha):
+    esc = await escenario_vinculable(ctx_waha)
+    v = await vincular_de_prueba(ctx_waha, waha, esc)
+    job = await _caer(ctx_waha, esc, v)
+    ctx_waha.mailer = MailerQueFalla()
+    assert await fin_vinculo.avisar_caida(ctx_waha, job) == "hecho"      # falla el proveedor: no relanza
+    async with ctx_waha.db.tenant_tx(esc["tenant_id"]) as con:
+        await aplicar_status(con, tenant_id=esc["tenant_id"], link_id=v["link_id"], waha_status="WORKING",
+                             origen="webhook", me_id=waha.me_id)
+    ctx_waha.mailer = MailerQueFalla(falla_si="nunca")
+    assert await fin_vinculo.avisar_caida(ctx_waha, job) == "hecho"
+    assert ctx_waha.mailer.enviados == []
 ```
 
 - [ ] **Step 2: Correr y ver la falla**
@@ -3551,6 +3719,7 @@ Nuestra base no se toca (tramo 6).
 
 import json
 import logging
+from datetime import timedelta, timezone
 from typing import Literal
 
 from app.radar import auditoria, eventos_producto
@@ -3573,6 +3742,14 @@ TEXTO_AVISO = (
     "Las credenciales ya fueron destruidas y no se puede volver a usar.\n\n"
     "Conservamos el tablero y las conversaciones ya importadas según la configuración de la línea. "
     "Para borrarlas, usá «Desconectar y borrar todo».\n\n{url}\n"
+)
+# Aviso de caída (Estados especiales): solo la fecha, ningún dato de conversación.
+HORA_ARGENTINA = timezone(timedelta(hours=-3))   # sin horario de verano; no depende de tzdata
+ASUNTO_CAIDA = "Tu WhatsApp se desconectó de Radar"
+TEXTO_CAIDA = (
+    "Tu WhatsApp se desconectó de Radar el {fecha}.\n\n"
+    "Entrá a Radar y tocá «Reconectar» para volver a vincularlo. Si no se reconecta en 72 horas, "
+    "cerramos el vínculo y borramos la sesión de conexión.\n\n{url}\n"
 )
 
 
@@ -3622,20 +3799,53 @@ async def ejecutar(ctx: RadarContexto, job: Job, *, espera_start_s: float = ESPE
             await auditoria.registrar(con, tenant_id=job.tenant_id, actor_user_id=None, actor_rol="sistema",
                                       accion="vinculo_cerrado", tipo_objeto="link", objeto_id=link["id"],
                                       detalle={"causa": causa, "ok": True})
-            await eventos_producto.registrar_evento(
-                con, tenant_id=job.tenant_id, evento="vinculo_cerrado", line_id=link["line_id"], objeto_id=link["id"],
-                valores={"desvinculo_confirmado": 1 if res["desvinculo_confirmado"] else 0})
             if causa not in SIN_AVISO:
-                duenos = [f["email"] for f in await con.fetch(
-                    "SELECT u.email FROM memberships m JOIN users u ON u.id = m.user_id WHERE m.rol = 'dueno'")]
+                duenos = await _emails_duenos(con)
     if not ok:
         logger.warning("ALERTA fin de vínculo %s incompleto: sesión borrada=%s, error de claves=%s",
                        link["id"], res["sesion_borrada"], res["error_claves"])
         raise FinIncompleto("fin de vínculo incompleto; se reintenta")
+    # El vínculo ya está cerrado: un mail que falla no convierte el job en falla
+    # (el reintento no lo reenviaría, porque encuentra el vínculo cerrado).
     url = ctx.settings.public_base_url.rstrip("/") + "/radar/"
-    for email in duenos:
-        await ctx.mailer.enviar(Email(para=email, asunto=ASUNTO_AVISO, texto=TEXTO_AVISO.format(url=url),
-                                      huella="sin-token"))
+    enviados = await _avisar(ctx, duenos, ASUNTO_AVISO, TEXTO_AVISO.format(url=url), link["id"])
+    async with ctx.db.tenant_tx(job.tenant_id) as con:
+        await eventos_producto.registrar_evento(
+            con, tenant_id=job.tenant_id, evento="vinculo_cerrado", line_id=link["line_id"], objeto_id=link["id"],
+            valores={"desvinculo_confirmado": 1 if res["desvinculo_confirmado"] else 0,
+                     "aviso_enviado": 1 if enviados else 0})
+    return "hecho"
+
+
+async def _emails_duenos(con) -> list[str]:
+    return [f["email"] for f in await con.fetch(
+        "SELECT u.email FROM memberships m JOIN users u ON u.id = m.user_id WHERE m.rol = 'dueno'")]
+
+
+async def _avisar(ctx: RadarContexto, destinatarios: list[str], asunto: str, texto: str, link_id) -> int:
+    """Manda el aviso a cada destinatario sin relanzar (como enviar_link_seguro
+    del tramo 1). Devuelve cuántos salieron. Solo se loguea el tipo de error."""
+    enviados = 0
+    for email in destinatarios:
+        try:
+            await ctx.mailer.enviar(Email(para=email, asunto=asunto, texto=texto, huella="sin-token"))
+            enviados += 1
+        except Exception as e:
+            logger.warning("aviso del vínculo %s no enviado: %s", link_id, type(e).__name__)
+    return enviados
+
+
+async def avisar_caida(ctx: RadarContexto, job: Job) -> Literal["hecho"]:
+    """Job aviso_caida (Estados especiales, "Vínculo caído"): email al dueño con
+    la fecha de la caída. Si el vínculo ya se recuperó o está cerrando, no avisa."""
+    async with ctx.db.tenant_tx(job.tenant_id) as con:
+        link = await con.fetchrow("SELECT id, estado, caido_desde FROM links WHERE id = $1", job.link_id)
+        if link is None or link["estado"] != "caido" or link["caido_desde"] is None:
+            return "hecho"
+        duenos = await _emails_duenos(con)
+    fecha = link["caido_desde"].astimezone(HORA_ARGENTINA).strftime("%d/%m")
+    url = ctx.settings.public_base_url.rstrip("/") + "/radar/"
+    await _avisar(ctx, duenos, ASUNTO_CAIDA, TEXTO_CAIDA.format(fecha=fecha, url=url), link["id"])
     return "hecho"
 ```
 
@@ -3644,7 +3854,7 @@ async def ejecutar(ctx: RadarContexto, job: Job, *, espera_start_s: float = ESPE
 ```bash
 python -m pytest tests/radar_tests/test_fin_vinculo.py -q
 ```
-Esperado: `7 passed`.
+Esperado: `10 passed`.
 
 - [ ] **Step 5: Commit**
 
@@ -3662,8 +3872,8 @@ git commit -m "Radar tramo 2: job de fin de vinculo con un unico DELETE, claves 
 - Test: `tests/radar_tests/test_salud.py`
 
 **Interfaces:**
-- Consumes: `Job`, `jobs.encolar`, `aplicar_status`, `leer_worker`, `cliente_de`, `WahaError`, `ClaveAdminAusente`, `VIVOS`, `CAIDA_MAXIMA`, `QR_ABANDONADO`, `PATRON_STATUS`.
-- Produces: `INTERVALO_S = 300`; `async ejecutar(ctx, job: Job) -> Literal["reprogramar", "hecho"]`. Efectos: aplica el estado real de WAHA (origen `salud`; 404 → `AUSENTE`); encola `fin_vinculo` con causa `caida_72h` (caído hace más de 72 h), `qr_abandonado` (en `esperando_qr` hace más de 30 min) o `duracion` (`duracion_vinculo_dias > 0` cumplido desde `conectado_at`). Un error de red no cambia el estado.
+- Consumes: `Job`, `jobs.encolar`, `auditoria.registrar`, `aplicar_status`, `leer_worker`, `cliente_de`, `WahaError`, `ClaveAdminAusente`, `VIVOS`, `CAIDA_MAXIMA`, `QR_ABANDONADO`, `PATRON_STATUS`.
+- Produces: `INTERVALO_S = 300`; `CREANDO_HUERFANO = timedelta(minutes=15)`; `async ejecutar(ctx, job: Job) -> Literal["reprogramar", "hecho"]`. Efectos: aplica el estado real de WAHA (origen `salud`; 404 → `AUSENTE`); encola `fin_vinculo` con causa `caida_72h` (caído hace más de 72 h), `qr_abandonado` (en `esperando_qr` hace más de 30 min) o `duracion` (`duracion_vinculo_dias > 0` cumplido desde `conectado_at`). Un vínculo en `creando` con más de 15 min está huérfano: sin sesión en WAHA pasa a `abortado` (auditado `vinculo_abortado`, motivo `waha_error`) y libera la línea; con sesión se encola su fin con causa `qr_abandonado`. Uno en `creando` más reciente no se toca. Un error de red no cambia el estado.
 
 - [ ] **Step 1: Tests (fallan)**
 
@@ -3675,8 +3885,10 @@ import uuid
 
 from app.radar import salud
 from app.radar.jobs import Job
+from app.radar.waha.sesion import nombre_sesion
+from app.radar.workers import listar_workers
 
-from .helpers import escenario_vinculable, vincular_de_prueba
+from .helpers import como_superusuario, crear_link_directo, escenario_vinculable, vincular_de_prueba
 
 
 def _job(esc, link_id):
@@ -3733,11 +3945,11 @@ async def test_caida_reciente_no_encola(ctx_waha, waha):
     assert await _fin_encolado(ctx_waha, esc, v["link_id"]) is None
 
 
-async def test_qr_abandonado_encola_el_fin(ctx_waha, waha):
+async def test_qr_abandonado_encola_el_fin(ctx_waha, waha, radar_urls):
     esc = await escenario_vinculable(ctx_waha)
     v = await vincular_de_prueba(ctx_waha, waha, esc, working=False)
-    await _sql(ctx_waha, esc, "UPDATE links SET created_at = now() - interval '31 minutes' WHERE id = $1",
-               v["link_id"])
+    await como_superusuario(radar_urls, "UPDATE links SET created_at = now() - interval '31 minutes' WHERE id = $1",
+                            v["link_id"])
     await salud.ejecutar(ctx_waha, _job(esc, v["link_id"]))
     assert await _fin_encolado(ctx_waha, esc, v["link_id"]) == "qr_abandonado"
 
@@ -3767,6 +3979,39 @@ async def test_vinculo_cerrado_termina_el_chequeo(ctx_waha, waha):
     waha.llamadas.clear()
     assert await salud.ejecutar(ctx_waha, _job(esc, v["link_id"])) == "hecho"
     assert waha.llamadas == []
+
+
+async def _creando(ctx, esc):
+    """Vínculo que quedó en 'creando' (el proceso murió entre el INSERT y WAHA)."""
+    [w] = await listar_workers(ctx)
+    return await crear_link_directo(ctx.db, esc["tenant_id"], esc["line_id"], w.id, esc["consent_id"],
+                                    estado="creando")
+
+
+async def test_creando_huerfano_sin_sesion_se_aborta_y_libera_la_linea(ctx_waha, waha, radar_urls):
+    esc = await escenario_vinculable(ctx_waha)
+    k = await _creando(ctx_waha, esc)
+    waha.llamadas.clear()
+    assert await salud.ejecutar(ctx_waha, _job(esc, k)) == "reprogramar"      # reciente: puede estar creándose
+    assert waha.llamadas == []
+    await como_superusuario(radar_urls, "UPDATE links SET created_at = now() - interval '16 minutes' WHERE id = $1", k)
+    assert await salud.ejecutar(ctx_waha, _job(esc, k)) == "hecho"
+    link = await _sql(ctx_waha, esc, "SELECT estado, cerrado_at FROM links WHERE id = $1", k)
+    assert link["estado"] == "abortado" and link["cerrado_at"] is not None
+    audit = await _sql(ctx_waha, esc, "SELECT detalle::text AS d FROM access_audit_log WHERE accion = 'vinculo_abortado'")
+    assert "waha_error" in audit["d"]
+    v = await vincular_de_prueba(ctx_waha, waha, esc)                          # la línea ya no está bloqueada
+    assert v["link_id"] != k
+
+
+async def test_creando_huerfano_con_sesion_encola_el_fin(ctx_waha, waha, radar_urls):
+    esc = await escenario_vinculable(ctx_waha)
+    k = await _creando(ctx_waha, esc)
+    n = nombre_sesion(k)
+    waha.sesiones[n] = {"name": n, "status": "SCAN_QR_CODE", "engine": "NOWEB", "config": {}, "me_id": None}
+    await como_superusuario(radar_urls, "UPDATE links SET created_at = now() - interval '16 minutes' WHERE id = $1", k)
+    assert await salud.ejecutar(ctx_waha, _job(esc, k)) == "hecho"
+    assert await _fin_encolado(ctx_waha, esc, k) == "qr_abandonado"
 ```
 
 - [ ] **Step 2: Correr y ver la falla**
@@ -3791,6 +4036,8 @@ webhook. Después decide si corresponde encolar el fin del vínculo:
   inactivo): el fin corre a las 72 h si no hubo reconexión antes;
 - en esperando_qr hace más de 30 min (QR abandonado);
 - duracion_vinculo_dias > 0 cumplida desde conectado_at.
+Un vínculo que quedó en 'creando' más de 15 min (el proceso murió entre el
+INSERT y WAHA) se aborta si la sesión no existe o se cierra si existe.
 Un error de red con WAHA no cambia nada: se reintenta en el próximo chequeo.
 La "sospecha de silencio" necesita tráfico y llega en el tramo 3.
 """
@@ -3799,6 +4046,7 @@ import logging
 from datetime import timedelta
 from typing import Literal
 
+from app.radar import auditoria
 from app.radar import jobs as cola
 from app.radar.contexto import RadarContexto
 from app.radar.jobs import Job
@@ -3810,13 +4058,19 @@ from app.radar.workers import ClaveAdminAusente, cliente_de, leer_worker
 logger = logging.getLogger("app.radar.salud")
 
 INTERVALO_S = 300
+# Un vínculo que sigue en 'creando' después de esto quedó huérfano (la creación
+# real tarda segundos: INSERT, POST /api/sessions, verificación y clave).
+CREANDO_HUERFANO = timedelta(minutes=15)
 
 
 async def ejecutar(ctx: RadarContexto, job: Job) -> Literal["reprogramar", "hecho"]:
     async with ctx.db.tenant_tx(job.tenant_id) as con:
-        link = await con.fetchrow("SELECT id, worker_id, session_name, estado FROM links WHERE id = $1", job.link_id)
+        link = await con.fetchrow("SELECT id, worker_id, session_name, estado, now() - created_at AS edad "
+                                  "FROM links WHERE id = $1", job.link_id)
     if link is None or link["estado"] not in VIVOS:
         return "hecho"
+    if link["estado"] == "creando" and link["edad"] <= CREANDO_HUERFANO:
+        return "reprogramar"          # iniciar_vinculo puede estar hablando con WAHA: no se toca
     try:
         worker = await leer_worker(ctx, link["worker_id"])
         async with cliente_de(ctx, worker) as cli:
@@ -3824,6 +4078,8 @@ async def ejecutar(ctx: RadarContexto, job: Job) -> Literal["reprogramar", "hech
     except (WahaError, ClaveAdminAusente, LookupError) as e:
         logger.warning("chequeo de salud del vínculo %s: WAHA no respondió (%s)", link["id"], type(e).__name__)
         return "reprogramar"
+    if link["estado"] == "creando":
+        return await _cerrar_creando_huerfano(ctx, job, link["id"], sesion_existe=sesion is not None)
     status = sesion["status"] if sesion else "AUSENTE"
     if not isinstance(status, str) or not PATRON_STATUS.match(status):
         status = "DESCONOCIDO"
@@ -3846,6 +4102,28 @@ async def ejecutar(ctx: RadarContexto, job: Job) -> Literal["reprogramar", "hech
             await con.execute("UPDATE links SET fin_causa = COALESCE(fin_causa, $2) WHERE id = $1", link["id"], causa)
             await cola.encolar(con, tipo="fin_vinculo", link_id=link["id"], causa=causa)
     return "reprogramar" if f["estado"] in VIVOS else "hecho"
+
+
+async def _cerrar_creando_huerfano(ctx: RadarContexto, job: Job, link_id, *, sesion_existe: bool) -> Literal["hecho"]:
+    """Un vínculo en 'creando' con más de CREANDO_HUERFANO: el proceso murió
+    entre el INSERT y WAHA. Sin sesión en WAHA → abortado (libera la línea: el
+    índice de un activo por línea ya no lo cuenta). Con sesión → fin de vínculo
+    con causa qr_abandonado, que la borra con un único DELETE."""
+    async with ctx.db.tenant_tx(job.tenant_id) as con:
+        if sesion_existe:
+            await con.execute("UPDATE links SET fin_causa = COALESCE(fin_causa, 'qr_abandonado'), updated_at = now() "
+                              "WHERE id = $1 AND estado = 'creando'", link_id)
+            await cola.encolar(con, tipo="fin_vinculo", link_id=link_id, causa="qr_abandonado")
+        else:
+            cambiado = await con.execute("UPDATE links SET estado = 'abortado', cerrado_at = now(), updated_at = now() "
+                                         "WHERE id = $1 AND estado = 'creando'", link_id)
+            if cambiado == "UPDATE 1":
+                await auditoria.registrar(con, tenant_id=job.tenant_id, actor_user_id=None, actor_rol="sistema",
+                                          accion="vinculo_abortado", tipo_objeto="link", objeto_id=link_id,
+                                          detalle={"motivo": "waha_error"})
+        logger.warning("vínculo %s huérfano en 'creando': %s", link_id,
+                       "fin encolado" if sesion_existe else "abortado")
+    return "hecho"
 ```
 
 - [ ] **Step 4: Correr**
@@ -3853,7 +4131,7 @@ async def ejecutar(ctx: RadarContexto, job: Job) -> Literal["reprogramar", "hech
 ```bash
 python -m pytest tests/radar_tests/test_salud.py -q
 ```
-Esperado: `8 passed`.
+Esperado: `10 passed`.
 
 - [ ] **Step 5: Commit**
 
@@ -3872,7 +4150,7 @@ git commit -m "Radar tramo 2: chequeo de salud con caida de 72 h, QR abandonado 
 - Test: `tests/radar_tests/test_worker.py`
 
 **Interfaces:**
-- Consumes: `jobs.reclamar/completar/reprogramar/fallar/programar_salud`, `fin_vinculo.ejecutar`, `salud.ejecutar`, `salud.INTERVALO_S`, `construir_contexto`, `validar_settings`, `get_radar_settings`.
+- Consumes: `jobs.reclamar/completar/reprogramar/fallar/programar_salud`, `fin_vinculo.ejecutar`, `fin_vinculo.avisar_caida`, `salud.ejecutar`, `salud.INTERVALO_S`, `construir_contexto`, `validar_settings`, `get_radar_settings`.
 - Produces: `HANDLERS: dict[str, Callable[[RadarContexto, Job], Awaitable[str]]]`; `async correr_una_vez(ctx, *, lote: int = 10) -> int`; `async bucle(ctx, *, parar: asyncio.Event, pausa_s: float = 2.0, salud_cada_s: float = 300) -> None`; entrada `python -m app.radar.worker`; `RadarSettings.worker_embebido: bool = True`; `app.state.radar_worker: asyncio.Task | None`.
 
 - [ ] **Step 1: Tests (fallan)**
@@ -3887,7 +4165,7 @@ from app.radar import jobs as cola
 from app.radar import worker
 from app.radar.app import crear_app_radar
 from app.radar.settings import RadarSettings
-from app.radar.vinculos import pedir_fin
+from app.radar.vinculos import aplicar_status, pedir_fin
 
 from .helpers import escenario_vinculable, vincular_de_prueba
 
@@ -3941,6 +4219,19 @@ async def test_tipo_sin_handler_falla_sin_romper_el_ciclo(ctx_waha, waha, monkey
     assert await worker.correr_una_vez(ctx_waha) == 1
     job = await _sql(ctx_waha, esc, "SELECT estado, ultimo_error FROM jobs WHERE link_id = $1", v["link_id"])
     assert (job["estado"], job["ultimo_error"]) == ("pendiente", "LookupError")
+
+
+async def test_aviso_de_caida_se_despacha_y_completa(ctx_waha, waha):
+    esc = await escenario_vinculable(ctx_waha)
+    v = await vincular_de_prueba(ctx_waha, waha, esc)
+    async with ctx_waha.db.tenant_tx(esc["tenant_id"]) as con:
+        await aplicar_status(con, tenant_id=esc["tenant_id"], link_id=v["link_id"], waha_status="FAILED",
+                             origen="webhook")
+    antes = len(ctx_waha.mailer.enviados)
+    assert await worker.correr_una_vez(ctx_waha) == 1
+    job = await _sql(ctx_waha, esc, "SELECT estado FROM jobs WHERE link_id = $1 AND tipo = 'aviso_caida'",
+                     v["link_id"])
+    assert job["estado"] == "hecho" and len(ctx_waha.mailer.enviados) == antes + 1
 
 
 async def test_bucle_programa_salud_y_para(ctx_waha, waha):
@@ -4013,6 +4304,7 @@ logger = logging.getLogger("app.radar.worker")
 HANDLERS: dict[str, Callable[[RadarContexto, Job], Awaitable[str]]] = {
     "fin_vinculo": fin_vinculo.ejecutar,
     "chequeo_salud": salud.ejecutar,
+    "aviso_caida": fin_vinculo.avisar_caida,
 }
 
 
@@ -4126,7 +4418,7 @@ async def _lifespan_radar(app: FastAPI):
 ```bash
 python -m pytest tests/radar_tests -q
 ```
-Esperado: todo verde; `test_worker.py` suma 6 (y `test_lifespan_migra_y_arma_el_contexto` del tramo 1 sigue pasando con el worker embebido).
+Esperado: todo verde; `test_worker.py` suma 7 (y `test_lifespan_migra_y_arma_el_contexto` del tramo 1 sigue pasando con el worker embebido).
 
 - [ ] **Step 6: Commit**
 
@@ -4372,11 +4664,16 @@ async def recibir(request: Request):
     return {"ok": True, "aplicado": r["aplicado"]}
 ```
 
-En `app/radar/app.py`, sumar `webhook_waha` al import de `app.radar.routers` y a la tupla de routers:
+En `app/radar/app.py` (`crear_app_radar` registra cada router con una línea `app.include_router`, sin tupla): el import de routers queda
 
 ```python
-    for r in (health, login, cuenta, parametros, soporte, admin, webhook_waha):
-        app.include_router(r.router)
+from app.radar.routers import admin, cuenta, health, login, parametros, soporte, webhook_waha
+```
+
+y se agrega, después de `app.include_router(soporte.router)`:
+
+```python
+    app.include_router(webhook_waha.router)
 ```
 
 - [ ] **Step 4: Correr**
@@ -4399,12 +4696,12 @@ git commit -m "Radar tramo 2: receptor de webhooks de WAHA con HMAC fail-closed,
 
 **Files:**
 - Create: `app/radar/consentimiento_asistido.py`, `app/radar/consola.py`, `app/radar/routers/vinculo_comun.py`, `app/radar/routers/consola.py`
-- Modify: `app/radar/app.py` (router)
+- Modify: `app/radar/app.py` (router), `app/radar/parametros_service.py` (`tenant_ya_consentido`), `app/radar/routers/parametros.py` (usa `tenant_ya_consentido`), `tests/radar_tests/test_parametros_api.py` (docstring)
 - Test: `tests/radar_tests/test_consola_api.py`
 
 **Interfaces:**
-- Consumes: `VERSIONES`, `hash_texto` (`app.radar.consentimiento`), `leer_linea` (`app.radar.lineas`), `DE_LINEA` (`app.radar.parametros`), `a_json`, `leer_parametros_tenant` (`app.radar.parametros_service`), `Email`, `requiere_rol`, `ip_de`, `Sesion`, `contexto`, `auditoria.registrar`, `eventos_producto.registrar_evento`, `radar_admin_consola_lineas()`, `semaforo`, `restriccion_activa`, servicios de `app.radar.vinculos`; helpers `entrar`, `crear_usuario`, `crear_linea_directa`, `crear_tenant_directo`, `escenario_vinculable`, `vincular_de_prueba`.
-- Produces: `VERSION_VIGENTE: str`; `async texto_para_linea(con, tenant_id, line_id) -> dict | None` (`version, texto, hash, linea_nombre, linea_estado, parametros_linea, parametros_tenant`); `async registrar_consentimiento_asistido(con, *, tenant_id, line_id, dueno_user_id, admin_user_id, version, opciones, ip, modo_asistencia, aceptado_por_nombre) -> uuid.UUID`; `email_copia_consentimiento(para: str, *, version: str) -> Email`; `PENDIENTES: dict[str, str]`; `fila_consola(f: dict, ahora) -> dict`; `async listar_lineas_consola(ctx, *, estado: str | None = None, tenant_id: uuid.UUID | None = None) -> list[dict]`; en `vinculo_comun`: `VincularIn(full_sync: bool = False)`, `CodigoIn(telefono)`, `DesconectarIn(confirmar: bool = False)`, `BorrarIn(confirmar: bool = False, nombre_linea: str = "")`, `RestriccionIn(hasta: datetime | None = None)`, `SIN_CACHE`, `http_de(e: VinculoRechazado) -> HTTPException`, `respuesta_png(contenido: bytes) -> Response`, `respuesta_codigo(codigo: str) -> JSONResponse`, `exigir_confirmacion(body: DesconectarIn) -> None`, `async exigir_nombre(ctx, tenant_id, line_id, body: BorrarIn) -> None`. Endpoints (todos `requiere_rol("admin")`): `GET /radar/admin/consola/lineas?estado=&tenant_id=`; bajo `/radar/admin/tenants/{tenant_id}/lineas/{line_id}`: `GET /consentimiento-asistido/texto`, `POST /consentimiento-asistido` (201 `{consent_id, copia_enviada}`), `POST /vinculo` (201, estado; también es "Reconectar"), `GET /vinculo`, `GET /vinculo/qr` (PNG, `no-store`), `POST /vinculo/codigo` (`{codigo}`, `no-store`), `POST /vinculo/reiniciar-qr`, `POST /vinculo/desconectar` (202), `POST /vinculo/desconectar-y-borrar` (202), `PUT /vinculo/restriccion`, `DELETE /vinculo/restriccion`. Errores: `{"detail": {"error": "<codigo>"}}`.
+- Consumes: `VERSIONES`, `hash_texto` (`app.radar.consentimiento`), `leer_linea` (`app.radar.lineas`), `DE_LINEA` (`app.radar.parametros`), `a_json`, `leer_parametros_tenant`, `leer_propuesta_tenant`, `lineas_vivas_sin_consentir` (`app.radar.parametros_service`), `_tenant_ya_consentido` (`app.radar.routers.parametros`, se mueve), `MailerQueFalla`, `Email`, `requiere_rol`, `ip_de`, `Sesion`, `contexto`, `auditoria.registrar`, `eventos_producto.registrar_evento`, `radar_admin_consola_lineas()`, `semaforo`, `restriccion_activa`, servicios de `app.radar.vinculos`; helpers `entrar`, `crear_usuario`, `crear_linea_directa`, `crear_tenant_directo`, `escenario_vinculable`, `vincular_de_prueba`.
+- Produces: `async tenant_ya_consentido(con, line_id, propuesta_t) -> dict` en `app.radar.parametros_service` (reemplaza a `routers/parametros._tenant_ya_consentido`); dependencia `_tenant_cliente(tenant_id, request, admin) -> Sesion` en `routers/consola.py` (404 `tenant_inexistente` si el tenant no existe o es KIS; la usan todas las rutas `_LINEA`); `copia_enviada` refleja si el mail salió; `VERSION_VIGENTE: str`; `async texto_para_linea(con, tenant_id, line_id) -> dict | None` (`version, texto, hash, linea_nombre, linea_estado, parametros_linea, parametros_tenant`); `async registrar_consentimiento_asistido(con, *, tenant_id, line_id, dueno_user_id, admin_user_id, version, opciones, ip, modo_asistencia, aceptado_por_nombre) -> uuid.UUID`; `email_copia_consentimiento(para: str, *, version: str) -> Email`; `PENDIENTES: dict[str, str]`; `fila_consola(f: dict, ahora) -> dict`; `async listar_lineas_consola(ctx, *, estado: str | None = None, tenant_id: uuid.UUID | None = None) -> list[dict]`; en `vinculo_comun`: `VincularIn(full_sync: bool = False)`, `CodigoIn(telefono)`, `DesconectarIn(confirmar: bool = False)`, `BorrarIn(confirmar: bool = False, nombre_linea: str = "")`, `RestriccionIn(hasta: datetime | None = None)`, `SIN_CACHE`, `http_de(e: VinculoRechazado) -> HTTPException`, `respuesta_png(contenido: bytes) -> Response`, `respuesta_codigo(codigo: str) -> JSONResponse`, `exigir_confirmacion(body: DesconectarIn) -> None`, `async exigir_nombre(ctx, tenant_id, line_id, body: BorrarIn) -> None`. Endpoints (todos `requiere_rol("admin")`): `GET /radar/admin/consola/lineas?estado=&tenant_id=`; bajo `/radar/admin/tenants/{tenant_id}/lineas/{line_id}`: `GET /consentimiento-asistido/texto`, `POST /consentimiento-asistido` (201 `{consent_id, copia_enviada}`), `POST /vinculo` (201, estado; también es "Reconectar"), `GET /vinculo`, `GET /vinculo/qr` (PNG, `no-store`), `POST /vinculo/codigo` (`{codigo}`, `no-store`), `POST /vinculo/reiniciar-qr`, `POST /vinculo/desconectar` (202), `POST /vinculo/desconectar-y-borrar` (202), `PUT /vinculo/restriccion`, `DELETE /vinculo/restriccion`. Errores: `{"detail": {"error": "<codigo>"}}`.
 
 - [ ] **Step 1: Tests (fallan)**
 
@@ -4417,12 +4714,14 @@ asistido + vínculo con QR, C4 acciones con doble confirmación. Solo el rol
 admin del tenant KIS; todo auditado.
 """
 import json
+import uuid
 
 from app.radar.constantes import TENANT_KIS
+from app.radar.parametros_service import lineas_vivas_sin_consentir
 from app.radar.vinculos import aplicar_status
 
-from .helpers import (crear_linea_directa, crear_tenant_directo, crear_usuario, entrar, escenario_vinculable,
-                      vincular_de_prueba)
+from .helpers import (MailerQueFalla, como_superusuario, crear_linea_directa, crear_tenant_directo, crear_usuario,
+                      entrar, escenario_vinculable, vincular_de_prueba)
 from .waha_falso import PNG
 
 
@@ -4594,6 +4893,53 @@ async def test_las_acciones_quedan_auditadas_con_el_admin(cliente, ctx_waha, wah
         filas = await con.fetch("SELECT accion, actor_rol, actor_user_id FROM access_audit_log ORDER BY id")
     assert [f["accion"] for f in filas] == ["vinculo_iniciado", "codigo_solicitado", "desconexion_pedida"]
     assert all(f["actor_rol"] == "admin" and f["actor_user_id"] == admin for f in filas)
+
+
+async def test_rutas_de_linea_solo_sobre_un_tenant_cliente(cliente, ctx_waha, waha):
+    esc = await escenario_vinculable(ctx_waha)
+    await _admin(cliente, ctx_waha)
+    kis = f"/radar/admin/tenants/{TENANT_KIS}/lineas/{esc['line_id']}"
+    otro = f"/radar/admin/tenants/{uuid.uuid4()}/lineas/{esc['line_id']}"
+    for r in (await cliente.get(kis + "/consentimiento-asistido/texto"),
+              await cliente.post(kis + "/vinculo", json={}),
+              await cliente.post(otro + "/vinculo/desconectar", json={"confirmar": True}),
+              await cliente.put(otro + "/vinculo/restriccion", json={"hasta": None})):
+        assert r.status_code == 404 and r.json()["detail"]["error"] == "tenant_inexistente"
+    assert waha.llamadas == []
+
+
+async def test_copia_que_no_sale_no_rompe_el_consentimiento(cliente, ctx_waha):
+    esc = await escenario_vinculable(ctx_waha)
+    nueva = await crear_linea_directa(ctx_waha.db, esc["tenant_id"], "Sucursal")
+    await _admin(cliente, ctx_waha)
+    ctx_waha.mailer = MailerQueFalla()
+    r = await cliente.post(_url(esc, "/consentimiento-asistido", line_id=nueva),
+                           json={"version_texto": "v1", "titular_leyo_y_acepto": True, "modo": "presencial",
+                                 "nombre": "Ana"})
+    assert r.status_code == 201 and r.json()["copia_enviada"] is False
+    assert (await _sql(ctx_waha, esc, "SELECT count(*) AS n FROM consents WHERE line_id = $1", nueva))["n"] == 1
+
+
+async def test_asistido_arrastra_la_propuesta_de_tenant_ya_aceptada(cliente, ctx_waha, radar_urls):
+    esc = await escenario_vinculable(ctx_waha)
+    t, li = esc["tenant_id"], esc["line_id"]
+    await como_superusuario(radar_urls, "UPDATE tenants SET parametros_propuestos = '{\"ia_habilitada\": true}'::jsonb, "
+                                        "parametros_propuestos_at = now() - interval '1 hour' WHERE id = $1", t)
+    async with ctx_waha.db.tenant_tx(t) as con:        # el dueño ya había aceptado la propuesta
+        await con.execute("UPDATE lines SET estado = 'vinculada' WHERE id = $1", li)
+        await con.execute("INSERT INTO consents (line_id, user_id, version_texto, hash_texto, opciones) "
+                          "VALUES ($1, $2, 'v1', repeat('a', 64), $3::jsonb)", li, esc["dueno_id"],
+                          json.dumps({"parametros_linea": {}, "parametros_tenant": {"ia_habilitada": True}}))
+        assert await lineas_vivas_sin_consentir(con, {"ia_habilitada": True}) == []
+    await _admin(cliente, ctx_waha)
+    r = await cliente.post(_url(esc, "/consentimiento-asistido"),
+                           json={"version_texto": "v1", "titular_leyo_y_acepto": True, "modo": "presencial",
+                                 "nombre": "Ana"})
+    assert r.status_code == 201
+    c = await _sql(ctx_waha, esc, "SELECT opciones FROM consents WHERE modo = 'asistido'")
+    assert json.loads(c["opciones"])["parametros_tenant"]["ia_habilitada"] is True
+    async with ctx_waha.db.tenant_tx(t) as con:        # la línea no vuelve a quedar pendiente
+        assert await lineas_vivas_sin_consentir(con, {"ia_habilitada": True}) == []
 ```
 
 - [ ] **Step 2: Correr y ver la falla**
@@ -4604,6 +4950,26 @@ python -m pytest tests/radar_tests/test_consola_api.py -q
 Esperado: fallas por `404 Not Found` en `/radar/admin/consola/lineas` y en las rutas de vínculo.
 
 - [ ] **Step 3: Consentimiento asistido y listado de la Consola**
+
+Primero, mover `_tenant_ya_consentido` de `app/radar/routers/parametros.py` a `app/radar/parametros_service.py` como función pública, para que el consentimiento asistido use exactamente la misma regla que el del dueño. Agregar al final de `app/radar/parametros_service.py` (ya importa `json`, `uuid`, `asyncpg`, `validar` y define `coincide_con_propuesta`):
+
+```python
+async def tenant_ya_consentido(con: asyncpg.Connection, line_id: uuid.UUID, propuesta_t: dict) -> dict:
+    """Valores de la propuesta de tenant vigente que el último consentimiento
+    de esta línea ya aceptó, siempre que sea posterior a esa propuesta (un
+    consentimiento viejo no vale para una propuesta nueva). Lo usan el
+    consentimiento del dueño (routers/parametros.py) y el asistido de la Consola."""
+    crudo = await con.fetchval(
+        "SELECT c.opciones->'parametros_tenant' FROM consents c "
+        "WHERE c.id = (SELECT c2.id FROM consents c2 WHERE c2.line_id = $1 ORDER BY c2.created_at DESC LIMIT 1) "
+        "AND c.created_at >= (SELECT t.parametros_propuestos_at FROM tenants t WHERE t.id = c.tenant_id)",
+        line_id)
+    previos = json.loads(crudo) if crudo else {}
+    return {n: validar(n, v) for n, v in propuesta_t.items()
+            if n in previos and coincide_con_propuesta(propuesta_t, n, validar(n, previos[n]))}
+```
+
+En `app/radar/routers/parametros.py`: borrar la función `_tenant_ya_consentido` completa; sumar `tenant_ya_consentido` al `from app.radar.parametros_service import (...)`; en `consentir`, cambiar `ya_consentidos = await _tenant_ya_consentido(con, line_id, propuesta_t)` por `ya_consentidos = await tenant_ya_consentido(con, line_id, propuesta_t)`; y borrar `import json`, que queda sin uso (`validar` y `coincide_con_propuesta` se siguen usando en `_validar_parciales` y en `consentir`). En `tests/radar_tests/test_parametros_api.py`, el docstring de `test_consentimiento_de_linea_no_arrastra_tenant_de_una_propuesta_anterior` pasa a nombrar `tenant_ya_consentido`. Los tests del tramo 1 no cambian de comportamiento.
 
 `app/radar/consentimiento_asistido.py`:
 
@@ -4823,6 +5189,7 @@ POST …/vinculo/desconectar · POST …/vinculo/desconectar-y-borrar   C4
 PUT|DELETE …/vinculo/restriccion                                   C4 (restricción de cuenta)
 """
 
+import logging
 import uuid
 from typing import Literal, Optional
 
@@ -4836,15 +5203,31 @@ from app.radar.consentimiento_asistido import (email_copia_consentimiento, regis
                                                texto_para_linea)
 from app.radar.consola import listar_lineas_consola
 from app.radar.contexto import contexto
+from app.radar.parametros_service import (a_json, leer_parametros_tenant, leer_propuesta_tenant,
+                                          tenant_ya_consentido)
 from app.radar.routers.vinculo_comun import (BorrarIn, CodigoIn, DesconectarIn, RestriccionIn, VincularIn,
                                              exigir_confirmacion, exigir_nombre, http_de, respuesta_codigo,
                                              respuesta_png)
 from app.radar.vinculos import (VinculoRechazado, estado_de_linea, iniciar_vinculo, levantar_restriccion,
                                 marcar_restriccion, pedir_codigo, pedir_fin, qr_png, reiniciar_qr)
 
+logger = logging.getLogger("app.radar.consola")
+
 router = APIRouter(prefix="/radar/admin", tags=["radar-consola"])
 _LINEA = "/tenants/{tenant_id}/lineas/{line_id}"
 _ESTADO_LINEA = r"^(vinculada|sin_vinculo|de_baja)$"
+
+
+async def _tenant_cliente(tenant_id: uuid.UUID, request: Request,
+                          admin: Sesion = Depends(requiere_rol("admin"))) -> Sesion:
+    """Como admin.py del tramo 1: las rutas de línea solo operan sobre un tenant
+    cliente que existe (nunca sobre el tenant KIS). Depende de requiere_rol, así
+    que primero responde 401/403 y recién después mira el tenant."""
+    async with contexto(request).db.tenant_tx(tenant_id) as con:
+        existe = await con.fetchval("SELECT count(*) FROM tenants WHERE id = $1 AND NOT es_kis", tenant_id)
+    if existe == 0:
+        raise HTTPException(status_code=404, detail={"error": "tenant_inexistente"})
+    return admin
 
 
 class ConsentimientoAsistidoIn(BaseModel):
@@ -4866,7 +5249,7 @@ async def lineas(request: Request, estado: Optional[str] = Query(default=None, p
 
 @router.get(_LINEA + "/consentimiento-asistido/texto")
 async def texto(tenant_id: uuid.UUID, line_id: uuid.UUID, request: Request,
-                admin: Sesion = Depends(requiere_rol("admin"))):
+                admin: Sesion = Depends(_tenant_cliente)):
     async with contexto(request).db.tenant_tx(tenant_id) as con:
         t = await texto_para_linea(con, tenant_id, line_id)
     if t is None:
@@ -4876,7 +5259,7 @@ async def texto(tenant_id: uuid.UUID, line_id: uuid.UUID, request: Request,
 
 @router.post(_LINEA + "/consentimiento-asistido", status_code=201)
 async def consentimiento_asistido(tenant_id: uuid.UUID, line_id: uuid.UUID, body: ConsentimientoAsistidoIn,
-                                  request: Request, admin: Sesion = Depends(requiere_rol("admin"))):
+                                  request: Request, admin: Sesion = Depends(_tenant_cliente)):
     if not body.titular_leyo_y_acepto:
         raise HTTPException(status_code=422, detail={"error": "consentimiento_no_aceptado"})
     if body.version_texto not in VERSIONES:
@@ -4893,7 +5276,13 @@ async def consentimiento_asistido(tenant_id: uuid.UUID, line_id: uuid.UUID, body
                                    "WHERE m.rol = 'dueno' ORDER BY m.created_at LIMIT 1")
         if dueno is None:
             raise HTTPException(status_code=409, detail={"error": "sin_dueno"})
-        opciones = {"parametros_linea": t["parametros_linea"], "parametros_tenant": t["parametros_tenant"]}
+        # Como el consentimiento propio del tramo 1 (routers/parametros.py): este
+        # pasa a ser "el último" de la línea, así que arrastra los valores de la
+        # propuesta de tenant vigente que el anterior ya aceptaba; si no, una
+        # línea vinculada que ya había aceptado volvería a quedar pendiente.
+        ya_consentidos = await tenant_ya_consentido(con, line_id, await leer_propuesta_tenant(con, tenant_id))
+        parametros_tenant = a_json({**(await leer_parametros_tenant(con, tenant_id)), **ya_consentidos})
+        opciones = {"parametros_linea": t["parametros_linea"], "parametros_tenant": parametros_tenant}
         cid = await registrar_consentimiento_asistido(
             con, tenant_id=tenant_id, line_id=line_id, dueno_user_id=dueno["id"], admin_user_id=admin.user_id,
             version=body.version_texto, opciones=opciones, ip=ip, modo_asistencia=body.modo,
@@ -4903,13 +5292,20 @@ async def consentimiento_asistido(tenant_id: uuid.UUID, line_id: uuid.UUID, body
                                   detalle={"modo": body.modo})
         await eventos_producto.registrar_evento(con, tenant_id=tenant_id, evento="consentimiento_registrado",
                                                 line_id=line_id, user_id=dueno["id"], objeto_id=cid)
-    await ctx.mailer.enviar(email_copia_consentimiento(dueno["email"], version=body.version_texto))
-    return {"consent_id": str(cid), "copia_enviada": True}
+    # El consentimiento ya quedó guardado: un proveedor de mail caído no lo
+    # convierte en 500 (mismo criterio que enviar_link_seguro del tramo 1).
+    try:
+        await ctx.mailer.enviar(email_copia_consentimiento(dueno["email"], version=body.version_texto))
+        copia = True
+    except Exception as e:
+        logger.warning("copia del consentimiento %s no enviada: %s", cid, type(e).__name__)
+        copia = False
+    return {"consent_id": str(cid), "copia_enviada": copia}
 
 
 @router.post(_LINEA + "/vinculo", status_code=201)
 async def vincular(tenant_id: uuid.UUID, line_id: uuid.UUID, request: Request, body: Optional[VincularIn] = None,
-                   admin: Sesion = Depends(requiere_rol("admin"))):
+                   admin: Sesion = Depends(_tenant_cliente)):
     try:
         return await iniciar_vinculo(contexto(request), tenant_id=tenant_id, line_id=line_id,
                                      full_sync=body.full_sync if body else False, **_actor(admin, request))
@@ -4919,7 +5315,7 @@ async def vincular(tenant_id: uuid.UUID, line_id: uuid.UUID, request: Request, b
 
 @router.get(_LINEA + "/vinculo")
 async def estado(tenant_id: uuid.UUID, line_id: uuid.UUID, request: Request,
-                 admin: Sesion = Depends(requiere_rol("admin"))):
+                 admin: Sesion = Depends(_tenant_cliente)):
     try:
         return await estado_de_linea(contexto(request), tenant_id=tenant_id, line_id=line_id)
     except VinculoRechazado as e:
@@ -4928,7 +5324,7 @@ async def estado(tenant_id: uuid.UUID, line_id: uuid.UUID, request: Request,
 
 @router.get(_LINEA + "/vinculo/qr")
 async def qr(tenant_id: uuid.UUID, line_id: uuid.UUID, request: Request,
-             admin: Sesion = Depends(requiere_rol("admin"))):
+             admin: Sesion = Depends(_tenant_cliente)):
     try:
         return respuesta_png(await qr_png(contexto(request), tenant_id=tenant_id, line_id=line_id))
     except VinculoRechazado as e:
@@ -4937,7 +5333,7 @@ async def qr(tenant_id: uuid.UUID, line_id: uuid.UUID, request: Request,
 
 @router.post(_LINEA + "/vinculo/codigo")
 async def codigo(tenant_id: uuid.UUID, line_id: uuid.UUID, body: CodigoIn, request: Request,
-                 admin: Sesion = Depends(requiere_rol("admin"))):
+                 admin: Sesion = Depends(_tenant_cliente)):
     try:
         return respuesta_codigo(await pedir_codigo(contexto(request), tenant_id=tenant_id, line_id=line_id,
                                                    telefono=body.telefono, **_actor(admin, request)))
@@ -4947,7 +5343,7 @@ async def codigo(tenant_id: uuid.UUID, line_id: uuid.UUID, body: CodigoIn, reque
 
 @router.post(_LINEA + "/vinculo/reiniciar-qr")
 async def reiniciar(tenant_id: uuid.UUID, line_id: uuid.UUID, request: Request,
-                    admin: Sesion = Depends(requiere_rol("admin"))):
+                    admin: Sesion = Depends(_tenant_cliente)):
     try:
         return await reiniciar_qr(contexto(request), tenant_id=tenant_id, line_id=line_id, **_actor(admin, request))
     except VinculoRechazado as e:
@@ -4956,7 +5352,7 @@ async def reiniciar(tenant_id: uuid.UUID, line_id: uuid.UUID, request: Request,
 
 @router.post(_LINEA + "/vinculo/desconectar", status_code=202)
 async def desconectar(tenant_id: uuid.UUID, line_id: uuid.UUID, request: Request,
-                      body: Optional[DesconectarIn] = None, admin: Sesion = Depends(requiere_rol("admin"))):
+                      body: Optional[DesconectarIn] = None, admin: Sesion = Depends(_tenant_cliente)):
     exigir_confirmacion(body)
     try:
         return await pedir_fin(contexto(request), tenant_id=tenant_id, line_id=line_id, causa="pedido_kis",
@@ -4967,7 +5363,7 @@ async def desconectar(tenant_id: uuid.UUID, line_id: uuid.UUID, request: Request
 
 @router.post(_LINEA + "/vinculo/desconectar-y-borrar", status_code=202)
 async def desconectar_y_borrar(tenant_id: uuid.UUID, line_id: uuid.UUID, request: Request,
-                               body: Optional[BorrarIn] = None, admin: Sesion = Depends(requiere_rol("admin"))):
+                               body: Optional[BorrarIn] = None, admin: Sesion = Depends(_tenant_cliente)):
     ctx = contexto(request)
     await exigir_nombre(ctx, tenant_id, line_id, body)
     try:
@@ -4979,7 +5375,7 @@ async def desconectar_y_borrar(tenant_id: uuid.UUID, line_id: uuid.UUID, request
 
 @router.put(_LINEA + "/vinculo/restriccion")
 async def marcar(tenant_id: uuid.UUID, line_id: uuid.UUID, body: RestriccionIn, request: Request,
-                 admin: Sesion = Depends(requiere_rol("admin"))):
+                 admin: Sesion = Depends(_tenant_cliente)):
     try:
         return await marcar_restriccion(contexto(request), tenant_id=tenant_id, line_id=line_id, hasta=body.hasta,
                                         **_actor(admin, request))
@@ -4989,7 +5385,7 @@ async def marcar(tenant_id: uuid.UUID, line_id: uuid.UUID, body: RestriccionIn, 
 
 @router.delete(_LINEA + "/vinculo/restriccion")
 async def levantar(tenant_id: uuid.UUID, line_id: uuid.UUID, request: Request,
-                   admin: Sesion = Depends(requiere_rol("admin"))):
+                   admin: Sesion = Depends(_tenant_cliente)):
     try:
         return await levantar_restriccion(contexto(request), tenant_id=tenant_id, line_id=line_id,
                                           **_actor(admin, request))
@@ -4997,11 +5393,16 @@ async def levantar(tenant_id: uuid.UUID, line_id: uuid.UUID, request: Request,
         raise http_de(e)
 ```
 
-En `app/radar/app.py`, sumar `consola` al import de `app.radar.routers` y a la tupla:
+En `app/radar/app.py` (`crear_app_radar` registra cada router con una línea `app.include_router`, sin tupla): el import de routers queda
 
 ```python
-    for r in (health, login, cuenta, parametros, soporte, admin, webhook_waha, consola):
-        app.include_router(r.router)
+from app.radar.routers import admin, consola, cuenta, health, login, parametros, soporte, webhook_waha
+```
+
+y se agrega, después de `app.include_router(soporte.router)` y de los routers de las tareas anteriores:
+
+```python
+    app.include_router(consola.router)
 ```
 
 - [ ] **Step 6: Correr**
@@ -5009,12 +5410,12 @@ En `app/radar/app.py`, sumar `consola` al import de `app.radar.routers` y a la t
 ```bash
 python -m pytest tests/radar_tests -q
 ```
-Esperado: todo verde; `test_consola_api.py` suma 12.
+Esperado: todo verde; `test_consola_api.py` suma 15 (y `test_parametros_api.py` del tramo 1 sigue verde con `tenant_ya_consentido` movido).
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add app/radar tests/radar_tests/test_consola_api.py
+git add app/radar tests/radar_tests/test_consola_api.py tests/radar_tests/test_parametros_api.py
 git commit -m "Radar tramo 2: API de la Consola KIS con consentimiento asistido, vinculo y acciones auditadas" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
@@ -5139,6 +5540,13 @@ def test_la_pantalla_del_dueno_tiene_lo_que_usa_el_modo_cliente():
     assert IDS_CLIENTE <= set(re.findall(r'(?:\$|enlazar)\("([a-z0-9-]+)"', js))
     assert IDS_CLIENTE <= _ids_html("conectar.html"), IDS_CLIENTE - _ids_html("conectar.html")
     assert {"filtro-estado", "lineas", "restriccion-hasta"}.isdisjoint(_ids_html("conectar.html"))
+
+
+def test_textos_del_js_no_prometen_lo_que_el_codigo_no_hace():
+    js = (ESTATICOS / "radar.js").read_text(encoding="utf-8")
+    assert "te avisamos por email" not in js          # sin_capacidad: nada avisa cuando se libera lugar
+    assert "e.caido_desde" in js and "se desconectó el " in js       # caída con fecha DD/MM
+    assert "r.copia_enviada" in js                    # la copia del consentimiento puede no haber salido
 ```
 
 - [ ] **Step 2: Correr y ver la falla**
@@ -5361,7 +5769,10 @@ button { margin: 4px 4px 4px 0; }
   let qrDesde = 0;
 
   const MENSAJES = {
-    sin_capacidad: "Estamos preparando tu conexión, te avisamos por email.",
+    // Sin promesa de aviso: en este tramo nada avisa cuando se libera lugar.
+    sin_capacidad: "En este momento no hay lugar para una conexión nueva. Probá de nuevo más tarde o escribinos.",
+    tenant_inexistente: "El cliente no existe.",
+    sin_vinculo: "Esta línea no tiene una conexión.",
     sin_consentimiento: "Falta el consentimiento de esta línea.",
     consentimiento_no_aceptado: "Hay que marcar la aceptación del texto.",
     restriccion_activa: "La cuenta tiene una restricción activa: no se puede volver a vincular.",
@@ -5436,11 +5847,13 @@ button { margin: 4px 4px 4px 0; }
   async function consentir() {
     if (!$("acepto").checked) throw new Error("consentimiento_no_aceptado");
     if (modo === "consola") {
-      await pedir("POST", base() + "/consentimiento-asistido", {
+      const r = await pedir("POST", base() + "/consentimiento-asistido", {
         version_texto: $("version").value, titular_leyo_y_acepto: true,
         modo: $("modo").value, nombre: $("nombre").value.trim(),
       });
-      $("aviso").textContent = "Consentimiento registrado. Se envió una copia al dueño.";
+      $("aviso").textContent = r.copia_enviada
+        ? "Consentimiento registrado. Se envió una copia al dueño."
+        : "Consentimiento registrado. La copia por email no salió: reenviala a mano.";
     } else {
       await pedir("POST", base() + "/consentimientos", { version_texto: $("version").value, acepta: true, titular: true });
     }
@@ -5448,9 +5861,19 @@ button { margin: 4px 4px 4px 0; }
   }
 
   // ---- P3: estado del vínculo, QR, código
+  function diaMes(iso) {
+    // "DD/MM" en hora de Argentina (Estados especiales: "se desconectó el DD/MM").
+    return new Date(iso).toLocaleDateString("es-AR", {
+      day: "2-digit", month: "2-digit", timeZone: "America/Argentina/Buenos_Aires",
+    });
+  }
+
   function mostrarEstado(e) {
     actual.nombre = e.linea_nombre;
     let texto = TEXTOS_ESTADO[e.estado] || e.estado;
+    if (e.estado === "caido" && e.caido_desde) {
+      texto = "Tu WhatsApp se desconectó el " + diaMes(e.caido_desde) + ". Tocá «Reconectar».";
+    }
     if (e.estado === "esperando_qr") texto = "Abrí WhatsApp → Dispositivos vinculados → Vincular un dispositivo → Escaneá.";
     if (e.estado === "vinculado" && e.numero) {
       texto = "Conectado: " + e.numero + ". ¿Es esta la línea del negocio? Si no lo es, usá «Desconectar y borrar todo».";
@@ -5463,7 +5886,7 @@ button { margin: 4px 4px 4px 0; }
     const puedeVincular = ["sin_vinculo", "cerrado", "abortado", "caido"].includes(e.estado) && !e.restriccion_activa;
     $("paso-consentimiento").hidden = !(puedeVincular && !e.tiene_consentimiento);
     $("paso-vincular").hidden = !(puedeVincular && e.tiene_consentimiento);
-    $("btn-generar").textContent = e.estado === "caido" ? "Reconectar (nuevo QR)" : "Generar QR";
+    $("btn-generar").textContent = e.estado === "caido" ? "Reconectar" : "Generar QR";
 
     const conQr = e.qr_disponible === true;
     $("qr").hidden = !conQr;
@@ -5701,11 +6124,16 @@ async def estatico(nombre: str):
                     headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "no-cache"})
 ```
 
-En `app/radar/app.py`, sumar `paginas` al import y a la tupla:
+En `app/radar/app.py` (`crear_app_radar` registra cada router con una línea `app.include_router`, sin tupla): el import de routers queda
 
 ```python
-    for r in (health, login, cuenta, parametros, soporte, admin, webhook_waha, consola, paginas):
-        app.include_router(r.router)
+from app.radar.routers import admin, consola, cuenta, health, login, paginas, parametros, soporte, webhook_waha
+```
+
+y se agrega, después de `app.include_router(soporte.router)` y de los routers de las tareas anteriores:
+
+```python
+    app.include_router(paginas.router)
 ```
 
 - [ ] **Step 6: Correr**
@@ -5713,7 +6141,7 @@ En `app/radar/app.py`, sumar `paginas` al import y a la tupla:
 ```bash
 python -m pytest tests/radar_tests -q
 ```
-Esperado: todo verde; `test_paginas.py` suma 8.
+Esperado: todo verde; `test_paginas.py` suma 9.
 
 - [ ] **Step 7: Commit**
 
@@ -5973,11 +6401,16 @@ async def desconectar_y_borrar(line_id: uuid.UUID, request: Request, body: Optio
         raise http_de(e)
 ```
 
-En `app/radar/app.py`, sumar `vinculo` al import y a la tupla:
+En `app/radar/app.py` (`crear_app_radar` registra cada router con una línea `app.include_router`, sin tupla): el import de routers queda
 
 ```python
-    for r in (health, login, cuenta, parametros, soporte, admin, webhook_waha, consola, paginas, vinculo):
-        app.include_router(r.router)
+from app.radar.routers import admin, consola, cuenta, health, login, paginas, parametros, soporte, vinculo, webhook_waha
+```
+
+y se agrega, después de `app.include_router(soporte.router)` y de los routers de las tareas anteriores:
+
+```python
+    app.include_router(vinculo.router)
 ```
 
 - [ ] **Step 4: Correr**
@@ -6139,7 +6572,7 @@ Si los nombres de `actions` no son los que usa WAHA, corregí `ACCIONES_CLAVE_LE
 ## 5. Desvínculo desde el teléfono
 
 1. Con la línea vinculada, quitá el dispositivo desde el teléfono (Dispositivos vinculados).
-2. Esperado en ≤ 5 min: la línea en rojo, estado "Tu WhatsApp se desconectó".
+2. Esperado en ≤ 5 min: la línea en rojo, estado "Tu WhatsApp se desconectó el DD/MM. Tocá «Reconectar»." y, en el log del mailer, un aviso de caída al dueño (solo `*@dominio`).
 3. **Reconectar** desde la Consola, escanear, y verificar que el vínculo anterior pasa a `cerrado` con causa `reemplazado`.
 
 | Punto a validar | Resultado |
@@ -6168,7 +6601,7 @@ Si los nombres de `actions` no son los que usa WAHA, corregí `ACCIONES_CLAVE_LE
 ## 7. Restricción y admisión
 
 1. En la Consola, **Marcar restricción** sin fecha; **Reconectar** tiene que dar "La cuenta tiene una restricción activa"; **Desconectar** tiene que funcionar. Levantala.
-2. `python scripts/radar_workers.py disco --nombre gows-staging --usado-gb 4` (80 % de 5 GB) y generá QR en otra línea. Esperado: "Estamos preparando tu conexión, te avisamos por email" y ninguna sesión nueva en WAHA. Volvé el disco a 0.
+2. `python scripts/radar_workers.py disco --nombre gows-staging --usado-gb 4` (80 % de 5 GB) y generá QR en otra línea. Esperado: "En este momento no hay lugar para una conexión nueva. Probá de nuevo más tarde o escribinos." y ninguna sesión nueva en WAHA. Volvé el disco a 0.
 
 ## 8. Cierre
 
@@ -6181,7 +6614,7 @@ Si los nombres de `actions` no son los que usa WAHA, corregí `ACCIONES_CLAVE_LE
 ```bash
 python -m pytest -q
 ```
-Esperado: toda la suite en verde, la del bot y la de Radar. `tests/radar_tests` suma 187 tests nuevos (9 + 11 + 23 + 17 + 10 + 7 + 29 + 9 + 15 + 7 + 8 + 6 + 9 + 12 + 8 + 7) sobre los 190 del tramo 1: 377, con el mismo `skipped` de Windows del tramo 1.
+Esperado: toda la suite en verde, la del bot y la de Radar. `tests/radar_tests` suma 200 tests nuevos (9 + 12 + 23 + 17 + 10 + 7 + 29 + 9 + 17 + 10 + 10 + 7 + 9 + 15 + 9 + 7) sobre los 206 que el tramo 1 real tiene en `tests/radar_tests` (`pytest --collect-only`): 406, con el mismo `skipped` de Windows del tramo 1.
 
 - [ ] **Step 4: Commit**
 
@@ -6219,20 +6652,32 @@ git commit -m "Radar tramo 2: documentacion de despliegue y runbook manual contr
 | §9 "QR mostrado → WORKING" y "mediana P0 → WORKING" | Task 9 (`vinculo_iniciado`, `vinculo_working` con `segundos`) |
 | §9 "Sesiones de WAHA vivas de vínculos ya terminados = 0" | Task 10 (verificación 404 y cero claves; si no, reintento), Task 11 (QR abandonado y caída > 72 h encolan el fin) |
 | Tests con WAHA falso; runbook manual contra GOWS | Todas las tasks (`WahaFalso`), Task 17 |
+| Vínculo caído: banner con fecha y email al dueño; un vínculo que cierra no avisa | Task 9 (`aplicar_status` encola `aviso_caida`; `test_caida_de_un_vinculado_encola_el_aviso_y_la_de_uno_que_cierra_no`), Task 10 (`avisar_caida`, `test_aviso_de_caida_con_la_fecha`), Task 12 (`HANDLERS["aviso_caida"]`), Task 15 (`diaMes(e.caido_desde)`) |
+| Restricción: el sistema no reinicia la sesión mientras está activa | Task 9 (`reiniciar_qr` → `409 restriccion_activa`; `test_con_restriccion_activa_no_se_reinicia_el_qr`) |
+| Admisión: no mostrar promesas que el código no cumple | Task 15 (`MENSAJES.sin_capacidad` sin "te avisamos por email"; `test_textos_del_js_no_prometen_lo_que_el_codigo_no_hace`) |
+| Ningún vínculo queda trabado en `creando` | Task 2 (`radar_jobs_programar_salud` incluye `creando`), Task 8 (`test_programar_salud_solo_vinculos_vivos`), Task 11 (`CREANDO_HUERFANO`, dos tests) |
+| Privilegios mínimos de `radar_app` (criterio del tramo 1) | Task 2 (`UPDATES_POR_COLUMNA`, `borrado_solicitado_at`, `test_grant_update_no_alcanza_columnas_de_identidad`) |
+| Semántica de consentimientos del tramo 1 (`parametros_propuestos_at`) | Task 14 (`tenant_ya_consentido`, `test_asistido_arrastra_la_propuesta_de_tenant_ya_aceptada`) |
+| Un mail que falla no rompe una operación confirmada | Task 10 (`_avisar`, `test_mail_que_falla_no_rompe_el_fin`), Task 14 (`test_copia_que_no_sale_no_rompe_el_consentimiento`) |
+| La Consola no opera sobre el tenant KIS ni sobre tenants inexistentes | Task 14 (`_tenant_cliente`, `test_rutas_de_linea_solo_sobre_un_tenant_cliente`) |
 
 **Fuera de alcance (a propósito):** pasada de conteo, P4 (selección de chats), backfill, reconciliación, `observado_hasta` en movimiento, "sospecha de silencio" y su reinicio automático, ingesta de `message.*` y `webhook_inbox` (tramo 3); KPI y C3 (tramo 4); IA y gasto de IA del mes (tramo 5); purgas, "borrar todo" sobre nuestra base con constancia, recordatorio semestral y baja de líneas (tramo 6). También quedan fuera P1 del cliente (decisión 14), "reintentar sincronización", "re-analizar" y "mover de worker" de C4 (dependen de los tramos 3 y 5), la detección automática de la restricción de cuenta (decisión 8) y el modo sin copia en WAHA (segunda etapa).
 
 ### (b) Placeholders
 
-Revisado: no hay `TBD`, `TODO`, "similar a la tarea N" ni pasos sin código. Las únicas modificaciones descritas en prosa sobre archivos del tramo 1 son inserciones puntuales con el bloque exacto (constantes, campos de `RadarSettings`, imports, la tupla de routers de `app.py`) o reemplazos completos de una función o constante (`validar_settings`, `_lifespan_radar`, `ACCIONES`…, `_validar_valor`, `EVENTOS`, `TABLAS`, `TABLAS_TENANT`, `RadarContexto`). Los `[VALIDAR]` del spec que el código no puede cerrar están en el runbook de la Task 17 como puntos a verificar, con qué corregir si fallan.
+Revisado: no hay `TBD`, `TODO`, "similar a la tarea N" ni pasos sin código. Las únicas modificaciones descritas en prosa sobre archivos del tramo 1 son inserciones puntuales con el bloque exacto (constantes, campos de `RadarSettings`, imports, el import de routers y la línea `app.include_router` de cada router nuevo en `app.py`) o reemplazos completos de una función o constante (`validar_settings`, `_lifespan_radar`, `ACCIONES`…, `_validar_valor`, `EVENTOS`, `TABLAS`, `TABLAS_TENANT`, `RadarContexto`). La mudanza de `_tenant_ya_consentido` (Task 14) trae la función completa en su lugar nuevo y lista cada línea que cambia en `routers/parametros.py`. La enmienda del 2026-09-24 no deja placeholders: cada corrección tiene su código y, si cambia comportamiento, su test. Los `[VALIDAR]` del spec que el código no puede cerrar están en el runbook de la Task 17 como puntos a verificar, con qué corregir si fallan.
 
 ### (c) Consistencia de nombres con el tramo 1
 
 Se usan tal cual: `RadarDB.tenant_tx`/`sin_tenant`, `politica_por_tenant`, `grants_app`, `definir_funcion_admin`, `radar_tenant_actual()`, `TENANT_KIS`/`TENANT_KIS_STR`, `RadarContexto` (se agrega un campo con default, sin romper a quien lo construye), `RadarSettings` (prefijo `RADAR_`), `validar_settings`, `construir_contexto`, `crear_app_radar`, `contexto(request)`, `auditoria.registrar` (con `ACCIONES`, `TIPOS_OBJETO`, `CLAVES_DETALLE`, `DetalleProhibido`, `validar_detalle`), `eventos_producto.registrar_evento` (`EVENTOS`), `Email`/`MemoryMailer`/`ctx.mailer.enviar`, `SecretStore` (`get/set/delete`, nombres `^[a-z0-9_:-]{1,120}$`: `waha_admin:<uuid>` y `waha_lectura:<uuid>` cumplen), `Sesion` (`user_id`, `tenant_id`, `rol`, `puede_ver_linea`), `sesion_actual`, `requiere_rol`, `ip_de`, `normalizar_e164`/`TelefonoNoSoportado`, `VERSIONES`/`hash_texto` (`app.radar.consentimiento`), `leer_linea` (`app.radar.lineas`), `DE_LINEA` (`app.radar.parametros`), `a_json`/`leer_parametros_tenant` (`app.radar.parametros_service`), el endpoint `POST /radar/api/lineas/{id}/consentimientos` con `ConsentimientoIn(version_texto, acepta, titular, …)`, las fixtures `radar_urls`, `radar_db`, `radar_ctx`, `cliente` y los helpers `crear_tenant_directo`, `crear_usuario`, `crear_linea_directa`, `entrar`. La cookie `radar_sesion` tiene `Path=/radar`, por eso todas las pantallas y APIs nuevas con sesión cuelgan de `/radar/…`; `/webhook/waha` no usa cookie. Los tests del tramo 1 que este plan toca (`test_esquema.py::TABLAS_TENANT`, `conftest.py::TABLAS`) se modifican explícitamente en la Task 2; `test_modo_radar_no_monta_bot` sigue pasando porque `/webhook/waha` ≠ `/webhook`.
 
+Enmienda 2026-09-24, contra el tramo 1 ya implementado: los nombres de arriba se verificaron en `app/radar/`, `migrations_radar/versions/r0001|r0002` y `tests/radar_tests/`. Además se usan `UPDATES_POR_COLUMNA` (patrón de r0002), `radar_urls["super"]` (`conftest.py`), `MailerQueFalla` (`helpers.py`), `leer_propuesta_tenant`, `lineas_vivas_sin_consentir` y `coincide_con_propuesta` (`parametros_service.py`), y el chequeo `SELECT … FROM tenants WHERE id = $1 AND NOT es_kis` de `routers/admin.py`. `app.py` registra los routers con una línea `app.include_router` por router (sin tupla), `test_esquema.py` tiene 14 tests y `tests/radar_tests` recoge 206.
+
 ### (d) Verificación de los bloques
 
 Los bloques se extrajeron a un árbol temporal fuera del repo. Resultado: los tests que no dependen de la base ni del tramo 1 (Tasks 3, 4, 5 y 7) corren contra el código del plan con `79 passed` (23 + 17 + 10 + 29, los mismos conteos de sus "Esperado"); los 56 bloques Python parsean; `radar.js` pasa `node --check`; y los chequeos estáticos de la Task 15 (sin sumideros de HTML, sin inline, ids del JS presentes en `consola.html` y los del modo cliente en `conectar.html`) se verificaron sobre los archivos extraídos. Los tests con base (pgserver + roles) y los que importan módulos del tramo 1 no se pudieron correr porque el tramo 1 todavía no está implementado en ninguna rama: sus conteos salen de contar funciones y casos parametrizados, y se confirman al ejecutar el plan.
+
+Enmienda 2026-09-24: los 61 bloques Python del plan enmendado parsean y `radar.js` pasa `node --check`. Las Tasks 3, 4, 5 y 7 no cambiaron. Los tests nuevos o modificados de la enmienda usan base y el tramo 1, así que se confirman al ejecutar el plan (el tramo 1 ya existe en esta rama; el total de 206 de `tests/radar_tests` sale de `pytest --collect-only`).
 
 ### (e) Decisiones abiertas para el dueño
 
@@ -6241,4 +6686,7 @@ Los bloques se extrajeron a un árbol temporal fuera del repo. Resultado: los te
 3. **Medición del disco de cada worker** (punto 13 del spike): hoy se carga a mano; la admisión por disco es tan buena como ese dato.
 4. **Variantes del texto de consentimiento** para parámetros distintos de los iniciales ("la conexión dura N días", purga): hoy hay una sola versión (`v1`) y la pantalla muestra los parámetros al lado.
 5. **Plazo del QR abandonado** (30 min) y **cantidad de reinicios** (3): valores de este plan, a calibrar con el punto 8 del spike.
-6. **Proveedor de email transaccional** (heredada del tramo 1): la copia del consentimiento asistido y el aviso de fin de vínculo usan el `Mailer`; con `log` no le llegan al dueño.
+6. **Proveedor de email transaccional** (heredada del tramo 1): la copia del consentimiento asistido y los avisos de fin y de caída del vínculo usan el `Mailer`; con `log` no le llegan al dueño.
+7. **Aviso cuando se libera capacidad** (§6.2, Admisión: "te avisamos por email"): en este tramo no hay mecanismo que registre el pedido rechazado y avise después, así que el texto no lo promete (enmienda, punto 11). Implementarlo (pedido pendiente + aviso desde el worker) o dejar el texto actual.
+8. **Worker embebido por defecto** (decisión 15): §6.2 pide un proceso aparte; se mantiene embebido por el volumen de secretos, reversible con `RADAR_WORKER_EMBEBIDO=false`. Necesita el OK explícito del dueño o un cambio en §6.2 antes de ejecutar.
+9. **Plazo de un vínculo huérfano en `creando`** (15 min, `salud.CREANDO_HUERFANO`): valor de este plan.
