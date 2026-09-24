@@ -18,7 +18,7 @@ from app.radar.db import RadarDB
 from app.radar.fuente import FuenteStore
 from app.radar.mailer import construir_mailer
 from app.radar.migrate import migrar_fuente, migrar_resultados
-from app.radar.routers import admin, consola, cuenta, health, login, paginas, parametros, soporte, webhook_waha
+from app.radar.routers import admin, consola, cuenta, health, login, paginas, parametros, soporte, vinculo, webhook_waha
 from app.radar.secrets import FileSecretStore
 from app.radar.settings import RadarSettings, get_radar_settings
 
@@ -91,5 +91,6 @@ def crear_app_radar(rs: RadarSettings | None = None, contexto: RadarContexto | N
     app.include_router(soporte.router)
     app.include_router(webhook_waha.router)
     app.include_router(consola.router)
+    app.include_router(vinculo.router)
     app.include_router(paginas.router)
     return app
