@@ -3,6 +3,7 @@ Worker de la cola de Radar (§6.2).
 
 - Como proceso aparte: `python -m app.radar.worker` (misma imagen, mismas
   variables RADAR_). No corre migraciones: las corre el servicio web.
+- No se corren a la vez el embebido y el proceso aparte (ver docs de despliegue).
 - Embebido (por defecto, RADAR_WORKER_EMBEBIDO=true): el lifespan del servicio
   web corre `bucle` como tarea. Motivo: las claves de WAHA viven en el
   FileSecretStore de un volumen de Railway, y un volumen se monta en un solo
@@ -33,7 +34,9 @@ HANDLERS: dict[str, Callable[[RadarContexto, Job], Awaitable[str]]] = {
 }
 
 
-async def correr_una_vez(ctx: RadarContexto, *, lote: int = 10) -> int:
+async def correr_una_vez(ctx: RadarContexto, *, lote: int = 1) -> int:
+    # De a un job por vuelta: el lease corre desde el reclamo, y en un lote los
+    # últimos llegaban a su turno con el lease vencido (otro worker los retomaba).
     trabajos = await cola.reclamar(ctx.db, lote=lote)
     for job in trabajos:
         try:

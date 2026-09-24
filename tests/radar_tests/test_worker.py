@@ -99,3 +99,16 @@ async def test_lifespan_arranca_y_detiene_el_worker_embebido(radar_urls, tmp_pat
         await asyncio.sleep(0.05)
         assert tarea is not None and not tarea.done()
     assert tarea.done()
+
+
+async def test_correr_una_vez_reclama_de_a_un_job(ctx_waha, waha, monkeypatch):
+    """Final B3: el lease corre desde el reclamo; se reclama de a uno por vuelta."""
+    pedidos = []
+
+    async def reclamar(db, *, lote=10, lease_s=cola.LEASE_S):
+        pedidos.append(lote)
+        return []
+
+    monkeypatch.setattr(cola, "reclamar", reclamar)
+    await worker.correr_una_vez(ctx_waha)
+    assert pedidos == [1]

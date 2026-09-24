@@ -158,3 +158,25 @@ async def test_fin_agotado_en_cerrando_se_reencola_al_programar_salud(radar_db, 
     async with radar_db.tenant_tx(t) as con:
         vivo = await con.fetchrow("SELECT tipo, causa FROM jobs WHERE link_id = $1 AND estado = 'pendiente'", k)
     assert (vivo["tipo"], vivo["causa"]) == ("fin_vinculo", "pedido_kis")
+
+
+async def test_worker_con_lease_vencido_no_pisa_el_estado_de_otro(radar_db):
+    """Final B3: A reclama y se le vence el lease; B lo reclama de nuevo. Lo
+    que A haga después (completar, reprogramar, fallar) no toca el job de B."""
+    t, k = await _link(radar_db, await crear_worker_directo(radar_db))
+    async with radar_db.tenant_tx(t) as con:
+        jid = await cola.encolar(con, tipo="fin_vinculo", link_id=k)
+    [de_a] = await cola.reclamar(radar_db, lease_s=0)
+    [de_b] = await cola.reclamar(radar_db)
+    assert (de_a.intentos, de_b.intentos) == (1, 2)
+    await cola.completar(radar_db, de_a)
+    await cola.reprogramar(radar_db, de_a, 300)
+    assert await cola.fallar(radar_db, de_a, RuntimeError("x")) is None
+    fila = await _job(radar_db, t, jid)
+    assert (fila["estado"], fila["intentos"], fila["ultimo_error"]) == ("corriendo", 2, None)
+    await cola.completar(radar_db, de_b)
+    assert (await _job(radar_db, t, jid))["estado"] == "hecho"
+
+
+def test_lease_cubre_el_peor_caso_del_fin():
+    assert cola.LEASE_S >= 600

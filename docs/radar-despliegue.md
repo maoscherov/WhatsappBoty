@@ -200,7 +200,12 @@ y a las claves de lectura por vínculo (`waha_lectura:<link_id>`). Nunca en Post
   y el comando `python -m app.radar.worker` (no corre migraciones: las corre el servicio web).
 - La cola vive en Postgres (`radar_jobs_reclamar`, `FOR UPDATE SKIP LOCKED`). Programa el chequeo de salud de cada vínculo vivo
   cada 5 min y corre los fines de vínculo. Un job que agota sus reintentos (`intentos >= max_intentos`) pasa a `fallido` en vez
-  de quedar reintentando para siempre; un vínculo con el job de fin en `fallido` queda en `cerrando` hasta que se reintente a mano.
+  de quedar reintentando para siempre; si era un fin de vínculo, el vínculo sigue en `cerrando` y la programación de salud
+  (cada 5 min) le vuelve a encolar el fin, sin techo, hasta que WAHA confirme el borrado.
+- **Nunca corren a la vez el worker embebido y el proceso aparte** (ni dos réplicas del servicio web con el embebido): con
+  `RADAR_WORKER_EMBEBIDO=true` no se levanta `python -m app.radar.worker`, y al pasar a proceso aparte se pone `false` en el web
+  antes de arrancarlo. La cola tolera un segundo worker (reclama de a un job, lease de 600 s, y completar/reprogramar/fallar solo
+  tocan un job que sigue siendo suyo), pero dos `fin_vinculo` del mismo vínculo en paralelo romperían "un único DELETE por intento".
 
 ### Pantallas
 
