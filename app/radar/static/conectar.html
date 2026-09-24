@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Radar — Conectar WhatsApp</title>
+<link rel="stylesheet" href="/radar/estaticos/radar.css">
+<script src="/radar/estaticos/radar.js" defer></script>
+</head>
+<body data-modo="cliente">
+<header>
+  <h1>Conectar tu WhatsApp</h1>
+  <p class="nota">No enviamos ni modificamos nada: solo leemos.</p>
+</header>
+<p id="error" class="error" role="alert"></p>
+
+<section id="panel">
+  <div id="paso-consentimiento" hidden>
+    <h2>Qué vamos a analizar y qué no</h2>
+    <pre id="texto-consentimiento"></pre>
+    <p id="parametros" class="nota"></p>
+    <input type="hidden" id="version" value="">
+    <label><input type="checkbox" id="acepto"> Soy titular o responsable de esta línea y confirmo el acuerdo de tratamiento de datos de mi contrato</label>
+    <button type="button" id="btn-consentir">Aceptar y continuar</button>
+  </div>
+
+  <div id="paso-vincular" hidden>
+    <h2>Conectar WhatsApp</h2>
+    <p><label><input type="checkbox" id="full-sync"> Hasta 12 meses de historial (no se puede cambiar después de escanear; para ampliarlo hay que desvincular y escanear de nuevo)</label></p>
+    <button type="button" id="btn-generar">Generar QR</button>
+  </div>
+
+  <div id="paso-estado">
+    <p id="estado-texto" role="status"></p>
+    <img id="qr" alt="Código QR para vincular WhatsApp" width="264" height="264" hidden>
+    <p id="cuenta" class="nota" hidden></p>
+    <p id="reinicios" class="nota"></p>
+    <button type="button" id="btn-reiniciar" hidden>Generar un código nuevo</button>
+    <p class="nota">Abrí WhatsApp → Dispositivos vinculados → Vincular un dispositivo → Escaneá. Si falla, revisá que el teléfono no tenga ya 4 dispositivos vinculados.</p>
+    <details>
+      <summary>Estoy en el mismo teléfono: vincular con código</summary>
+      <label>Número de la línea, en formato internacional <input type="tel" id="telefono" autocomplete="off"></label>
+      <button type="button" id="btn-codigo">Pedir código</button>
+      <p id="codigo"></p>
+    </details>
+    <p id="aviso" class="nota"></p>
+  </div>
+
+  <div>
+    <button type="button" id="btn-desconectar">Desconectar</button>
+    <button type="button" id="btn-borrar" class="peligro">Desconectar y borrar todo</button>
+  </div>
+</section>
+</body>
+</html>

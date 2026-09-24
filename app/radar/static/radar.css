@@ -1,0 +1,18 @@
+:root { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; color: #1d1d1f; background: #fafafa; }
+body { margin: 0 auto; max-width: 1200px; padding: 16px; }
+[hidden] { display: none !important; }
+h1 { font-size: 22px; } h2 { font-size: 18px; } h3 { font-size: 16px; }
+.tabla { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { border-bottom: 1px solid #ddd; padding: 6px 8px; text-align: left; white-space: nowrap; }
+tr.semaforo-verde td:first-child { color: #137333; font-weight: 600; }
+tr.semaforo-amarillo td:first-child { color: #b06000; font-weight: 600; }
+tr.semaforo-rojo td:first-child { color: #c5221f; font-weight: 600; }
+tr.semaforo-gris td:first-child { color: #5f6368; }
+pre { white-space: pre-wrap; background: #fff; border: 1px solid #ddd; padding: 12px; max-height: 320px; overflow: auto; }
+.error { color: #c5221f; min-height: 1em; }
+.nota { color: #5f6368; font-size: 13px; }
+.peligro { color: #c5221f; }
+.filtros label { margin-right: 12px; }
+button { margin: 4px 4px 4px 0; }
+#panel { margin-top: 24px; padding: 16px; background: #fff; border: 1px solid #ddd; }
