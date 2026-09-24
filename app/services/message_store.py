@@ -15,12 +15,14 @@ class MessageStore:
     def __init__(self, db):
         self._db = db
 
-    async def save(self, phone: str, role: str, content: str, autor: Optional[str] = None):
+    async def save(self, phone: str, role: str, content: str, autor: Optional[str] = None,
+                   origen: Optional[str] = None, media: Optional[str] = None):
         if not content:
             return
         await self._db.execute(
-            "INSERT INTO messages (phone, role, content, autor) VALUES ($1, $2, $3, $4)",
-            phone, role, content, (autor or None),
+            "INSERT INTO messages (phone, role, content, autor, origen, media) "
+            "VALUES ($1, $2, $3, $4, $5, $6)",
+            phone, role, content, (autor or None), (origen or None), (media or None),
         )
 
     async def history(self, phone: str, limit: int = 200,
@@ -33,13 +35,13 @@ class MessageStore:
         """
         if before_id:
             rows = await self._db.fetch(
-                "SELECT id, role, content, autor, created_at FROM messages "
+                "SELECT id, role, content, autor, origen, media, created_at FROM messages "
                 "WHERE phone = $1 AND id < $2 ORDER BY id DESC LIMIT $3",
                 phone, int(before_id), limit,
             )
         else:
             rows = await self._db.fetch(
-                "SELECT id, role, content, autor, created_at FROM messages "
+                "SELECT id, role, content, autor, origen, media, created_at FROM messages "
                 "WHERE phone = $1 ORDER BY id DESC LIMIT $2",
                 phone, limit,
             )
@@ -95,11 +97,22 @@ def mensaje_a_dict(r) -> dict:
     guardan como "📷 /media/chat/{id}": se exponen en `media` para que la
     pantalla las muestre como imagen (el archivo vence a los 7 días)."""
     content = r["content"] or ""
-    media = None
-    if content.startswith(_MEDIA_PREFIX):
+    media = _col(r, "media")
+    origen = _col(r, "origen")
+    if not media and content.startswith(_MEDIA_PREFIX):
         media = content[len("📷 "):].strip()
+    if not origen:
+        origen = "imagen" if content.startswith(_MEDIA_PREFIX) else ("texto" if r["role"] == "user" else None)
     return {"id": r["id"], "role": r["role"], "content": content,
-            "autor": r["autor"], "media": media, "ts": r["created_at"].isoformat()}
+            "autor": r["autor"], "origen": origen, "media": media,
+            "ts": r["created_at"].isoformat()}
+
+
+def _col(r, nombre):
+    try:
+        return r[nombre]
+    except (KeyError, IndexError):
+        return None
 
 
 async def guardar_historico(phone: str, role: str, content: str, autor: Optional[str] = None) -> None:

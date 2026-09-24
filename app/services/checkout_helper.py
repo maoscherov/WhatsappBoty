@@ -1401,11 +1401,13 @@ def bot_encendido(cfg: dict) -> bool:
 # gustaría más información?" y el sistema le pegó debajo OTRO "No me figura
 # disponible" con otra pregunta).
 # ══════════════════════════════════════════════════════════════════════════════
+# La pregunta vaga se saca con TODA su oración, aunque arranque a mitad
+# ("En cuanto a la avena…, ¿te gustaría que te ofrezca otras opciones?", 23/9).
 _CIERRE_VAGO = re.compile(
-    r"(?:^|(?<=[.!?…\n]))\s*¿[^?¿]*\b("
+    r"(?:^|(?<=[.!?…\n]))(?P<previo>[^.!?…\n¿]*)¿[^?¿]*\b("
     r"m[aá]s\s+informaci[oó]n|"
-    r"te\s+gustar[ií]a\s+(considerar|saber|conocer|ver|que\s+te)|"
-    r"quer[eé]s\s+(saber|conocer|que\s+te\s+(cuente|pase|detalle))|"
+    r"te\s+gustar[ií]a\s+(consider\w*|saber|conocer|ver|que\s+te\s+(ofrezca|cuente|muestre|detalle))|"
+    r"quer[eé]s\s+(saber|conocer|que\s+te\s+(cuente|detalle|ofrezca|muestre))|"
     r"te\s+interesa(r[ií]a)?\s+(alguna|alguno|conocer|saber)|"
     r"alguna\s+de\s+estas\s+opciones"
     r")\b[^?¿]*\?",
@@ -1417,7 +1419,16 @@ def quitar_cierres_vagos(texto: str) -> str:
     """Saca preguntas de cierre que no llevan a nada ("¿Te gustaría más
     información sobre alguna de estas opciones?"). Si el resultado queda
     vacío, devuelve el original."""
-    limpio = _CIERRE_VAGO.sub(" ", texto or "")
+    # Los decimales de un precio no son fin de oración ("$4.770, ¿te…?").
+    protegido = re.sub(r"(?<=\d)\.(?=\d)", "\x00", texto or "")
+    def _recorte(m):
+        # Si lo que precede a la pregunta trae un precio, es la oferta: se
+        # conserva y se quita solo la pregunta.
+        previo = m.group("previo") or ""
+        if "$" in previo or re.search(r"\d", previo):
+            return previo.rstrip(" ,;:") + "."
+        return " "
+    limpio = _CIERRE_VAGO.sub(_recorte, protegido).replace("\x00", ".")
     limpio = re.sub(r"[ \t]{2,}", " ", limpio)
     limpio = re.sub(r"\s*\n\s*\n\s*\n+", "\n\n", limpio).strip()
     return limpio if limpio else (texto or "")

@@ -595,3 +595,100 @@ def set_sku_service(svc: SKUService) -> SKUService:
     global _instance
     _instance = svc
     return _instance
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Caso real 23/9 (María, audio): "jabón aveno y la crema Atopix". La
+# transcripción escribió "Topics" y el modelo cambió "aveno" por "avena".
+# ══════════════════════════════════════════════════════════════════════════════
+# Marcas que más se piden por audio; se suman a las más frecuentes del catálogo.
+MARCAS_AUDIO_BASE = [
+    "Aveno", "Atopix", "Actron", "Ibupirac", "Ibuevanol", "Tafirol", "Bayaspirina", "Buscapina",
+    "Sertal", "Dermaglos", "Isdin", "La Roche-Posay", "Eucerin", "Cetaphil", "Hyalu C",
+    "Bagovit", "Lanzopral", "Omeprazol", "Holomagnesio", "Curflex", "Dioxaflex", "Novalgina",
+    "Refrianex", "Mejoral", "Geniol", "Aspirina", "Uvasal", "Sal de frutas Eno", "Loratadina",
+    "Allegra", "Cepage", "Cassará", "Bagó", "Roemmers", "Elea", "Vichy", "Avene", "Bioderma",
+]
+
+
+def marcas_frecuentes(sku_svc, n: int = 60) -> list[str]:
+    """Las `n` marcas con más productos en el catálogo (cacheado por instancia)."""
+    cache = getattr(sku_svc, "_marcas_frecuentes", None)
+    if cache is not None:
+        return cache[:n]
+    from collections import Counter
+    c = Counter()
+    for s in sku_svc.todos():
+        m = (getattr(s, "marca", "") or "").strip()
+        if 2 < len(m) <= 30 and not m.isdigit():
+            c[m.title()] += 1
+    cache = [m for m, _ in c.most_common(200)]
+    try:
+        sku_svc._marcas_frecuentes = cache
+    except Exception:
+        pass
+    return cache[:n]
+
+
+def vocabulario_audio(sku_svc, max_chars: int = 650) -> str:
+    """Texto de guía para la transcripción: marcas que tiene que escribir bien."""
+    vistas, nombres = set(), []
+    for m in MARCAS_AUDIO_BASE + marcas_frecuentes(sku_svc):
+        k = m.lower()
+        if k not in vistas:
+            vistas.add(k)
+            nombres.append(m)
+    out = "Consulta a una farmacia. Productos y marcas: "
+    for m in nombres:
+        if len(out) + len(m) + 2 > max_chars:
+            break
+        out += m + ", "
+    return out.rstrip(", ") + "."
+
+
+def _plano(s: str) -> str:
+    import unicodedata
+    return "".join(ch for ch in unicodedata.normalize("NFD", (s or "").lower())
+                   if unicodedata.category(ch) != "Mn")
+
+
+def restaurar_palabras_cliente(entidad: Optional[str], texto: str) -> Optional[str]:
+    """
+    El buscador recibe el producto que extrae el modelo, y el modelo a veces
+    "corrige" una palabra que el cliente dijo bien ("aveno" → "avena"). Si una
+    palabra de la entidad no está en el mensaje pero hay una casi igual, se usa
+    la del cliente. Mismo criterio que completar_numeros.
+    """
+    if not entidad or not texto:
+        return entidad
+    tokens_texto = [t for t in _re_mod.findall(r"[a-záéíóúüñ]+", _plano(texto)) if len(t) >= 4]
+    if not tokens_texto:
+        return entidad
+    presentes = set(tokens_texto)
+    partes = []
+    cambio = False
+    for tok in _re_mod.split(r"(\s+)", entidad):
+        base = _plano(tok).strip(".,;:!?¿¡")
+        if len(base) >= 4 and base.isalpha() and base not in presentes:
+            mejor = max(tokens_texto, key=lambda t: fuzz.ratio(base, t))
+            if fuzz.ratio(base, mejor) >= 75 and mejor[:2] == base[:2]:
+                partes.append(mejor)
+                cambio = True
+                continue
+        partes.append(tok)
+    return "".join(partes) if cambio else entidad
+
+
+def alguna_palabra_coincide(query: str, nombre: str) -> bool:
+    """Alguna palabra distintiva (4+ letras, no un tipo como "crema") de la
+    consulta aparece en el nombre, por sus primeras 4 letras. Sin eso, lo
+    encontrado no tiene nada que ver con lo pedido ("crema Topics" →
+    Dermaglos glicólico, 23/9). Si la consulta es solo un tipo, no objeta."""
+    nombre_exp = _plano(expandir_abreviaturas(nombre or ""))
+    genericas = {"crema", "jabon", "shampoo", "gotas", "jarabe", "comprimidos", "capsulas",
+                 "protector", "solar", "gel", "locion", "polvo", "spray", "para", "algo"}
+    distintivas = [t for t in _re_mod.findall(r"[a-záéíóúüñ]+", _plano(query))
+                   if len(t) >= 4 and t not in genericas]
+    if not distintivas:
+        return True     # "una crema": no hay marca que contradiga; decide el tipo
+    return any(t[:4] in nombre_exp for t in distintivas)

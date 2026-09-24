@@ -39,15 +39,17 @@ class AudioService:
         self._provider = provider
         logger.info(f"AudioService inicializado con provider={provider} model={self._model}")
 
-    async def transcribir(self, audio_bytes: bytes, filename: str = "audio.ogg") -> Optional[str]:
+    async def transcribir(self, audio_bytes: bytes, filename: str = "audio.ogg",
+                          prompt: Optional[str] = None) -> Optional[str]:
+        """`prompt`: vocabulario que conviene reconocer (marcas del catálogo).
+        Sin él, Whisper escribe castellano general: "Atopix" → "Topics"."""
         try:
             audio_file = io.BytesIO(audio_bytes)
             audio_file.name = filename
-            result = await self._client.audio.transcriptions.create(
-                model=self._model,
-                file=audio_file,
-                language="es",
-            )
+            kwargs = {"model": self._model, "file": audio_file, "language": "es"}
+            if prompt:
+                kwargs["prompt"] = prompt[:700]
+            result = await self._client.audio.transcriptions.create(**kwargs)
             texto = result.text.strip()
             logger.info(f"Audio transcripto ({self._provider}): {texto[:80]}...")
             return texto or None

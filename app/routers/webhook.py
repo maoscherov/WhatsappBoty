@@ -613,6 +613,8 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
         _skip_record = False  # True para mensajes descartados antes de procesar
         _audio_prov_used: str | None = None   # "groq" | "openai" si se transcribió
         texto = ""            # texto del usuario (para historial en finally)
+        _origen = "texto"     # texto | audio | imagen | documento (historial)
+        _media_ref = None     # archivo guardado para el operador (/media/chat/…)
         respuesta = None      # respuesta del bot (para historial en finally)
 
         # Serializar por teléfono: los mensajes del mismo usuario se procesan
@@ -636,20 +638,43 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
             # horario". El mensaje se guarda y entra a la cola de derivadas.
             _bot_off = not bot_encendido(await deps["config"].get_all())
 
-            # Audio con transcripción de Kapso: ya viene resuelto, no hace falta
-            # descargar ni pasar por Whisper.
-            if msg_type == "audio" and msg.get("texto_transcripto"):
-                texto = msg["texto_transcripto"]
-                _audio_prov_used = "kapso"
-
-            # Audio → transcripción
-            elif msg_type == "audio" and msg["audio_id"]:
+            # Audio → transcripción propia CON vocabulario de marcas (23/9: la
+            # de Kapso escribió "Topics" por "Atopix"). La de Kapso queda de
+            # respaldo. El original se guarda 7 días para que el operador lo
+            # escuche y verifique la transcripción.
+            if msg_type == "audio" and (msg.get("media_url") or msg.get("audio_id")
+                                        or msg.get("texto_transcripto")):
+                _origen = "audio"
                 _ta = _time.perf_counter()
-                audio_bytes = await deps["wa"].download_audio(msg["audio_id"])
+                if msg.get("media_url"):
+                    audio_bytes = await _descargar_url(msg["media_url"])
+                elif msg.get("audio_id"):
+                    audio_bytes = await deps["wa"].download_audio(msg["audio_id"])
+                else:
+                    audio_bytes = None
+                texto = ""
                 if audio_bytes:
-                    texto = await deps["audio"].transcribir(audio_bytes) or ""
-                    _steps["transcripcion_ms"] = int((_time.perf_counter() - _ta) * 1000)
-                    _audio_prov_used = _s.audio_provider or "groq"
+                    try:
+                        _aid = "aud" + (_re.sub(r"[^\w]", "", msg_id)[-29:] or msg_id[-29:])
+                        from app.services.blob_store import get_blob_store as _gbs_a
+                        if await _gbs_a(_s.redis_url).save(f"chat:{_aid}", audio_bytes, ".ogg",
+                                                           ttl=7 * 24 * 3600):
+                            _media_ref = f"/media/chat/{_aid}"
+                    except Exception:
+                        pass
+                    try:
+                        from app.services.sku_service import vocabulario_audio
+                        _vocab = vocabulario_audio(deps["sku"])
+                    except Exception:
+                        _vocab = None
+                    texto = await deps["audio"].transcribir(audio_bytes, prompt=_vocab) or ""
+                    if texto:
+                        _audio_prov_used = _s.audio_provider or "groq"
+                if not texto and msg.get("texto_transcripto"):
+                    texto = msg["texto_transcripto"]
+                    _audio_prov_used = "kapso"
+                _steps["transcripcion_ms"] = int((_time.perf_counter() - _ta) * 1000)
+                if audio_bytes or texto:
                     if not texto:
                         if _bot_off:
                             texto = "[audio que no se pudo transcribir]"
@@ -704,9 +729,11 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     # También al historial permanente (la foto vence a los 7
                     # días, pero queda constancia de que el cliente la mandó).
                     try:
-                        await deps["msgs"].save(phone, "user", _img_ref)
+                        await deps["msgs"].save(phone, "user", _img_ref,
+                                                origen="documento" if msg_type == "document" else "imagen")
                     except Exception:
                         pass
+                _origen = "documento" if msg_type == "document" else "imagen"
 
                 _s_adj = await deps["session"].get(phone)
                 _s_adj["_adjunto_at"] = _time.time()
@@ -1674,8 +1701,8 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 _tsku = _time.perf_counter()
                 # El modelo suele tirar el número ("aveno infantil por 65" →
                 # "aveno infantil"): se le devuelven los de la frase original.
-                from app.services.sku_service import completar_numeros
-                _entidad_busq = completar_numeros(entidad, texto)
+                from app.services.sku_service import completar_numeros, restaurar_palabras_cliente
+                _entidad_busq = restaurar_palabras_cliente(completar_numeros(entidad, texto), texto)
                 if _entidad_busq != entidad:
                     logger.info(f"Entidad completada con números: {entidad!r} → {_entidad_busq!r}")
                 resultados_sku = deps["sku"].buscar(_entidad_busq)
@@ -1900,23 +1927,30 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     from app.services.sku_service import nombre_coincide
                     _lineas_extra = []
                     _extras_guardar = []   # los que existen de verdad: sumables
+                    from app.services.sku_service import (restaurar_palabras_cliente as _rpc,
+                                                          alguna_palabra_coincide)
                     for _ent2 in _extras:
+                        _ent2 = _rpc(_ent2, texto)
                         _r2 = deps["sku"].buscar(_ent2)
                         # Mismo descuento que en la búsqueda principal: estos
                         # precios también los ve el cliente en el mensaje.
                         _r2, _ = aplicar_descuento_socio(_r2, phone, _cfg_desc)
                         _top2 = next((r for r in _r2 if r.get("vendible")
                                       and r.get("requiere_receta") not in ("si", "ambiguo")), None)
-                        if _top2 and nombre_coincide(_ent2, _top2["nombre"]):
+                        # El tipo solo ("crema") no alcanza para darlo por lo pedido:
+                        # "crema Topics" matcheaba con cualquier crema (23/9).
+                        if _top2 and nombre_coincide(_ent2, _top2["nombre"])                                 and alguna_palabra_coincide(_ent2, _top2["nombre"]):
                             _lineas_extra.append(
                                 f"• {_ent2}: {_top2['nombre']} — ${_top2['precio']:,.2f}")
                             _extras_guardar.append({
                                 "sku_id": _top2["sku_id"], "nombre": _top2["nombre"],
                                 "precio": _top2["precio"], "cantidad": 1,
                             })
-                        elif _top2:
+                        elif _top2 and alguna_palabra_coincide(_ent2, _top2["nombre"]):
                             # Hay algo parecido pero de OTRA marca/producto: se
                             # ofrece como similar, nunca como si fuera lo pedido.
+                            # Sin ninguna palabra en común no se ofrece nada
+                            # ("crema Topics" → Dermaglos glicólico, 23/9).
                             _lineas_extra.append(
                                 f"• {_ent2}: no lo encontré tal cual; lo más parecido "
                                 f"que tengo es {_top2['nombre']} — ${_top2['precio']:,.2f}")
@@ -1926,7 +1960,8 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                             _lineas_extra.append(f"• {_ent2}: no lo encontré en el catálogo")
                             await deps["metrics"].evento("busqueda_sin_resultado", phone=phone,
                                                          dato=" ".join(_ent2.lower().split())[:80])
-                    respuesta = quitar_frases_de_espera(respuesta)
+                    # Una sola pregunta al final: la del bloque de adicionales.
+                    respuesta = quitar_cierres_vagos(quitar_frases_de_espera(respuesta))
                     # Se guardan para que el cliente pueda sumarlos después:
                     # antes eran sólo texto y un "mandame todos" cobraba uno solo.
                     if _extras_guardar:
@@ -1942,7 +1977,7 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 # catálogo o está sin stock): según config, ofrecer consultarlo
                 # con el equipo o derivar directo. Antes la consulta moría acá.
                 if not _sku_pendiente_nuevo and _intencion != "item_agregado" \
-                        and not _opciones_ofrecidas \
+                        and not _opciones_ofrecidas and not _extras \
                         and intencion in ("pedido", "consulta_precio", "consulta_stock"):
                     _cfg_ss = await deps["config"].get_all()
                     _modo_ss = (_cfg_ss.get("sin_stock_mode") or "preguntar").lower()
@@ -2068,7 +2103,8 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 # Historial permanente en Postgres (best-effort, no-op sin DB)
                 try:
                     if texto:
-                        await deps["msgs"].save(phone, "user", texto)
+                        await deps["msgs"].save(phone, "user", texto, origen=_origen,
+                                                media=_media_ref)
                     if respuesta:
                         await deps["msgs"].save(phone, "assistant", respuesta)
                 except Exception:

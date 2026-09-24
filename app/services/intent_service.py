@@ -132,6 +132,8 @@ PEDIDOS DE VARIOS PRODUCTOS:
 Si el cliente menciona MÁS de un producto en el mismo mensaje ("una tintura, gomitas de menta y caramelos para la tos"):
   - poné el PRIMERO en "entidad_producto",
   - y los DEMÁS en "entidades_adicionales", cada uno por separado, tal como los nombró.
+UN PRODUCTO = TIPO + MARCA: "jabón Aveno", "crema Atopix", "protector Isdin", "jarabe Ibupirac" son UN solo producto aunque la transcripción de un audio haya puesto una coma en el medio ("jabón, aveno"). No los separes.
+ESCRIBÍ LA MARCA COMO LA DIJO EL CLIENTE: no la "corrijas" a una palabra común ("aveno" NO es "avena", "atopix" no es "a tópicos"). El sistema busca con esas palabras.
 NUNCA los juntes en una sola búsqueda: mezclados devuelven cualquier cosa. El sistema busca los adicionales y agrega su disponibilidad a tu respuesta — vos no digas que los vas a verificar.
 IMPORTANTÍSIMO: en tu respuesta hablá SOLO del producto de "entidad_producto" (el único sobre el que tenés [RESULTADOS DEL CATÁLOGO]). NO afirmes NADA sobre los adicionales: ni que los tenés, ni que NO los tenés, ni su precio. No los buscaste vos, no tenés esos datos, y el sistema agrega la información real debajo de tu respuesta. Decir "no tengo el talco" cuando el sistema encuentra el talco dos líneas más abajo deja al bot contradiciéndose solo (pasó de verdad).
 

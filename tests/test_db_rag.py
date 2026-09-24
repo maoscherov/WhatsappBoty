@@ -340,3 +340,18 @@ def test_socio_buscar_por_nombre(tmp_path):
     assert [s["celular"] for s in svc.buscar_por_nombre("perez jose")] == ["3415550002"]
     assert svc.buscar_por_nombre("aveno") == []
     assert svc.buscar_por_nombre("3415") == []      # solo números: no es un nombre
+
+
+async def test_history_origen_y_media(db):
+    """23/9: el audio se veía como texto escrito; ahora queda su origen y el
+    archivo para escucharlo."""
+    store = MessageStore(db)
+    await store.save("549555", "user", "tenés jabón aveno?", origen="audio", media="/media/chat/aud1")
+    await store.save("549555", "user", "📷 /media/chat/img1", origen="imagen")
+    await store.save("549555", "user", "hola")                       # fila sin origen
+    await store.save("549555", "assistant", "¡Hola!")
+    h = await store.history("549555")
+    assert (h[0]["origen"], h[0]["media"]) == ("audio", "/media/chat/aud1")
+    assert (h[1]["origen"], h[1]["media"]) == ("imagen", "/media/chat/img1")
+    assert h[2]["origen"] == "texto" and h[2]["media"] is None
+    assert h[3]["origen"] is None

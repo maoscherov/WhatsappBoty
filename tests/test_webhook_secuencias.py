@@ -309,3 +309,143 @@ def test_bloque_adjunto_pdf():
     from app.services.image_service import bloque_adjunto
     assert bloque_adjunto("QQ==", "application/pdf")["type"] == "document"
     assert bloque_adjunto("QQ==", "image/jpeg")["type"] == "image"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 23/9 10:57 — audio de María: "jabón, aveno y la crema Topics"
+# ══════════════════════════════════════════════════════════════════════════════
+class _Audio:
+    def __init__(self, texto):
+        self.texto = texto
+        self.prompts = []
+
+    async def transcribir(self, data, filename="audio.ogg", prompt=None):
+        self.prompts.append(prompt)
+        return self.texto
+
+
+class _Msgs:
+    def __init__(self):
+        self.guardados = []
+
+    async def save(self, phone, role, content, autor=None, origen=None, media=None):
+        self.guardados.append({"role": role, "content": content, "origen": origen, "media": media})
+
+
+_MARIA = "Hola chicas, buen día, ¿cómo va? Me dicen si tienen jabón, aveno y la crema Topics."
+
+
+@pytest.fixture
+def entorno_maria(monkeypatch, entorno):
+    import app.services.catalog_live as cl
+
+    async def _sin_erp(*a, **k):
+        return None
+    monkeypatch.setattr(cl, "lookup_y_aplicar", _sin_erp)
+    fd, path = tempfile.mkstemp(suffix=".csv")
+    os.close(fd)
+    with open(path, "w", encoding="utf-8-sig", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["SKU", "Nombre", "Precio", "Marca", "Laboratorio",
+                    "Codigo_Barras_1", "Categoria", "Es_Medicamento"])
+        w.writerows([
+            ("20", "Jabon Vertiente Frutos Rojos X90", "3500", "Vertiente", "Vertiente", "2020", "Jabones", "false"),
+            ("21", "AVENO JAB x 120", "17609.31", "Aveno", "Andromaco", "2121", "Jabones", "false"),
+            ("22", "DERMAGLOS F GLICOLICO MANDELICO CRE x 50", "40458.27", "Dermaglos", "Andromaco",
+             "2222", "Dermocosmética", "false"),
+        ])
+
+    class _Blob:
+        async def save(self, *a, **k):
+            return True
+    import app.services.blob_store as bs
+    monkeypatch.setattr(bs, "get_blob_store", lambda *a, **k: _Blob())
+
+    def armar(transcripcion=_MARIA):
+        guion = {_MARIA: {
+            "intencion": "consulta_stock", "entidad_producto": "jabón",
+            "entidades_adicionales": ["avena", "crema Topics"],
+            "respuesta": ("¡Hola María! Justo no tengo stock del jabón Vertiente frutos rojos en este "
+                          "momento. En cuanto a la avena y la crema Topics, ¿Te gustaría que te "
+                          "ofrezca otras opciones de jabón?")}}
+        deps = entorno(guion)
+        deps["sku"] = SKUService(path)
+        deps["audio"] = _Audio(transcripcion)
+        deps["msgs"] = _Msgs()
+        return deps
+
+    yield armar
+    os.remove(path)
+
+
+async def test_audio_kapso_se_transcribe_con_vocabulario_y_se_guarda(entorno_maria):
+    deps = entorno_maria()
+    await wh.procesar_mensajes([_msg("", tipo="audio", media_url="https://kapso/a.ogg",
+                                     texto_transcripto="jabón, avena y la crema a tópicos")])
+    # Se usó NUESTRA transcripción, con las marcas como guía
+    assert deps["audio"].prompts and "Atopix" in deps["audio"].prompts[0]
+    assert "Aveno" in deps["audio"].prompts[0]
+    # Historial: el mensaje del cliente queda marcado como audio, con el original
+    u = [g for g in deps["msgs"].guardados if g["role"] == "user"]
+    assert u and u[-1]["origen"] == "audio" and u[-1]["content"] == _MARIA
+    assert (u[-1]["media"] or "").startswith("/media/chat/aud")
+
+
+async def test_audio_si_falla_la_transcripcion_propia_usa_la_de_kapso(entorno_maria):
+    deps = entorno_maria(transcripcion=None)
+    await wh.procesar_mensajes([_msg("", tipo="audio", media_url="https://kapso/a.ogg",
+                                     texto_transcripto="hola, tenés ibuprofeno?")])
+    u = [g for g in deps["msgs"].guardados if g["role"] == "user"]
+    assert u and u[-1]["content"] == "hola, tenés ibuprofeno?" and u[-1]["origen"] == "audio"
+
+
+async def test_maria_respuesta_limpia(entorno_maria):
+    deps = entorno_maria()
+    await wh.procesar_mensajes([_msg(_MARIA)])
+    r = deps["wa"].enviados[-1]
+    # "avena" del modelo vuelve a "aveno" del cliente → encuentra el jabón Aveno tal cual
+    assert "• aveno: AVENO JAB x 120" in r
+    # "crema Topics" no tiene nada en común con la Dermaglos: no se ofrece
+    assert "DERMAGLOS" not in r and "crema Topics: no lo encontré" in r
+    # Una sola pregunta: fuera la vaga del modelo y sin la de consultar con el equipo
+    assert "ofrezca otras opciones" not in r
+    assert "consulte con el equipo" not in r
+
+
+def test_restaurar_palabras_cliente():
+    from app.services.sku_service import restaurar_palabras_cliente as r
+    assert r("avena", _MARIA) == "aveno"
+    assert r("jabón avena", _MARIA) == "jabón aveno"
+    assert r("crema Topics", _MARIA) == "crema Topics"          # no inventa
+    assert r("ibuprofeno", "tenés ibuprofeno?") == "ibuprofeno"
+    assert r("avena", "quiero un jabón de avena") == "avena"     # el cliente dijo avena
+    assert r(None, _MARIA) is None
+
+
+def test_alguna_palabra_coincide():
+    from app.services.sku_service import alguna_palabra_coincide as a
+    assert a("crema Topics", "DERMAGLOS F GLICOLICO MANDELICO CRE x 50") is False
+    assert a("avena", "AVENO JAB x 120") is True
+    assert a("crema atopix", "Atopix (Pieles Atopicas) Crema X150Gr") is True
+    assert a("crema", "Cualquier Crema X50") is True                # solo tipo: no objeta
+    assert a("crema Topics", "Otra Crema X50") is False
+
+
+def test_vocabulario_audio_trae_marcas_del_catalogo(entorno_maria):
+    from app.services.sku_service import vocabulario_audio
+    deps = entorno_maria()
+    v = vocabulario_audio(deps["sku"])
+    assert v.startswith("Consulta a una farmacia") and len(v) <= 650
+    assert "Atopix" in v and "Vertiente" in v
+
+
+@pytest.mark.parametrize("txt,esperado", [
+    ("¡Hola María! Justo no tengo stock del jabón. En cuanto a la avena y la crema Topics, "
+     "¿Te gustaría que te ofrezca otras opciones de jabón?", "¡Hola María! Justo no tengo stock del jabón."),
+    ("Tengo el Actron a $4.770, ¿te gustaría considerarlo?", "Tengo el Actron a $4.770."),
+    ("¿Te gustaría que te lo encargue?", "¿Te gustaría que te lo encargue?"),
+    ("¿Querés que te pase con alguien del equipo?", "¿Querés que te pase con alguien del equipo?"),
+])
+def test_cierre_vago_oracion_completa(txt, esperado):
+    from app.services.checkout_helper import quitar_cierres_vagos
+    assert quitar_cierres_vagos(txt) == esperado

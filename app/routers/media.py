@@ -19,7 +19,10 @@ from app.config import get_settings
 from app.services.blob_store import get_blob_store
 
 _CT = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
-       ".webp": "image/webp", ".gif": "image/gif"}
+       ".webp": "image/webp", ".gif": "image/gif",
+       # Audios (para escuchar el original de una transcripción) y PDF (recetas).
+       ".ogg": "audio/ogg", ".opus": "audio/ogg", ".mp3": "audio/mpeg", ".m4a": "audio/mp4",
+       ".pdf": "application/pdf"}
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/media")
