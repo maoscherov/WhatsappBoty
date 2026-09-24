@@ -18,6 +18,7 @@ from typing import Any, Optional
 
 import httpx
 
+# Siempre con fullmatch: con `$` y re.match un salto de línea final pasaba el control.
 PATRON_SESION = re.compile(r"^v_[0-9a-f]{12}$")
 _S = r"(?P<sesion>[^/]+)"
 RUTAS_PERMITIDAS: tuple[tuple[str, re.Pattern[str]], ...] = (
@@ -57,14 +58,14 @@ def verificar_ruta(metodo: str, ruta: str) -> Optional[str]:
     """Devuelve la sesión embebida en la ruta (o None) si está permitida; si no, lanza."""
     for m, patron in RUTAS_PERMITIDAS:
         if m == metodo:
-            hallado = patron.match(ruta)
+            hallado = patron.fullmatch(ruta)
             if hallado:
                 return hallado.groupdict().get("sesion")
     raise RutaNoPermitida(f"{metodo} fuera de la lista blanca")
 
 
 def verificar_nombre_sesion(nombre: Any) -> str:
-    if not isinstance(nombre, str) or not PATRON_SESION.match(nombre):
+    if not isinstance(nombre, str) or not PATRON_SESION.fullmatch(nombre):
         raise SesionProhibida("solo sesiones de Radar (v_ + 12 hex)")
     return nombre
 
@@ -163,7 +164,7 @@ class WahaCliente:
             codigo = (r.json() or {}).get("code")
         except ValueError:
             return None
-        return codigo if isinstance(codigo, str) and _CODIGO.match(codigo) else None
+        return codigo if isinstance(codigo, str) and _CODIGO.fullmatch(codigo) else None
 
     # --- claves -----------------------------------------------------------------
     async def crear_clave(self, sesion: str, *, actions: dict[str, bool]) -> tuple[str, str]:

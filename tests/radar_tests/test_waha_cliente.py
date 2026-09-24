@@ -7,7 +7,7 @@ import logging
 import pytest
 
 from app.radar.waha.cliente import (RutaNoPermitida, SesionProhibida, WahaCliente, WahaHttpError,
-                                    verificar_ruta)
+                                    verificar_nombre_sesion, verificar_ruta)
 
 from .waha_falso import PNG, WahaFalso
 
@@ -141,3 +141,19 @@ async def test_no_loguea_codigo_ni_numero(caplog):
         await cli.qr_png(S)
         await cli.pedir_codigo(S, "5493411234567")
     assert "ABCD" not in caplog.text and "5493411234567" not in caplog.text and "clave-admin" not in caplog.text
+
+
+async def test_salto_de_linea_final_no_pasa_la_lista_blanca():
+    """Final B5: con `$` y re.match, un salto de línea final pasaba; ahora es fullmatch."""
+    nl = chr(10)
+    waha = WahaFalso()
+    async with _cli(waha) as cli:
+        with pytest.raises(SesionProhibida):
+            await cli.leer_sesion(S + nl)
+    for metodo, ruta in (("GET", "/api/server/version" + nl), ("POST", "/api/sessions" + nl),
+                         ("POST", f"/api/sessions/{S}/start" + nl), ("DELETE", "/api/keys/k1" + nl)):
+        with pytest.raises(RutaNoPermitida):
+            verificar_ruta(metodo, ruta)
+    with pytest.raises(SesionProhibida):
+        verificar_nombre_sesion(verificar_ruta("GET", f"/api/sessions/{S}" + nl))
+    assert waha.llamadas == []
