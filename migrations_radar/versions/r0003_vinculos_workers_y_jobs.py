@@ -216,13 +216,23 @@ def upgrade() -> None:
             RETURNS TABLE (id uuid, tenant_id uuid, tipo text, link_id uuid, causa text, intentos int)
             LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path = public, pg_temp
             AS $f$
+                -- Nota de revisión de Task 2: un job 'corriendo' con lease vencido y sin
+                -- intentos disponibles (intentos >= max_intentos) NO se reclama de nuevo:
+                -- pasa a 'fallido'. Si no, un job que tumba al worker se reintenta sin fin.
+                WITH agotados AS (
+                    UPDATE jobs x
+                       SET estado = 'fallido', bloqueado_hasta = NULL, updated_at = now()
+                     WHERE x.estado = 'corriendo' AND x.bloqueado_hasta < now()
+                       AND x.intentos >= x.max_intentos
+                    RETURNING 1)
                 UPDATE jobs j
                    SET estado = 'corriendo', intentos = j.intentos + 1,
                        bloqueado_hasta = now() + make_interval(secs => p_lease_s), updated_at = now()
                  WHERE j.id IN (
                        SELECT x.id FROM jobs x
                         WHERE (x.estado = 'pendiente' AND x.ejecutar_desde <= now())
-                           OR (x.estado = 'corriendo' AND x.bloqueado_hasta < now())
+                           OR (x.estado = 'corriendo' AND x.bloqueado_hasta < now()
+                               AND x.intentos < x.max_intentos)
                         ORDER BY x.ejecutar_desde
                         FOR UPDATE SKIP LOCKED
                         LIMIT p_lote)
