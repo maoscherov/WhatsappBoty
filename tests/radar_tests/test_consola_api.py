@@ -230,3 +230,18 @@ async def test_asistido_arrastra_la_propuesta_de_tenant_ya_aceptada(cliente, ctx
     assert json.loads(c["opciones"])["parametros_tenant"]["ia_habilitada"] is True
     async with ctx_waha.db.tenant_tx(t) as con:        # la línea no vuelve a quedar pendiente
         assert await lineas_vivas_sin_consentir(con, {"ia_habilitada": True}) == []
+
+
+async def test_consentimiento_asistido_solo_acepta_la_version_vigente(cliente, ctx_waha, monkeypatch):
+    """Final: una versión vieja de VERSIONES no sirve para un consentimiento nuevo."""
+    from app.radar.consentimiento import VERSIONES
+    monkeypatch.setitem(VERSIONES, "v0", "texto viejo")
+    esc = await escenario_vinculable(ctx_waha)
+    await _admin(cliente, ctx_waha)
+    nueva = await crear_linea_directa(ctx_waha.db, esc["tenant_id"], "Nueva")
+    r = await cliente.post(_url(esc, "/consentimiento-asistido", line_id=nueva),
+                           json={"version_texto": "v0", "titular_leyo_y_acepto": True, "modo": "presencial",
+                                 "nombre": "Ana"})
+    assert r.status_code == 422 and r.json()["detail"]["error"] == "version_desconocida"
+    fila = await _sql(ctx_waha, esc, "SELECT count(*) AS n FROM consents WHERE line_id = $1", nueva)
+    assert fila["n"] == 0

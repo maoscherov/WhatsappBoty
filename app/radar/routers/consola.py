@@ -22,9 +22,8 @@ from pydantic import BaseModel, Field
 
 from app.radar import auditoria, eventos_producto
 from app.radar.auth import Sesion, ip_de, requiere_rol
-from app.radar.consentimiento import VERSIONES
-from app.radar.consentimiento_asistido import (email_copia_consentimiento, registrar_consentimiento_asistido,
-                                               texto_para_linea)
+from app.radar.consentimiento_asistido import (VERSION_VIGENTE, email_copia_consentimiento,
+                                               registrar_consentimiento_asistido, texto_para_linea)
 from app.radar.consola import listar_lineas_consola
 from app.radar.contexto import contexto
 from app.radar.parametros_service import (a_json, leer_parametros_tenant, leer_propuesta_tenant,
@@ -86,7 +85,7 @@ async def consentimiento_asistido(tenant_id: uuid.UUID, line_id: uuid.UUID, body
                                   request: Request, admin: Sesion = Depends(_tenant_cliente)):
     if not body.titular_leyo_y_acepto:
         raise HTTPException(status_code=422, detail={"error": "consentimiento_no_aceptado"})
-    if body.version_texto not in VERSIONES:
+    if body.version_texto != VERSION_VIGENTE:        # una versión vieja no sirve para uno nuevo
         raise HTTPException(status_code=422, detail={"error": "version_desconocida"})
     ctx = contexto(request)
     ip = ip_de(request)
