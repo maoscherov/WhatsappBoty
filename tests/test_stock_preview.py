@@ -57,7 +57,7 @@ async def test_estructura_y_resumen(sku_svc):
     assert p65["ofrecible"] is True and p65["motivo"] is None
     assert p65["stock_cache"]["precio"] == 32409.0
     assert out["respuesta_esperada"].startswith("Ofrecería")
-    assert "32,409.00" in out["respuesta_esperada"]
+    assert "$ 32.409,00" in out["respuesta_esperada"]
 
 
 async def test_sin_precio_no_es_ofrecible_y_se_marca_dudoso(sku_svc):
@@ -111,3 +111,26 @@ async def test_descuento_socio(sku_svc, tmp_path):
     acond = next(p for p in out["productos"] if "Acondicionador" in p["nombre"])
     assert acond["precio_socio"] == pytest.approx(8100.0)
     assert acond["stock_cache"]["precio"] == 9000.0     # el cache no se toca
+
+
+async def test_erp_responde_lo_mismo_que_el_cache(sku_svc, monkeypatch):
+    """Caso real 23/9: el ERP confirma el mismo dato (stock 0) y la pantalla
+    decía 'no se pudo consultar el ERP' y mostraba '—' en stock en el ERP."""
+    import app.services.catalog_live as cl
+    llamados = []
+
+    async def _igual(ids, timeout=None, sku_svc=None):
+        llamados.append(list(ids))
+        return {i: {"external_id": i, "stock": 0, "precio": 0} for i in ids}
+    monkeypatch.setattr(cl, "lookup_y_aplicar", _igual)
+    out = await sp.vista_previa_stock("aveno solar", sku_svc, {})
+    assert out["verificacion_vivo"]["canal_disponible"] is True
+    assert llamados and "2" in llamados[0]          # el dudoso se consultó
+    p50 = next(p for p in out["productos"] if p["sku_id"] == "2")
+    assert p50["stock_vivo"] == {"consultado": True, "encontrado": True, "unidades": 0, "precio": 0}
+
+
+def test_formato_pesos():
+    assert sp.pesos(13415.38) == "$ 13.415,38"
+    assert sp.pesos(0) == "$ 0,00"
+    assert sp.pesos(None) == "$ 0,00"

@@ -27,55 +27,63 @@ def _motivo_no_ofrecible(r: dict, receta_mode: str) -> Optional[str]:
     return None
 
 
+def pesos(valor) -> str:
+    """$ 13.415,38 — formato argentino, igual que la tabla del backoffice."""
+    try:
+        s = f"{float(valor or 0):,.2f}"
+    except (TypeError, ValueError):
+        return "$ 0,00"
+    return "$ " + s.replace(",", "X").replace(".", ",").replace("X", ".")
+
+
 async def vista_previa_stock(q: str, sku_svc, cfg: dict, phone: str = "",
                              vivo: bool = False, socio_svc=None,
                              timeout: Optional[float] = None) -> dict:
     """
-    Devuelve lo que el bot ofrecería para `q`. `vivo=True` fuerza la consulta
-    al ERP de TODOS los resultados (no solo los dudosos): pega al ERP, usar a
+    Devuelve lo que el bot ofrecería para `q`. Sin `vivo`, verifica contra el
+    ERP solo los resultados dudosos, con el mismo límite que el bot al ofrecer.
+    `vivo=True` fuerza la consulta de TODOS los resultados: pega al ERP, usar a
     demanda. `phone` aplica el descuento de socio como en la conversación.
     """
-    from app.services.catalog_live import (
-        es_dudoso, filtrar_por_stock, lookup_y_aplicar, refrescar_ofertas_en_vivo,
-        OFERTA_TIMEOUT_SECS,
-    )
+    from app.services import catalog_live as cl
     from app.services.catalog_source import estado as estado_catalogo
     from app.services.checkout_helper import aplicar_descuento_socio
 
-    timeout = timeout or OFERTA_TIMEOUT_SECS
+    timeout = timeout or cl.OFERTA_TIMEOUT_SECS
     receta_mode = cfg.get("receta_mode", "conservador")
 
     cache = sku_svc.buscar(q, top_n=MAX_RESULTADOS)
     antes = {str(r["sku_id"]): dict(r) for r in cache}
-    dudosos = {str(r["sku_id"]) for r in cache if es_dudoso(r)}
+    dudosos = [str(r["sku_id"]) for r in cache if cl.es_dudoso(r)]
 
+    # La verificación se hace ACÁ, con la misma regla que el bot, para saber
+    # con certeza si el ERP respondió. Antes se infería comparando el dato
+    # antes/después: si el ERP confirmaba lo mismo que el cache (stock 0),
+    # la pantalla decía "no se pudo consultar el ERP" (caso real 23/9).
+    a_consultar = [str(r["sku_id"]) for r in cache] if vivo else dudosos[:cl.MAX_IDS_POR_OFERTA]
     vivos: dict[str, dict] = {}
     canal_ok: Optional[bool] = None
-    if cache:
+    if a_consultar:
         try:
-            if vivo:
-                res = await lookup_y_aplicar([str(r["sku_id"]) for r in cache],
-                                             timeout=timeout, sku_svc=sku_svc)
-                canal_ok = res is not None
-                vivos = res or {}
-                actuales = []
-                for r in cache:
-                    s = sku_svc.get_by_id(str(r["sku_id"]))
-                    actuales.append(sku_svc._to_response(s) if s else r)
-            else:
-                actuales = await refrescar_ofertas_en_vivo(cache, sku_svc, timeout=timeout)
-                if dudosos:
-                    # refrescar_ofertas_en_vivo no expone si hubo canal: se
-                    # infiere de si algún dudoso cambió.
-                    canal_ok = any(actuales[i] != cache[i] for i in range(len(cache)))
+            res = await cl.lookup_y_aplicar(a_consultar, timeout=timeout, sku_svc=sku_svc)
+            canal_ok = res is not None
+            vivos = res or {}
         except Exception as e:
             logger.warning(f"stock_preview: verificación en vivo falló: {e}")
-            actuales = cache
             canal_ok = False
-    else:
-        actuales = []
 
-    ofrecidos = filtrar_por_stock(list(actuales))
+    # Resultados con el dato que quedó después de aplicar la respuesta del ERP.
+    actuales = []
+    for r in cache:
+        sid = str(r["sku_id"])
+        v = vivos.get(sid)
+        if v is not None and not v.get("missing"):
+            s = sku_svc.get_by_id(sid)
+            actuales.append(sku_svc._to_response(s) if s is not None else r)
+        else:
+            actuales.append(r)
+
+    ofrecidos = cl.filtrar_por_stock(list(actuales))
     if phone:
         ofrecidos, pct = aplicar_descuento_socio(ofrecidos, phone, cfg, socio_svc)
     else:
@@ -88,8 +96,6 @@ async def vista_previa_stock(q: str, sku_svc, cfg: dict, phone: str = "",
         sid = str(r["sku_id"])
         a = antes.get(sid, {})
         v = vivos.get(sid)
-        if v is None and sid in dudosos and canal_ok and a != r:
-            v = {"stock": r.get("cantidad_visible"), "precio": r.get("precio")}
         motivo = _motivo_no_ofrecible(r, receta_mode)
         productos.append({
             "sku_id": sid,
@@ -120,7 +126,7 @@ async def vista_previa_stock(q: str, sku_svc, cfg: dict, phone: str = "",
         "verificacion_vivo": {
             "modo": "todos" if vivo else ("dudosos" if dudosos else "no_necesaria"),
             "canal_disponible": canal_ok,
-            "ids_consultados": sorted(vivos.keys()) if vivo else sorted(dudosos),
+            "ids_consultados": sorted(a_consultar),
         },
         "descuento_socio_pct": pct if phone else None,
         "productos": productos,
@@ -137,5 +143,5 @@ def _resumen(productos: list[dict]) -> str:
         motivos = sorted({p["motivo"] for p in productos if p.get("motivo")})
         return (f"Encuentra {len(productos)} producto(s) pero ninguno ofrecible "
                 f"({', '.join(motivos) or 'sin motivo'}): diría que no lo tiene y ofrecería encargarlo.")
-    lista = "; ".join(f"{p['nombre']} — ${float(p['precio_socio'] or p['precio']):,.2f}" for p in ofrecibles[:3])
+    lista = "; ".join(f"{p['nombre']} — {pesos(p['precio_socio'] or p['precio'])}" for p in ofrecibles[:3])
     return f"Ofrecería {len(ofrecibles)} producto(s): {lista}."
