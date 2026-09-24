@@ -38,7 +38,8 @@ class RadarSettings(BaseSettings):
     remitente: str = "radar@keepitsimple.com.ar"
 
     # WAHA (tramo 2). La clave admin de cada worker NO va acá: vive en el
-    # SecretStore (waha_admin:<worker_id>) y la registra scripts/radar_workers.py.
+    # SecretStore (ver app.radar.workers.nombre_clave_admin) y la registra
+    # scripts/radar_workers.py.
     waha_webhook_url: str = ""        # URL de /webhook/waha que alcanza WAHA (red privada de Railway)
     waha_webhook_hmac_key: str = ""   # 32+ caracteres; vacía = el receptor rechaza todo (fail-closed)
     waha_timeout_s: float = 20.0

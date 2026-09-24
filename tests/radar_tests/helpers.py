@@ -92,6 +92,10 @@ async def crear_worker_directo(db: RadarDB, nombre: str = "w1", engine: str = "N
             "VALUES ($1, 'http://waha.interno', $2, $3, $4) RETURNING id", nombre, engine, max_sesiones, disco_max_gb)
 
 
+# Clave HMAC del webhook en tests (32+ caracteres, como exige validar_settings).
+HMAC_TEST = "clave-hmac-de-test-de-32-caracteres!!"
+
+
 async def crear_consentimiento_directo(db: RadarDB, tenant_id: uuid.UUID, line_id: uuid.UUID,
                                        user_id: uuid.UUID) -> uuid.UUID:
     async with db.tenant_tx(tenant_id) as con:

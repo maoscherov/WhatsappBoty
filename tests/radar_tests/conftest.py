@@ -29,6 +29,10 @@ from app.radar.mailer import MemoryMailer
 from app.radar.migrate import migrar_fuente, migrar_resultados
 from app.radar.secrets import FileSecretStore
 from app.radar.settings import RadarSettings
+from app.radar.workers import registrar_worker
+
+from .helpers import HMAC_TEST
+from .waha_falso import WahaFalso
 
 ROLES_SQL = """
     CREATE ROLE radar_migrator LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
@@ -126,3 +130,22 @@ async def cliente(radar_ctx):
     app = crear_app_radar(radar_ctx.settings, contexto=radar_ctx)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as c:
         yield c
+
+
+@pytest.fixture
+def waha():
+    return WahaFalso()
+
+
+@pytest.fixture
+async def ctx_waha(radar_ctx, waha):
+    """radar_ctx con el WAHA falso, el webhook configurado y un worker NOWEB (w1) registrado.
+    Muta el mismo objeto que usa la fixture `cliente`, así la app de los tests lo ve."""
+    radar_ctx.settings = radar_ctx.settings.model_copy(update={
+        "waha_webhook_url": "http://radar.interno/webhook/waha",
+        "waha_webhook_hmac_key": HMAC_TEST,
+    })
+    radar_ctx.waha_transport = waha.transporte()
+    await registrar_worker(radar_ctx, nombre="w1", base_url="http://waha.interno", engine="NOWEB",
+                           max_sesiones=50, disco_max_gb=10, admin_key="clave-admin-de-test")
+    return radar_ctx
