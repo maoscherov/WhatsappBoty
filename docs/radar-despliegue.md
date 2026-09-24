@@ -151,7 +151,75 @@ su cuenta: solo se arrastra lo que un admin de KIS propuso y sigue vigente.
 
 ## Qué NO existe todavía
 
-WAHA y vínculos (tramo 2), ingesta y tablas de conversación en el almacén de
-fuente (tramo 3), KPI (4), IA (5), purga, supresiones, "borrar todo", emails
-de hallazgos y el almacén purgable (6). Ver el plan
+Ingesta y tablas de conversación en el almacén de fuente (tramo 3), KPI (4),
+IA (5), purga, supresiones, "borrar todo", emails de hallazgos y el almacén
+purgable (6). Ver el plan
 `docs/superpowers/plans/2026-09-21-radar-tramo1-acceso-y-datos.md`.
+
+## Tramo 2: WAHA, vínculos y Consola KIS
+
+### Variables nuevas
+
+| Variable | Qué es |
+|---|---|
+| `RADAR_WAHA_WEBHOOK_URL` | URL de `POST /webhook/waha` que alcanza WAHA. En Railway, por red privada: `http://<servicio-radar>.railway.internal:<puerto>/webhook/waha`. Vacía = no se puede vincular (503). |
+| `RADAR_WAHA_WEBHOOK_HMAC_KEY` | 32+ caracteres aleatorios (`python -c "import secrets; print(secrets.token_urlsafe(48))"`). Firma los webhooks (sha512). Vacía = el receptor rechaza todo; corta = la app no arranca (`validar_settings`, `app/radar/app.py`). |
+| `RADAR_WAHA_TIMEOUT_S` | Timeout de cada llamada a WAHA (default `20.0`). |
+| `RADAR_WORKER_EMBEBIDO` | `true` (default): la cola de jobs corre dentro del servicio web. Ver "Worker de la cola". |
+
+Las lee `RadarSettings` (`app/radar/settings.py`), igual que las del tramo 1.
+
+### Servidor WAHA de clientes
+
+- Un servicio aparte por worker, **sin dominio público** (solo red privada de Railway), con el endurecimiento del runbook GOWS
+  (`docs/superpowers/plans/2026-09-21-radar-gows-staging-runbook.md`: `WAHA_PRINT_QR=False`, `WAHA_PRESENCE_AUTO_ONLINE=False`,
+  `WAHA_SESSION_CONFIG_IGNORE_*=true`, medios apagados, `WAHA_APPS_ENABLED=false`, dashboard y Swagger deshabilitados, clave
+  hasheada) y **sin backups del volumen**.
+- Sin `WHATSAPP_HOOK_URL` global: Radar configura el webhook en cada sesión (`app/radar/waha/sesion.py::cuerpo_sesion`).
+
+### Registrar un worker
+
+En la shell del servicio de Radar, con la clave admin **en claro** del WAHA (la del gestor de contraseñas, nunca en un archivo
+del repo):
+
+    WAHA_ADMIN_KEY='...' python scripts/radar_workers.py registrar --nombre w1 \
+        --base-url http://waha-w1.railway.internal:3000 --engine GOWS --max-sesiones 50 --disco-max-gb 20
+    python scripts/radar_workers.py listar
+    python scripts/radar_workers.py disco --nombre w1 --usado-gb 3.5
+
+La clave admin va al `SecretStore` como `waha_admin:<worker_id>` (`RADAR_SECRETS_DIR`, 0600), junto a las `k_tenant` del tramo 1
+y a las claves de lectura por vínculo (`waha_lectura:<link_id>`). Nunca en Postgres; solo la lee `app/radar/workers.py::cliente_de`.
+
+### Worker de la cola
+
+- Por defecto corre dentro del servicio web (`RADAR_WORKER_EMBEBIDO=true`, `app/radar/worker.py`): el lifespan del servicio web
+  corre `bucle` como tarea. Motivo: las claves de WAHA viven en el volumen de `RADAR_SECRETS_DIR` y en Railway un volumen se
+  monta en un solo servicio. **Pendiente de OK del dueño**: §6.2 del spec pide un proceso aparte; se mantiene embebido por
+  ahora, reversible con `RADAR_WORKER_EMBEBIDO=false` (ver "Decisiones abiertas" del plan del tramo 2).
+- Si los secretos pasan a un gestor externo: `RADAR_WORKER_EMBEBIDO=false` en el web y un segundo servicio con la misma imagen
+  y el comando `python -m app.radar.worker` (no corre migraciones: las corre el servicio web).
+- La cola vive en Postgres (`radar_jobs_reclamar`, `FOR UPDATE SKIP LOCKED`). Programa el chequeo de salud de cada vínculo vivo
+  cada 5 min y corre los fines de vínculo. Un job que agota sus reintentos (`intentos >= max_intentos`) pasa a `fallido` en vez
+  de quedar reintentando para siempre; un vínculo con el job de fin en `fallido` queda en `cerrando` hasta que se reintente a mano.
+
+### Pantallas
+
+- Consola KIS: `https://<radar>/radar/consola` (rol `admin`).
+- Pantalla del dueño: `https://<radar>/radar/conectar?linea=<line_id>` (rol `dueno`).
+
+### Desvíos del plan frente al código real
+
+- **`UPDATE` por columna en r0003**: igual que en r0002 (tramo 1), las tablas nuevas del tramo 2 (`links`, `link_status_events`,
+  `waha_workers`, `radar_jobs`) usan `GRANT UPDATE (columnas...)` explícito por tabla (`UPDATES_POR_COLUMNA` en
+  `migrations_radar/versions/r0003_*.py`), no `UPDATE` genérico. `radar_app` nunca puede tocar `id`, `tenant_id` ni las
+  columnas de identidad/creación.
+- **`CHECK` de `jobs.causa`**: la columna `causa` de `radar_jobs` tiene `CHECK (causa ~ '^[a-z0-9_]{1,40}$')` en vez de una
+  lista fija de valores, para no tener que migrar el esquema cada vez que se agrega una causa nueva de fin de vínculo.
+- **Jobs agotados pasan a `fallido`**: `radar_jobs_reclamar` (r0003) hace
+  `estado = CASE WHEN intentos >= max_intentos THEN 'fallido' ELSE 'pendiente' END`: un job sin reintentos disponibles no queda
+  dando vueltas, queda visible como fallido para intervención manual.
+- **`terminar_sesion` no corta ante fallas**: `app/radar/waha/gestor.py::terminar_sesion` sigue cada paso (lectura, start
+  opcional, `DELETE`, borrado de claves, verificación) aunque un paso anterior haya fallado, y devuelve un resumen con el error
+  de cada paso en vez de abortar en el primero. Así un fallo de lectura, por ejemplo, no impide intentar igual el `DELETE` y el
+  borrado de claves; el job de fin de vínculo decide con ese resumen si reintentar.
+- **Worker embebido por defecto**: ver "Worker de la cola" arriba — decisión pendiente del dueño frente a §6.2 del spec.
