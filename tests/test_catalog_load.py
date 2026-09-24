@@ -35,7 +35,11 @@ class TestDerivarRequiereReceta:
 
     def test_default_no(self):
         assert derivar_requiere_receta("", "", "", "Algo") == "no"
-        assert derivar_requiere_receta("Medicamentos", "", "", "Algo") == "no"
+
+    def test_medicamento_sin_referencia_es_a_validar(self):
+        # Antes daba "no": con Observer (categoría "Medicamentos") ningún
+        # medicamento derivaba por receta (caso real 24/9, Atenolol).
+        assert derivar_requiere_receta("Medicamentos", "", "", "Algo") == "ambiguo"
 
 
 class TestFromRows:

@@ -55,7 +55,8 @@ WHERE catalog_items.hash IS DISTINCT FROM EXCLUDED.hash
 
 
 def _fila(branch_id: str, item: CatalogItemIn, source: str) -> tuple:
-    requiere = derivar_requiere_receta(item.category, item.rubro, item.subrubro, item.name)
+    requiere = derivar_requiere_receta(item.category, item.rubro, item.subrubro, item.name,
+                                       item.barcodes)
     return (
         branch_id, item.external_id, item.hash, item.barcodes, item.troquel,
         item.name, item.brand, item.drug, item.form, item.category, item.rubro,

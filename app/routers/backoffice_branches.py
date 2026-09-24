@@ -231,3 +231,48 @@ async def bo_sku_stock(_=Depends(_auth), q: str = Query(..., min_length=2),
         q, get_sku_service(settings.sku_csv_path), cfg, phone=phone, vivo=vivo,
         socio_svc=socios, timeout=settings.live_lookup_timeout_s,
     )
+
+
+# ── Receta por código de barras (24/9) ──────────────────────────────────────
+
+from fastapi import File, UploadFile  # noqa: E402
+
+
+@router.get("/receta/estado")
+async def bo_receta_estado(_=Depends(_auth)):
+    """
+    Cómo quedó la condición de venta: tamaño de la referencia (sí/no), cuántos
+    productos del catálogo ERP quedaron con receta, venta libre o "a validar"
+    (medicamentos sin referencia: el bot los deriva), y ejemplos de estos.
+    """
+    from app.services.receta_referencia import estado
+    db = get_db(get_settings().database_url)
+    if not db.available():
+        raise HTTPException(status_code=503, detail="Base de datos no disponible")
+    return await estado(db)
+
+
+@router.post("/receta/importar")
+async def bo_receta_importar(file: UploadFile = File(...), _=Depends(_auth)):
+    """
+    Reemplaza la referencia con un catálogo en el formato base de la farmacia
+    (Nombre, Codigo_Barras_1..4, Categoria; o columna requiere_receta si/no),
+    recalcula el flag de todo el catálogo ERP y recarga el bot.
+    """
+    from app.services.receta_referencia import filas_desde_csv, recalcular_catalogo, reemplazar
+    db = get_db(get_settings().database_url)
+    if not db.available():
+        raise HTTPException(status_code=503, detail="Base de datos no disponible")
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Archivo vacío")
+    filas = filas_desde_csv(data)
+    if not filas:
+        raise HTTPException(status_code=422, detail="No se encontró ningún código de barras en el archivo")
+    n = await reemplazar(db, filas, fuente=file.filename or "import")
+    res = await recalcular_catalogo(db)
+    try:
+        await get_catalog_refresher().recargar()
+    except Exception as e:
+        logger.warning(f"receta/importar: no se pudo recargar el catálogo: {e}")
+    return {"referencia": n, **res}

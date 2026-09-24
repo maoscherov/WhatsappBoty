@@ -95,6 +95,16 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"No se pudo hidratar la config: {e}")
 
+        # Receta por código de barras (24/9): carga la referencia (la siembra
+        # con el catálogo de la farmacia si está vacía) y recalcula el flag de
+        # todo el catálogo ERP ANTES de cargarlo en el bot.
+        try:
+            from app.services.receta_referencia import inicializar as _init_receta
+            _r = await asyncio.wait_for(_init_receta(get_db(settings.database_url)), timeout=60.0)
+            logger.info(f"Referencia de receta: {_r}")
+        except Exception as e:
+            logger.error(f"No se pudo inicializar la referencia de receta: {e}")
+
         # Catálogo ERP: si hay una sucursal sincronizada por el agente (o la
         # que fija DEFAULT_BRANCH_ID), gana Postgres sobre el CSV, que ya
         # quedó cargado arriba como fallback (el blob de Redis no se toca).
