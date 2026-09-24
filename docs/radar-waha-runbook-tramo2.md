@@ -40,12 +40,29 @@ archivo del repo; anotá solo estados y sí/no.
    webhook a tu túnel con los cinco eventos.
 5. En los logs del contenedor (Railway → Deployments → Logs) **no** tiene que aparecer el QR
    (`WAHA_PRINT_QR=False`).
+6. **Formato de `X-Webhook-Hmac` contra WAHA real (antes de dar por buena la conexión).** El receptor espera
+   el HMAC-SHA512 del cuerpo crudo en hex (`app/radar/routers/webhook_waha.py::verificar_hmac`), y eso solo se
+   probó contra el WAHA falso. Con la sesión recién creada WAHA ya manda un `session.status` (`STARTING` →
+   `SCAN_QR_CODE`); si no, tocá **Generar QR** de nuevo para forzar otro evento. En el log de Radar (el access
+   log de uvicorn) buscá las líneas `POST /webhook/waha`:
+   - **`200`** → el formato coincide. Confirmalo en la base: `SELECT waha_status, origen FROM
+     link_status_events ORDER BY id` tiene filas con origen `webhook`.
+   - **`401`** → la firma no coincide y **todos** los eventos se van a rechazar (los vínculos solo avanzarían
+     por polling y chequeo de salud). No sigas con el resto del runbook. Revisá, en este orden:
+     1. que `RADAR_WAHA_WEBHOOK_HMAC_KEY` sea la misma con la que se creó la sesión (si la cambiaste, reiniciá
+        Radar, cerrá la sesión y generá un QR nuevo: la clave viaja en la config de la sesión);
+     2. el formato de la cabecera: apuntá un vínculo de prueba a un receptor descartable en tu máquina (por el
+        mismo túnel) que imprima **solo** el largo de `X-Webhook-Hmac`, si es hex o base64 y si trae prefijo
+        (`sha512=`), nunca el valor ni el cuerpo; y el algoritmo que anuncie `X-Webhook-Hmac-Algorithm`, si viene.
+     Con eso ajustá `verificar_hmac` y su test en `tests/radar_tests/test_webhook_waha.py` **antes** del piloto,
+     y repetí este paso hasta ver `200`.
 
 | Punto a validar | Resultado (sí/no) |
 |---|---|
 | La sesión se llama `v_` + 12 hex y no hay otras sesiones de Radar vivas | |
 | `ignore`, `storage`, `metadata` y webhook coinciden | |
 | El QR no aparece en los logs de WAHA | |
+| El webhook de WAHA entra con `200` (no `401`): el formato de `X-Webhook-Hmac` coincide | |
 
 ## 2. Clave de solo lectura
 
