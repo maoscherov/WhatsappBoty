@@ -60,7 +60,19 @@ async def _lifespan_radar(app: FastAPI):
         await asyncio.wait_for(asyncio.to_thread(migrar_fuente, rs.fuente_database_url), timeout=60)
         app.state.radar = await construir_contexto(rs)
     logger.info("Radar arrancó: almacén de fuente %s", app.state.radar.fuente.almacen)
+    parar = asyncio.Event()
+    tarea = None
+    if propio and rs.worker_embebido:
+        from app.radar.worker import bucle   # import local: app.radar.worker importa este módulo en _main
+        tarea = asyncio.create_task(bucle(app.state.radar, parar=parar))
+    app.state.radar_worker = tarea
     yield
+    if tarea is not None:
+        parar.set()
+        try:
+            await asyncio.wait_for(tarea, timeout=15)
+        except asyncio.TimeoutError:
+            tarea.cancel()
     if propio:
         await app.state.radar.cerrar()
 

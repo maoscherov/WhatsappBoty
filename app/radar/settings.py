@@ -44,6 +44,9 @@ class RadarSettings(BaseSettings):
     waha_webhook_hmac_key: str = ""   # 32+ caracteres; vacía = el receptor rechaza todo (fail-closed)
     waha_timeout_s: float = 20.0
 
+    # Worker de la cola dentro del servicio web (ver app/radar/worker.py).
+    worker_embebido: bool = True
+
 
 @lru_cache
 def get_radar_settings() -> RadarSettings:
