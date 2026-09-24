@@ -130,3 +130,27 @@ async def test_creando_huerfano_con_sesion_encola_el_fin(ctx_waha, waha, radar_u
     await como_superusuario(radar_urls, "UPDATE links SET created_at = now() - interval '16 minutes' WHERE id = $1", k)
     assert await salud.ejecutar(ctx_waha, _job(esc, k)) == "hecho"
     assert await _fin_encolado(ctx_waha, esc, k) == "qr_abandonado"
+
+
+async def test_salud_no_pisa_un_status_mas_nuevo_del_webhook(ctx_waha, waha, monkeypatch):
+    """Final B4: la salud lee FAILED, en el medio el webhook trae WORKING; lo
+    leído es viejo y no se aplica (ni caída ni aviso)."""
+    from app.radar.vinculos import aplicar_status
+    from app.radar.waha.cliente import WahaCliente
+    esc = await escenario_vinculable(ctx_waha)
+    v = await vincular_de_prueba(ctx_waha, waha, esc)
+    waha.estados[v["session_name"]] = ["FAILED"]
+    original = WahaCliente.leer_sesion
+
+    async def leer_y_llega_el_webhook(self, nombre):
+        sesion = await original(self, nombre)
+        async with ctx_waha.db.tenant_tx(esc["tenant_id"]) as con:
+            await aplicar_status(con, tenant_id=esc["tenant_id"], link_id=v["link_id"], waha_status="WORKING",
+                                 origen="webhook", me_id=waha.me_id)
+        return sesion
+
+    monkeypatch.setattr(WahaCliente, "leer_sesion", leer_y_llega_el_webhook)
+    assert await salud.ejecutar(ctx_waha, _job(esc, v["link_id"])) == "reprogramar"
+    link = await _sql(ctx_waha, esc, "SELECT estado FROM links WHERE id = $1", v["link_id"])
+    avisos = await _sql(ctx_waha, esc, "SELECT count(*) AS n FROM jobs WHERE tipo = 'aviso_caida'")
+    assert link["estado"] == "vinculado" and avisos["n"] == 0

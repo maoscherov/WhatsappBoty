@@ -94,13 +94,23 @@ async def _leer_estado(con: asyncpg.Connection, line_id: uuid.UUID):
 
 
 async def aplicar_status(con: asyncpg.Connection, *, tenant_id: uuid.UUID, link_id: uuid.UUID, waha_status: str,
-                         origen: str, me_id: Optional[str] = None) -> dict:
-    """Aplica un estado de WAHA a un vínculo, dentro de la transacción del llamador."""
+                         origen: str, me_id: Optional[str] = None,
+                         leido_desde: Optional[datetime] = None) -> dict:
+    """Aplica un estado de WAHA a un vínculo, dentro de la transacción del llamador.
+
+    `leido_desde`: para polling y salud, el now() de la base tomado ANTES del GET
+    a WAHA. Si el vínculo recibió un status después (el webhook), lo leído es
+    viejo y no se aplica: si no, un SCAN_QR_CODE leído antes del WORKING del
+    webhook tiraría el vínculo a 'caido' y mandaría un falso aviso de caída."""
     if not PATRON_STATUS.match(waha_status or ""):
         raise ValueError("status de WAHA inválido")
-    link = await con.fetchrow("SELECT id, line_id, estado, created_at FROM links WHERE id = $1 FOR UPDATE", link_id)
+    link = await con.fetchrow("SELECT id, line_id, estado, created_at, ultimo_status_at FROM links "
+                              "WHERE id = $1 FOR UPDATE", link_id)
     if link is None:
         return {"aplicado": False, "estado_anterior": None, "estado": None, "efectos": []}
+    if leido_desde is not None and link["ultimo_status_at"] is not None and link["ultimo_status_at"] > leido_desde:
+        return {"aplicado": False, "estado_anterior": link["estado"], "estado": link["estado"],
+                "efectos": ["obsoleto"]}
     t = transicion(link["estado"], waha_status)
     if "ignorar" in t.efectos:
         return {"aplicado": False, "estado_anterior": link["estado"], "estado": link["estado"], "efectos": ["ignorar"]}
@@ -257,6 +267,7 @@ async def estado_de_linea(ctx: RadarContexto, *, tenant_id: uuid.UUID, line_id: 
                                         or ahora - link["ultimo_status_at"] > SIN_EVENTOS_POLLING)
     if link is not None and link["estado"] == "esperando_qr" and sin_eventos:
         # P3: "sin eventos por 20 s → polling de respaldo", hecho por el servidor.
+        leido_desde = ahora          # now() de la base, tomado antes del GET a WAHA
         try:
             worker = await leer_worker(ctx, link["worker_id"])
             async with cliente_de(ctx, worker) as cli:
@@ -265,7 +276,8 @@ async def estado_de_linea(ctx: RadarContexto, *, tenant_id: uuid.UUID, line_id: 
             if isinstance(status, str) and PATRON_STATUS.match(status):
                 async with ctx.db.tenant_tx(tenant_id) as con:
                     await aplicar_status(con, tenant_id=tenant_id, link_id=link["id"], waha_status=status,
-                                         origen="polling", me_id=sesion["me_id"] if sesion else None)
+                                         origen="polling", me_id=sesion["me_id"] if sesion else None,
+                                         leido_desde=leido_desde)
                     linea, consentida, link, ahora = await _leer_estado(con, line_id)
         except (WahaError, ClaveAdminAusente, LookupError) as e:
             logger.warning("vínculo %s: polling de respaldo falló (%s)", link["id"], type(e).__name__)

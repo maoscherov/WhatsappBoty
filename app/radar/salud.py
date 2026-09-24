@@ -37,7 +37,7 @@ CREANDO_HUERFANO = timedelta(minutes=15)
 
 async def ejecutar(ctx: RadarContexto, job: Job) -> Literal["reprogramar", "hecho"]:
     async with ctx.db.tenant_tx(job.tenant_id) as con:
-        link = await con.fetchrow("SELECT id, worker_id, session_name, estado, now() - created_at AS edad "
+        link = await con.fetchrow("SELECT id, worker_id, session_name, estado, now() - created_at AS edad, now() AS leido_desde "
                                   "FROM links WHERE id = $1", job.link_id)
     if link is None or link["estado"] not in VIVOS:
         return "hecho"
@@ -58,7 +58,7 @@ async def ejecutar(ctx: RadarContexto, job: Job) -> Literal["reprogramar", "hech
     async with ctx.db.tenant_tx(job.tenant_id) as con:
         await con.execute("UPDATE links SET ultimo_chequeo_at = now() WHERE id = $1", link["id"])
         await aplicar_status(con, tenant_id=job.tenant_id, link_id=link["id"], waha_status=status, origen="salud",
-                             me_id=sesion["me_id"] if sesion else None)
+                             me_id=sesion["me_id"] if sesion else None, leido_desde=link["leido_desde"])
         f = await con.fetchrow(
             "SELECT l.estado, l.caido_desde, l.conectado_at, l.created_at, li.duracion_vinculo_dias, now() AS ahora "
             "FROM links l JOIN lines li ON li.id = l.line_id WHERE l.id = $1", link["id"])
