@@ -116,6 +116,8 @@ class SessionService:
         if sku_id != session.get("pending_sku_id"):
             session.pop("receta_validada", None)
 
+        if sku_id != session.get("pending_sku_id") or not session.get("pending_at"):
+            session["pending_at"] = time.time()
         session.update({
             "pending_sku_id": sku_id,
             "pending_sku_nombre": sku_nombre,
@@ -165,6 +167,7 @@ class SessionService:
         derivadas); delegar=False la deja en modo operador con el pedido listo.
         """
         session = await self.get(phone)
+        session["pending_at"] = time.time()
         session.update({
             "pending_sku_id": sku_id,
             "pending_sku_nombre": sku_nombre,
@@ -231,6 +234,7 @@ class SessionService:
             "pending_cantidad": 1,
             "pending_opciones": [],
             "pending_items": [],
+            "pending_at": None,
             "extras_ofrecidos": [],
             "estado": "idle",
             "tipo_entrega": None,

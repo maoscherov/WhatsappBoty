@@ -46,6 +46,7 @@ from app.services.checkout_helper import (
     match_retiro, match_envio, pide_humano, derivar_si_receta, afirma_envio,
     pide_anotar, entrega_ya_elegida, crear_link_y_responder,
     pide_efectivo, habilitado_efectivo, bot_encendido,
+    referencia_ambigua_bloquea, cumplir_derivacion_prometida,
     quitar_cierres_vagos, ya_dice_no_disponible, solo_la_pregunta,
     alternativas_con_precio, texto_alternativas,
     pide_cancelar_pedido, pregunta_obra_social, responder_obra_social, parsear_lista,
@@ -88,6 +89,11 @@ async def _recibir_con_bot_apagado(deps: dict, phone: str, contenido: str) -> No
     if contenido:
         await deps["session"].add_message(phone, "user", contenido)
     logger.info(f"Bot apagado: mensaje de {phone} guardado sin responder")
+
+
+# Tipos de mensaje que, si no se pudieron leer, se derivan en vez de ignorarse.
+# Stickers y reacciones no: no piden nada.
+_ADJUNTOS_A_DERIVAR = {"document", "video", "location", "contacts", "image"}
 
 
 INTENCIONES_CON_SKU = {"consulta_precio", "consulta_stock", "pedido", "consulta_abierta"}
@@ -468,10 +474,16 @@ def _kapso_a_mensajes(evento: dict) -> list[dict]:
         "from": str(telefono).lstrip("+"),
         "id": msg.get("id") or "",
         "type": tipo,
-        "text": (msg.get("text") or {}).get("body", "") or (msg.get("image") or {}).get("caption", ""),
+        # El texto que acompaña a una imagen o a un documento viene como
+        # caption; el del documento se perdía (caso real 23/9, receta en PDF).
+        "text": ((msg.get("text") or {}).get("body", "")
+                 or (msg.get("image") or {}).get("caption", "")
+                 or (msg.get("document") or {}).get("caption", "")),
         "audio_id": None,
         "image_id": None,
-        "image_mime_type": (kapso.get("media_data") or {}).get("content_type", "image/jpeg"),
+        "image_mime_type": ((kapso.get("media_data") or {}).get("content_type")
+                            or (msg.get("document") or {}).get("mime_type")
+                            or (msg.get("image") or {}).get("mime_type") or "image/jpeg"),
         "phone_number_id": evento.get("phone_number_id"),
         # Propios de Kapso
         "media_url": media_url,
@@ -579,7 +591,7 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
     # separado hacía que el texto (que suele llegar primero) recibiera un
     # "¿podrías especificar?" un segundo antes de que la imagen respondiera
     # todo (caso real 31/8).
-    _phones_con_imagen = {m["from"] for m in messages if m.get("type") == "image"}
+    _phones_con_imagen = {m["from"] for m in messages if m.get("type") in ("image", "document")}
     if _phones_con_imagen:
         _descartados = [m for m in messages
                         if m.get("type") == "text" and m["from"] in _phones_con_imagen
@@ -652,7 +664,14 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                         continue
 
             # Imagen → clasificar (receta/credencial derivan; producto sigue el flujo)
-            if msg_type == "image" and (msg.get("image_id") or msg.get("media_url")):
+            # Documentos (PDF o imagen mandada como archivo) van por el mismo
+            # camino que las fotos: el clasificador reconoce recetas, bonos,
+            # credenciales y comprobantes. Antes llegaban sin texto y se
+            # descartaban EN SILENCIO (caso real 23/9: receta de Praxys en PDF).
+            _es_doc_legible = (msg_type == "document" and msg.get("media_url") and (
+                "pdf" in (msg.get("image_mime_type") or "").lower()
+                or (msg.get("image_mime_type") or "").lower().startswith("image/")))
+            if (msg_type == "image" or _es_doc_legible) and (msg.get("image_id") or msg.get("media_url")):
                 _ti = _time.perf_counter()
                 if msg.get("media_url"):
                     image_bytes = await _descargar_url(msg["media_url"])   # Kapso: URL directa
@@ -672,7 +691,8 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 _img_id = _re.sub(r"[^\w]", "", msg_id)[-32:] or msg_id[-32:]
                 _img_ref = None
                 try:
-                    _ext = ".png" if "png" in mime else ".webp" if "webp" in mime else ".jpg"
+                    _ext = (".pdf" if "pdf" in mime else ".png" if "png" in mime
+                            else ".webp" if "webp" in mime else ".jpg")
                     from app.services.blob_store import get_blob_store as _gbs
                     ok = await _gbs(_s.redis_url).save(f"chat:{_img_id}", image_bytes, _ext, ttl=7 * 24 * 3600)
                     if ok:
@@ -687,6 +707,10 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                         await deps["msgs"].save(phone, "user", _img_ref)
                     except Exception:
                         pass
+
+                _s_adj = await deps["session"].get(phone)
+                _s_adj["_adjunto_at"] = _time.time()
+                await deps["session"].save(phone, _s_adj)
 
                 if _bot_off:
                     # La foto ya quedó guardada para el operador: no se
@@ -806,7 +830,32 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     await deps["session"].add_message(phone, "assistant", respuesta)
                     continue
 
-            if not texto.strip():
+            # Un documento que no es PDF ni imagen (Word, Excel) no se lee aunque
+            # traiga texto: lo mira una persona.
+            _doc_ilegible = msg_type == "document" and not _es_doc_legible
+            if not texto.strip() or _doc_ilegible:
+                # Un adjunto que el bot no sabe leer (Word, video, ubicación,
+                # contacto) NO se descarta en silencio: lo mira una persona.
+                if msg_type in _ADJUNTOS_A_DERIVAR:
+                    _intencion = "adjunto_no_reconocido"
+                    _ref_adj = f"[{msg_type} recibido]" + (f" {texto.strip()}" if texto.strip() else "")
+                    texto = _ref_adj
+                    if _bot_off:
+                        await _recibir_con_bot_apagado(deps, phone, _ref_adj)
+                        continue
+                    await deps["session"].add_message(phone, "user", _ref_adj)
+                    await deps["session"].set_estado(phone, "operador", motivo="adjunto_no_reconocido")
+                    _cfg_adj = await deps["config"].get_all()
+                    _soc_adj = deps["socios"].find_by_phone(phone)
+                    respuesta = personalizar_nombre(
+                        _cfg_adj.get("imagen_no_reconocida_message") or (
+                            "¡Hola {nombre}! Recibí tu archivo 🙌 Te paso con alguien del "
+                            "equipo que lo mira y te ayuda."),
+                        (_soc_adj.get("nombre", "").split() or [""])[0] if _soc_adj else "")
+                    respuesta = respuesta.replace("tu imagen", "tu archivo")
+                    await deps["wa"].send_text(phone, respuesta)
+                    await deps["session"].add_message(phone, "assistant", respuesta)
+                    continue
                 _skip_record = True
                 continue
 
@@ -1279,6 +1328,26 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
             # ── Caso especial: hay producto pendiente de confirmar ───────────
             if session.get("estado") == "esperando_confirmacion" and session.get("pending_sku_id"):
                 texto_lower = texto.lower().strip()
+                # "Necesito eso" NO confirma un pedido pendiente si el cliente
+                # mandó un adjunto después (se refiere al adjunto), ni si el
+                # producto lleva receta (caso real 23/9: receta en PDF +
+                # "necesito eso" → confirmó el Colpuril que había quedado de antes).
+                _cfg_dx = await deps["config"].get_all()
+                if referencia_ambigua_bloquea(
+                        texto, session,
+                        necesita_receta(deps["sku"], session["pending_sku_id"],
+                                        _cfg_dx.get("receta_mode", "conservador"))):
+                    _intencion = "referencia_ambigua"
+                    _prod_dx = session.get("pending_sku_nombre") or "el producto"
+                    await deps["session"].clear_pending(phone)
+                    respuesta = (f"Para no equivocarme: ¿me decís el nombre del producto que "
+                                 f"necesitás? Antes habíamos hablado de {_prod_dx}.")
+                    _ts = _time.perf_counter()
+                    await deps["wa"].send_text(phone, respuesta)
+                    _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
+                    await deps["session"].add_message(phone, "user", texto)
+                    await deps["session"].add_message(phone, "assistant", respuesta)
+                    continue
                 if _match_no(texto_lower):
                     _intencion = "pedido_cancelado"
                     await deps["session"].clear_pending(phone)
@@ -1517,6 +1586,8 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                         else:
                             respuesta = "Dale, sin problema. ¿En qué más te puedo ayudar?"
 
+                    if await cumplir_derivacion_prometida(deps["session"], phone, respuesta):
+                        _intencion = "derivacion_prometida"
                     _ts = _time.perf_counter()
                     await deps["wa"].send_text(phone, respuesta)
                     _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
@@ -1950,6 +2021,13 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 if _deriv:
                     respuesta = _deriv
                     _intencion = "derivado_receta"
+
+            # El modelo dijo "te paso con alguien del equipo": se cumple. Antes
+            # quedaba solo en el texto, nadie lo veía y el producto seguía
+            # pendiente; el "Bueno" siguiente preguntaba retiro/envío (23/9).
+            if await cumplir_derivacion_prometida(deps["session"], phone, respuesta):
+                if _intencion != "derivado_receta":
+                    _intencion = "derivacion_prometida"
 
             _ts = _time.perf_counter()
             await deps["wa"].send_text(phone, respuesta)

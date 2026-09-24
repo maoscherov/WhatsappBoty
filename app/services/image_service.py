@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 _VISION_MODELS = {"anthropic": "claude-haiku-4-5-20251001", "openai": "gpt-4o"}
 
 _PROMPT = (
-    "Analizá esta imagen enviada a una farmacia por WhatsApp y clasificala.\n"
+    "Analizá esta imagen o documento (puede ser un PDF) enviado a una farmacia por WhatsApp y clasificala.\n"
     "Respondé SOLO con un JSON (sin texto extra) con este esquema:\n"
     '{"tipo": "receta|bono|credencial|comprobante|producto|otro", "items": "nombres separados por coma o vacío"}\n\n'
     "- receta: es una receta o prescripción médica: manuscrita, impresa, o una "
@@ -48,6 +48,19 @@ _PROMPT = (
     "ni la composición del envase (xylitol, niacinamida, manteca de karité, excipientes...) "
     "como items: no son productos pedidos. Si no hay productos identificables, dejalo vacío."
 )
+
+
+def es_pdf(media_type: str) -> bool:
+    return "pdf" in (media_type or "").lower()
+
+
+def bloque_adjunto(b64: str, media_type: str) -> dict:
+    """Bloque de contenido para Claude: los PDF van como documento (las
+    recetas electrónicas llegan así, caso real 23/9), el resto como imagen."""
+    if es_pdf(media_type):
+        return {"type": "document",
+                "source": {"type": "base64", "media_type": "application/pdf", "data": b64}}
+    return {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": b64}}
 
 
 _CAMPOS_RECETA = ("paciente", "dni", "obra_social", "nro_afiliado", "plan",
@@ -121,7 +134,7 @@ class ImageService:
             messages=[{
                 "role": "user",
                 "content": [
-                    {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": b64}},
+                    bloque_adjunto(b64, media_type),
                     {"type": "text", "text": _PROMPT},
                 ],
             }],
@@ -129,6 +142,8 @@ class ImageService:
         return response.content[0].text if getattr(response, "content", None) else ""
 
     async def _openai_vision(self, b64: str, media_type: str) -> str:
+        if es_pdf(media_type):
+            raise ValueError("OpenAI vision no lee PDF")
         resp = await self._openai.chat.completions.create(
             model=_VISION_MODELS["openai"],
             max_tokens=256,
@@ -186,13 +201,14 @@ class ImageService:
                     r = await self._anthropic.messages.create(
                         model=_VISION_MODELS["anthropic"], max_tokens=512,
                         messages=[{"role": "user", "content": [
-                            {"type": "image", "source": {"type": "base64",
-                             "media_type": media_type, "data": b64}},
+                            bloque_adjunto(b64, media_type),
                             {"type": "text", "text": _PROMPT_RECETA},
                         ]}],
                     )
                     raw = r.content[0].text if getattr(r, "content", None) else ""
                 else:
+                    if es_pdf(media_type):
+                        continue
                     r = await self._openai.chat.completions.create(
                         model=_VISION_MODELS["openai"], max_tokens=512,
                         response_format={"type": "json_object"},

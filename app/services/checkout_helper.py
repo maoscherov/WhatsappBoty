@@ -93,6 +93,12 @@ _HUMANO = [
     r"\bderiv(a|ame|arme|ar|anme|alo)\b",
     r"\batenci[oó]n personalizada\b",
     r"\b(hablar|pasame|pas[aá]s|pasar|paso|comunicar\w*|comunicame)\b.{0,20}\bequipo\b",
+    # Caso real 23/9: "¿me pasás con las chicas?" — así nombran los clientes a
+    # las empleadas de la farmacia.
+    r"\b(hablar|pasame|pas[aá]s|pasar|paso|comunicar\w*|comunicame|atienda|atiendan)\b"
+    r".{0,25}\b(las?\s+chicas?|los\s+chicos|las?\s+farmac[eé]utic[oa]s?|alguien\s+de\s+la\s+farmacia|"
+    r"el\s+personal|una\s+empleada)\b",
+    r"\bhablar\s+con\s+alguien\b",
 ]
 
 
@@ -1458,3 +1464,60 @@ def texto_alternativas(alternativas: list[dict]) -> str:
         lineas.append(f"• {a['nombre']} — ${float(a['precio']):,.2f}{receta}")
     cierre = "¿Te sirve?" if len(alternativas) == 1 else "¿Te sirve alguno? Decime el nombre o el número."
     return "Lo que tengo disponible:\n" + "\n".join(lineas) + "\n\n" + cierre
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Caso real 23/9: receta en PDF ignorada + "necesito eso" confirmó un
+# medicamento que había quedado pendiente; y una derivación prometida por el
+# modelo que nunca se hizo.
+# ══════════════════════════════════════════════════════════════════════════════
+def referencia_ambigua_bloquea(texto: str, session: dict, pendiente_con_receta: bool) -> bool:
+    """
+    True si el mensaje solo señala algo ("necesito eso", "quiero esto") y NO
+    puede tomarse como confirmación del producto pendiente: porque después del
+    pendiente llegó un adjunto (el "eso" es el adjunto) o porque el pendiente
+    lleva receta y no lo cotizó el operador (nunca se confirma sin nombrarlo).
+    """
+    if not texto_deictico(texto):
+        return False
+    if pendiente_con_receta and not session.get("receta_validada"):
+        return True
+    adj = session.get("_adjunto_at") or 0
+    pend = session.get("pending_at") or 0
+    return bool(adj) and float(adj) >= float(pend)
+
+
+_DERIV_PROMETIDA = re.compile(
+    r"\b(te\s+(paso|derivo|comunico|conecto)\s+con|ya\s+te\s+(paso|derivo)|"
+    r"te\s+va\s+a\s+(atender|contactar|escribir)\s+(alguien|una\s+persona|el\s+equipo|una\s+de\s+las\s+chicas))",
+    re.IGNORECASE,
+)
+_DERIV_OFERTA = re.compile(
+    r"\b(si\s+quer[eé]s|quer[eé]s\s+que|puedo|pod[eé]s|prefer[ií]s|te\s+gustar[ií]a)\b|¿",
+    re.IGNORECASE)
+
+
+def derivacion_prometida(texto: str) -> bool:
+    """
+    True si el texto AFIRMA que pasa la charla a una persona ("te paso con
+    alguien del equipo, aguardá"). No cuenta si solo lo OFRECE ("¿querés que
+    te pase con alguien?", "si querés te paso").
+    """
+    for oracion in re.split(r"(?<=[.!?…\n])\s*", texto or ""):
+        if _DERIV_PROMETIDA.search(oracion) and not _DERIV_OFERTA.search(oracion):
+            return True
+    return False
+
+
+async def cumplir_derivacion_prometida(session_svc, phone: str, respuesta: str) -> bool:
+    """Si la respuesta promete una persona, la conversación pasa a la cola del
+    operador y se suelta el producto pendiente. Devuelve True si derivó."""
+    if not derivacion_prometida(respuesta):
+        return False
+    s = await session_svc.get(phone)
+    if s.get("estado") == "operador":
+        return True
+    await session_svc.clear_pending(phone)
+    await session_svc.set_estado(phone, "operador", motivo="derivacion_prometida")
+    logger.info(f"Derivación prometida por el modelo → cumplida para {phone}")
+    return True
