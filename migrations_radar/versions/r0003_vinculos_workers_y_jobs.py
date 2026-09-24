@@ -130,7 +130,7 @@ def upgrade() -> None:
             tenant_id       UUID NOT NULL DEFAULT radar_tenant_actual() REFERENCES tenants(id),
             tipo            TEXT NOT NULL CHECK (tipo IN ('fin_vinculo', 'chequeo_salud', 'aviso_caida')),
             link_id         UUID NOT NULL REFERENCES links(id),
-            causa           TEXT NULL CHECK (causa ~ '^[a-z_]{1,40}$'),
+            causa           TEXT NULL CHECK (causa ~ '^[a-z0-9_]{1,40}$'),
             estado          TEXT NOT NULL DEFAULT 'pendiente'
                             CHECK (estado IN ('pendiente', 'corriendo', 'hecho', 'fallido')),
             intentos        INTEGER NOT NULL DEFAULT 0,
