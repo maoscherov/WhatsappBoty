@@ -7,7 +7,7 @@ import uuid
 
 import pytest
 
-from app.radar.waha.cliente import WahaCliente
+from app.radar.waha.cliente import WahaCliente, WahaError
 from app.radar.waha.gestor import (ConfigNoCoincide, crear_clave_lectura, crear_sesion_verificada,
                                    terminar_sesion)
 from app.radar.waha.sesion import ACCIONES_CLAVE_LECTURA, cuerpo_sesion
@@ -71,7 +71,7 @@ async def test_fin_un_solo_delete_sin_logout_y_solo_sus_claves():
         res = await terminar_sesion(cli, N, intentar_start=True)
     assert res == {"status_antes": "WORKING", "start_intentado": False, "desvinculo_confirmado": True,
                    "delete_status": 200, "sesion_borrada": True, "claves_borradas": 2, "claves_restantes": 0,
-                   "error_claves": None, "ok": True}
+                   "error_claves": None, "error_lectura": None, "error_borrado": None, "ok": True}
     assert waha.llamadas.count(f"DELETE /api/sessions/{N}") == 1
     assert not any("logout" in x for x in waha.llamadas)
     assert [k["session"] for k in waha.claves] == [OTRA]
@@ -125,3 +125,36 @@ async def test_fin_de_sesion_que_ya_no_existe():
     assert res["status_antes"] is None and res["delete_status"] == 404
     assert res["sesion_borrada"] is True and res["ok"] is True
     assert waha.llamadas.count(f"DELETE /api/sessions/{N}") == 1
+
+
+async def test_lectura_inicial_con_5xx_no_corta_y_borra_igual():
+    waha = WahaFalso()
+    async with _cli(waha) as cli:
+        await crear_sesion_verificada(cli, CUERPO)
+        waha.falla_leer = True
+        res = await terminar_sesion(cli, N, intentar_start=False)
+    assert res["status_antes"] is None and res["error_lectura"] == "WahaHttpError"
+    assert res["delete_status"] == 200
+    assert waha.llamadas.count(f"DELETE /api/sessions/{N}") == 1
+    assert res["ok"] is False
+
+
+async def test_delete_con_error_de_conexion_no_corta_y_borra_claves():
+    waha = WahaFalso()
+    async with _cli(waha) as cli:
+        await crear_sesion_verificada(cli, CUERPO)
+        await crear_clave_lectura(cli, N)
+        waha.falla_borrar_sesion = True
+        res = await terminar_sesion(cli, N, intentar_start=False)
+    assert res["delete_status"] is None and res["error_borrado"] == "WahaError"
+    assert res["claves_borradas"] == 1
+    assert res["ok"] is False
+
+
+async def test_crear_verificada_si_la_relectura_falla_borra_y_propaga():
+    waha = WahaFalso()
+    waha.falla_leer = True
+    async with _cli(waha) as cli:
+        with pytest.raises(WahaError):
+            await crear_sesion_verificada(cli, CUERPO)
+    assert waha.llamadas[-1] == f"DELETE /api/sessions/{N}" and waha.sesiones == {}

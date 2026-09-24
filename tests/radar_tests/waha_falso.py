@@ -27,6 +27,7 @@ class WahaFalso:
         self.falla_codigo = False
         self.falla_crear = False
         self.falla_leer = False
+        self.falla_borrar_sesion = False            # DELETE /api/sessions/{s} -> error de conexion
         self.me_id = "5493411234567@c.us"
         self._n = 0
 
@@ -64,6 +65,8 @@ class WahaFalso:
                     s["me"] = {"id": self.me_id, "pushName": "Negocio"}
                 return httpx.Response(200, json=s)
             if len(partes) == 4 and m == "DELETE":
+                if self.falla_borrar_sesion:
+                    raise httpx.ConnectError("caida simulada del DELETE de sesion", request=req)
                 if s is None:
                     return httpx.Response(404, json={})
                 del self.sesiones[nombre]

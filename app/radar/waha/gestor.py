@@ -30,7 +30,14 @@ class ConfigNoCoincide(RuntimeError):
 async def crear_sesion_verificada(cli: WahaCliente, cuerpo: dict[str, Any]) -> dict[str, Any]:
     nombre = verificar_nombre_sesion(cuerpo["name"])
     await cli.crear_sesion(cuerpo)
-    sesion = await cli.leer_sesion(nombre) or {}
+    try:
+        sesion = await cli.leer_sesion(nombre) or {}
+    except WahaError:
+        try:
+            await cli.borrar_sesion(nombre)
+        except WahaError:
+            pass
+        raise
     problemas = verificar_config(sesion, cuerpo)
     if problemas:
         await cli.borrar_sesion(nombre)
@@ -56,8 +63,13 @@ async def esperar_estado(cli: WahaCliente, nombre: str, *, objetivos: tuple[str,
 async def terminar_sesion(cli: WahaCliente, nombre: str, *, intentar_start: bool, espera_start_s: float = 180,
                           intervalo_s: float = 5) -> dict[str, Any]:
     verificar_nombre_sesion(nombre)
-    antes = await cli.leer_sesion(nombre)
-    status_antes = antes["status"] if antes else None
+    status_antes: Optional[str] = None
+    error_lectura: Optional[str] = None
+    try:
+        antes = await cli.leer_sesion(nombre)
+        status_antes = antes["status"] if antes else None
+    except WahaError as e:
+        error_lectura = type(e).__name__
     status_al_borrar = status_antes
     start_intentado = False
     if intentar_start and status_antes in ("STOPPED", "FAILED"):
@@ -68,7 +80,13 @@ async def terminar_sesion(cli: WahaCliente, nombre: str, *, intentar_start: bool
                                                     intervalo_s=intervalo_s)
         except WahaError:
             status_al_borrar = status_antes
-    delete_status = await cli.borrar_sesion(nombre)
+
+    delete_status: Optional[int] = None
+    error_borrado: Optional[str] = None
+    try:
+        delete_status = await cli.borrar_sesion(nombre)
+    except WahaError as e:
+        error_borrado = type(e).__name__
 
     borradas = 0
     error_claves: Optional[str] = None
@@ -98,5 +116,7 @@ async def terminar_sesion(cli: WahaCliente, nombre: str, *, intentar_start: bool
         "claves_borradas": borradas,
         "claves_restantes": restantes,
         "error_claves": error_claves,
-        "ok": borrada and restantes == 0,
+        "error_lectura": error_lectura,
+        "error_borrado": error_borrado,
+        "ok": borrada and restantes == 0 and error_lectura is None and error_borrado is None,
     }
