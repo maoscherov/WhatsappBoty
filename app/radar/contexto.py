@@ -5,7 +5,9 @@ fixture (tests).
 """
 
 from dataclasses import dataclass
+from typing import Optional
 
+import httpx
 from fastapi import HTTPException, Request
 
 from app.radar.db import RadarDB
@@ -22,6 +24,9 @@ class RadarContexto:
     fuente: FuenteStore
     secretos: SecretStore
     mailer: Mailer
+    # Solo tests: transporte httpx del servidor WAHA falso. En producción es
+    # None y el cliente usa la red.
+    waha_transport: Optional[httpx.AsyncBaseTransport] = None
 
     async def cerrar(self) -> None:
         await self.db.close()

@@ -16,15 +16,22 @@ from typing import Any, Optional
 
 import asyncpg
 
+from app.radar.constantes import CAUSAS_FIN
 from app.radar.parametros import PARAMETROS
 
 ACCIONES = frozenset({
     "tenant_creado", "tenants_listados", "linea_creada", "usuario_invitado", "invitacion_reenviada",
     "rol_cambiado", "parametro_cambiado", "parametro_propuesto", "consentimiento_registrado", "login_canjeado",
     "sesion_cerrada", "sesion_revocada", "soporte_otorgado", "soporte_revocado", "acceso_soporte",
+    # tramo 2: vínculo y Consola KIS
+    "consentimiento_asistido", "vinculo_iniciado", "vinculo_abortado", "admision_rechazada",
+    "qr_reiniciado", "codigo_solicitado", "desconexion_pedida", "borrado_pedido",
+    "restriccion_marcada", "restriccion_levantada", "vinculo_cerrado", "consola_abierta",
+    "worker_registrado",
 })
 TIPOS_OBJETO = frozenset({
     "tenant", "line", "user", "membership", "consent", "session", "support_grant", "login_token",
+    "link", "waha_worker",
 })
 ROLES_ACTOR = frozenset({"admin", "dueno", "gestor", "lector", "soporte", "sistema"})
 
@@ -35,10 +42,12 @@ CLAVES_DETALLE = {
     "parametro": "parametro", "valor_anterior": "valor_parametro", "valor_nuevo": "valor_parametro",
     "rol_anterior": "rol", "rol_nuevo": "rol",
     "ambito": "ambito", "proposito": "proposito",
+    "causa": "causa", "modo": "modo_asistencia", "ok": "booleano", "motivo": "motivo",
 }
 _HMAC = re.compile(r"^[0-9a-f]{64}$")
 _ROLES = frozenset({"admin", "dueno", "gestor", "lector", "soporte"})
 _ENUMS_PARAMETROS = frozenset(v for p in PARAMETROS.values() for v in p.orden)
+_MOTIVOS = frozenset({"sin_capacidad", "config_no_coincide", "waha_error"})
 
 
 class DetalleProhibido(ValueError):
@@ -59,6 +68,10 @@ def _validar_valor(clave: str, tipo: str, valor: Any) -> Any:
         "rol": lambda v: v in _ROLES,
         "ambito": lambda v: v in ("tenant", "linea"),
         "proposito": lambda v: v in ("login", "invitacion"),
+        "causa": lambda v: v in CAUSAS_FIN,
+        "modo_asistencia": lambda v: v in ("presencial", "videollamada"),
+        "booleano": lambda v: isinstance(v, bool),
+        "motivo": lambda v: v in _MOTIVOS,
     }[tipo](valor)
     if not ok:
         raise DetalleProhibido(f"detalle.{clave}: valor no admitido")

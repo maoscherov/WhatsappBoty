@@ -13,6 +13,8 @@ import asyncpg
 
 EVENTOS = frozenset({
     "invitacion_enviada", "login_canjeado", "consentimiento_registrado", "linea_creada",
+    # tramo 2 (§9: QR mostrado → WORKING, mediana P0 → WORKING)
+    "vinculo_iniciado", "vinculo_working", "vinculo_cerrado",
 })
 _CLAVE = re.compile(r"^[a-z_]{1,40}$")
 

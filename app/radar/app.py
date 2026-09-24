@@ -26,6 +26,7 @@ logger = logging.getLogger("app.radar")
 
 OBLIGATORIAS = ("database_url", "migrator_database_url", "fuente_database_url", "cookie_secret")
 MIN_COOKIE_SECRET = 32
+MIN_WEBHOOK_HMAC = 32
 
 
 def validar_settings(rs: RadarSettings) -> None:
@@ -34,6 +35,9 @@ def validar_settings(rs: RadarSettings) -> None:
         raise RuntimeError("Faltan variables RADAR_: " + ", ".join(faltantes))
     if len(rs.cookie_secret) < MIN_COOKIE_SECRET:
         raise RuntimeError(f"RADAR_COOKIE_SECRET: mínimo {MIN_COOKIE_SECRET} caracteres aleatorios")
+    # Vacía se admite (el receptor responde 401 a todo); corta no: sería una firma débil.
+    if rs.waha_webhook_hmac_key and len(rs.waha_webhook_hmac_key) < MIN_WEBHOOK_HMAC:
+        raise RuntimeError(f"RADAR_WAHA_WEBHOOK_HMAC_KEY: mínimo {MIN_WEBHOOK_HMAC} caracteres aleatorios")
 
 
 async def construir_contexto(rs: RadarSettings) -> RadarContexto:
