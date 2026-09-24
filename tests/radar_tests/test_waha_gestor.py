@@ -39,7 +39,21 @@ async def test_aborta_y_borra_si_mark_online_quedo_en_true():
         with pytest.raises(ConfigNoCoincide) as e:
             await crear_sesion_verificada(cli, CUERPO)
     assert e.value.problemas == ["noweb.markOnline"]
-    assert waha.llamadas[-1] == f"DELETE /api/sessions/{N}" and waha.sesiones == {}
+    assert f"DELETE /api/sessions/{N}" in waha.llamadas and waha.sesiones == {}
+    assert e.value.resultado["ok"] is True
+
+
+async def test_config_distinta_con_borrado_fallido_lo_informa():
+    """Final B1: el borrado de limpieza usa terminar_sesion y su resultado viaja
+    en ConfigNoCoincide; un DELETE que falla no se da por bueno."""
+    waha = WahaFalso()
+    waha.mutar_eco = lambda c: c["noweb"].__setitem__("markOnline", True)
+    waha.falla_borrar_sesion = True
+    async with _cli(waha) as cli:
+        with pytest.raises(ConfigNoCoincide) as e:
+            await crear_sesion_verificada(cli, CUERPO)
+    assert e.value.resultado["ok"] is False and N in waha.sesiones
+    assert not any(x.endswith("/logout") for x in waha.llamadas)
 
 
 async def test_aborta_si_la_metadata_no_coincide():
@@ -157,4 +171,4 @@ async def test_crear_verificada_si_la_relectura_falla_borra_y_propaga():
     async with _cli(waha) as cli:
         with pytest.raises(WahaError):
             await crear_sesion_verificada(cli, CUERPO)
-    assert waha.llamadas[-1] == f"DELETE /api/sessions/{N}" and waha.sesiones == {}
+    assert f"DELETE /api/sessions/{N}" in waha.llamadas and waha.sesiones == {}

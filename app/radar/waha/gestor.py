@@ -2,7 +2,7 @@
 Gestor del ciclo de vida de una sesión WAHA (§3 P3, §6.3 punto 6).
 
 - crear_sesion_verificada: POST, relee y compara; si no coincide, borra la
-  sesión y lanza ConfigNoCoincide (nunca se muestra un QR de una sesión mal
+  sesión con terminar_sesion y lanza ConfigNoCoincide con el resultado (nunca se muestra un QR de una sesión mal
   configurada).
 - terminar_sesion: un único DELETE /api/sessions/{name}. Nunca logout: sobre
   una sesión en marcha, WAHA hace logout y la vuelve a arrancar con QR nuevo y
@@ -22,9 +22,13 @@ from app.radar.waha.sesion import ACCIONES_CLAVE_LECTURA, verificar_config
 
 
 class ConfigNoCoincide(RuntimeError):
-    def __init__(self, problemas: list[str]) -> None:
+    """`resultado` es lo que devolvió terminar_sesion al limpiar: con
+    resultado["ok"] falso no está confirmado que la sesión ya no exista."""
+
+    def __init__(self, problemas: list[str], resultado: Optional[dict[str, Any]] = None) -> None:
         super().__init__("la sesión no quedó como se pidió: " + ", ".join(problemas))
         self.problemas = problemas
+        self.resultado = resultado or {"ok": False}
 
 
 async def crear_sesion_verificada(cli: WahaCliente, cuerpo: dict[str, Any]) -> dict[str, Any]:
@@ -33,15 +37,16 @@ async def crear_sesion_verificada(cli: WahaCliente, cuerpo: dict[str, Any]) -> d
     try:
         sesion = await cli.leer_sesion(nombre) or {}
     except WahaError:
-        try:
-            await cli.borrar_sesion(nombre)
-        except WahaError:
-            pass
+        # Limpieza de mejor esfuerzo; el llamador vuelve a llamar a terminar_sesion
+        # y decide por su resultado (terminar_sesion no lanza por errores de WAHA).
+        await terminar_sesion(cli, nombre, intentar_start=False)
         raise
     problemas = verificar_config(sesion, cuerpo)
     if problemas:
-        await cli.borrar_sesion(nombre)
-        raise ConfigNoCoincide(problemas)
+        # Limpieza con terminar_sesion (DELETE + claves + verificación 404), no un
+        # DELETE suelto cuyo status nadie mira. Nunca start: la sesión no sirve.
+        resultado = await terminar_sesion(cli, nombre, intentar_start=False)
+        raise ConfigNoCoincide(problemas, resultado)
     return sesion
 
 

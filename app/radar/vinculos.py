@@ -197,6 +197,9 @@ async def iniciar_vinculo(ctx: RadarContexto, *, tenant_id: uuid.UUID, line_id: 
     cuerpo = cuerpo_sesion(link_id=link_id, tenant_id=tenant_id, line_id=line_id, engine=worker.engine,
                            webhook_url=rs.waha_webhook_url, hmac_key=rs.waha_webhook_hmac_key, full_sync=full_sync)
     motivo: Optional[str] = None
+    # Solo se marca 'abortado' si está confirmado que la sesión no existe en
+    # WAHA: 'abortado' no es VIVO y nada lo vuelve a mirar (ni la salud ni el fin).
+    sin_sesion = False
     key_id = valor = ""
     try:
         async with cliente_de(ctx, worker) as cli:
@@ -205,21 +208,31 @@ async def iniciar_vinculo(ctx: RadarContexto, *, tenant_id: uuid.UUID, line_id: 
                 key_id, valor = await crear_clave_lectura(cli, nombre)
             except ConfigNoCoincide as e:
                 motivo = "config_no_coincide"
+                sin_sesion = bool(e.resultado.get("ok"))
                 logger.warning("ALERTA vínculo %s abortado: WAHA no guardó %s", link_id, ", ".join(e.problemas))
             except WahaError as e:
                 motivo = "waha_error"
                 logger.warning("vínculo %s abortado: WAHA falló al crear (%s)", link_id, type(e).__name__)
                 try:
-                    await terminar_sesion(cli, nombre, intentar_start=False)
+                    sin_sesion = bool((await terminar_sesion(cli, nombre, intentar_start=False))["ok"])
                 except WahaError:
-                    pass
+                    sin_sesion = False
     except ClaveAdminAusente:
         motivo = "waha_error"
+        sin_sesion = True          # sin clave admin no se llegó a llamar a WAHA
         logger.warning("vínculo %s abortado: falta la clave admin del worker", link_id)
     if motivo:
         async with ctx.db.tenant_tx(tenant_id) as con:
-            await con.execute("UPDATE links SET estado = 'abortado', cerrado_at = now(), updated_at = now() "
-                              "WHERE id = $1", link_id)
+            if sin_sesion:
+                await con.execute("UPDATE links SET estado = 'abortado', cerrado_at = now(), updated_at = now() "
+                                  "WHERE id = $1", link_id)
+            else:
+                # No se pudo confirmar el borrado: queda a cargo del fin (reintenta
+                # con backoff y, agotado, lo re-encola la programación de salud).
+                logger.warning("vínculo %s: limpieza en WAHA sin confirmar, se encola el fin", link_id)
+                await con.execute("UPDATE links SET fin_causa = COALESCE(fin_causa, 'qr_abandonado'), "
+                                  "updated_at = now() WHERE id = $1", link_id)
+                await cola.encolar(con, tipo="fin_vinculo", link_id=link_id, causa="qr_abandonado")
             await auditoria.registrar(con, tenant_id=tenant_id, actor_user_id=actor_user_id, actor_rol=actor_rol,
                                       accion="vinculo_abortado", tipo_objeto="link", objeto_id=link_id, ip=ip,
                                       detalle={"motivo": motivo})

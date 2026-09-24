@@ -251,3 +251,54 @@ async def test_caida_de_un_vinculado_encola_el_aviso_y_la_de_uno_que_cierra_no(c
                              origen="webhook")
         n = await con.fetchval("SELECT count(*) FROM jobs WHERE tipo = 'aviso_caida' AND link_id = $1", w["link_id"])
     assert n == 0
+
+
+async def test_aborto_sin_borrado_confirmado_encola_el_fin_en_vez_de_abortar(ctx_waha, waha):
+    """Final B1: si no se puede confirmar que la sesión no existe en WAHA, el
+    vínculo no queda 'abortado' (nada lo volvería a mirar): se encola el fin."""
+    waha.mutar_eco = lambda c: c["noweb"].__setitem__("markOnline", True)
+    waha.falla_borrar_sesion = True
+    esc = await escenario_vinculable(ctx_waha)
+    e = await _rechazo(_iniciar(ctx_waha, esc))
+    assert (e.status, e.codigo) == (502, "config_no_coincide")
+    fila = await _fila(ctx_waha, esc, "SELECT id, estado, fin_causa FROM links WHERE line_id = $1", esc["line_id"])
+    assert fila["estado"] != "abortado" and fila["fin_causa"] == "qr_abandonado"
+    job = await _fila(ctx_waha, esc, "SELECT estado FROM jobs WHERE link_id = $1 AND tipo = 'fin_vinculo'", fila["id"])
+    assert job is not None and job["estado"] == "pendiente"
+
+
+async def test_error_de_waha_al_crear_la_clave_sin_limpieza_confirmada_encola_el_fin(ctx_waha, waha):
+    waha.falla_claves = True
+    esc = await escenario_vinculable(ctx_waha)
+    e = await _rechazo(_iniciar(ctx_waha, esc))
+    assert (e.status, e.codigo) == (502, "waha_error")
+    fila = await _fila(ctx_waha, esc, "SELECT id, estado FROM links WHERE line_id = $1", esc["line_id"])
+    assert fila["estado"] != "abortado"
+    job = await _fila(ctx_waha, esc, "SELECT 1 AS x FROM jobs WHERE link_id = $1 AND tipo = 'fin_vinculo'", fila["id"])
+    assert job is not None
+
+
+async def test_polling_no_pisa_un_working_mas_nuevo_del_webhook(ctx_waha, waha, monkeypatch):
+    """Final B4: el polling lee SCAN_QR_CODE, en el medio entra el webhook
+    WORKING y después el polling aplica lo viejo. No debe caer ni avisar."""
+    from app.radar.waha.cliente import WahaCliente
+    esc = await escenario_vinculable(ctx_waha)
+    estado = await _iniciar(ctx_waha, esc)
+    link_id = uuid.UUID(estado["link_id"])
+    waha.estados[nombre_sesion(link_id)] = ["SCAN_QR_CODE"]
+    original = WahaCliente.leer_sesion
+
+    async def leer_y_llega_el_webhook(self, nombre):
+        sesion = await original(self, nombre)
+        async with ctx_waha.db.tenant_tx(esc["tenant_id"]) as con:
+            await aplicar_status(con, tenant_id=esc["tenant_id"], link_id=link_id, waha_status="WORKING",
+                                 origen="webhook", me_id=waha.me_id)
+        return sesion
+
+    monkeypatch.setattr(WahaCliente, "leer_sesion", leer_y_llega_el_webhook)
+    estado = await estado_de_linea(ctx_waha, tenant_id=esc["tenant_id"], line_id=esc["line_id"])
+    assert estado["estado"] == "vinculado"
+    fila = await _fila(ctx_waha, esc, "SELECT estado, waha_status FROM links WHERE id = $1", link_id)
+    assert (fila["estado"], fila["waha_status"]) == ("vinculado", "WORKING")
+    avisos = await _fila(ctx_waha, esc, "SELECT count(*) AS n FROM jobs WHERE tipo = 'aviso_caida'")
+    assert avisos["n"] == 0
