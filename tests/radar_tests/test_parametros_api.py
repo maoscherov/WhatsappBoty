@@ -307,7 +307,7 @@ async def test_consentimiento_viejo_no_vale_para_una_propuesta_nueva(cliente, ra
 
 
 async def test_consentimiento_de_linea_no_arrastra_tenant_de_una_propuesta_anterior(cliente, radar_ctx):
-    """_tenant_ya_consentido no arrastra valores consentidos antes de la propuesta
+    """tenant_ya_consentido no arrastra valores consentidos antes de la propuesta
     de tenant vigente."""
     a, d, l1, adm = await _base(radar_ctx, estado="vinculada")
     l2 = await crear_linea_directa(radar_ctx.db, a, "Norte", estado="vinculada")

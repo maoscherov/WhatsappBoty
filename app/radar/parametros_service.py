@@ -200,3 +200,18 @@ async def cambiar_parametros_tenant(con: asyncpg.Connection, *, tenant_id: uuid.
     await _auditar(con, tenant_id=tenant_id, objeto_id=tenant_id, tipo_objeto="tenant", actor_user_id=actor_user_id,
                    actor_rol=actor_rol, ip=ip, ambito="tenant", actuales=actuales, finales=finales, cambios=cambios)
     return finales
+
+
+async def tenant_ya_consentido(con: asyncpg.Connection, line_id: uuid.UUID, propuesta_t: dict) -> dict:
+    """Valores de la propuesta de tenant vigente que el último consentimiento
+    de esta línea ya aceptó, siempre que sea posterior a esa propuesta (un
+    consentimiento viejo no vale para una propuesta nueva). Lo usan el
+    consentimiento del dueño (routers/parametros.py) y el asistido de la Consola."""
+    crudo = await con.fetchval(
+        "SELECT c.opciones->'parametros_tenant' FROM consents c "
+        "WHERE c.id = (SELECT c2.id FROM consents c2 WHERE c2.line_id = $1 ORDER BY c2.created_at DESC LIMIT 1) "
+        "AND c.created_at >= (SELECT t.parametros_propuestos_at FROM tenants t WHERE t.id = c.tenant_id)",
+        line_id)
+    previos = json.loads(crudo) if crudo else {}
+    return {n: validar(n, v) for n, v in propuesta_t.items()
+            if n in previos and coincide_con_propuesta(propuesta_t, n, validar(n, previos[n]))}

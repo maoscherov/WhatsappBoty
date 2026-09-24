@@ -5,7 +5,6 @@ una línea viva (§2.1, §3 P2). El consentimiento acepta lo que un admin de
 KIS propuso (parametros_propuestos); no es un canal para aflojar solo.
 """
 
-import json
 import uuid
 from typing import Any
 
@@ -21,7 +20,7 @@ from app.radar.parametros import DE_LINEA, DE_TENANT, ValorInvalido, validar
 from app.radar.parametros_service import (CambioRechazado, a_json, cambiar_parametros_linea,
                                           cambiar_parametros_tenant, coincide_con_propuesta,
                                           consumir_propuesta_linea, consumir_propuesta_tenant,
-                                          leer_parametros_tenant, leer_propuesta_tenant)
+                                          leer_parametros_tenant, leer_propuesta_tenant, tenant_ya_consentido)
 
 router = APIRouter(prefix="/radar/api", tags=["radar-parametros"])
 
@@ -53,20 +52,6 @@ def _validar_parciales(parciales: dict, permitidos: list[str]) -> dict:
         return {n: validar(n, v) for n, v in parciales.items()}
     except ValorInvalido as e:
         raise HTTPException(status_code=422, detail={"error": "valor_invalido", "detalle": str(e)})
-
-
-async def _tenant_ya_consentido(con, line_id: uuid.UUID, propuesta_t: dict) -> dict:
-    """Valores de la propuesta de tenant vigente que el último consentimiento
-    de esta línea ya aceptó, siempre que sea posterior a esa propuesta (un
-    consentimiento viejo no vale para una propuesta nueva)."""
-    crudo = await con.fetchval(
-        "SELECT c.opciones->'parametros_tenant' FROM consents c "
-        "WHERE c.id = (SELECT c2.id FROM consents c2 WHERE c2.line_id = $1 ORDER BY c2.created_at DESC LIMIT 1) "
-        "AND c.created_at >= (SELECT t.parametros_propuestos_at FROM tenants t WHERE t.id = c.tenant_id)",
-        line_id)
-    previos = json.loads(crudo) if crudo else {}
-    return {n: validar(n, v) for n, v in propuesta_t.items()
-            if n in previos and coincide_con_propuesta(propuesta_t, n, validar(n, previos[n]))}
 
 
 @router.get("/lineas/{line_id}/parametros")
@@ -136,7 +121,7 @@ async def consentir(line_id: uuid.UUID, body: ConsentimientoIn, request: Request
             # Un consentimiento nuevo reemplaza al anterior como "el último" de la
             # línea: arrastra los valores propuestos de tenant que el anterior ya
             # aceptaba, para no volver a dejar la línea pendiente (ciclo).
-            ya_consentidos = await _tenant_ya_consentido(con, line_id, propuesta_t)
+            ya_consentidos = await tenant_ya_consentido(con, line_id, propuesta_t)
             finales_t = {**(await leer_parametros_tenant(con, sesion.tenant_id)), **ya_consentidos, **nuevos_tenant}
             opciones = {"parametros_linea": a_json(finales_l), "parametros_tenant": a_json(finales_t)}
             cid = await registrar_consentimiento(con, tenant_id=sesion.tenant_id, line_id=line_id, user_id=sesion.user_id,
