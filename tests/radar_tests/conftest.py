@@ -38,7 +38,8 @@ ROLES_SQL = """
 """
 
 # Orden de TRUNCATE: hijas antes que padres.
-TABLAS = ["product_events", "access_audit_log", "support_grants", "consents", "sessions",
+TABLAS = ["jobs", "link_status_events", "links", "waha_workers",
+          "product_events", "access_audit_log", "support_grants", "consents", "sessions",
           "login_tokens", "memberships", "lines", "users", "tenants"]
 
 

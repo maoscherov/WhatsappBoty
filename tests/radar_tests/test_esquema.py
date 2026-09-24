@@ -15,7 +15,8 @@ from app.radar.constantes import TENANT_KIS
 from .helpers import crear_linea_directa, crear_tenant_directo, crear_usuario
 
 TABLAS_TENANT = {"users", "memberships", "lines", "login_tokens", "sessions", "consents",
-                 "support_grants", "access_audit_log", "product_events"}
+                 "support_grants", "access_audit_log", "product_events",
+                 "waha_workers", "links", "link_status_events", "jobs"}
 
 
 async def _owner(radar_urls):

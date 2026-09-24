@@ -1,8 +1,14 @@
 """Atajos de test que escriben directo en la base como radar_app."""
 
 import uuid
+from datetime import datetime
+from typing import Optional
+
+import asyncpg
 
 from app.radar.auth import COOKIE, armar_cookie, emitir_sesion
+from app.radar.consentimiento import hash_texto
+from app.radar.constantes import TENANT_KIS
 from app.radar.db import RadarDB
 
 # Dominio con el que hay que setear una cookie A MANO en el cliente httpx con
@@ -66,3 +72,43 @@ class MailerQueFalla:
         if self.falla_si in mail.asunto:
             raise RuntimeError("proveedor de mail caído")
         self.enviados.append(mail)
+
+
+async def como_superusuario(radar_urls: dict, sql: str, *args) -> None:
+    """Para tests: escribe columnas que radar_app no puede actualizar (created_at,
+    max_intentos). No sirve el migrator: con FORCE RLS no ve filas."""
+    con = await asyncpg.connect(radar_urls["super"])
+    try:
+        await con.execute(sql, *args)
+    finally:
+        await con.close()
+
+
+async def crear_worker_directo(db: RadarDB, nombre: str = "w1", engine: str = "NOWEB",
+                               max_sesiones: int = 50, disco_max_gb: int = 10) -> uuid.UUID:
+    async with db.tenant_tx(TENANT_KIS) as con:
+        return await con.fetchval(
+            "INSERT INTO waha_workers (nombre, base_url, engine, max_sesiones, disco_max_gb) "
+            "VALUES ($1, 'http://waha.interno', $2, $3, $4) RETURNING id", nombre, engine, max_sesiones, disco_max_gb)
+
+
+async def crear_consentimiento_directo(db: RadarDB, tenant_id: uuid.UUID, line_id: uuid.UUID,
+                                       user_id: uuid.UUID) -> uuid.UUID:
+    async with db.tenant_tx(tenant_id) as con:
+        return await con.fetchval(
+            "INSERT INTO consents (line_id, user_id, version_texto, hash_texto, opciones) "
+            "VALUES ($1, $2, 'v1', $3, '{}'::jsonb) RETURNING id", line_id, user_id, hash_texto("v1"))
+
+
+async def crear_link_directo(db: RadarDB, tenant_id: uuid.UUID, line_id: uuid.UUID, worker_id: uuid.UUID,
+                             consent_id: uuid.UUID, estado: str = "esperando_qr",
+                             caido_desde: Optional[datetime] = None,
+                             restriccion_hasta: Optional[datetime] = None) -> uuid.UUID:
+    link_id = uuid.uuid4()
+    async with db.tenant_tx(tenant_id) as con:
+        await con.execute(
+            "INSERT INTO links (id, line_id, worker_id, consent_id, session_name, engine, estado, caido_desde, "
+            "restriccion_hasta) VALUES ($1, $2, $3, $4, $5, 'NOWEB', $6, $7, $8)",
+            link_id, line_id, worker_id, consent_id, "v_" + link_id.hex[:12], estado, caido_desde,
+            restriccion_hasta)
+    return link_id
