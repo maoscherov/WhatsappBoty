@@ -522,6 +522,42 @@ def receta_ya_mencionada(history: list) -> bool:
     return False
 
 
+def descuento_para(phone: str, cfg: dict, socio_svc=None) -> tuple[float, str]:
+    """
+    (pct, tipo) del descuento que corresponde al teléfono: "empleado",
+    "socio" o "" (ninguno). El de empleado NO se acumula con el de socio:
+    un empleado que además es socio tiene el de empleado (decisión 25/9).
+    Único lugar que decide el descuento: catálogo, texto al modelo, respuesta
+    a "¿tengo descuento?", link de pago y cotización de recetas.
+    """
+    try:
+        from app.services.empleado_service import get_empleado_service
+        if get_empleado_service().find_by_phone(phone):
+            pct = float(cfg.get("empleado_discount_pct") or 0)
+            if pct > 0:
+                return pct, "empleado"
+    except ImportError:
+        pass
+    except Exception as e:
+        logger.warning(f"No se pudo evaluar si {phone} es empleado: {e}")
+    try:
+        pct = float(cfg.get("socio_discount_pct") or 0)
+    except (TypeError, ValueError):
+        pct = 0.0
+    if pct <= 0:
+        return 0.0, ""
+    try:
+        if socio_svc is None:
+            from app.config import get_settings as _gs
+            from app.services.socio_service import get_socio_service as _gss
+            socio_svc = _gss(_gs().socios_path)
+        if socio_svc.find_by_phone(phone):
+            return pct, "socio"
+    except Exception as e:
+        logger.warning(f"No se pudo evaluar el descuento de socio para {phone}: {e}")
+    return 0.0, ""
+
+
 def aplicar_descuento_socio(resultados: list[dict], phone: str, cfg: dict,
                             socio_svc=None) -> tuple[list[dict], float]:
     """
@@ -542,22 +578,8 @@ def aplicar_descuento_socio(resultados: list[dict], phone: str, cfg: dict,
         return resultados, 0.0
     if str(cfg.get("socio_discount_en_catalogo", "true")).lower() != "true":
         return resultados, 0.0
-    try:
-        pct = float(cfg.get("socio_discount_pct") or 0)
-    except (TypeError, ValueError):
-        pct = 0.0
+    pct, _tipo = descuento_para(phone, cfg, socio_svc)
     if pct <= 0:
-        return resultados, 0.0
-
-    try:
-        if socio_svc is None:
-            from app.config import get_settings as _gs
-            from app.services.socio_service import get_socio_service as _gss
-            socio_svc = _gss(_gs().socios_path)
-        if not socio_svc.find_by_phone(phone):
-            return resultados, 0.0
-    except Exception as e:
-        logger.warning(f"No se pudo evaluar el descuento de socio para {phone}: {e}")
         return resultados, 0.0
 
     modo = cfg.get("receta_mode", "conservador")
@@ -581,14 +603,35 @@ def costo_envio_de(cfg: dict) -> float:
         return 0.0
 
 
-def pregunta_entrega(cfg: dict, extra: str = "", saludo: bool = True) -> str:
+def domicilio_de(phone: Optional[str], socio_svc=None) -> str:
+    """Domicilio del socio en el padrón, o "" si no es socio o no lo tiene."""
+    if not phone:
+        return ""
+    try:
+        if socio_svc is None:
+            from app.config import get_settings as _gs
+            from app.services.socio_service import get_socio_service as _gss
+            socio_svc = _gss(_gs().socios_path)
+        socio = socio_svc.find_by_phone(phone)
+        return ((socio or {}).get("domicilio") or "").strip()
+    except Exception:
+        return ""
+
+
+def pregunta_entrega(cfg: dict, extra: str = "", saludo: bool = True,
+                     phone: Optional[str] = None, socio_svc=None) -> str:
     """
     La pregunta retiro/envío, con el costo del envío A LA VISTA si existe:
-    el cliente lo ve antes de elegir, nunca como sorpresa en el link.
+    el cliente lo ve antes de elegir, nunca como sorpresa en el link. Si
+    quien escribe es socio con domicilio, la dirección va EN la pregunta
+    (pedido 25/9: antes salía solo en uno de los cuatro caminos).
     """
     costo = costo_envio_de(cfg)
-    envio_txt = (f"*envío a domicilio* (+${costo:,.0f})" if costo > 0
-                 else "*envío a domicilio*")
+    dom = domicilio_de(phone, socio_svc)
+    destino = f"envío a {dom}" if dom else "envío a domicilio"
+    envio_txt = (f"*{destino}* (+${costo:,.0f})" if costo > 0 else f"*{destino}*")
+    if dom:
+        extra = f"{extra} Si es a otra dirección, decímela.".rstrip() if extra else " Si es a otra dirección, decímela."
     if saludo:
         return f"¡Genial! ¿Cómo preferís recibirlo: *retiro en sucursal* o {envio_txt}?{extra}"
     return f"¿Preferís *retiro en sucursal* o {envio_txt}? 🙂{extra}"
@@ -832,14 +875,18 @@ async def crear_link_y_responder(
     # línea que explica el beneficio en el mensaje del link.
     descuento_line = ""
     try:
-        from app.services.socio_service import get_socio_service as _gss
-        pct = float(_cfg.get("socio_discount_pct") or 0)
-        if pct > 0 and _gss(_settings.socios_path).find_by_phone(phone):
+        pct, _tipo = descuento_para(phone, _cfg)
+        if pct > 0:
             # Precio de lista reconstruido desde el total ya bonificado, sólo
             # para mostrarlo en el mensaje.
             antes = (round(total_productos / (1 - pct / 100), 2)
                      if pct < 100 else total_productos)
-            plantilla = _cfg.get("socio_discount_message") or ""
+            if _tipo == "empleado":
+                plantilla = (_cfg.get("empleado_discount_message")
+                             or "🎉 Como empleado te aplicamos un {pct}% de descuento "
+                                "(precio de lista: ${antes}).")
+            else:
+                plantilla = _cfg.get("socio_discount_message") or ""
             descuento_line = plantilla.replace("{pct}", f"{pct:g}").replace("{antes}", f"{antes:,.2f}")
     except Exception as e:
         logger.warning(f"No se pudo evaluar descuento de socio para {phone}: {e}")
@@ -1014,12 +1061,7 @@ async def confirmar_pedido(
             )
         # 2b. No indicó → preguntar retiro o envío
         await session_svc.set_estado(phone, "esperando_entrega")
-        socio = socio_svc.find_by_phone(phone) if socio_svc else None
-        if socio and socio.get("domicilio"):
-            extra = f" Si querés envío, te lo mandamos a *{socio['domicilio']}* (o decime otra dirección)."
-        else:
-            extra = ""
-        return (pregunta_entrega(cfg, extra), "esperando_entrega")
+        return (pregunta_entrega(cfg, phone=phone, socio_svc=socio_svc), "esperando_entrega")
 
     # 3. Sin envío → link directo con retiro
     respuesta, _ = await crear_link_y_responder(payment_svc, session_svc, phone, session, "retiro", None)
@@ -1059,7 +1101,8 @@ async def resolver_entrega(
         _cfg_e = await _gcs(_gs().redis_url).get_all()
     except Exception:
         pass
-    return (pregunta_entrega(_cfg_e, saludo=False), "esperando_entrega")
+    return (pregunta_entrega(_cfg_e, saludo=False, phone=phone, socio_svc=socio_svc),
+            "esperando_entrega")
 
 
 async def capturar_direccion(
@@ -1564,3 +1607,39 @@ async def cumplir_derivacion_prometida(session_svc, phone: str, respuesta: str) 
     await session_svc.set_estado(phone, "operador", motivo="derivacion_prometida")
     logger.info(f"Derivación prometida por el modelo → cumplida para {phone}")
     return True
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Presentación distinta a la pedida (caso 24/9: "Atenolol 50 x50" → ofreció el
+# de 30 sin decir que el de 50 no está).
+# ══════════════════════════════════════════════════════════════════════════════
+_CANTIDAD_RE = re.compile(r"\bx\s*(\d{1,4})\b", re.IGNORECASE)
+_DOSIS_RE = re.compile(r"(?<![x\d])(\d+(?:[.,]\d+)?)\s*(mg|mcg|g|ml|%|ui)?\b", re.IGNORECASE)
+
+
+def _presentacion(texto: str) -> tuple[set, set]:
+    t = (texto or "").lower()
+    cantidades = set(_CANTIDAD_RE.findall(t))
+    sin_cant = _CANTIDAD_RE.sub(" ", t)
+    dosis = {m.group(1).replace(",", ".") for m in _DOSIS_RE.finditer(sin_cant)}
+    return dosis, cantidades
+
+
+def presentacion_distinta(pedido: str, ofrecido: str) -> bool:
+    """True si lo pedido especifica una dosis o cantidad que el producto
+    ofrecido no tiene (ambos la informan y no coinciden)."""
+    d_p, c_p = _presentacion(pedido)
+    d_o, c_o = _presentacion(ofrecido)
+    if c_p and c_o and not (c_p & c_o):
+        return True
+    if d_p and d_o and not (d_p & d_o):
+        return True
+    return False
+
+
+def aviso_presentacion(pedido: str, respuesta: str) -> str:
+    """Antepone que la presentación pedida no está, salvo que el texto ya lo diga."""
+    if ya_dice_no_disponible(respuesta):
+        return respuesta
+    return f"No tengo {pedido.strip()} en esa presentación. {respuesta}".strip()
+

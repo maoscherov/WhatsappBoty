@@ -211,6 +211,30 @@ class SocioService:
     def total(self) -> int:
         return len(self._socios)
 
+    def cargar_desde_lista(self, socios: list[dict]):
+        """
+        Construye los índices en memoria (por teléfono a 10 y 8 dígitos, y por
+        DNI) a partir de una lista de dicts ya normalizados — mismos campos
+        que carga `_load` desde el archivo (nombre, apellido, nombre_pila,
+        nro_socio, dni, domicilio, celular, celular_original). Se usa para
+        poblar el servicio desde Postgres (`cargar_desde_db`).
+        """
+        self._socios = []
+        self._por_tel_10.clear()
+        self._por_tel_8.clear()
+        self._por_dni.clear()
+        for socio in socios:
+            socio = dict(socio)
+            if not socio.get("celular"):
+                continue
+            if not socio.get("nombre_pila"):
+                socio["nombre_pila"] = nombre_de_pila(socio)
+            self._socios.append(socio)
+            self._por_tel_10[socio["celular"]] = socio
+            self._por_tel_8[socio["celular"][-8:]] = socio
+            if socio.get("dni"):
+                self._por_dni[socio["dni"]] = socio
+
     def _load(self):
         p = Path(self._path)
         if not p.exists():
@@ -392,6 +416,43 @@ class SocioService:
         if socio["nro_socio"]:
             partes.append(f"N° de socio: {socio['nro_socio']}")
         return " | ".join(partes)
+
+
+async def guardar_en_db(db, svc: "SocioService") -> int:
+    """Reemplaza la tabla `socios` completa (transacción) con los socios
+    cargados en memoria en `svc`. Postgres pasa a ser la fuente de verdad."""
+    filas = [
+        (s.get("celular", ""), s.get("celular_original", ""), s.get("nombre", ""),
+         s.get("apellido", ""), s.get("nombre_pila", ""), s.get("nro_socio", ""),
+         s.get("dni", ""), s.get("domicilio", ""))
+        for s in svc._socios
+    ]
+    async with db.transaction() as con:
+        await con.execute("DELETE FROM socios")
+        if filas:
+            await con.executemany(
+                "INSERT INTO socios (celular, celular_original, nombre, apellido, "
+                "nombre_pila, nro_socio, dni, domicilio) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+                filas)
+    return len(filas)
+
+
+async def cargar_desde_db(db, svc: "SocioService") -> int:
+    """Llena `svc` desde la tabla `socios`. Devuelve cuántos se cargaron
+    (0 si la tabla está vacía o Postgres no está disponible)."""
+    rows = await db.fetch(
+        "SELECT celular, celular_original, nombre, apellido, nombre_pila, "
+        "nro_socio, dni, domicilio FROM socios")
+    if not rows:
+        return 0
+    socios = [{
+        "celular": r["celular"], "celular_original": r["celular_original"],
+        "nombre": r["nombre"], "apellido": r["apellido"], "nombre_pila": r["nombre_pila"],
+        "nro_socio": r["nro_socio"], "dni": r["dni"], "domicilio": r["domicilio"],
+    } for r in rows]
+    svc.cargar_desde_lista(socios)
+    return svc.total
 
 
 _instance: Optional[SocioService] = None

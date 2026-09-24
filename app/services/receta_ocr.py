@@ -17,7 +17,8 @@ logger = logging.getLogger(__name__)
 
 
 def cotizar_receta(precio_base: float, pct_os: float = 0,
-                   es_socio: bool = False, pct_socio: float = 0) -> dict:
+                   es_socio: bool = False, pct_socio: float = 0,
+                   etiqueta: str = "socio") -> dict:
     """
     Cotización de una receta desde el backoffice: precio que carga el
     operador, menos el % que reconoce la obra social, menos el % de socio si
@@ -41,7 +42,7 @@ def cotizar_receta(precio_base: float, pct_os: float = 0,
     final = f"${precio_final:,.2f}"
     if pct_os and pct_socio_aplicado:
         desglose = (f"Sale {lista}, tu obra social te reconoce el {pct_os:g}% y por "
-                    f"ser socio tenés un {pct_socio_aplicado:g}% adicional: te queda "
+                    f"ser {etiqueta} tenés un {pct_socio_aplicado:g}% adicional: te queda "
                     f"en {final}.")
     elif pct_os:
         desglose = (f"Sale {lista} y tu obra social te reconoce el {pct_os:g}%: "
@@ -49,7 +50,7 @@ def cotizar_receta(precio_base: float, pct_os: float = 0,
     elif pct_socio_aplicado:
         # Sin % de OS cargado, el precio que puso el operador ya se presume
         # con la cobertura aplicada (pedido 5/9): se dice explícitamente.
-        desglose = (f"Sale por obra social {lista} y por ser socio tenés un "
+        desglose = (f"Sale por obra social {lista} y por ser {etiqueta} tenés un "
                     f"{pct_socio_aplicado:g}% de descuento: te queda en {final}.")
     else:
         desglose = f"Sale por obra social {final}."

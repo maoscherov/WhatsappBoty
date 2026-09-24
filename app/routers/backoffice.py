@@ -745,12 +745,93 @@ async def bo_socios_import(file: UploadFile = File(...), _=Depends(_auth)):
         settings.socios_path = str(dest)
         # Copia en Redis para sobrevivir deploys (fs efímero de Railway)
         await get_blob_store(settings.redis_url).save("socios", content, suffix)
+        # Persistencia en Postgres (best-effort: si falla, el padrón sigue
+        # funcionando en memoria desde el archivo hasta el próximo import).
+        persistido = False
+        try:
+            db = get_db(settings.database_url)
+            if db.available():
+                from app.services.socio_service import guardar_en_db
+                await guardar_en_db(db, svc)
+                persistido = True
+        except Exception as e:
+            logger.warning(f"No se pudo persistir el padrón de socios en Postgres: {e}")
         return {"status": "ok", "total": svc.total, "path": str(dest),
-                "reporte_carga": svc.reporte_carga}
+                "reporte_carga": svc.reporte_carga, "persistido": persistido}
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=422, detail=f"Error procesando padrón: {e}")
+
+
+# ── Empleados (20% de descuento, no acumulable con el de socio) ───────────────
+
+@router.post("/empleados/import")
+async def bo_empleados_import(file: UploadFile = File(...), grupo: str = Query("general"),
+                              _=Depends(_auth)):
+    """
+    Carga (o reemplaza) la planilla de empleados de un grupo (p.ej. mutual,
+    cooperativa) SIN tocar los otros grupos. Persiste en Postgres y recarga
+    el singleton en memoria con todos los grupos.
+    """
+    from app.services.empleado_service import (get_empleado_service, parsear_planilla)
+    from app.services.empleado_service import guardar_en_db as guardar_empleados_db
+    from app.services.empleado_service import cargar_desde_db as cargar_empleados_db
+
+    settings = get_settings()
+    grupo = (grupo or "general").strip() or "general"
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Archivo vacío")
+
+    try:
+        empleados, reporte = parsear_planilla(data, file.filename or "", grupo)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Error procesando planilla: {e}")
+    if not empleados:
+        raise HTTPException(
+            status_code=422,
+            detail="No se reconoció ningún empleado (¿falta el encabezado con "
+                   "celular/teléfono y nombre?)")
+
+    db = get_db(settings.database_url)
+    if not db.available():
+        raise HTTPException(status_code=503, detail="Postgres no disponible — no se pudo persistir")
+    await guardar_empleados_db(db, empleados, grupo)
+
+    svc = get_empleado_service()
+    total = await cargar_empleados_db(db, svc)
+    svc.reporte_carga = reporte
+
+    total_grupo = sum(1 for e in svc._empleados if e.get("grupo") == grupo)
+    return {"grupo": grupo, "total_grupo": total_grupo, "total": total,
+            "reporte_carga": reporte}
+
+
+@router.get("/empleados/info")
+async def bo_empleados_info(_=Depends(_auth)):
+    from app.services.empleado_service import get_empleado_service
+    svc = get_empleado_service()
+    por_grupo: dict[str, int] = {}
+    for e in svc._empleados:
+        g = e.get("grupo") or "general"
+        por_grupo[g] = por_grupo.get(g, 0) + 1
+    return {"total": svc.total, "por_grupo": por_grupo, "reporte_carga": svc.reporte_carga}
+
+
+@router.get("/empleados")
+async def bo_empleados_list(_=Depends(_auth), q: str = Query(""), page: int = Query(1, ge=1),
+                            page_size: int = Query(50, ge=1, le=200)):
+    from app.services.empleado_service import get_empleado_service
+    svc = get_empleado_service()
+    pagina, total = svc.listar(q, page, page_size)
+    empleados = [{
+        "nombre": e.get("nombre"), "apellido": e.get("apellido"),
+        "nombre_pila": e.get("nombre_pila"), "grupo": e.get("grupo"),
+        "celular": e.get("celular"), "celular_original": e.get("celular_original"),
+        "activo": e.get("activo", True),
+    } for e in pagina]
+    return {"total": total, "page": page, "page_size": page_size, "empleados": empleados}
 
 
 # ── Horarios de atención ───────────────────────────────────────────────────────
@@ -844,6 +925,8 @@ class ConfigUpdate(BaseModel):
     socio_discount_info_message: str | None = None   # respuesta fija con descuento activo ({pct})
     socio_discount_off_message: str | None = None    # respuesta fija con descuento apagado
     derivadas_poll_seconds: str | None = None    # intervalo de polleo de /bo/derivadas
+    empleado_discount_pct: str | None = None     # descuento de empleado, no acumulable con el de socio
+    empleado_discount_message: str | None = None
 
 
 class BotSwitch(BaseModel):
@@ -988,14 +1071,14 @@ async def bo_paylink(body: PaylinkIn, _=Depends(_auth)):
     # El desglose redactado viaja en la respuesta y en el mensaje al cliente.
     cotizacion = None
     if body.pct_os is not None or body.plantilla == "receta":
-        _es_socio = bool(get_socio_service(settings.socios_path).find_by_phone(body.phone))
-        try:
-            _pct_socio = float(_cfg.get("socio_discount_pct") or 0)
-        except (TypeError, ValueError):
-            _pct_socio = 0.0
+        # Mismo descuento que en el chat: empleado (no acumulable) o socio.
+        from app.services.checkout_helper import descuento_para
+        _pct_socio, _tipo_desc = descuento_para(
+            body.phone, _cfg, get_socio_service(settings.socios_path))
         from app.services.receta_ocr import cotizar_receta
         cotizacion = cotizar_receta(precio, pct_os=body.pct_os or 0,
-                                    es_socio=_es_socio, pct_socio=_pct_socio)
+                                    es_socio=_pct_socio > 0, pct_socio=_pct_socio,
+                                    etiqueta=_tipo_desc or "socio")
         precio = cotizacion["precio_final"]
 
     total = round(precio * cantidad, 2)

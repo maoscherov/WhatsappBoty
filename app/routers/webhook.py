@@ -46,7 +46,8 @@ from app.services.checkout_helper import (
     confirmar_pedido, resolver_entrega, capturar_direccion,
     match_retiro, match_envio, pide_humano, derivar_si_receta, afirma_envio,
     pide_anotar, entrega_ya_elegida, crear_link_y_responder,
-    pide_efectivo, habilitado_efectivo, bot_encendido,
+    pide_efectivo, habilitado_efectivo, bot_encendido, descuento_para,
+    presentacion_distinta, aviso_presentacion,
     referencia_ambigua_bloquea, cumplir_derivacion_prometida,
     quitar_cierres_vagos, ya_dice_no_disponible, solo_la_pregunta,
     alternativas_con_precio, texto_alternativas,
@@ -912,19 +913,30 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
             # Si el socio tiene descuento activo, los precios del catálogo YA
             # vienen bonificados: el modelo tiene que saberlo para aclararlo al
             # darlos, y para no volver a descontar por su cuenta.
-            if _ctx_socio:
-                _cfg_socio = await deps["config"].get_all()
-                _pct_cfg = float(_cfg_socio.get("socio_discount_pct") or 0)
-                _en_catalogo = str(
-                    _cfg_socio.get("socio_discount_en_catalogo", "true")).lower() == "true"
-                if _pct_cfg > 0 and _en_catalogo:
-                    _ctx_socio += (
-                        f" | IMPORTANTE: los precios que ves YA tienen aplicado el "
-                        f"{_pct_cfg:g}% de descuento de socio. Cuando digas un precio, "
-                        f"aclaralo en la misma frase (ej: \"sale $8.500, ya con tu "
-                        f"{_pct_cfg:g}% de socio\"). No vuelvas a descontar nada vos, "
-                        f"ni menciones el precio de lista."
-                    )
+            _cfg_socio = await deps["config"].get_all()
+            _pct_cfg, _tipo_desc = descuento_para(phone, _cfg_socio, deps["socios"])
+            if _tipo_desc == "empleado":
+                # Empleado (20%, no acumulable): puede no estar en el padrón.
+                try:
+                    from app.services.empleado_service import get_empleado_service
+                    _emp = get_empleado_service().find_by_phone(phone) or {}
+                except Exception:
+                    _emp = {}
+                if not _nombre_socio:
+                    _nombre_socio = _emp.get("nombre_pila") or ""
+                if not _ctx_socio:
+                    _ctx_socio = f"Nombre de pila (para saludar): {_nombre_socio}".strip()
+                _ctx_socio += " | Es EMPLEADO de la mutual"
+            _en_catalogo = str(
+                _cfg_socio.get("socio_discount_en_catalogo", "true")).lower() == "true"
+            if _ctx_socio and _pct_cfg > 0 and _en_catalogo:
+                _ctx_socio += (
+                    f" | IMPORTANTE: los precios que ves YA tienen aplicado el "
+                    f"{_pct_cfg:g}% de descuento de {_tipo_desc}. Cuando digas un precio, "
+                    f"aclaralo en la misma frase (ej: \"sale $8.500, ya con tu "
+                    f"{_pct_cfg:g}% de {_tipo_desc}\"). No vuelvas a descontar nada vos, "
+                    f"ni menciones el precio de lista."
+                )
 
             # ── Control de horario de atención ──────────────────────────────
             hours = await deps["config"].get_hours()
@@ -1044,7 +1056,8 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     elif session.get("pending_sku_id") or _items_ef:
                         await deps["session"].set_estado(phone, "esperando_entrega")
                         respuesta = ("¡Dale! Lo pagás en efectivo 💵 " +
-                                     pregunta_entrega(_cfg_pm, saludo=False))
+                                     pregunta_entrega(_cfg_pm, saludo=False, phone=phone,
+                                                      socio_svc=deps["socios"]))
                     else:
                         respuesta = ("¡Dale! Cuando armemos tu pedido lo dejamos para pagar "
                                      "en efectivo 💵 Contame qué necesitás.")
@@ -1082,7 +1095,8 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     elif session.get("pending_sku_id") or _items_cc:
                         await deps["session"].set_estado(phone, "esperando_entrega")
                         respuesta = ("¡Dale! Te lo cargamos a tu cuenta corriente 🙌 " +
-                                     pregunta_entrega(_cfg_pm, saludo=False))
+                                     pregunta_entrega(_cfg_pm, saludo=False, phone=phone,
+                                                      socio_svc=deps["socios"]))
                     else:
                         respuesta = ("¡Dale! Cuando armemos tu pedido lo cargamos a tu "
                                      "cuenta corriente 🙌 Contame qué necesitás.")
@@ -1159,8 +1173,12 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
             # descuento real —si está activo— se aplica solo al armar el link.
             if pregunta_descuento(texto):
                 _intencion = "consulta_descuento"
+                _pct_emp, _tipo_emp = descuento_para(phone, _cfg_pm, deps["socios"])
                 _pct_desc = float(_cfg_pm.get("socio_discount_pct") or 0)
-                if _pct_desc > 0:
+                if _tipo_emp == "empleado":
+                    respuesta = (f"¡Sí! Como empleado tenés {_pct_emp:g}% de descuento en "
+                                 "productos sin receta, y ya te lo muestro aplicado en los precios 🙂")
+                elif _pct_desc > 0:
                     respuesta = (_cfg_pm.get("socio_discount_info_message") or
                                  "¡Sí! Los socios de la Mutual tienen {pct}% de descuento en "
                                  "productos sin receta — se aplica solo en el link de pago 🙂"
@@ -1287,7 +1305,8 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                             + (f" (el envío cuesta ${_costo_e:,.0f} y se suma al total)"
                                if _costo_e else "") +
                             ". No generes links de pago ni cambies el producto.",
-                            pregunta_entrega(_cfg_ent, saludo=False),
+                            pregunta_entrega(_cfg_ent, saludo=False, phone=phone,
+                                             socio_svc=deps["socios"]),
                         )
                     else:
                         respuesta, _intencion = await resolver_entrega(
@@ -1899,6 +1918,10 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                             opciones=resultados_sku,
                         )
                         _sku_pendiente_nuevo = producto_elegido["sku_id"]
+                        # Pidió otra presentación ("x50") y se ofrece otra ("x30"):
+                        # se dice explícitamente (caso 24/9, Atenolol).
+                        if presentacion_distinta(_entidad_busq, producto_elegido["nombre"]):
+                            respuesta = aviso_presentacion(_entidad_busq, respuesta)
                         await deps["metrics"].evento(
                             "producto_ofrecido", phone=phone,
                             dato=producto_elegido["nombre"][:120],

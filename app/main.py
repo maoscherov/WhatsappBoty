@@ -95,6 +95,36 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"No se pudo hidratar la config: {e}")
 
+        # Padrón de socios y empleados (24/9): Postgres pasa a ser la fuente de
+        # verdad. Si la tabla socios tiene filas, el singleton se carga desde
+        # ahí (pisa lo leído del archivo arriba); si está vacía y el archivo
+        # cargó socios, se siembra la tabla desde el archivo. Best-effort: un
+        # padrón mal cargado en Postgres nunca debe tumbar el arranque.
+        try:
+            from app.services.socio_service import (get_socio_service, guardar_en_db,
+                                                     cargar_desde_db as cargar_socios_db)
+            _db_socios = get_db(settings.database_url)
+            if _db_socios.available():
+                _socio_svc = get_socio_service(settings.socios_path)
+                _n_db = await cargar_socios_db(_db_socios, _socio_svc)
+                if _n_db:
+                    logger.info(f"Padrón de socios cargado desde Postgres: {_n_db} socios")
+                elif _socio_svc.total:
+                    await guardar_en_db(_db_socios, _socio_svc)
+                    logger.info(f"Padrón de socios sembrado en Postgres desde el archivo: "
+                                f"{_socio_svc.total} socios")
+        except Exception as e:
+            logger.warning(f"No se pudo hidratar/sembrar el padrón de socios en Postgres: {e}")
+
+        try:
+            from app.services.empleado_service import get_empleado_service, cargar_desde_db as cargar_empleados_db
+            _db_emp = get_db(settings.database_url)
+            if _db_emp.available():
+                _n_emp = await cargar_empleados_db(_db_emp, get_empleado_service())
+                logger.info(f"Listado de empleados cargado desde Postgres: {_n_emp} empleados")
+        except Exception as e:
+            logger.warning(f"No se pudo cargar el listado de empleados desde Postgres: {e}")
+
         # Receta por código de barras (24/9): carga la referencia (la siembra
         # con el catálogo de la farmacia si está vacía) y recalcula el flag de
         # todo el catálogo ERP ANTES de cargarlo en el bot.

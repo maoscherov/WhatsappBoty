@@ -310,6 +310,11 @@ DEFAULTS: dict[str, str] = {
     # Cada cuántos segundos el backoffice pollea /bo/derivadas para la alerta
     # sonora. Lo lee el frontend (Lovable) desde /bo/config.
     "derivadas_poll_seconds": "15",
+    # Descuento de EMPLEADO (24/9): NO acumulable con el de socio — si el
+    # teléfono está en el listado de empleados, se aplica este descuento en
+    # vez del de socio (aunque también sea socio). "0" = apagado.
+    "empleado_discount_pct": "20",
+    "empleado_discount_message": "",
 }
 
 DEFAULT_HOURS = {
