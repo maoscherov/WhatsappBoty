@@ -116,3 +116,30 @@ async def crear_link_directo(db: RadarDB, tenant_id: uuid.UUID, line_id: uuid.UU
             link_id, line_id, worker_id, consent_id, "v_" + link_id.hex[:12], estado, caido_desde,
             restriccion_hasta)
     return link_id
+
+
+async def escenario_vinculable(ctx, nombre: str = "Farmacia A") -> dict:
+    """Tenant con dueño, una línea y el consentimiento de esa línea (sin vínculo todavía)."""
+    t = await crear_tenant_directo(ctx.db, nombre)
+    email = f"dueno-{uuid.uuid4().hex[:8]}@cliente.com"
+    d = await crear_usuario(ctx.db, t, email, "dueno")
+    li = await crear_linea_directa(ctx.db, t, "Local centro")
+    c = await crear_consentimiento_directo(ctx.db, t, li, d)
+    return {"tenant_id": t, "dueno_id": d, "dueno_email": email, "line_id": li, "consent_id": c}
+
+
+async def vincular_de_prueba(ctx, waha, esc: dict, *, working: bool = True) -> dict:
+    """Vincula la línea del escenario contra el WAHA falso y, si `working`, simula el escaneo."""
+    from app.radar.vinculos import aplicar_status, iniciar_vinculo
+    from app.radar.waha.sesion import nombre_sesion
+
+    estado = await iniciar_vinculo(ctx, tenant_id=esc["tenant_id"], line_id=esc["line_id"],
+                                   actor_user_id=esc["dueno_id"], actor_rol="dueno", ip=None)
+    link_id = uuid.UUID(estado["link_id"])
+    nombre = nombre_sesion(link_id)
+    if working:
+        waha.sesiones[nombre]["status"] = "WORKING"
+        async with ctx.db.tenant_tx(esc["tenant_id"]) as con:
+            await aplicar_status(con, tenant_id=esc["tenant_id"], link_id=link_id, waha_status="WORKING",
+                                 origen="webhook", me_id=waha.me_id)
+    return {"link_id": link_id, "session_name": nombre}
