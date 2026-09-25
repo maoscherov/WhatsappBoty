@@ -112,6 +112,25 @@ async def test_empleados_guardar_y_cargar_por_grupo(db):
     assert svc2.find_by_phone("3415559999")["grupo"] == "cooperativa"
 
 
+async def test_empleados_sin_grupo_reemplaza_la_lista_completa(db):
+    # El backoffice sube sin grupo: una planilla nueva reemplaza TODO,
+    # incluso lo que se hubiera cargado antes con un grupo.
+    empleados, _ = parsear_planilla(_xlsx_empleados(), "listado.xlsx", "general")
+    await guardar_empleados_db(db, [{
+        "nombre": "Carlos", "apellido": "Diaz", "nombre_pila": "Carlos",
+        "celular": "3415559999", "celular_original": "3415559999", "activo": True,
+    }], "cooperativa")
+    await guardar_empleados_db(db, empleados)
+    svc = EmpleadoService()
+    assert await cargar_empleados_db(db, svc) == 3
+    assert svc.find_by_phone("3415559999") is None
+
+    await guardar_empleados_db(db, empleados[:1])
+    svc2 = EmpleadoService()
+    assert await cargar_empleados_db(db, svc2) == 1
+    assert {e["grupo"] for e in svc2._empleados} == {"general"}
+
+
 async def test_socios_guardar_y_cargar_desde_db(db, tmp_path):
     p = tmp_path / "padron.csv"
     p.write_text(

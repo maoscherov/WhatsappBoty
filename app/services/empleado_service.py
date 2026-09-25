@@ -277,17 +277,20 @@ def parsear_planilla(data: bytes, filename: str, grupo: str) -> tuple[list[dict]
 
 # ── Persistencia (Postgres) ──────────────────────────────────────────────────
 
-async def guardar_en_db(db, empleados: list[dict], grupo: str) -> int:
-    """Reemplaza SOLO los empleados del grupo dado (transacción) — así cada
-    grupo (p.ej. mutual y cooperativa) se carga por separado sin pisar a los
-    demás."""
+async def guardar_en_db(db, empleados: list[dict], grupo: str | None = None) -> int:
+    """Sin `grupo` reemplaza la lista COMPLETA de empleados (así se usa desde
+    el backoffice). Con `grupo` reemplaza solo ese grupo y no toca los demás."""
     filas = [
         (e.get("celular", ""), e.get("celular_original", ""), e.get("nombre", ""),
-         e.get("apellido", ""), e.get("nombre_pila", ""), grupo, bool(e.get("activo", True)))
+         e.get("apellido", ""), e.get("nombre_pila", ""), grupo or "general",
+         bool(e.get("activo", True)))
         for e in empleados
     ]
     async with db.transaction() as con:
-        await con.execute("DELETE FROM empleados WHERE grupo = $1", grupo)
+        if grupo:
+            await con.execute("DELETE FROM empleados WHERE grupo = $1", grupo)
+        else:
+            await con.execute("DELETE FROM empleados")
         if filas:
             await con.executemany(
                 "INSERT INTO empleados (celular, celular_original, nombre, apellido, "

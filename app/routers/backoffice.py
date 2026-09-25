@@ -767,25 +767,25 @@ async def bo_socios_import(file: UploadFile = File(...), _=Depends(_auth)):
 # ── Empleados (20% de descuento, no acumulable con el de socio) ───────────────
 
 @router.post("/empleados/import")
-async def bo_empleados_import(file: UploadFile = File(...), grupo: str = Query("general"),
+async def bo_empleados_import(file: UploadFile = File(...), grupo: str | None = Query(None),
                               _=Depends(_auth)):
     """
-    Carga (o reemplaza) la planilla de empleados de un grupo (p.ej. mutual,
-    cooperativa) SIN tocar los otros grupos. Persiste en Postgres y recarga
-    el singleton en memoria con todos los grupos.
+    Carga la planilla de empleados y REEMPLAZA la lista completa. `?grupo=`
+    es opcional (compatibilidad): si viene, reemplaza solo ese grupo.
+    Persiste en Postgres y recarga el singleton en memoria.
     """
     from app.services.empleado_service import (get_empleado_service, parsear_planilla)
     from app.services.empleado_service import guardar_en_db as guardar_empleados_db
     from app.services.empleado_service import cargar_desde_db as cargar_empleados_db
 
     settings = get_settings()
-    grupo = (grupo or "general").strip() or "general"
+    grupo = (grupo or "").strip() or None
     data = await file.read()
     if not data:
         raise HTTPException(status_code=400, detail="Archivo vacío")
 
     try:
-        empleados, reporte = parsear_planilla(data, file.filename or "", grupo)
+        empleados, reporte = parsear_planilla(data, file.filename or "", grupo or "general")
     except Exception as e:
         raise HTTPException(status_code=422, detail=f"Error procesando planilla: {e}")
     if not empleados:
@@ -803,8 +803,8 @@ async def bo_empleados_import(file: UploadFile = File(...), grupo: str = Query("
     total = await cargar_empleados_db(db, svc)
     svc.reporte_carga = reporte
 
-    total_grupo = sum(1 for e in svc._empleados if e.get("grupo") == grupo)
-    return {"grupo": grupo, "total_grupo": total_grupo, "total": total,
+    total_grupo = sum(1 for e in svc._empleados if e.get("grupo") == (grupo or "general"))
+    return {"grupo": grupo or "general", "total_grupo": total_grupo, "total": total,
             "reporte_carga": reporte}
 
 
