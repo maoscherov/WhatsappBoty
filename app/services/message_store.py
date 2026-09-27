@@ -16,13 +16,15 @@ class MessageStore:
         self._db = db
 
     async def save(self, phone: str, role: str, content: str, autor: Optional[str] = None,
-                   origen: Optional[str] = None, media: Optional[str] = None):
+                   origen: Optional[str] = None, media: Optional[str] = None,
+                   media_nombre: Optional[str] = None):
         if not content:
             return
         await self._db.execute(
-            "INSERT INTO messages (phone, role, content, autor, origen, media) "
-            "VALUES ($1, $2, $3, $4, $5, $6)",
+            "INSERT INTO messages (phone, role, content, autor, origen, media, media_nombre) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7)",
             phone, role, content, (autor or None), (origen or None), (media or None),
+            (media_nombre or None),
         )
 
     async def history(self, phone: str, limit: int = 200,
@@ -35,13 +37,13 @@ class MessageStore:
         """
         if before_id:
             rows = await self._db.fetch(
-                "SELECT id, role, content, autor, origen, media, created_at FROM messages "
+                "SELECT id, role, content, autor, origen, media, media_nombre, created_at FROM messages "
                 "WHERE phone = $1 AND id < $2 ORDER BY id DESC LIMIT $3",
                 phone, int(before_id), limit,
             )
         else:
             rows = await self._db.fetch(
-                "SELECT id, role, content, autor, origen, media, created_at FROM messages "
+                "SELECT id, role, content, autor, origen, media, media_nombre, created_at FROM messages "
                 "WHERE phone = $1 ORDER BY id DESC LIMIT $2",
                 phone, limit,
             )
@@ -95,7 +97,9 @@ _MEDIA_PREFIX = "📷 /media/chat/"
 def mensaje_a_dict(r) -> dict:
     """Fila de `messages` → dict del backoffice. Las fotos del cliente se
     guardan como "📷 /media/chat/{id}": se exponen en `media` para que la
-    pantalla las muestre como imagen (el archivo vence a los 7 días)."""
+    pantalla las muestre. `media` sale FIRMADA (?exp=&sig=, 24 h): el archivo
+    no se abre sin clave. `media_tipo` dice cómo mostrarlo."""
+    from app.services import chat_media
     content = r["content"] or ""
     media = _col(r, "media")
     origen = _col(r, "origen")
@@ -103,8 +107,10 @@ def mensaje_a_dict(r) -> dict:
         media = content[len("📷 "):].strip()
     if not origen:
         origen = "imagen" if content.startswith(_MEDIA_PREFIX) else ("texto" if r["role"] == "user" else None)
-    return {"id": r["id"], "role": r["role"], "content": content,
-            "autor": r["autor"], "origen": origen, "media": media,
+    return {"id": r["id"], "role": r["role"], "content": chat_media.firmar_en_texto(content),
+            "autor": r["autor"], "origen": origen, "media": chat_media.firmar(media),
+            "media_tipo": chat_media.tipo_de(media) if media else None,
+            "media_nombre": _col(r, "media_nombre"),
             "ts": r["created_at"].isoformat()}
 
 
@@ -115,7 +121,9 @@ def _col(r, nombre):
         return None
 
 
-async def guardar_historico(phone: str, role: str, content: str, autor: Optional[str] = None) -> None:
+async def guardar_historico(phone: str, role: str, content: str, autor: Optional[str] = None,
+                            origen: Optional[str] = None, media: Optional[str] = None,
+                            media_nombre: Optional[str] = None) -> None:
     """
     Guarda un mensaje en el historial permanente desde cualquier punto de envío
     (operador, cotización, pedido listo, avisos automáticos). Best-effort: el
@@ -126,7 +134,8 @@ async def guardar_historico(phone: str, role: str, content: str, autor: Optional
         from app.services.db import get_db
         db = get_db(get_settings().database_url)
         if db.available():
-            await get_message_store(db).save(phone, role, content, autor)
+            await get_message_store(db).save(phone, role, content, autor, origen=origen,
+                                             media=media, media_nombre=media_nombre)
     except Exception as e:
         logger.debug(f"historial: no se pudo guardar mensaje de {phone}: {e}")
 

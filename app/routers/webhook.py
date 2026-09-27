@@ -41,6 +41,7 @@ from app.services.estilo_humano import humanizar
 from app.services.rag_service import get_rag_service
 from app.services.session_service import contexto_vencido
 from app.services.message_store import get_message_store
+from app.services import chat_media
 from app.services.metrics_store import get_metrics_store
 from app.services.checkout_helper import (
     confirmar_pedido, resolver_entrega, capturar_direccion,
@@ -489,6 +490,8 @@ def _kapso_a_mensajes(evento: dict) -> list[dict]:
         "phone_number_id": evento.get("phone_number_id"),
         # Propios de Kapso
         "media_url": media_url,
+        "filename": ((msg.get("document") or {}).get("filename")
+                     or (kapso.get("media_data") or {}).get("filename") or ""),
         "texto_transcripto": transcripcion,
     }]
 
@@ -617,6 +620,7 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
         texto = ""            # texto del usuario (para historial en finally)
         _origen = "texto"     # texto | audio | imagen | documento (historial)
         _media_ref = None     # archivo guardado para el operador (/media/chat/…)
+        _media_nombre = None  # nombre original del archivo (documentos)
         respuesta = None      # respuesta del bot (para historial en finally)
 
         # Serializar por teléfono: los mensajes del mismo usuario se procesan
@@ -656,14 +660,8 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     audio_bytes = None
                 texto = ""
                 if audio_bytes:
-                    try:
-                        _aid = "aud" + (_re.sub(r"[^\w]", "", msg_id)[-29:] or msg_id[-29:])
-                        from app.services.blob_store import get_blob_store as _gbs_a
-                        if await _gbs_a(_s.redis_url).save(f"chat:{_aid}", audio_bytes, ".ogg",
-                                                           ttl=7 * 24 * 3600):
-                            _media_ref = f"/media/chat/{_aid}"
-                    except Exception:
-                        pass
+                    _aid = "aud" + (_re.sub(r"[^\w]", "", msg_id)[-29:] or msg_id[-29:])
+                    _media_ref = await chat_media.guardar(_aid, audio_bytes, ".ogg")
                     try:
                         from app.services.sku_service import vocabulario_audio
                         _vocab = vocabulario_audio(deps["sku"])
@@ -713,26 +711,22 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     continue
                 mime = msg.get("image_mime_type", "image/jpeg")
 
-                # Guardar la imagen en Redis (7 días) para que el operador la vea
-                # en el backoffice. La referencia va al historial como /media/chat/{id}.
+                # Guardar el archivo (volumen, 6 meses) para que el operador lo
+                # vea en el backoffice. La referencia va al historial como
+                # /media/chat/{id}{ext}.
                 _img_id = _re.sub(r"[^\w]", "", msg_id)[-32:] or msg_id[-32:]
                 _img_ref = None
-                try:
-                    _ext = (".pdf" if "pdf" in mime else ".png" if "png" in mime
-                            else ".webp" if "webp" in mime else ".jpg")
-                    from app.services.blob_store import get_blob_store as _gbs
-                    ok = await _gbs(_s.redis_url).save(f"chat:{_img_id}", image_bytes, _ext, ttl=7 * 24 * 3600)
-                    if ok:
-                        _img_ref = f"📷 /media/chat/{_img_id}"
-                except Exception:
-                    pass
-                if _img_ref:
+                _nombre_arch = msg.get("filename") or ""
+                _ref = await chat_media.guardar(
+                    _img_id, image_bytes, chat_media.ext_para(mime, _nombre_arch), _nombre_arch)
+                if _ref:
+                    _img_ref = f"📷 {_ref}"
                     await deps["session"].add_message(phone, "user", _img_ref)
-                    # También al historial permanente (la foto vence a los 7
-                    # días, pero queda constancia de que el cliente la mandó).
+                    # También al historial permanente, con el archivo aparte.
                     try:
                         await deps["msgs"].save(phone, "user", _img_ref,
-                                                origen="documento" if msg_type == "document" else "imagen")
+                                                origen="documento" if msg_type == "document" else "imagen",
+                                                media=_ref, media_nombre=_nombre_arch or None)
                     except Exception:
                         pass
                 _origen = "documento" if msg_type == "document" else "imagen"
@@ -867,6 +861,19 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 # contacto) NO se descarta en silencio: lo mira una persona.
                 if msg_type in _ADJUNTOS_A_DERIVAR:
                     _intencion = "adjunto_no_reconocido"
+                    # Word, Excel, video: el bot no los lee, pero se guardan
+                    # para que el operador los abra desde el backoffice.
+                    if msg.get("media_url") or msg.get("image_id"):
+                        _datos_adj = (await _descargar_url(msg["media_url"]) if msg.get("media_url")
+                                      else await deps["wa"].download_image(msg["image_id"]))
+                        if _datos_adj:
+                            _media_nombre = msg.get("filename") or None
+                            _media_ref = await chat_media.guardar(
+                                _re.sub(r"[^\w]", "", msg_id)[-32:] or msg_id[-32:], _datos_adj,
+                                chat_media.ext_para(msg.get("image_mime_type") or "",
+                                                    _media_nombre or ""),
+                                _media_nombre or "")
+                            _origen = "video" if msg_type == "video" else "documento"
                     _ref_adj = f"[{msg_type} recibido]" + (f" {texto.strip()}" if texto.strip() else "")
                     texto = _ref_adj
                     if _bot_off:
@@ -2128,7 +2135,7 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 try:
                     if texto:
                         await deps["msgs"].save(phone, "user", texto, origen=_origen,
-                                                media=_media_ref)
+                                                media=_media_ref, media_nombre=_media_nombre)
                     if respuesta:
                         await deps["msgs"].save(phone, "assistant", respuesta)
                 except Exception:

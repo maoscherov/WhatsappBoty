@@ -96,6 +96,31 @@ class WhatsAppService:
                 await _registrar_fallo(to, "image", f"{type(e).__name__}: {e}")
                 return False
 
+    async def send_document(self, to: str, url: str, filename: str = "", caption: str = "") -> bool:
+        """Envía un documento (PDF, Word, Excel…) por WhatsApp. url debe ser
+        HTTPS pública; WhatsApp lo descarga de ahí."""
+        doc: dict = {"link": url}
+        if filename:
+            doc["filename"] = filename
+        if caption:
+            doc["caption"] = caption
+        payload = {"messaging_product": "whatsapp", "to": to, "type": "document", "document": doc}
+        async with httpx.AsyncClient() as client:
+            try:
+                resp = await client.post(
+                    f"{self._base}/{self._phone_id}/messages",
+                    headers={**self._headers, "Content-Type": "application/json"},
+                    json=payload,
+                    timeout=15,
+                )
+                if resp.status_code != 200:
+                    await _registrar_fallo(to, "document", f"HTTP {resp.status_code}: {resp.text}")
+                    return False
+                return True
+            except Exception as e:
+                await _registrar_fallo(to, "document", f"{type(e).__name__}: {e}")
+                return False
+
     async def mark_read(self, message_id: str):
         payload = {
             "messaging_product": "whatsapp",

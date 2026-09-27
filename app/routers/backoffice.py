@@ -9,7 +9,7 @@ GET /bo/session/{phone} → detalle completo de una sesión
 import logging
 import re
 import statistics
-from fastapi import APIRouter, HTTPException, Query, Depends, UploadFile, File, Header
+from fastapi import APIRouter, HTTPException, Query, Depends, UploadFile, File, Form, Header
 from pathlib import Path
 from pydantic import BaseModel
 
@@ -195,7 +195,23 @@ async def bo_session_detail(phone: str, _=Depends(_auth)):
     settings = get_settings()
     session_svc = get_session_service(settings.redis_url)
     session = await session_svc.get(phone)
+    # Los adjuntos van FIRMADOS: /media/chat no abre sin clave o firma.
+    session["history"] = [_mensaje_en_vivo(m) for m in session.get("history", [])]
     return {"phone": phone, "nombre": _nombre_socio(phone), **session}
+
+
+def _mensaje_en_vivo(m: dict) -> dict:
+    """Mensaje de la sesión en vivo con el adjunto firmado y, si tiene uno,
+    `media` / `media_tipo` como en el historial."""
+    from app.services import chat_media
+    m = dict(m)
+    contenido = m.get("content") or ""
+    ref = re.search(r"/media/chat/[\w.\-]+", contenido)
+    if ref:
+        m["media"] = chat_media.firmar(ref.group(0))
+        m["media_tipo"] = chat_media.tipo_de(ref.group(0))
+        m["content"] = chat_media.firmar_en_texto(contenido)
+    return m
 
 
 @router.get("/perf")
@@ -1546,6 +1562,62 @@ async def bo_kb_cargar_mutual(_=Depends(_auth), reemplazar: bool = Query(False))
 async def bo_kb_delete(doc_id: int, _=Depends(_auth)):
     await _rag().kb_delete(doc_id)
     return {"status": "ok"}
+
+
+@router.post("/session/{phone}/attachment")
+async def bo_send_attachment(phone: str, file: UploadFile = File(...), caption: str = Form(""),
+                             agente: str | None = Form(None), _=Depends(_auth)):
+    """
+    Operador adjunta un archivo (foto, PDF, Word, Excel…) y se lo manda al
+    cliente por WhatsApp. Queda guardado 6 meses y en el historial.
+    """
+    import uuid
+    from app.services import chat_media
+    from app.services.message_store import guardar_historico
+
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Archivo vacío")
+    if len(data) > chat_media.MAX_BYTES:
+        raise HTTPException(status_code=413, detail="El archivo supera los 15 MB")
+    nombre = Path(file.filename or "").name or "archivo"
+    ext = chat_media.ext_para(file.content_type or "", nombre)
+    if ext not in chat_media.EXT_ADJUNTABLES:
+        raise HTTPException(
+            status_code=415,
+            detail="Tipo de archivo no permitido. Se aceptan fotos (JPG, PNG), PDF, Word, "
+                   "Excel, PowerPoint, TXT y CSV.")
+
+    settings = get_settings()
+    base = (settings.public_base_url or "").rstrip("/")
+    if not base:
+        raise HTTPException(status_code=500, detail="Falta PUBLIC_BASE_URL para enviar archivos")
+    ref = await chat_media.guardar("op" + uuid.uuid4().hex, data, ext, nombre)
+    if not ref:
+        raise HTTPException(status_code=507, detail="No se pudo guardar el archivo")
+
+    # WhatsApp lo descarga de nuestra URL: firmada por 3 días.
+    url = base + chat_media.firmar(ref, horas=72)
+    tipo = chat_media.tipo_de(ext)
+    wa = get_whatsapp_service(settings.whatsapp_token, settings.whatsapp_phone_number_id)
+    caption = (caption or "").strip()
+    if tipo == "imagen" and ext in (".jpg", ".png"):
+        sent = await wa.send_image(phone, url, caption)
+    else:
+        sent = await wa.send_document(phone, url, nombre, caption)
+    if not sent:
+        raise HTTPException(status_code=502, detail="Error enviando el archivo por WhatsApp")
+
+    session_svc = get_session_service(settings.redis_url)
+    texto = (f"📷 {ref}" if tipo == "imagen" else f"📎 {nombre} {ref}") + (
+        f"\n{caption}" if caption else "")
+    await session_svc.add_message(phone, "operator", texto)
+    _autor = agente or (await session_svc.get(phone)).get("agente")
+    await guardar_historico(phone, "operator", caption or f"📎 {nombre}", autor=_autor,
+                            origen="imagen" if tipo == "imagen" else "documento",
+                            media=ref, media_nombre=nombre)
+    return {"status": "ok", "sent": True, "media": chat_media.firmar(ref),
+            "media_tipo": tipo, "media_nombre": nombre}
 
 
 @router.post("/session/{phone}/message")

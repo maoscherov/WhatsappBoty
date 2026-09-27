@@ -297,7 +297,7 @@ async def test_history_operador_con_autor_y_foto(db):
     await store.save("549444", "assistant", "respuesta del bot")
 
     h = await store.history("549444")
-    assert h[0]["media"] == "/media/chat/abc123" and h[0]["role"] == "user"
+    assert h[0]["media"].startswith("/media/chat/abc123?exp=") and h[0]["role"] == "user"
     assert h[1]["role"] == "operator" and h[1]["autor"] == "Claudia" and h[1]["media"] is None
     assert h[2]["autor"] is None
 
@@ -351,7 +351,9 @@ async def test_history_origen_y_media(db):
     await store.save("549555", "user", "hola")                       # fila sin origen
     await store.save("549555", "assistant", "¡Hola!")
     h = await store.history("549555")
-    assert (h[0]["origen"], h[0]["media"]) == ("audio", "/media/chat/aud1")
-    assert (h[1]["origen"], h[1]["media"]) == ("imagen", "/media/chat/img1")
+    assert h[0]["origen"] == "audio" and h[0]["media"].startswith("/media/chat/aud1?exp=")
+    assert h[0]["media_tipo"] == "audio"
+    assert h[1]["origen"] == "imagen" and h[1]["media"].startswith("/media/chat/img1?exp=")
+    assert h[1]["media_tipo"] == "imagen"
     assert h[2]["origen"] == "texto" and h[2]["media"] is None
     assert h[3]["origen"] is None

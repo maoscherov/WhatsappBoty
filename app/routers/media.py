@@ -50,8 +50,10 @@ def _safe(name: str) -> str:
 
 @router.get("/health")
 def media_health():
+    from app.services import chat_media
     d = _images_dir()
-    return {"status": "ok", "images_count": len(list(d.glob("*"))), "dir": str(d)}
+    return {"status": "ok", "images_count": len(list(d.glob("*"))), "dir": str(d),
+            "chat": chat_media.estado()}
 
 
 @router.get("/list")
@@ -111,15 +113,33 @@ def media_delete(filename: str, x_api_key: str = Header(default="")):
     return {"status": "ok", "deleted": filename}
 
 
-@router.get("/chat/{key}")
-async def media_chat(key: str):
-    """Sirve una imagen que envió un cliente por WhatsApp (guardada en Redis)."""
-    settings = get_settings()
-    res = await get_blob_store(settings.redis_url).load(f"chat:{_safe(key)}")
+@router.get("/chat/{archivo}")
+async def media_chat(archivo: str, key: str | None = Query(None), exp: str | None = Query(None),
+                     sig: str | None = Query(None),
+                     x_bo_key: str | None = Header(None, alias="x-bo-key")):
+    """
+    Sirve un adjunto de una conversación (foto, PDF, audio, documento). Pide
+    la clave del backoffice (?key= o x-bo-key) o una firma vigente (?exp=&sig=,
+    la que devuelven el historial y la vista en vivo).
+    """
+    from urllib.parse import quote
+    from app.services import chat_media
+
+    id_, _ = chat_media.separar(archivo)
+    if not chat_media.acceso_valido(id_, key or x_bo_key, exp, sig):
+        raise HTTPException(status_code=403, detail="Acceso denegado")
+    res = await chat_media.cargar(id_)
     if not res:
-        raise HTTPException(status_code=404, detail="Imagen no encontrada")
-    data, ext = res
-    return Response(content=data, media_type=_CT.get(ext.lower(), "image/jpeg"))
+        raise HTTPException(status_code=404, detail="Archivo no encontrado")
+    data, ext, nombre = res
+    ext = ext.lower()
+    tipo = chat_media.CONTENT_TYPE.get(ext) or _CT.get(ext) or "application/octet-stream"
+    nombre = nombre or f"{id_}{ext}"
+    # Se ven en el navegador: fotos, PDF, audio y video. El resto se descarga.
+    modo = "inline" if chat_media.tipo_de(ext) != "archivo" else "attachment"
+    return Response(content=data, media_type=tipo, headers={
+        "Content-Disposition": f"{modo}; filename*=UTF-8''{quote(nombre)}",
+        "Cache-Control": "private, max-age=3600"})
 
 
 @router.get("/{filename}")

@@ -72,3 +72,11 @@ def pg_dsn():
         srv.cleanup()
     except Exception:
         pass
+
+
+@pytest.fixture(autouse=True)
+def _adjuntos_en_tmp(tmp_path, monkeypatch):
+    """Los adjuntos de las conversaciones van a una carpeta temporal (en
+    producción, el volumen /data/chat)."""
+    from app.services import chat_media
+    monkeypatch.setattr(chat_media, "_dir", lambda: tmp_path / "chat")

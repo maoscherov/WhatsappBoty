@@ -171,8 +171,13 @@ async def lifespan(app: FastAPI):
         logger.info(f"Sync de Mercurio activo cada {settings.mercurio_sync_interval_secs}s "
                     f"(sucursal {settings.mercurio_branch_id})")
 
+    # Adjuntos de las conversaciones: se borran los de más de 6 meses (al
+    # arrancar y una vez por día).
+    media_task = asyncio.create_task(_limpiar_adjuntos_periodico())
+
     yield
 
+    media_task.cancel()
     if cierre_task:
         cierre_task.cancel()
     if mercurio_task:
@@ -181,6 +186,18 @@ async def lifespan(app: FastAPI):
         await get_db(settings.database_url).close()
     except Exception:
         pass
+
+
+async def _limpiar_adjuntos_periodico():
+    from app.services import chat_media
+    while True:
+        try:
+            await asyncio.to_thread(chat_media.limpiar_viejos)
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            logging.getLogger("app.media").warning(f"Limpieza de adjuntos falló: {e}")
+        await asyncio.sleep(24 * 3600)
 
 
 async def _sync_mercurio_periodico():

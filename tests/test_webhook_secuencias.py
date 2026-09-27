@@ -328,7 +328,7 @@ class _Msgs:
     def __init__(self):
         self.guardados = []
 
-    async def save(self, phone, role, content, autor=None, origen=None, media=None):
+    async def save(self, phone, role, content, autor=None, origen=None, media=None, media_nombre=None):
         self.guardados.append({"role": role, "content": content, "origen": origen, "media": media})
 
 
@@ -449,3 +449,28 @@ def test_vocabulario_audio_trae_marcas_del_catalogo(entorno_maria):
 def test_cierre_vago_oracion_completa(txt, esperado):
     from app.services.checkout_helper import quitar_cierres_vagos
     assert quitar_cierres_vagos(txt) == esperado
+
+
+# ── 27/9: los adjuntos que el bot no lee se guardan para el operador ────────────
+async def test_documento_ilegible_queda_guardado_con_su_nombre(entorno):
+    from app.services import chat_media
+    deps = entorno()
+    await wh.procesar_mensajes([_msg("", tipo="document", media_url="https://kapso/orden.docx",
+                                     filename="Orden médica.docx",
+                                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")])
+    guardados = [k for n, a, k in deps["msgs"].llamadas if n == "save" and a[1] == "user"]
+    assert guardados and guardados[-1]["media"].endswith(".docx")
+    assert guardados[-1]["media_nombre"] == "Orden médica.docx"
+    assert guardados[-1]["origen"] == "documento"
+    id_, _ = chat_media.separar(guardados[-1]["media"])
+    data, ext, nombre = await chat_media.cargar(id_)
+    assert ext == ".docx" and nombre == "Orden médica.docx"
+
+
+async def test_receta_pdf_queda_guardada_como_pdf(entorno):
+    deps = entorno(img_tipo="receta")
+    await wh.procesar_mensajes([_msg("", tipo="document", media_url="https://kapso/rpe.pdf",
+                                     filename="rpe.pdf", mime="application/pdf")])
+    guardados = [k for n, a, k in deps["msgs"].llamadas if n == "save" and a[1] == "user"]
+    assert guardados and guardados[0]["media"].endswith(".pdf")
+    assert guardados[0]["media_nombre"] == "rpe.pdf"

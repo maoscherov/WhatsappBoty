@@ -60,6 +60,9 @@ class Settings(BaseSettings):
     images_dir: str = "/data/images"          # volume mount en Railway
     image_server_api_key: str = ""            # clave para subir imágenes
     images_base_url: str = ""                 # ej: https://tuapp.railway.app/media
+    # Adjuntos de las conversaciones (cliente y operador): volumen de Railway.
+    chat_media_dir: str = "/data/chat"
+    chat_media_retencion_dias: int = 180
 
     # Sync de catálogo desde el ERP de la sucursal (remedia-agent)
     default_branch_id: str = ""      # override: sucursal ERP del bot (vacío = la única activa con catálogo)
