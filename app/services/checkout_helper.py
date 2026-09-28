@@ -934,14 +934,14 @@ async def crear_link_y_responder(
                 session_svc, phone, session, tipo_entrega, direccion,
                 total=total, costo_envio=_costo_envio, cfg=_cfg,
                 link_previo=session.get("estado") == "esperando_pago")
-            return respuesta_ef, None
+            return await nota_envio_fuera_horario(respuesta_ef, tipo_entrega), None
 
     if session.get("pago_metodo") == "cuenta_corriente":
         respuesta_cc = await _cerrar_venta_cc(
             session_svc, phone, session, tipo_entrega, direccion,
             total=total, costo_envio=_costo_envio,
             link_previo=session.get("estado") == "esperando_pago")
-        return respuesta_cc, None
+        return await nota_envio_fuera_horario(respuesta_cc, tipo_entrega), None
 
     link, err = await payment_svc.crear_link(
         sku_id=sku_link,
@@ -991,7 +991,7 @@ async def crear_link_y_responder(
         f"{descuento_bloque}{entrega_line}\n"
         "El link tiene vigencia de 24hs. ¡Cualquier cosa me avisás!"
     )
-    return respuesta, link
+    return await nota_envio_fuera_horario(respuesta, tipo_entrega), link
 
 
 def _clave_stock(session: dict) -> str:
@@ -1643,3 +1643,54 @@ def aviso_presentacion(pedido: str, respuesta: str) -> str:
         return respuesta
     return f"No tengo {pedido.strip()} en esa presentación. {respuesta}".strip()
 
+
+
+# ── Fuera de horario (27/9) ─────────────────────────────────────────────────────
+_PROMESA_INMEDIATA = re.compile(
+    r"[^.!?\n]*\b(en un (momento|ratito|rato)|en breve|enseguida|en unos minutos|"
+    r"ya te (contacta|escrib|respond|atiend)\w*|aguard\w*)\b[^.!?\n]*[.!?]?[ \t]*[🙌🙏😊🙂]*",
+    re.IGNORECASE)
+
+
+def aviso_fuera_horario(texto: str, cuando: str) -> str:
+    """Mensaje de derivación mandado con la farmacia cerrada: sin promesas de
+    atención inmediata ("en un momento te contactamos") y con cuándo abrimos."""
+    limpio = _PROMESA_INMEDIATA.sub("", texto or "").strip()
+    limpio = re.sub(r"[ \t]+\n", "\n", limpio).strip() or "Eso lo ve alguien del equipo."
+    aviso = ("Ahora estamos fuera de horario: te respondemos apenas abramos"
+             + (f" ({cuando})" if cuando else "") + " 🙏")
+    return f"{limpio}\n\n{aviso}"
+
+
+_SOY_SOCIO = re.compile(
+    r"(?<!no )\b(soy|somos) (soci[oa]s?|de la mutual|afiliad[oa]s?)\b"
+    r"|(?<!no )\bestoy (asociad[oa]|afiliad[oa])\b"
+    r"|(?<!no )\bsoy (un |una )?soci[oa]\b"
+    r"|\b(mi|el) (n[úu]mero|nro|n°) de soci[oa]\b",
+    re.IGNORECASE)
+
+
+def dice_ser_socio(texto: str) -> bool:
+    """El cliente dice ser socio ("soy socia", "estoy afiliado", "mi número de
+    socio es…"). Si no está en el padrón, se deriva para validar el DNI y
+    dar de alta la línea (plan a producción, 24/9)."""
+    return bool(_SOY_SOCIO.search(texto or ""))
+
+
+async def nota_envio_fuera_horario(respuesta: str, tipo_entrega: str) -> str:
+    """Pedido con envío cerrado el local: se avisa que sale cuando abrimos."""
+    if tipo_entrega != "envio":
+        return respuesta
+    try:
+        from app.config import get_settings as _gs
+        from app.services.config_service import get_config_service as _gcs
+        cfg_svc = _gcs(_gs().redis_url)
+        hours = await cfg_svc.get_hours()
+        if cfg_svc.is_open_now(hours):
+            return respuesta
+        cuando = cfg_svc.proxima_apertura(hours)
+    except Exception:
+        return respuesta
+    nota = "🛵 Estamos fuera de horario: el envío sale apenas abramos" + (
+        f" ({cuando})." if cuando else ".")
+    return f"{respuesta}\n\n{nota}"

@@ -61,6 +61,7 @@ from app.services.checkout_helper import (
     quitar_confirmaciones_fantasma, pregunta_entrega, costo_envio_de,
     producto_respaldado, productos_con_precio, parece_direccion,
     personalizar_nombre, pide_cuenta_corriente, habilitado_cc,
+    aviso_fuera_horario, dice_ser_socio,
 )
 
 logger = logging.getLogger(__name__)
@@ -92,6 +93,59 @@ async def _recibir_con_bot_apagado(deps: dict, phone: str, contenido: str) -> No
     if contenido:
         await deps["session"].add_message(phone, "user", contenido)
     logger.info(f"Bot apagado: mensaje de {phone} guardado sin responder")
+
+
+class _WaFueraHorario:
+    """
+    WhatsApp de un mensaje procesado con la farmacia cerrada (27/9). El bot
+    atiende igual; si en ESTE mensaje la charla se deriva a una persona
+    (receta, "pasame con alguien", algo que no entiende), el texto de la
+    derivación se cambia: sin "en un momento te contactamos" y con cuándo
+    abrimos. Hay ~25 puntos que derivan: se resuelve acá una sola vez.
+    """
+
+    def __init__(self, wa, session_svc, phone: str, cuando: str, ya_derivada: bool):
+        self._wa = wa
+        self._session = session_svc
+        self._phone = phone
+        self._cuando = cuando
+        self._avisado = ya_derivada      # ya estaba con un operador: no se toca
+        self.cambio: tuple[str, str] | None = None   # (original, lo que se mandó)
+
+    def enviado(self, texto: str) -> str:
+        """Lo que de verdad le llegó al cliente (para sesión e historial)."""
+        return self.cambio[1] if self.cambio and texto == self.cambio[0] else texto
+
+    async def send_text(self, to: str, text: str, **k) -> bool:
+        if not self._avisado and to == self._phone:
+            s = await self._session.get(self._phone)
+            if s.get("estado") == "operador":
+                original = text
+                text = aviso_fuera_horario(text, self._cuando)
+                self.cambio = (original, text)
+                self._avisado = True
+                s["_derivada_fuera_horario"] = True
+                await self._session.save(self._phone, s)
+        return await self._wa.send_text(to, text, **k)
+
+    def __getattr__(self, nombre):
+        return getattr(self._wa, nombre)
+
+
+class _SesionFueraHorario:
+    """La sesión guarda el texto que se mandó de verdad, no el original."""
+
+    def __init__(self, session_svc, wa: _WaFueraHorario):
+        self._s = session_svc
+        self._wa = wa
+
+    async def add_message(self, phone: str, role: str, content: str):
+        if role == "assistant":
+            content = self._wa.enviado(content)
+        return await self._s.add_message(phone, role, content)
+
+    def __getattr__(self, nombre):
+        return getattr(self._s, nombre)
 
 
 # Tipos de mensaje que, si no se pudieron leer, se derivan en vez de ignorarse.
@@ -590,6 +644,8 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
     """
     _s = get_settings()
     deps = _deps(_s)
+    _wa_base = deps["wa"]
+    _session_base = deps["session"]
 
     # Foto + texto que solo señala ("Necesito esos productos") en el mismo
     # lote: el texto se descarta — la imagen ES el pedido. Procesarlos por
@@ -642,7 +698,24 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
             # Interruptor global (19/9): con el bot apagado no sale NINGÚN
             # mensaje automático — ni del modelo, ni textos fijos, ni "fuera de
             # horario". El mensaje se guarda y entra a la cola de derivadas.
-            _bot_off = not bot_encendido(await deps["config"].get_all())
+            _cfg_msg = await deps["config"].get_all()
+            _bot_off = not bot_encendido(_cfg_msg)
+
+            # Fuera de horario (27/9): el bot vende igual lo que no lleva
+            # receta. Lo que necesita una persona se deriva avisando cuándo
+            # abrimos (ver _WaFueraHorario). "vender_fuera_horario"=false
+            # vuelve al mensaje de cerrado de siempre.
+            _hours_msg = await deps["config"].get_hours()
+            _cerrado = not deps["config"].is_open_now(_hours_msg)
+            _vende_cerrado = str(_cfg_msg.get("vender_fuera_horario", "true")).lower() == "true"
+            deps["wa"], deps["session"] = _wa_base, _session_base
+            if _cerrado and _vende_cerrado and not _bot_off:
+                _estado_ini = (await _session_base.get(phone)).get("estado")
+                deps["wa"] = _WaFueraHorario(
+                    _wa_base, _session_base, phone,
+                    deps["config"].proxima_apertura(_hours_msg),
+                    ya_derivada=_estado_ini == "operador")
+                deps["session"] = _SesionFueraHorario(_session_base, deps["wa"])
 
             # Audio → transcripción propia CON vocabulario de marcas (23/9: la
             # de Kapso escribió "Topics" por "Atopix"). La de Kapso queda de
@@ -946,14 +1019,15 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 )
 
             # ── Control de horario de atención ──────────────────────────────
-            hours = await deps["config"].get_hours()
-            if not deps["config"].is_open_now(hours):
+            hours = _hours_msg
+            if _cerrado:
                 # Tablero: conversaciones fuera de horario, con día y hora para
                 # clasificar el tipo de cierre (mediodía/nocturno/finde).
                 _ahora_lt = datetime.now(_TZ_LOCAL)
                 await deps["metrics"].evento(
                     "fuera_horario", phone=phone,
                     dato=f"{_ahora_lt.weekday()}:{_ahora_lt.hour}")
+            if _cerrado and not _vende_cerrado:
                 # Solo avisar una vez cada 10 mins para no spamear
                 last_closed = session.get("_last_closed_msg", "")
                 now_str = _time.strftime("%Y-%m-%dT%H:%M", _time.gmtime())[:15]  # cada 15min
@@ -1167,6 +1241,24 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     "¡Dale! Eso lo revisa alguien del equipo en el sistema de "
                     "recetas 🩺 En un momento te contactamos."
                 )
+                _ts = _time.perf_counter()
+                await deps["wa"].send_text(phone, respuesta)
+                _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
+                await deps["session"].add_message(phone, "user", texto)
+                await deps["session"].add_message(phone, "assistant", respuesta)
+                continue
+
+            # ── "Soy socio" y no está en el padrón → validar con una persona ──
+            # Plan a producción (24/9): al no socio el bot le vende sin el 15%;
+            # solo deriva si dice ser socio, para validar el DNI y dar de alta
+            # la línea. Mientras tanto no se le aplica ningún descuento.
+            if (dice_ser_socio(texto) and not deps["socios"].find_by_phone(phone)
+                    and descuento_para(phone, _cfg_pm, deps["socios"])[1] != "empleado"):
+                _intencion = "socio_no_reconocido"
+                await deps["session"].set_estado(phone, "operador", motivo="socio_no_reconocido")
+                respuesta = ("¡Gracias! No encuentro este número en el padrón de socios. "
+                             "Te paso con alguien del equipo que te pide el DNI y lo registra, "
+                             "así se te aplica el descuento 🙌")
                 _ts = _time.perf_counter()
                 await deps["wa"].send_text(phone, respuesta)
                 _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
@@ -2137,6 +2229,8 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                         await deps["msgs"].save(phone, "user", texto, origen=_origen,
                                                 media=_media_ref, media_nombre=_media_nombre)
                     if respuesta:
+                        if isinstance(deps["wa"], _WaFueraHorario):
+                            respuesta = deps["wa"].enviado(respuesta)
                         await deps["msgs"].save(phone, "assistant", respuesta)
                 except Exception:
                     pass

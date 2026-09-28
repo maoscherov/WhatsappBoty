@@ -97,6 +97,10 @@ DEFAULTS: dict[str, str] = {
     # encenderlo, "efectivo" sigue el flujo de pago manual (derivar/solo tarjeta).
     "efectivo_enabled": "false",
     "efectivo_solo_socios": "false",     # "true" = solo socios del padrón
+    # Fuera de horario (27/9): el bot vende igual lo que no lleva receta; lo
+    # que necesita una persona queda derivado con aviso de cuándo abrimos.
+    # "false" = comportamiento anterior (solo el mensaje de cerrado).
+    "vender_fuera_horario": "true",
     "efectivo_con_envio": "false",       # "true" = también con envío (paga al recibir)
     "efectivo_tope_monto": "0",          # tope por pedido, 0 = sin tope
     "efectivo_horas_reserva": "24",      # plazo que se informa para retirarlo (0 = no se informa)
@@ -502,6 +506,28 @@ class ConfigService:
         close_t = cfg.get("close", "23:59")
         current = now.strftime("%H:%M")
         return open_t <= current <= close_t
+
+    def proxima_apertura(self, hours: dict) -> str:
+        """Cuándo abre la farmacia: "hoy a las 8:00", "mañana a las 8:00",
+        "el lunes a las 8:00". Vacío si no hay horario cargado."""
+        dias = {"mon": "lunes", "tue": "martes", "wed": "miércoles", "thu": "jueves",
+                "fri": "viernes", "sat": "sábado", "sun": "domingo"}
+        schedule = hours.get("schedule", {})
+        now = datetime.now(TZ_ARG)
+        for offset in range(8):
+            day = DAY_MAP[(now.weekday() + offset) % 7]
+            cfg = schedule.get(day, {})
+            open_t = (cfg.get("open") or "")[:5]
+            if not cfg.get("active") or not open_t:
+                continue
+            if offset == 0 and now.strftime("%H:%M") >= open_t:
+                continue
+            hora = open_t.lstrip("0") or "0:00"
+            if hora.startswith(":"):
+                hora = "0" + hora
+            cuando = "hoy" if offset == 0 else "mañana" if offset == 1 else f"el {dias[day]}"
+            return f"{cuando} a las {hora}"
+        return ""
 
     def get_pickup_text(self, hours: dict, pickup_minutes: int = 30) -> str:
         """

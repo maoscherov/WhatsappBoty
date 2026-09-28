@@ -259,6 +259,7 @@ class SessionService:
             session["derivada_at"] = time.time()
             session["derivada_motivo"] = motivo
             session.pop("_handoff_avisado", None)
+            session.pop("_derivada_fuera_horario", None)
             # Evento para el tablero (derivaciones por motivo). Best-effort:
             # centralizado acá porque hay ~10 puntos que derivan y el motivo
             # solo vivía en la sesión, que muere a las 24hs.
@@ -390,6 +391,10 @@ class SessionService:
         for phone, session in await self.list_all():
             if session.get("estado") != "operador" or session.get("_handoff_avisado"):
                 continue
+            # Derivada fuera de horario: al cliente ya se le dijo cuándo
+            # abrimos; un "ya te atienden" a la noche sería falso.
+            if session.get("_derivada_fuera_horario"):
+                continue
             derivada = session.get("derivada_at")
             if derivada and now - float(derivada) >= threshold_secs:
                 out.append(phone)
@@ -460,6 +465,10 @@ class SessionService:
             # por inactividad, la libera una persona (19/9).
             if session.get("derivada_motivo") == "bot_apagado":
                 continue
+            # Derivada fuera de horario (receta, pedido de una persona): la
+            # atiende alguien al abrir; devolverla al bot la dejaría sin resolver.
+            if session.get("_derivada_fuera_horario"):
+                continue
             derivada = session.get("derivada_at")
             if derivada and now - float(derivada) >= threshold_secs:
                 out.append(phone)
@@ -476,6 +485,7 @@ class SessionService:
         session = await self.get(phone)
         session["estado"] = "idle"
         for k in ("derivada_at", "derivada_motivo", "_handoff_avisado", "agente",
+                  "_derivada_fuera_horario",
                   "_conv_inicio", "_negativos", "derivacion_ofrecida",
                   "extras_ofrecidos", "receta_info", "atendida_at", "pago_metodo"):
             session.pop(k, None)

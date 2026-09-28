@@ -474,3 +474,157 @@ async def test_receta_pdf_queda_guardada_como_pdf(entorno):
     guardados = [k for n, a, k in deps["msgs"].llamadas if n == "save" and a[1] == "user"]
     assert guardados and guardados[0]["media"].endswith(".pdf")
     assert guardados[0]["media_nombre"] == "rpe.pdf"
+
+
+# ── 27/9: fuera de horario vende lo que no lleva receta ─────────────────────────
+class _CfgCerrado(_Cfg):
+    def is_open_now(self, hours):
+        return False
+
+    def proxima_apertura(self, hours):
+        return "mañana a las 8:00"
+
+
+@pytest.fixture
+def cerrado(entorno):
+    def armar(guion=None, img_tipo="receta", cfg=None):
+        deps = entorno(guion, img_tipo, cfg)
+        c = _CfgCerrado(cfg)
+        deps["config"] = c
+        return deps
+    return armar
+
+
+async def test_fuera_de_horario_el_bot_atiende(cerrado):
+    deps = cerrado()
+    await wh.procesar_mensajes([_msg("Hola")])
+    assert deps["wa"].enviados == ["¡Hola!"]
+
+
+async def test_fuera_de_horario_apagado_responde_cerrado(cerrado):
+    deps = cerrado(cfg={"vender_fuera_horario": "false"})
+    await wh.procesar_mensajes([_msg("Hola")])
+    assert len(deps["wa"].enviados) == 1 and "¡Hola!" not in deps["wa"].enviados
+
+
+async def test_fuera_de_horario_pedir_una_persona_avisa_cuando_abrimos(cerrado):
+    deps = cerrado()
+    await wh.procesar_mensajes([_msg("Me pasás con una persona?")])
+    r = deps["wa"].enviados[-1]
+    assert "alguien del equipo" in r
+    assert "fuera de horario" in r and "mañana a las 8:00" in r
+    assert "En un momento" not in r
+    s = await deps["session"].get(PHONE)
+    assert s["estado"] == "operador" and s.get("_derivada_fuera_horario") is True
+    # Lo que quedó en la sesión es lo que se mandó de verdad
+    assert s["history"][-1]["content"] == r
+    # No vuelve al bot ni recibe el "ya te atienden" durante la noche
+    assert PHONE not in await deps["session"].derivadas_sin_atender(0)
+    assert PHONE not in await deps["session"].derivadas_para_aviso(0)
+
+
+async def test_fuera_de_horario_receta_en_pdf_avisa_cuando_abrimos(cerrado):
+    deps = cerrado(img_tipo="receta")
+    await wh.procesar_mensajes([_msg("", tipo="document", media_url="https://kapso/rpe.pdf",
+                                     mime="application/pdf")])
+    r = deps["wa"].enviados[-1]
+    assert "receta" in r.lower() and "mañana a las 8:00" in r
+    assert (await deps["session"].get(PHONE))["estado"] == "operador"
+
+
+async def test_liberar_limpia_la_marca_de_fuera_de_horario(cerrado):
+    deps = cerrado()
+    await wh.procesar_mensajes([_msg("Me pasás con una persona?")])
+    await deps["session"].liberar(PHONE)
+    assert not (await deps["session"].get(PHONE)).get("_derivada_fuera_horario")
+
+
+# ── "soy socio" y no está en el padrón ──────────────────────────────────────────
+async def test_dice_ser_socio_sin_padron_deriva(entorno):
+    deps = entorno()
+    await wh.procesar_mensajes([_msg("Hola, soy socia de la mutual, tenés ibuprofeno?")])
+    s = await deps["session"].get(PHONE)
+    assert s["estado"] == "operador" and s["derivada_motivo"] == "socio_no_reconocido"
+    assert "DNI" in deps["wa"].enviados[-1]
+
+
+async def test_socio_del_padron_no_se_deriva(entorno):
+    class _EnPadron(_Socios):
+        def find_by_phone(self, phone):
+            return {"nombre": "Ana", "nombre_pila": "Ana"}
+
+        def contexto_para_prompt(self, phone):
+            return "Nombre de pila (para saludar): Ana"
+    deps = entorno()
+    deps["socios"] = _EnPadron()
+    await wh.procesar_mensajes([_msg("Hola, soy socia")])
+    assert (await deps["session"].get(PHONE)).get("estado") != "operador"
+
+
+def test_dice_ser_socio():
+    from app.services.checkout_helper import dice_ser_socio as d
+    for t in ("soy socio", "Soy socia de la mutual", "estoy afiliada",
+              "mi número de socio es 1234", "somos socios"):
+        assert d(t), t
+    assert not d("quiero ser socio")
+    assert not d("No soy socio, ¿igual me lo venden?")
+    assert not d("¿los socios tienen descuento?")
+
+
+def test_aviso_fuera_horario():
+    from app.services.checkout_helper import aviso_fuera_horario as a
+    r = a("Dale Ana, te paso con alguien del equipo. En un momento te contactamos 🙌",
+          "mañana a las 8:00")
+    assert r.startswith("Dale Ana, te paso con alguien del equipo.")
+    assert "En un momento" not in r and r.endswith("(mañana a las 8:00) 🙏")
+    assert a("Aguardá un momento por favor.", "").startswith("Eso lo ve alguien del equipo.")
+
+
+def test_proxima_apertura(monkeypatch):
+    from datetime import datetime as _dt
+    from app.services import config_service as cs
+
+    class _Reloj(_dt):
+        ahora = None
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.ahora.replace(tzinfo=tz)
+    monkeypatch.setattr(cs, "datetime", _Reloj)
+    semana = {d: {"active": True, "open": "08:00", "close": "20:00"}
+              for d in ("mon", "tue", "wed", "thu", "fri")}
+    semana["sat"] = {"active": True, "open": "09:00", "close": "13:00"}
+    h = {"enabled": True, "schedule": semana}
+    svc = cs.ConfigService.__new__(cs.ConfigService)
+    _Reloj.ahora = _dt(2026, 9, 28, 6, 30)          # lunes, antes de abrir
+    assert svc.proxima_apertura(h) == "hoy a las 8:00"
+    _Reloj.ahora = _dt(2026, 9, 28, 22, 0)          # lunes a la noche
+    assert svc.proxima_apertura(h) == "mañana a las 8:00"
+    _Reloj.ahora = _dt(2026, 10, 2, 21, 0)          # viernes a la noche
+    assert svc.proxima_apertura(h) == "mañana a las 9:00"
+    _Reloj.ahora = _dt(2026, 10, 3, 14, 0)          # sábado a la tarde
+    assert svc.proxima_apertura(h) == "el lunes a las 8:00"
+
+
+async def test_nota_envio_fuera_horario(monkeypatch):
+    from app.services import checkout_helper as ch
+    from app.services import config_service as cs
+
+    class _C:
+        abierto = False
+
+        async def get_hours(self):
+            return {}
+
+        def is_open_now(self, h):
+            return self.abierto
+
+        def proxima_apertura(self, h):
+            return "mañana a las 8:00"
+    c = _C()
+    monkeypatch.setattr(cs, "get_config_service", lambda *a, **k: c)
+    r = await ch.nota_envio_fuera_horario("Link: x", "envio")
+    assert r.endswith("el envío sale apenas abramos (mañana a las 8:00).")
+    assert await ch.nota_envio_fuera_horario("Link: x", "retiro") == "Link: x"
+    c.abierto = True
+    assert await ch.nota_envio_fuera_horario("Link: x", "envio") == "Link: x"
