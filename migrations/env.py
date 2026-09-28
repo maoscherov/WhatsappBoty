@@ -51,7 +51,11 @@ def run_migrations_offline() -> None:
 def run_migrations_online() -> None:
     section = config.get_section(config.config_ini_section) or {}
     section["sqlalchemy.url"] = _database_url()
-    connectable = engine_from_config(section, prefix="sqlalchemy.", poolclass=pool.NullPool)
+    # lock_timeout: un ALTER sobre una tabla en uso (la versión anterior sigue
+    # atendiendo durante el deploy) falla rápido en vez de colgarse; el
+    # arranque lo reintenta en segundo plano (28/9: 0010 y 0011 no se aplicaron).
+    connectable = engine_from_config(section, prefix="sqlalchemy.", poolclass=pool.NullPool,
+                                     connect_args={"options": "-c lock_timeout=5000"})
     with connectable.connect() as connection:
         context.configure(connection=connection, target_metadata=target_metadata)
         with context.begin_transaction():

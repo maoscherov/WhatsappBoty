@@ -312,3 +312,13 @@ async def test_endpoint_conversaciones_cuenta_y_filtra_marcas(cliente, db):
     r = await cliente.get("/bo/conversaciones", headers={"x-bo-key": "CLAVE"}, params={"con_marcas": True})
     telefonos = {c["phone"] for c in r.json()["conversaciones"]}
     assert telefonos == {"5493415556677"}
+
+
+async def test_crear_con_la_base_rechazando_da_error_claro():
+    """28/9: sin la tabla (migración sin aplicar) el INSERT fallaba en
+    silencio y el endpoint devolvía 500 con un TypeError."""
+    class _DbQueFalla:
+        async def fetchrow(self, *a):
+            return None
+    with pytest.raises(RuntimeError, match="No se pudo guardar la marca"):
+        await marcas_service.crear(_DbQueFalla(), "549", "otro", "prueba")

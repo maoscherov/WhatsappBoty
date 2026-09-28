@@ -1636,6 +1636,8 @@ async def bo_marcas_crear(body: MarcaIn, _=Depends(_auth)):
             message_id=body.message_id, autor=body.autor)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=f"{e}. Reintentá en unos minutos.")
 
 
 @router.get("/marcas")

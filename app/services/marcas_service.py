@@ -64,6 +64,9 @@ async def crear(db, phone: str, categoria: str, observacion: str,
         "RETURNING id, phone, message_id, categoria, observacion, autor, created_at",
         phone, message_id, categoria, observacion, (autor or None),
     )
+    if row is None:
+        # La base rechazó el INSERT (queda en el log como "DB fetchrow error").
+        raise RuntimeError("No se pudo guardar la marca")
     return _row_a_dict(row)
 
 

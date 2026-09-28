@@ -63,18 +63,16 @@ async def lifespan(app: FastAPI):
 
     # PostgreSQL (opcional): historial permanente + RAG con pgvector
     if settings.database_url:
-        # Migraciones Alembic — aplican el esquema al arrancar
+        # Migraciones Alembic — aplican el esquema al arrancar. Si fallan (p.ej.
+        # la tabla está bloqueada por la versión anterior durante el deploy),
+        # se reintentan en segundo plano: antes quedaba solo un aviso en el log
+        # y el código nuevo corría sobre el esquema viejo (28/9).
         try:
-            from alembic.config import Config
-            from alembic import command
-            root = Path(__file__).resolve().parent.parent
-            cfg = Config(str(root / "alembic.ini"))
-            cfg.set_main_option("script_location", str(root / "migrations"))
-            # Timeout: nunca colgar el arranque por una DB lenta/inaccesible.
-            await asyncio.wait_for(asyncio.to_thread(command.upgrade, cfg, "head"), timeout=20.0)
+            await asyncio.wait_for(asyncio.to_thread(_migrar), timeout=20.0)
             logger.info("Migraciones Alembic aplicadas (head)")
         except Exception as e:
-            logger.warning(f"No se pudieron aplicar migraciones Alembic: {e}")
+            logger.error(f"No se pudieron aplicar migraciones Alembic: {e} — se reintenta")
+            asyncio.create_task(_reintentar_migraciones())
         try:
             db = get_db(settings.database_url)
             await asyncio.wait_for(db.connect(), timeout=10.0)
@@ -186,6 +184,30 @@ async def lifespan(app: FastAPI):
         await get_db(settings.database_url).close()
     except Exception:
         pass
+
+
+def _migrar():
+    from alembic import command
+    from alembic.config import Config
+    root = Path(__file__).resolve().parent.parent
+    cfg = Config(str(root / "alembic.ini"))
+    cfg.set_main_option("script_location", str(root / "migrations"))
+    command.upgrade(cfg, "head")
+
+
+async def _reintentar_migraciones(intentos: int = 30, espera: int = 60):
+    log = logging.getLogger("app.migraciones")
+    for n in range(1, intentos + 1):
+        await asyncio.sleep(espera)
+        try:
+            await asyncio.wait_for(asyncio.to_thread(_migrar), timeout=60.0)
+            log.info(f"Migraciones Alembic aplicadas en el reintento {n}")
+            return
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            log.error(f"Reintento {n}/{intentos} de migraciones falló: {e}")
+    log.error("Migraciones Alembic SIN aplicar tras todos los reintentos")
 
 
 async def _limpiar_adjuntos_periodico():
@@ -384,4 +406,18 @@ async def health():
         # Railway inyecta el SHA del commit deployado — permite verificar qué
         # versión está corriendo sin mirar los logs.
         "commit": (os.getenv("RAILWAY_GIT_COMMIT_SHA") or "")[:9] or None,
+        # Versión del esquema de la base: si no coincide con la última
+        # migración del código, algo no se aplicó.
+        "db": await _version_db(),
     }
+
+
+async def _version_db():
+    try:
+        db = get_db(get_settings().database_url)
+        if not db.available():
+            return None
+        filas = await db.fetch("SELECT version_num FROM alembic_version")
+        return filas[0]["version_num"] if filas else None
+    except Exception:
+        return None
