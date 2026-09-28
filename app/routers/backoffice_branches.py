@@ -252,27 +252,82 @@ async def bo_receta_estado(_=Depends(_auth)):
     return await estado(db)
 
 
-@router.post("/receta/importar")
-async def bo_receta_importar(file: UploadFile = File(...), _=Depends(_auth)):
+@router.post("/receta/sincronizar")
+async def bo_receta_sincronizar(file: UploadFile = File(...), modo: str = Query("actualizar"),
+                                autor: str = Query(""), _=Depends(_auth)):
     """
-    Reemplaza la referencia con un catálogo en el formato base de la farmacia
-    (Nombre, Codigo_Barras_1..4, Categoria; o columna requiere_receta si/no),
-    recalcula el flag de todo el catálogo ERP y recarga el bot.
+    Sube un archivo (CSV o Excel, catálogo base/bot o una planilla ad-hoc) con
+    la condición de venta y arma una VISTA PREVIA: nada se aplica todavía.
+    `modo=actualizar` agrega/pisa por código de barras sin borrar nada;
+    `modo=reemplazar` deja la referencia exactamente como el archivo. Para
+    aplicarla: POST /receta/sincronizar/{id}/confirmar.
     """
-    from app.services.receta_referencia import filas_desde_csv, recalcular_catalogo, reemplazar
+    from app.services.receta_referencia import preparar_sincronizacion
     db = get_db(get_settings().database_url)
     if not db.available():
         raise HTTPException(status_code=503, detail="Base de datos no disponible")
     data = await file.read()
     if not data:
         raise HTTPException(status_code=400, detail="Archivo vacío")
-    filas = filas_desde_csv(data)
-    if not filas:
-        raise HTTPException(status_code=422, detail="No se encontró ningún código de barras en el archivo")
-    n = await reemplazar(db, filas, fuente=file.filename or "import")
-    res = await recalcular_catalogo(db)
+    try:
+        return await preparar_sincronizacion(db, data, file.filename or "archivo", modo,
+                                             autor=autor or None)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@router.post("/receta/sincronizar/{id}/confirmar")
+async def bo_receta_sincronizar_confirmar(id: int, _=Depends(_auth)):
+    """Aplica la vista previa: upsert o reemplazo de la referencia, recalcula
+    el catálogo ERP y recarga el bot."""
+    from app.services.receta_referencia import SincronizacionConflicto, confirmar_sincronizacion
+    db = get_db(get_settings().database_url)
+    if not db.available():
+        raise HTTPException(status_code=503, detail="Base de datos no disponible")
+    try:
+        res = await confirmar_sincronizacion(db, id)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Sincronización no encontrada")
+    except SincronizacionConflicto as e:
+        raise HTTPException(status_code=409, detail=str(e))
     try:
         await get_catalog_refresher().recargar()
     except Exception as e:
-        logger.warning(f"receta/importar: no se pudo recargar el catálogo: {e}")
-    return {"referencia": n, **res}
+        logger.warning(f"receta/sincronizar confirmar: no se pudo recargar el catálogo: {e}")
+    return res
+
+
+@router.post("/receta/sincronizar/{id}/descartar")
+async def bo_receta_sincronizar_descartar(id: int, _=Depends(_auth)):
+    from app.services.receta_referencia import SincronizacionConflicto, descartar_sincronizacion
+    db = get_db(get_settings().database_url)
+    if not db.available():
+        raise HTTPException(status_code=503, detail="Base de datos no disponible")
+    try:
+        return await descartar_sincronizacion(db, id)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Sincronización no encontrada")
+    except SincronizacionConflicto as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+@router.get("/receta/sincronizaciones")
+async def bo_receta_sincronizaciones(_=Depends(_auth), limit: int = Query(20, ge=1, le=200)):
+    """Historial de sincronizaciones (más nuevas primero), sin el detalle de filas."""
+    from app.services.receta_referencia import listar_sincronizaciones
+    db = get_db(get_settings().database_url)
+    if not db.available():
+        raise HTTPException(status_code=503, detail="Base de datos no disponible")
+    return {"sincronizaciones": await listar_sincronizaciones(db, limit=limit)}
+
+
+@router.get("/receta/sincronizaciones/{id}")
+async def bo_receta_sincronizacion_uno(id: int, _=Depends(_auth)):
+    from app.services.receta_referencia import obtener_sincronizacion
+    db = get_db(get_settings().database_url)
+    if not db.available():
+        raise HTTPException(status_code=503, detail="Base de datos no disponible")
+    res = await obtener_sincronizacion(db, id)
+    if res is None:
+        raise HTTPException(status_code=404, detail="Sincronización no encontrada")
+    return res

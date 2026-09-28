@@ -68,7 +68,8 @@ def test_ambiguo_deriva_en_modo_conservador():
 async def db(pg_dsn):
     d = Database(pg_dsn)
     assert await d.connect()
-    await d.execute("TRUNCATE catalog_extras, catalog_items, branches, receta_referencia")
+    await d.execute("TRUNCATE catalog_extras, catalog_items, branches, receta_referencia, "
+                    "receta_sincronizaciones")
     await d.execute("INSERT INTO branches (branch_id, nombre, token_hash) VALUES ('suc', 'Suc', 'x') "
                     "ON CONFLICT DO NOTHING")
     yield d
@@ -83,7 +84,7 @@ def _it(eid, name, barcodes, category="Medicamentos"):
         price="1000", stock=2, visible=True, active=True)
 
 
-async def test_inicializar_siembra_y_recalcula(db, tmp_path):
+async def test_inicializar_no_siembra_y_recalcula(db):
     # El catálogo ERP se escribió con la regla VIEJA: todo "no"
     store = CatalogStore(db)
     await store.upsert_items("suc", [
@@ -94,18 +95,27 @@ async def test_inicializar_siembra_y_recalcula(db, tmp_path):
     ])
     await db.execute("UPDATE catalog_items SET requiere_receta = 'no'")
 
-    csv = tmp_path / "base.csv"
-    csv.write_bytes(_CSV)
-    res = await rr.inicializar(db, ruta_csv=str(csv))
-    assert res["sembrado"] is True and res["referencia"] >= 5
+    # Referencia vacía: YA NO se siembra desde ningún archivo (28/9 — ver
+    # docstring del módulo), solo recalcula con lo que hay. Sin referencia,
+    # todo medicamento que no esté en la whitelist OTC queda "ambiguo" (a
+    # validar): deriva de más, nunca vende sin receta por descuido.
+    res = await rr.inicializar(db)
+    assert res["referencia"] == 0
+    assert "sembrado" not in res
     flags = {r["external_id"]: r["requiere_receta"]
              for r in await db.fetch("SELECT external_id, requiere_receta FROM catalog_items")}
-    assert flags == {"a": "si", "b": "no", "c": "ambiguo", "d": "no"}
-    assert res["totales"] == {"si": 1, "no": 2, "ambiguo": 1}
+    assert flags == {"a": "ambiguo", "b": "no", "c": "ambiguo", "d": "no"}
+    assert res["totales"] == {"si": 0, "no": 2, "ambiguo": 2}
 
-    # Segunda vez: no vuelve a sembrar ni cambia nada
-    res2 = await rr.inicializar(db, ruta_csv=str(csv))
-    assert res2["sembrado"] is False and res2["cambiados"] == 0
+    # Con la referencia cargada (por una sincronización ya aplicada, no por
+    # siembra al arrancar), inicializar la toma y recalcula de nuevo.
+    await rr.reemplazar(db, rr.filas_desde_csv(_CSV), fuente="test")
+    res2 = await rr.inicializar(db)
+    assert res2["referencia"] >= 5
+    flags2 = {r["external_id"]: r["requiere_receta"]
+              for r in await db.fetch("SELECT external_id, requiere_receta FROM catalog_items")}
+    assert flags2 == {"a": "si", "b": "no", "c": "ambiguo", "d": "no"}
+    assert res2["totales"] == {"si": 1, "no": 2, "ambiguo": 1}
 
     est = await rr.estado(db)
     assert est["referencia"]["si"] >= 3

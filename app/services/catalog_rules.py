@@ -14,7 +14,7 @@ _BAJO_RECETA = "medicamentos bajo receta"
 
 
 def derivar_requiere_receta(category: str, rubro: str, subrubro: str, name: str,
-                            barcodes=()) -> str:
+                            barcodes=(), referencia=None) -> str:
     """
     "si" | "no" | "ambiguo" — el ERP no trae flag de receta.
 
@@ -27,16 +27,39 @@ def derivar_requiere_receta(category: str, rubro: str, subrubro: str, name: str,
          conservador (default) deriva. Más vale derivar de más que vender
          sin receta.
       5. El resto → "no".
+
+    `referencia`: función barcodes → flag|None. Por defecto la referencia
+    cargada; la sincronización pasa la NUEVA para simular antes de aplicar.
     """
-    if es_venta_libre(name) or _categoria_sin_receta(category):
-        return "no"
-    from app.services.receta_referencia import buscar
-    ref = buscar(barcodes)
+    return explicar_receta(category, rubro, subrubro, name, barcodes, referencia)[0]
+
+
+# Origen de la marca, para el backoffice ("¿por qué el bot deriva esto?").
+ORIGENES = {
+    "venta_libre_conocida": "Venta libre conocida (lista de la farmacia)",
+    "no_medicinal": "Rubro no medicinal",
+    "referencia": "Referencia de recetas (sincronizada)",
+    "categoria_bajo_receta": "Categoría \"Medicamentos bajo receta\"",
+    "sin_referencia": "Medicamento sin referencia (a validar)",
+    "otro": "No es medicamento",
+}
+
+
+def explicar_receta(category: str, rubro: str, subrubro: str, name: str,
+                    barcodes=(), referencia=None) -> tuple[str, str]:
+    """(flag, origen) con el mismo orden que `derivar_requiere_receta`."""
+    if es_venta_libre(name):
+        return "no", "venta_libre_conocida"
+    if _categoria_sin_receta(category):
+        return "no", "no_medicinal"
+    if referencia is None:
+        from app.services.receta_referencia import buscar as referencia
+    ref = referencia(barcodes)
     if ref in ("si", "no", "ambiguo"):
-        return ref
+        return ref, "referencia"
     campos = ((category or ""), (rubro or ""), (subrubro or ""))
     if any(c.strip().lower() == _BAJO_RECETA for c in campos):
-        return "si"
+        return "si", "categoria_bajo_receta"
     if any("medicament" in c.lower() for c in campos):
-        return "ambiguo"
-    return "no"
+        return "ambiguo", "sin_referencia"
+    return "no", "otro"
