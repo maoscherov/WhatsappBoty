@@ -2,9 +2,11 @@
 Archivos de las conversaciones (lo que manda el cliente y lo que adjunta el
 operador): fotos, PDF, audios, Word, Excel, videos.
 
-Viven en el volumen de Railway (CHAT_MEDIA_DIR, por defecto /data/chat) y se
-borran solos a los 6 meses. Antes vivían en Redis con 7 días de vida: lo que
-quedó ahí se sigue sirviendo hasta que vence (ver `cargar`).
+Viven en un bucket S3 (Railway Buckets, variables S3_*) y se borran solos a
+los 6 meses. Sin bucket configurado caen al disco (CHAT_MEDIA_DIR). Antes
+vivían en Redis con 7 días de vida: lo que quedó ahí se sigue sirviendo hasta
+que vence (ver `cargar`). El bucket es privado: los archivos se sirven por
+/media/chat con clave o firma, nunca con una URL directa al bucket.
 
 La referencia que va al historial es "/media/chat/{id}{ext}" (la extensión
 dice el tipo sin abrir el archivo). Para abrirla hace falta la clave del
@@ -95,9 +97,75 @@ def separar(ref: str) -> tuple[str, str]:
     return _limpio(nombre[: -len(ext)] if ext else nombre), ext
 
 
+# ── Bucket S3 ───────────────────────────────────────────────────────────────────
+_cliente_s3 = None
+
+
+def _s3():
+    """Cliente S3 si el bucket está configurado (S3_*), si no None."""
+    global _cliente_s3
+    st = get_settings()
+    if not (st.s3_bucket and st.s3_endpoint and st.s3_access_key_id and st.s3_secret_access_key):
+        return None
+    if _cliente_s3 is None:
+        import boto3
+        from botocore.config import Config
+        _cliente_s3 = boto3.client(
+            "s3", endpoint_url=st.s3_endpoint, region_name=st.s3_region or "auto",
+            aws_access_key_id=st.s3_access_key_id,
+            aws_secret_access_key=st.s3_secret_access_key,
+            config=Config(signature_version="s3v4", retries={"max_attempts": 3}))
+    return _cliente_s3
+
+
+def _clave(id_: str) -> str:
+    return f"chat/{id_}"
+
+
+def _s3_guardar(id_: str, data: bytes, ext: str, nombre: str) -> None:
+    from urllib.parse import quote
+    _s3().put_object(
+        Bucket=get_settings().s3_bucket, Key=_clave(id_), Body=data,
+        ContentType=CONTENT_TYPE.get(ext, "application/octet-stream"),
+        # Los metadatos de S3 solo aceptan ASCII: el nombre va codificado.
+        Metadata={"ext": ext, "nombre": quote(nombre or "")})
+
+
+def _s3_cargar(id_: str) -> Optional[tuple[bytes, str, str]]:
+    from urllib.parse import unquote
+    try:
+        obj = _s3().get_object(Bucket=get_settings().s3_bucket, Key=_clave(id_))
+    except Exception as e:
+        if "NoSuchKey" in type(e).__name__ or "NoSuchKey" in str(e) or "404" in str(e):
+            return None
+        raise
+    meta = obj.get("Metadata") or {}
+    return obj["Body"].read(), meta.get("ext", ""), unquote(meta.get("nombre", ""))
+
+
+def _s3_limpiar(limite: float) -> int:
+    cli, bucket, borrados = _s3(), get_settings().s3_bucket, 0
+    token = None
+    while True:
+        kw = {"Bucket": bucket, "Prefix": "chat/"}
+        if token:
+            kw["ContinuationToken"] = token
+        res = cli.list_objects_v2(**kw)
+        viejos = [o["Key"] for o in res.get("Contents", [])
+                  if o["LastModified"].timestamp() < limite]
+        for k in viejos:
+            cli.delete_object(Bucket=bucket, Key=k)
+            borrados += 1
+        if not res.get("IsTruncated"):
+            return borrados
+        token = res.get("NextContinuationToken")
+
+
+# ── Guardar / cargar / limpiar ──────────────────────────────────────────────────
 async def guardar(id_: str, data: bytes, ext: str, nombre: str = "") -> Optional[str]:
-    """Guarda el archivo y devuelve la referencia para el historial, o None
-    si no se pudo (demasiado grande o sin disco)."""
+    """Guarda el archivo (bucket o, sin bucket, disco) y devuelve la
+    referencia para el historial, o None si no se pudo."""
+    import asyncio
     id_ = _limpio(id_)[-40:]
     if not id_ or not data:
         return None
@@ -105,12 +173,15 @@ async def guardar(id_: str, data: bytes, ext: str, nombre: str = "") -> Optional
         logger.warning(f"Adjunto {id_} de {len(data) // 1024} KB supera el máximo: no se guarda")
         return None
     try:
-        d = _dir()
-        d.mkdir(parents=True, exist_ok=True)
-        (d / f"{id_}{ext}").write_bytes(data)
-        (d / f"{id_}.json").write_text(
-            json.dumps({"ext": ext, "nombre": nombre or "", "bytes": len(data)}),
-            encoding="utf-8")
+        if _s3():
+            await asyncio.to_thread(_s3_guardar, id_, data, ext, nombre)
+        else:
+            d = _dir()
+            d.mkdir(parents=True, exist_ok=True)
+            (d / f"{id_}{ext}").write_bytes(data)
+            (d / f"{id_}.json").write_text(
+                json.dumps({"ext": ext, "nombre": nombre or "", "bytes": len(data)}),
+                encoding="utf-8")
         return f"{PREFIJO}{id_}{ext}"
     except Exception as e:
         logger.warning(f"No se pudo guardar el adjunto {id_}: {e}")
@@ -118,11 +189,20 @@ async def guardar(id_: str, data: bytes, ext: str, nombre: str = "") -> Optional
 
 
 async def cargar(id_: str) -> Optional[tuple[bytes, str, str]]:
-    """(bytes, ext, nombre original). Primero el volumen; si no está, Redis
-    (archivos anteriores al volumen, que vencen a los 7 días)."""
+    """(bytes, ext, nombre original). Busca en el bucket, después en el disco
+    (lo guardado antes de configurar el bucket) y por último en Redis
+    (archivos viejos, que vencen a los 7 días)."""
+    import asyncio
     id_ = _limpio(id_)
     if not id_:
         return None
+    if _s3():
+        try:
+            res = await asyncio.to_thread(_s3_cargar, id_)
+            if res:
+                return res
+        except Exception as e:
+            logger.warning(f"No se pudo leer el adjunto {id_} del bucket: {e}")
     d = _dir()
     meta_path = d / f"{id_}.json"
     try:
@@ -144,37 +224,51 @@ async def cargar(id_: str) -> Optional[tuple[bytes, str, str]]:
 
 def limpiar_viejos(dias: Optional[int] = None) -> int:
     """Borra los archivos con más de `dias` (por defecto, la retención
-    configurada: 180). Devuelve cuántos archivos borró."""
+    configurada: 180), en el bucket y en el disco. Devuelve cuántos borró."""
     dias = dias if dias is not None else get_settings().chat_media_retencion_dias
     limite = time.time() - dias * 86400
     borrados = 0
-    d = _dir()
-    if not d.exists():
-        return 0
-    for p in d.iterdir():
+    if _s3():
         try:
-            if p.is_file() and p.stat().st_mtime < limite:
-                p.unlink()
-                if p.suffix != ".json":
-                    borrados += 1
-        except Exception:
-            pass
+            borrados += _s3_limpiar(limite)
+        except Exception as e:
+            logger.warning(f"Limpieza del bucket falló: {e}")
+    d = _dir()
+    if d.exists():
+        for p in d.iterdir():
+            try:
+                if p.is_file() and p.stat().st_mtime < limite:
+                    p.unlink()
+                    if p.suffix != ".json":
+                        borrados += 1
+            except Exception:
+                pass
     if borrados:
         logger.info(f"Adjuntos: {borrados} archivos con más de {dias} días borrados")
     return borrados
 
 
 def estado() -> dict:
-    """Para /media/health: dónde se guarda y si es un volumen de verdad (sin
-    volumen, el disco de Railway se borra en cada deploy)."""
+    """Para /media/health: dónde se guardan los adjuntos. Sin bucket, el
+    disco de Railway se borra en cada deploy."""
+    st = get_settings()
+    if _s3():
+        try:
+            _s3().head_bucket(Bucket=st.s3_bucket)
+            ok = True
+        except Exception as e:
+            logger.warning(f"Bucket {st.s3_bucket} no responde: {e}")
+            ok = False
+        return {"almacenamiento": "bucket", "bucket": st.s3_bucket, "bucket_ok": ok,
+                "retencion_dias": st.chat_media_retencion_dias}
     d = _dir()
     archivos = [p for p in d.glob("*") if p.suffix != ".json"] if d.exists() else []
     raiz = d
     while raiz.parent != raiz and not os.path.ismount(raiz):
         raiz = raiz.parent
-    return {"dir": str(d), "archivos": len(archivos),
+    return {"almacenamiento": "disco", "dir": str(d), "archivos": len(archivos),
             "volumen": raiz != Path(raiz.anchor) and os.path.ismount(raiz),
-            "retencion_dias": get_settings().chat_media_retencion_dias}
+            "retencion_dias": st.chat_media_retencion_dias}
 
 
 # ── Firma de URLs ───────────────────────────────────────────────────────────────

@@ -172,3 +172,84 @@ def test_operador_no_puede_adjuntar_ejecutables(backoffice):
     r = cli.post("/bo/session/549341/attachment", headers={"x-bo-key": "CLAVE"},
                  files={"file": ("virus.exe", b"MZ", "application/octet-stream")})
     assert r.status_code == 415 and wa.enviados == []
+
+
+# ── Bucket S3 (Railway Buckets, 28/9) ───────────────────────────────────────────
+class _S3Falso:
+    """Lo mínimo de la API de S3 que usa chat_media, en memoria."""
+    def __init__(self):
+        self.objetos = {}
+
+    def put_object(self, Bucket, Key, Body, ContentType, Metadata):
+        from datetime import datetime, timezone
+        for v in Metadata.values():
+            v.encode("ascii")                      # S3 rechaza metadatos no ASCII
+        self.objetos[Key] = {"Body": Body, "Metadata": Metadata, "ContentType": ContentType,
+                             "LastModified": datetime.now(timezone.utc)}
+
+    def get_object(self, Bucket, Key):
+        import io
+        if Key not in self.objetos:
+            raise Exception("An error occurred (NoSuchKey)")
+        o = self.objetos[Key]
+        return {"Body": io.BytesIO(o["Body"]), "Metadata": o["Metadata"]}
+
+    def list_objects_v2(self, Bucket, Prefix, **kw):
+        return {"Contents": [{"Key": k, "LastModified": o["LastModified"]}
+                             for k, o in self.objetos.items() if k.startswith(Prefix)],
+                "IsTruncated": False}
+
+    def delete_object(self, Bucket, Key):
+        self.objetos.pop(Key, None)
+
+    def head_bucket(self, Bucket):
+        return {}
+
+
+@pytest.fixture
+def bucket(monkeypatch):
+    s3 = _S3Falso()
+    monkeypatch.setattr(chat_media, "_s3", lambda: s3)
+    monkeypatch.setattr(get_settings(), "s3_bucket", "remedia-adjuntos")
+    return s3
+
+
+async def test_bucket_guarda_y_carga_con_nombre_con_tildes(bucket):
+    ref = await chat_media.guardar("wamid.X1", b"PK..", ".docx", "Orden médica Nº 3.docx")
+    assert ref == "/media/chat/wamidX1.docx"
+    assert "chat/wamidX1" in bucket.objetos
+    assert bucket.objetos["chat/wamidX1"]["ContentType"].endswith("wordprocessingml.document")
+    data, ext, nombre = await chat_media.cargar("wamidX1")
+    assert data == b"PK.." and ext == ".docx" and nombre == "Orden médica Nº 3.docx"
+    assert not chat_media._dir().exists()          # nada al disco
+
+
+async def test_bucket_sigue_leyendo_lo_que_quedo_en_disco(monkeypatch, bucket):
+    monkeypatch.setattr(chat_media, "_s3", lambda: None)
+    await chat_media.guardar("viejo1", b"%PDF", ".pdf", "receta.pdf")   # antes del bucket
+    monkeypatch.setattr(chat_media, "_s3", lambda: bucket)
+    assert (await chat_media.cargar("viejo1"))[0] == b"%PDF"
+    assert await chat_media.cargar("no-existe") is None
+
+
+async def test_bucket_limpia_lo_de_mas_de_6_meses(bucket):
+    from datetime import datetime, timedelta, timezone
+    await chat_media.guardar("viejo", b"a", ".jpg")
+    await chat_media.guardar("nuevo", b"b", ".jpg")
+    bucket.objetos["chat/viejo"]["LastModified"] = datetime.now(timezone.utc) - timedelta(days=200)
+    assert chat_media.limpiar_viejos(180) == 1
+    assert list(bucket.objetos) == ["chat/nuevo"]
+
+
+def test_estado_dice_bucket_o_disco(bucket, monkeypatch):
+    e = chat_media.estado()
+    assert e["almacenamiento"] == "bucket" and e["bucket_ok"] is True
+    monkeypatch.setattr(chat_media, "_s3", lambda: None)
+    assert chat_media.estado()["almacenamiento"] == "disco"
+
+
+async def test_media_chat_sirve_desde_el_bucket(clave, cliente_media, bucket):
+    await chat_media.guardar("rec9", b"%PDF-1.4", ".pdf", "receta.pdf")
+    r = cliente_media.get(chat_media.firmar("/media/chat/rec9.pdf"))
+    assert r.status_code == 200 and r.content == b"%PDF-1.4"
+    assert r.headers["content-type"] == "application/pdf"

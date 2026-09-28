@@ -63,6 +63,13 @@ class Settings(BaseSettings):
     # Adjuntos de las conversaciones (cliente y operador): volumen de Railway.
     chat_media_dir: str = "/data/chat"
     chat_media_retencion_dias: int = 180
+    # Bucket S3 (Railway Buckets): si están cargados, los adjuntos van ahí en
+    # vez del disco. En Railway: S3_BUCKET=${{Bucket.BUCKET}}, etc.
+    s3_endpoint: str = ""
+    s3_bucket: str = ""
+    s3_access_key_id: str = ""
+    s3_secret_access_key: str = ""
+    s3_region: str = "auto"
 
     # Sync de catálogo desde el ERP de la sucursal (remedia-agent)
     default_branch_id: str = ""      # override: sucursal ERP del bot (vacío = la única activa con catálogo)
