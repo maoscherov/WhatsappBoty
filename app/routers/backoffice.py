@@ -1196,10 +1196,21 @@ async def bo_take(phone: str, agente: str = Query(...), _=Depends(_auth)):
     settings = get_settings()
     session_svc = get_session_service(settings.redis_url)
     session = await session_svc.get(phone)
+    # Tomar = atiende una persona y el bot deja de hablar hasta que se la
+    # devuelva (28/9). Antes solo asignaba: la charla seguía en "idle" y el
+    # bot contestaba encima del operador.
+    ya_derivada = session.get("estado") == "operador"
+    if not ya_derivada:
+        await session_svc.set_estado(phone, "operador", motivo="tomada_por_operador")
+        session = await session_svc.get(phone)
     session["agente"] = agente.strip()
     # SLA de atención: cuánto tardó una persona en tomar la derivación (el
-    # tablero mide "derivaciones dentro del SLA de 15 min").
-    _derivada = session.get("derivada_at")
+    # tablero mide "derivaciones dentro del SLA de 15 min"). Tomar una charla
+    # que no estaba derivada no cuenta para el SLA.
+    _derivada = session.get("derivada_at") if ya_derivada else None
+    if not ya_derivada:
+        import time as _t
+        session["atendida_at"] = _t.time()
     if _derivada and not session.get("atendida_at"):
         import time as _t
         session["atendida_at"] = _t.time()
@@ -1213,7 +1224,7 @@ async def bo_take(phone: str, agente: str = Query(...), _=Depends(_auth)):
         except Exception as e:
             logger.debug(f"evento derivacion_atendida: {e}")
     await session_svc.save(phone, session)
-    return {"status": "ok", "phone": phone, "agente": agente.strip()}
+    return {"status": "ok", "phone": phone, "agente": agente.strip(), "estado": "operador"}
 
 
 @router.post("/session/{phone}/close")
