@@ -58,6 +58,7 @@ _ALIAS_CATEGORIA = {"categoria"}
 _ALIAS_CATEGORIA_FALLBACK = {"rubro"}
 _ALIAS_FLAG = {"requiere_receta", "receta", "bajo_receta", "condicion_venta", "condicion_de_venta"}
 _ALIAS_VENTA_LIBRE = {"venta_libre"}
+_ALIAS_ES_MEDICAMENTO = {"es_medicamento", "medicamento"}
 # codigo_barras(_1..n) | codigo_de_barras(_n) | cod_barras(_n) | barcode(_n) |
 # codigo_barra(_n) | ean | ean13
 _RE_BARCODE_COL = re.compile(
@@ -115,7 +116,8 @@ def _analizar_headers(headers: list[str]) -> tuple[dict, str]:
     Un encabezado cubre como mucho un rol (el primero que matchea, en orden de
     aparición en el archivo).
     """
-    cols = {"nombre": None, "categoria": None, "flag": None, "venta_libre": None, "barcodes": []}
+    cols = {"nombre": None, "categoria": None, "flag": None, "venta_libre": None,
+            "es_medicamento": None, "barcodes": []}
     categoria_fallback = None
     normalizados = []
     for h in headers:
@@ -133,6 +135,8 @@ def _analizar_headers(headers: list[str]) -> tuple[dict, str]:
             cols["flag"] = h
         elif cols["venta_libre"] is None and norm in _ALIAS_VENTA_LIBRE:
             cols["venta_libre"] = h
+        elif cols["es_medicamento"] is None and norm in _ALIAS_ES_MEDICAMENTO:
+            cols["es_medicamento"] = h
         elif _RE_BARCODE_COL.match(norm):
             cols["barcodes"].append(h)
     if cols["categoria"] is None:
@@ -213,6 +217,7 @@ def leer_archivo(data: bytes, nombre_archivo: str) -> tuple[list[tuple[str, str,
     total = 0
     sin_codigo = 0
     codigos_validos = 0
+    ajustados = 0
     for row in filas_raw:
         # Fila completamente vacía (relleno al final del Excel): ni cuenta ni
         # ensucia sin_codigo.
@@ -222,16 +227,37 @@ def leer_archivo(data: bytes, nombre_archivo: str) -> tuple[list[tuple[str, str,
         nombre = _texto_celda(row.get(cols["nombre"])) if cols["nombre"] else ""
         categoria = _texto_celda(row.get(cols["categoria"])) if cols["categoria"] else ""
 
+        es_med = (_flag_explicito(row.get(cols["es_medicamento"])) == "si"
+                  if cols["es_medicamento"] else False)
+        cat = categoria.strip().lower()
+        # Medicamento sin categoría que lo aclare ("Medicamentos" a secas, o
+        # vacía con la marca de medicamento): no se sabe si lleva receta.
+        sin_categoria_clara = (("medicament" in cat and cat != "medicamentos bajo receta")
+                               or (not cat and es_med))
+        otc = es_venta_libre(nombre) or _categoria_sin_receta(categoria)
+
         flag = _flag_explicito(row.get(cols["flag"])) if cols["flag"] else None
         if flag is None and cols["venta_libre"]:
             inv = _flag_explicito(row.get(cols["venta_libre"]))
             flag = _INVERSO[inv] if inv else None
+        if flag == "no" and cols["es_medicamento"] and sin_categoria_clara and not otc:
+            # 28/9: en el catálogo del bot, 460 medicamentos sin categoría
+            # venían como venta libre por la regla vieja (RACORVAL 160 "no",
+            # RACORVAL 80 "si"). Esa marca no es una validación: a validar.
+            flag = "ambiguo"
+            ajustados += 1
         if flag is None:
-            # Mismo criterio que siempre: categoría explícita "Medicamentos
-            # Bajo Receta", con la lista blanca OTC y el rubro no medicinal
-            # como override conservador.
-            flag = "si" if categoria.strip().lower() == "medicamentos bajo receta" else "no"
-            if es_venta_libre(nombre) or _categoria_sin_receta(categoria):
+            # Categoría explícita "Medicamentos Bajo Receta" → con receta; la
+            # lista blanca OTC y el rubro no medicinal → venta libre. Un
+            # medicamento sin categoría clara → a validar (antes quedaba como
+            # venta libre: 482 en el catálogo base, RACORVAL entre ellos).
+            if otc:
+                flag = "no"
+            elif cat == "medicamentos bajo receta":
+                flag = "si"
+            elif sin_categoria_clara:
+                flag = "ambiguo"
+            else:
                 flag = "no"
 
         bcs = []
@@ -259,13 +285,16 @@ def leer_archivo(data: bytes, nombre_archivo: str) -> tuple[list[tuple[str, str,
         "formato": formato,
         "columnas": {k: v for k, v in {
             "nombre": cols["nombre"], "categoria": cols["categoria"], "flag": cols["flag"],
-            "venta_libre": cols["venta_libre"],
+            "venta_libre": cols["venta_libre"], "es_medicamento": cols["es_medicamento"],
             "barcodes": ", ".join(cols["barcodes"]) if cols["barcodes"] else None,
         }.items() if v},
         "filas": total,
         "codigos_validos": codigos_validos,
         "sin_codigo": sin_codigo,
         "conflictos_en_archivo": conflictos,
+        # Medicamentos sin categoría clara marcados "venta libre" en el
+        # archivo que pasaron a "a validar" (ver arriba).
+        "ajustados_a_validar": ajustados,
     }
     return filas, info
 

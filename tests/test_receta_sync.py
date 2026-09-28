@@ -484,3 +484,52 @@ async def test_endpoint_sin_auth_403(cliente):
     ac, _recargas = cliente
     r = await ac.get("/bo/receta/sincronizaciones")
     assert r.status_code == 403
+
+
+# ── 28/9: medicamentos sin categoría clara no pasan como venta libre ────────────
+def test_medicamento_sin_categoria_queda_a_validar():
+    """Caso real: RACORVAL (antihipertensivo) venía sin categoría en el
+    catálogo base y la regla vieja lo daba como venta libre."""
+    csv_base = (
+        "SKU,Nombre,Precio,Marca,Laboratorio,Codigo_Barras_1,Codigo_Barras_2,Codigo_Barras_3,"
+        "Codigo_Barras_4,Categoria,Es_Medicamento\n"
+        "1,RACORVAL D 160/12.5 mg comp.rec.x 60,9000,Roemmers,Roemmers,7795345124964,,,,,true\n"
+        "2,Algo Generico X30,100,X,X,7790000000017,,,,Medicamentos,true\n"
+        "3,Magnesio Suplemento X30,100,X,X,7790000000024,,,,Suplementos y Complementos,true\n"
+        "4,Ibuprofeno 400 X10,100,X,X,7790000000031,,,,,true\n"
+        "5,Sin Categoria Ni Medicamento,100,X,X,7790000000048,,,,,false\n"
+    ).encode("utf-8")
+    filas, info = rr.leer_archivo(csv_base, "base.csv")
+    f = {b: fl for b, _, fl in filas}
+    assert f["7795345124964"] == "ambiguo"      # RACORVAL: a validar, no venta libre
+    assert f["7790000000017"] == "ambiguo"      # "Medicamentos" a secas
+    assert f["7790000000024"] == "no"           # categoría no medicinal
+    assert f["7790000000031"] == "no"           # lista blanca OTC
+    assert f["7790000000048"] == "no"           # no es medicamento
+    assert info["columnas"]["es_medicamento"] == "Es_Medicamento"
+
+
+def test_venta_libre_del_catalogo_del_bot_sin_categoria_no_se_confia():
+    csv_bot = (
+        "sku_id,barcode,sku_nombre,categoria,es_medicamento,requiere_receta\n"
+        "1,7795345124964,RACORVAL D 160/12.5 mg x 60,,si,no\n"
+        "2,7795345125015,RACORVAL COM 80X60,,si,si\n"
+        "3,7790000000031,Ibuprofeno 400 X10,,si,no\n"
+        "4,7790000000055,Shampoo X,Shampoo,false,no\n"
+    ).encode("utf-8")
+    filas, info = rr.leer_archivo(csv_bot, "bot.csv")
+    f = {b: fl for b, _, fl in filas}
+    assert f["7795345124964"] == "ambiguo" and info["ajustados_a_validar"] == 1
+    assert f["7795345125015"] == "si"
+    assert f["7790000000031"] == "no"            # OTC conocido: la marca se respeta
+    assert f["7790000000055"] == "no"
+
+
+def test_planilla_validada_sin_columna_de_medicamento_se_respeta():
+    """Una planilla revisada por la farmacia (sin columna es_medicamento):
+    su "Venta libre" explícito manda."""
+    csv_planilla = ("Código de barras;Descripción;Condición de venta\n"
+                    "7795345124964;RACORVAL D 160/12.5;Venta libre\n").encode("utf-8")
+    filas, info = rr.leer_archivo(csv_planilla, "planilla.csv")
+    assert filas == [("7795345124964", "RACORVAL D 160/12.5", "no")]
+    assert info["ajustados_a_validar"] == 0
