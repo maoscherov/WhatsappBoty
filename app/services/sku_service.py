@@ -200,14 +200,22 @@ def nombre_coincide(query: str, nombre: str) -> bool:
     return False
 
 
+# Categorías del ERP que no dicen qué es el producto: Observer manda "General"
+# para 38.000 productos, antibióticos incluidos (caso real 28/9: G-Amoxicilina,
+# G-Cefalexina, G-Losartán en "General / Medicamentos Varios" quedaban como
+# venta libre). Con estas no se afirma nada: decide el rubro / la referencia.
+_CATEGORIAS_SIN_INFO = {"general", "productos medicos", "productos médicos", "varios", "otros"}
+
+
 def _categoria_sin_receta(categoria: str) -> bool:
     """
     True si la categoría del catálogo indica un producto NO medicinal
     (perfumería, accesorios, etc.) — esos nunca requieren receta, aunque el
-    flag venga mal cargado. Sólo se afirma con categoría explícita.
+    flag venga mal cargado. Sólo se afirma con categoría explícita e
+    informativa ("General" no lo es).
     """
     c = (categoria or "").strip().lower()
-    return bool(c) and "medicamento" not in c
+    return bool(c) and "medicamento" not in c and c not in _CATEGORIAS_SIN_INFO
 
 
 def requiere_derivacion(requiere_receta: str, modo: str = "conservador") -> bool:

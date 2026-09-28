@@ -93,3 +93,23 @@ class TestFromRows:
         svc = SKUService.from_rows([_fila(barcodes=["111", "222", "333"])])
         for cb in ("111", "222", "333"):
             assert svc.get_by_barcode(cb).sku_id == "100"
+
+
+class TestCategoriaSinInformacion:
+    """28/9: el ERP manda "General" para 38.000 productos, antibióticos
+    incluidos; esa categoría no puede declarar venta libre."""
+
+    def test_antibiotico_en_general_queda_a_validar(self):
+        assert derivar_requiere_receta("General", "Medicamentos Varios", "",
+                                       "G-AMOXICILINA ENV x 8") == "ambiguo"
+        assert derivar_requiere_receta("Productos médicos", "Medicamentos Varios", "",
+                                       "G- Furosemida 40mg ENV x 10") == "ambiguo"
+
+    def test_categoria_informativa_sigue_mandando(self):
+        assert derivar_requiere_receta("Cosméticos", "Medicamentos", "",
+                                       "GOMINA FIJADOR GEL x 150") == "no"
+        assert derivar_requiere_receta("Alimentos", "Medicamentos Varios", "",
+                                       "CENTRUM BASE COM x 30") == "no"
+
+    def test_general_sin_rubro_medicinal_es_venta_libre(self):
+        assert derivar_requiere_receta("General", "Accesorios", "", "PEINE X") == "no"
