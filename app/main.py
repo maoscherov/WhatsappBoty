@@ -10,7 +10,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
 from app.routers import (webhook, simulate, backoffice, mp_webhook, orders_api,
-                         media, payway, sync_api, agent_ws, backoffice_branches)
+                         media, payway, sync_api, agent_ws, backoffice_branches,
+                         backoffice_receta)
 from app.services.sku_service import get_sku_service
 from app.services.session_service import get_session_service
 from app.services.blob_store import get_blob_store
@@ -123,9 +124,12 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"No se pudo cargar el listado de empleados desde Postgres: {e}")
 
-        # Receta por código de barras (24/9): carga la referencia (la siembra
-        # con el catálogo de la farmacia si está vacía) y recalcula el flag de
-        # todo el catálogo ERP ANTES de cargarlo en el bot.
+        # Receta por código de barras (24/9): Postgres es la ÚNICA fuente de
+        # verdad de la referencia (28/9: sembrarla desde un archivo al
+        # arrancar leyó 0 filas en prod porque el catálogo restaurado desde
+        # Redis pisó el CSV con otro formato de columnas antes de leerlo —
+        # ver receta_referencia.py). Solo carga y recalcula el flag de todo
+        # el catálogo ERP ANTES de cargarlo en el bot.
         try:
             from app.services.receta_referencia import inicializar as _init_receta
             _r = await asyncio.wait_for(_init_receta(get_db(settings.database_url)), timeout=60.0)
@@ -370,6 +374,7 @@ app.include_router(payway.router)
 app.include_router(sync_api.router)
 app.include_router(agent_ws.router)
 app.include_router(backoffice_branches.router)
+app.include_router(backoffice_receta.router)
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 

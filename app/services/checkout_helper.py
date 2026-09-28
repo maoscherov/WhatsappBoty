@@ -501,6 +501,9 @@ async def derivar_si_receta(sku_svc, session_svc, cfg: dict, phone: str, sku_id:
         # receta y ahora pide que se lo anotemos, "te derivo" alcanza —
         # repetir "requiere receta" suena a que no lo escuchamos.
         _ya_dicho = receta_ya_mencionada(_s.get("history") or [])
+        # Qué producto frenó la venta: el operador lo marca desde el chat (28/9).
+        from app.services.receta_marcas import recordar_producto_por_receta
+        await recordar_producto_por_receta(session_svc, sku_svc, phone, sku_id)
         await session_svc.clear_pending(phone)
         await session_svc.set_estado(phone, "operador", motivo="receta")
         if _ya_dicho:
@@ -1022,6 +1025,8 @@ async def confirmar_pedido(
     #    Excepción: receta_validada — el OPERADOR ya vio la receta y cotizó
     #    este producto; el "sí" del cliente sigue derecho a entrega y link.
     if necesita_receta(sku_svc, sku_id, modo) and not session.get("receta_validada"):
+        from app.services.receta_marcas import recordar_producto_por_receta
+        await recordar_producto_por_receta(session_svc, sku_svc, phone, sku_id)
         await session_svc.clear_pending(phone)
         await session_svc.set_estado(phone, "operador", motivo="receta")
         inicio = f"{nombre}, ese" if nombre else "Ese"

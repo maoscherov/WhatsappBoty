@@ -1991,6 +1991,10 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                         _cfg_rec = await deps["config"].get_all()
                         if necesita_receta(deps["sku"], producto_elegido["sku_id"],
                                            _cfg_rec.get("receta_mode", "conservador")):
+                            from app.services.receta_marcas import recordar_producto_por_receta
+                            await recordar_producto_por_receta(
+                                deps["session"], deps["sku"], phone, producto_elegido["sku_id"],
+                                cantidad)
                             respuesta = (f"{producto_elegido['nombre']} requiere receta 🩺, así que "
                                          "ese no lo puedo sumar al pedido. El resto sigue como está "
                                          "— ¿lo confirmamos?")
