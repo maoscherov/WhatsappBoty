@@ -32,11 +32,16 @@ impl ErpError {
 }
 
 /// Resultado de `fetch_all`: productos y cuántos lotes se leyeron (para medir
-/// el tiempo por lote).
+/// el tiempo por lote), más lo que falló en esta lectura (0.3.5).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct FetchResult {
     pub productos: Vec<ProductoDTO>,
     pub lotes: u32,
+    /// Lotes que el ERP no pudo servir (500 / respuesta ilegible). Sus
+    /// productos se recuperaron de a uno por id.
+    pub lotes_fallidos: Vec<u32>,
+    /// `idProducto` que fallaron también individualmente (no 404).
+    pub ids_rotos: Vec<i64>,
 }
 
 /// Resultado de `probe`: una lectura mínima para verificar que el ERP responde.

@@ -68,6 +68,36 @@ pub struct Heartbeat {
     /// Latencias del agente. Remedia lo ignora hasta que lo use.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metrics: Option<crate::metrics::MetricsSnapshot>,
+    /// `idProducto` que fallaron individualmente en la última lectura del
+    /// catálogo. `Some(vec![])` = ninguno (el servidor lo limpia); `None` = se
+    /// desconoce.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub erp_productos_rotos: Option<Vec<i64>>,
+    /// Lotes que fallaron en la última lectura (misma regla).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub erp_lotes_fallidos: Option<Vec<u32>>,
+    /// Último sondeo por código de barras; `None` si nunca corrió.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sondeo: Option<SondeoResumen>,
+}
+
+/// Resumen del último sondeo por código de barras (0.3.5).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SondeoResumen {
+    /// rfc3339 de la corrida.
+    pub at: String,
+    /// Códigos consultados al ERP en esa corrida.
+    pub consultados: i64,
+    /// Productos encontrados en esa corrida.
+    pub encontrados: i64,
+    /// Productos que se mantienen hoy por sondeo (tamaño del conjunto persistido).
+    pub activos: i64,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct CodigosFaltantes {
+    #[serde(default)]
+    codigos: Vec<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -163,6 +193,30 @@ impl RemediaClient {
 
     pub async fn full_manifest(&self, m: &FullManifest) -> Result<FullManifestResponse, RemediaError> {
         self.post("/v1/sync/full-manifest", m).await
+    }
+
+    /// Códigos de barras que el servidor conoce y faltan en el catálogo
+    /// sincronizado. Un 404 (servidor viejo sin el endpoint) = lista vacía.
+    pub async fn codigos_faltantes(&self) -> Result<Vec<String>, RemediaError> {
+        let resp = self
+            .client
+            .get(format!("{}/v1/sync/codigos-faltantes", self.base_url))
+            .send()
+            .await
+            .map_err(|e| RemediaError::Unreachable(e.to_string()))?;
+        let status = resp.status();
+        if status == StatusCode::NOT_FOUND {
+            tracing::warn!("el servidor no tiene /v1/sync/codigos-faltantes (¿versión vieja?): sin sondeo");
+            return Ok(Vec::new());
+        }
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(RemediaError::Http(status.as_u16(), text.chars().take(300).collect()));
+        }
+        let bytes = resp.bytes().await.map_err(|e| RemediaError::Decode(e.to_string()))?;
+        let r: CodigosFaltantes =
+            serde_json::from_slice(&bytes).map_err(|e| RemediaError::Decode(e.to_string()))?;
+        Ok(r.codigos)
     }
 
     pub async fn heartbeat(&self, h: &Heartbeat) -> Result<(), RemediaError> {

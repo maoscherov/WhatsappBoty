@@ -82,6 +82,9 @@ async fn full_manifest_and_heartbeat() {
         catalog_count: 0,
         pending_batches: 0,
         metrics: None,
+        erp_productos_rotos: None,
+        erp_lotes_fallidos: None,
+        sondeo: None,
     }).await.unwrap();
 }
 

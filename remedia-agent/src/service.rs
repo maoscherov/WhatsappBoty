@@ -4,7 +4,7 @@
 //! Service Control Manager. Las funciones de registro del servicio solo existen
 //! en Windows; en otros targets compilan a un error explicativo.
 
-use crate::catalog::state::{META_ERP_STATUS, META_LAST_FULL_MANIFEST, META_LAST_ID_SCAN};
+use crate::catalog::state::{META_ERP_STATUS, META_LAST_FULL_MANIFEST, META_LAST_ID_SCAN, META_LAST_SONDEO};
 use crate::catalog::{State, SyncEngine};
 use crate::config::{Config, CONFIG_FILE, STATE_FILE};
 use crate::erp::build_adapter;
@@ -34,6 +34,24 @@ pub fn resolve_data_dir(opt: Option<PathBuf>) -> PathBuf {
 /// ilegible cuenta como "nunca".
 pub fn should_run_full_manifest(last: Option<&str>, now: DateTime<Local>) -> bool {
     is_due(last, now, FULL_MANIFEST_EVERY)
+}
+
+/// Sondeo por código de barras (0.3.5): la primera vez, en el primer ciclo
+/// (al instalar tienen que entrar ya los productos que faltan: SESAREN XR,
+/// 28/9); después, a la hora del barrido diario (`live_full_hour`) si pasaron
+/// más de 20 h, o a cualquier hora si pasaron más de 48 h (PC apagada a las 3).
+pub fn should_run_sondeo(cfg: &Config, last: Option<&str>, now: DateTime<Local>) -> bool {
+    use chrono::Timelike;
+    if !cfg.erp.sondeo_cb {
+        return false;
+    }
+    if last.and_then(|s| DateTime::parse_from_rfc3339(s).ok()).is_none() {
+        return true;
+    }
+    if is_due(last, now, chrono::Duration::hours(48)) {
+        return true;
+    }
+    now.hour() as u8 == cfg.erp.live_full_hour && is_due(last, now, chrono::Duration::hours(20))
 }
 
 fn is_due(last: Option<&str>, now: DateTime<Local>, every: chrono::Duration) -> bool {
@@ -164,7 +182,15 @@ pub async fn run_cycle(engine: &SyncEngine) {
     let now = Local::now();
     let state = &engine.state;
 
-    let extra = if engine.cfg.erp.daily_id_scan
+    // Sondeo por código de barras (diario), ANTES del sync: lo que encuentre
+    // entra en este mismo ciclo.
+    if should_run_sondeo(&engine.cfg, state.get_meta(META_LAST_SONDEO).ok().flatten().as_deref(), now) {
+        if let Err(e) = engine.sondeo_cb().await {
+            warn!(error = %e, "sondeo por CB falló");
+        }
+    }
+
+    let mut extra = if engine.cfg.erp.daily_id_scan
         && is_due(state.get_meta(META_LAST_ID_SCAN).ok().flatten().as_deref(), now, FULL_MANIFEST_EVERY)
     {
         match engine.daily_id_scan().await {
@@ -180,6 +206,11 @@ pub async fn run_cycle(engine: &SyncEngine) {
     } else {
         Vec::new()
     };
+    // Productos que el lote no lista y el sondeo encontró: se releen cada ciclo.
+    match engine.extras_cb_lookup().await {
+        Ok(v) => extra.extend(v),
+        Err(e) => warn!(error = %e, "no se pudieron releer los productos del sondeo por CB"),
+    }
 
     match engine.run_once_with(extra).await {
         Ok(r) => info!(
@@ -594,6 +625,36 @@ mod tests {
         assert!(!should_run_full_manifest(Some(&h1), now));
         let h23 = (now - chrono::Duration::hours(23) - chrono::Duration::minutes(59)).to_rfc3339();
         assert!(!should_run_full_manifest(Some(&h23), now));
+    }
+
+    #[test]
+    fn sondeo_a_la_hora_o_tras_48h() {
+        use chrono::TimeZone;
+        let mut cfg = Config::from_toml(
+            "branch_id = \"b\"
+remedia_url = \"https://r\"
+token = \"t\"
+[erp]
+base_url = \"http://e\"
+",
+        ).unwrap();
+        let a_las_3 = Local.with_ymd_and_hms(2026, 9, 29, 3, 10, 0).unwrap();
+        let tarde = Local.with_ymd_and_hms(2026, 9, 29, 15, 0, 0).unwrap();
+        // Nunca corrió: en el primer ciclo, a cualquier hora.
+        assert!(should_run_sondeo(&cfg, None, a_las_3));
+        assert!(should_run_sondeo(&cfg, None, tarde));
+        // Corrió ayer a las 3: a las 3 de hoy toca (24 h), a las 15 no.
+        let ayer = Local.with_ymd_and_hms(2026, 9, 28, 3, 5, 0).unwrap().to_rfc3339();
+        assert!(should_run_sondeo(&cfg, Some(&ayer), a_las_3));
+        assert!(!should_run_sondeo(&cfg, Some(&ayer), tarde));
+        // Hace 1 h: no.
+        let hace_1h = (a_las_3 - chrono::Duration::hours(1)).to_rfc3339();
+        assert!(!should_run_sondeo(&cfg, Some(&hace_1h), a_las_3));
+        // Más de 48 h: a cualquier hora.
+        let vieja = Local.with_ymd_and_hms(2026, 9, 26, 3, 0, 0).unwrap().to_rfc3339();
+        assert!(should_run_sondeo(&cfg, Some(&vieja), tarde));
+        cfg.erp.sondeo_cb = false;
+        assert!(!should_run_sondeo(&cfg, Some(&vieja), tarde));
     }
 
     #[test]

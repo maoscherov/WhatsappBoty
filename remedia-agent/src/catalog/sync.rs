@@ -5,7 +5,8 @@ use crate::catalog::state::{
     State, KIND_CATALOG, META_CATALOG_COUNT, META_ERP_STATUS, META_ERP_VERSION,
     META_LAST_FULL_MANIFEST, META_LAST_HEARTBEAT, META_LAST_HEARTBEAT_ERROR, META_LAST_SYNC_AT,
     META_LAST_SYNC_CHANGED, META_LAST_SYNC_ERROR, META_LAST_SYNC_FETCHED, META_LAST_SYNC_OK,
-    META_LAST_FULL_LIVE, META_METRICS_JSON,
+    META_LAST_FULL_LIVE, META_METRICS_JSON, META_ERP_IDS_ROTOS, META_ERP_LOTES_FALLIDOS,
+    META_LAST_SONDEO, META_SONDEO_JSON,
 };
 use crate::catalog::CatalogItem;
 use crate::config::Config;
@@ -14,8 +15,9 @@ use crate::erp::{ErpAdapter, ErpError};
 use crate::metrics::{elapsed_ms, Metrics};
 use crate::remedia::client::{
     now_rfc3339, CatalogBatch, FullManifest, Heartbeat, ManifestEntry, SCHEMA_VERSION,
-    SOURCE_OBSERVER,
+    SondeoResumen, SOURCE_OBSERVER,
 };
+use crate::erp::FetchResult;
 use crate::remedia::{RemediaClient, RemediaError};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
@@ -200,6 +202,7 @@ impl SyncEngine {
                 self.metrics.record_fetch(elapsed_ms(t_fetch), v.lotes);
                 self.state.set_meta(META_ERP_STATUS, "ok")?;
                 self.state.set_meta(META_LAST_SYNC_ERROR, "")?;
+                self.guardar_fallas_lectura(&v)?;
                 v
             }
             Err(e) => {
@@ -336,6 +339,8 @@ impl SyncEngine {
             let _ = self.state.set_meta(META_ERP_STATUS, e.status_label());
             anyhow::anyhow!("full-manifest: {e}")
         })?;
+        self.guardar_fallas_lectura(&fetched)?;
+        let ids_rotos = fetched.ids_rotos.clone();
         // Mismos datos (y hashes) que el delta: si no, el manifiesto pediría
         // reenviar todo lo corregido en cada corrida.
         let outcome = self.enrich_live(fetched.productos).await;
@@ -354,7 +359,20 @@ impl SyncEngine {
                 entries.push(ManifestEntry { external_id: id, hash: h.clone() });
             }
         }
-        let current: HashSet<String> = entries.iter().map(|e| e.external_id.clone()).collect();
+        // Idem para lo que el ERP hoy no logra servir (500 individual) y para
+        // lo que el lote no lista pero el sondeo por CB encontró: sin estas
+        // entradas el servidor los desactivaría (28/9).
+        let mut presentes: HashSet<String> = entries.iter().map(|e| e.external_id.clone()).collect();
+        let extras_ids: HashSet<i64> = self.state.extras_cb()?.into_values().collect();
+        for id in ids_rotos.iter().copied().chain(extras_ids) {
+            let id = id.to_string();
+            if let Some(h) = known.get(&id) {
+                if presentes.insert(id.clone()) {
+                    entries.push(ManifestEntry { external_id: id, hash: h.clone() });
+                }
+            }
+        }
+        let current = presentes;
 
         let manifest = FullManifest {
             branch_id: self.cfg.branch_id.clone(),
@@ -401,7 +419,122 @@ impl SyncEngine {
             catalog_count: get(META_CATALOG_COUNT)?.and_then(|v| v.parse().ok()).unwrap_or(0),
             pending_batches: self.state.pending_count()?,
             metrics: Some(self.metrics.snapshot()),
+            erp_productos_rotos: get(META_ERP_IDS_ROTOS)?.and_then(|v| serde_json::from_str(&v).ok()),
+            erp_lotes_fallidos: get(META_ERP_LOTES_FALLIDOS)?.and_then(|v| serde_json::from_str(&v).ok()),
+            sondeo: get(META_SONDEO_JSON)?.and_then(|v| serde_json::from_str(&v).ok()),
         })
+    }
+
+    /// Guarda qué falló en esta lectura del catálogo (vacío si nada): va al
+    /// heartbeat para que el servidor vea los lotes/productos que el ERP no sirve.
+    fn guardar_fallas_lectura(&self, f: &FetchResult) -> anyhow::Result<()> {
+        self.state.set_meta(META_ERP_LOTES_FALLIDOS, &serde_json::to_string(&f.lotes_fallidos)?)?;
+        self.state.set_meta(META_ERP_IDS_ROTOS, &serde_json::to_string(&f.ids_rotos)?)?;
+        Ok(())
+    }
+
+    /// Busca códigos de barras en el ERP de a `LIVE_CB_CHUNK`, en serie y con
+    /// `live_pause_ms` entre llamadas. Devuelve `(productos, cbs_fallidos, error)`;
+    /// ante ERP caído / 401 devuelve lo encontrado hasta ahí junto con el error.
+    async fn buscar_cbs(&self, codigos: &[String]) -> (Vec<ProductoDTO>, Vec<String>, Option<ErpError>) {
+        let erp = self.erp();
+        let pausa = Duration::from_millis(self.cfg.erp.live_pause_ms);
+        let mut encontrados: HashMap<i64, ProductoDTO> = HashMap::new();
+        let mut fallidos = Vec::new();
+        for chunk in codigos.chunks(LIVE_CB_CHUNK) {
+            match lookup_cb_bisect(erp.as_ref(), chunk.to_vec()).await {
+                Ok((found, malos)) => {
+                    for p in found {
+                        encontrados.insert(p.id_producto, p);
+                    }
+                    fallidos.extend(malos);
+                }
+                Err(e) => return (encontrados.into_values().collect(), fallidos, Some(e)),
+            }
+            tokio::time::sleep(pausa).await;
+        }
+        (encontrados.into_values().collect(), fallidos, None)
+    }
+
+    /// Sondeo por código de barras (0.3.5). El listado por lotes de Observer
+    /// omite productos que existen y tienen stock (SESAREN XR, ids 12521-12523,
+    /// 28/9) pero `codigosBarras` los encuentra. Se le piden al servidor los
+    /// códigos que conoce y faltan en el catálogo, se buscan en el ERP y lo
+    /// hallado se recuerda en `extras_cb` para releerlo en cada ciclo.
+    /// Devuelve `true` si terminó, `false` si se cortó (ERP caído / servidor
+    /// sin respuesta): en ese caso se reintenta en el próximo ciclo.
+    pub async fn sondeo_cb(&self) -> anyhow::Result<bool> {
+        let codigos = match self.remedia().codigos_faltantes().await {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(error = %e, "sondeo por CB: no se pudieron pedir los códigos faltantes");
+                return Ok(false);
+            }
+        };
+        let extras = self.state.extras_cb()?;
+        let mut vistos = HashSet::new();
+        let codigos: Vec<String> = codigos
+            .into_iter()
+            .filter(|c| !c.is_empty() && c.chars().all(|ch| ch.is_ascii_digit()))
+            .filter(|c| !extras.contains_key(c))
+            .filter(|c| vistos.insert(c.clone()))
+            .take(self.cfg.erp.sondeo_max)
+            .collect();
+        let consultados = codigos.len();
+        let (found, _fallidos, err) = self.buscar_cbs(&codigos).await;
+        let nuevos: Vec<(String, i64)> = found
+            .iter()
+            .flat_map(|p| p.codigo_barras.iter().map(|cb| (cb.clone(), p.id_producto)))
+            .collect();
+        self.state.extras_cb_add(&nuevos)?;
+        let activos = self.state.extras_cb()?.into_values().collect::<HashSet<_>>().len();
+        let resumen = SondeoResumen {
+            at: now_rfc3339(),
+            consultados: consultados as i64,
+            encontrados: found.len() as i64,
+            activos: activos as i64,
+        };
+        self.state.set_meta(META_SONDEO_JSON, &serde_json::to_string(&resumen)?)?;
+        info!(consultados, encontrados = found.len(), activos, "sondeo por CB terminado");
+        if let Some(e) = err {
+            warn!(error = %e, "sondeo por CB cortado: ERP no disponible, se conserva lo encontrado");
+            return Ok(false);
+        }
+        self.state.set_meta(META_LAST_SONDEO, &now_rfc3339())?;
+        Ok(true)
+    }
+
+    /// Relee en cada ciclo los productos descubiertos por el sondeo (barato:
+    /// de a 20 CB). Los que el ERP ya no devuelve se olvidan; ante error se
+    /// conservan. Los productos van como `extra` del ciclo.
+    pub async fn extras_cb_lookup(&self) -> anyhow::Result<Vec<ProductoDTO>> {
+        let extras = self.state.extras_cb()?;
+        if extras.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut cbs: Vec<String> = extras.keys().cloned().collect();
+        cbs.sort();
+        let (found, fallidos, err) = self.buscar_cbs(&cbs).await;
+        if let Some(e) = err {
+            warn!(error = %e, "extras por CB: ERP no disponible, se conservan sin releer");
+            return Ok(found);
+        }
+        let ids: HashSet<i64> = found.iter().map(|p| p.id_producto).collect();
+        let cbs_vistos: HashSet<&str> =
+            found.iter().flat_map(|p| p.codigo_barras.iter().map(String::as_str)).collect();
+        let fallidos: HashSet<&str> = fallidos.iter().map(String::as_str).collect();
+        let a_borrar: Vec<String> = extras
+            .iter()
+            .filter(|(cb, id)| {
+                !fallidos.contains(cb.as_str()) && !cbs_vistos.contains(cb.as_str()) && !ids.contains(id)
+            })
+            .map(|(cb, _)| cb.clone())
+            .collect();
+        if !a_borrar.is_empty() {
+            info!(n = a_borrar.len(), "extras por CB que el ERP ya no devuelve, se olvidan");
+            self.state.extras_cb_remove(&a_borrar)?;
+        }
+        Ok(found)
     }
 
     pub async fn send_heartbeat(&self) -> anyhow::Result<()> {

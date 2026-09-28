@@ -52,6 +52,15 @@ pub struct ErpConfig {
     /// Pausa entre requests al ERP durante el pase de verdad (ms).
     #[serde(default = "d_live_pause_ms")]
     pub live_pause_ms: u64,
+    /// Sondeo diario por código de barras (0.3.5): el listado por lotes de
+    /// Observer omite productos que existen y tienen stock (SESAREN XR, 28/9).
+    /// Una vez por día se le piden al servidor los códigos que conoce y no
+    /// están en el catálogo, y se buscan en el ERP por `codigosBarras`.
+    #[serde(default = "d_true")]
+    pub sondeo_cb: bool,
+    /// Tope de códigos que se sondean por corrida.
+    #[serde(default = "d_sondeo_max")]
+    pub sondeo_max: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -117,6 +126,9 @@ fn d_live_full_hour() -> u8 {
 }
 fn d_live_pause_ms() -> u64 {
     DEFAULT_LIVE_PAUSE_MS
+}
+fn d_sondeo_max() -> usize {
+    10_000
 }
 fn d_log_dir() -> PathBuf {
     Config::default_data_dir().join("logs")
@@ -194,6 +206,8 @@ dir = "C:\\ProgramData\\RemediaAgent\\logs"
         assert!(c.erp.live_selective);
         assert_eq!(c.erp.live_full_hour, 3);
         assert_eq!(c.erp.live_pause_ms, 500);
+        assert!(c.erp.sondeo_cb);
+        assert_eq!(c.erp.sondeo_max, 10_000);
         assert_eq!(c.heartbeat_interval_secs, 300);
         assert_eq!(c.log.dir, PathBuf::from(r"C:\ProgramData\RemediaAgent\logs"));
     }
@@ -230,6 +244,19 @@ live_pause_ms = 1000",
             "base_url = \"http://192.168.1.156:60064\"\nlive_enrich = false",
         );
         assert!(!Config::from_toml(&s).unwrap().erp.live_enrich);
+    }
+
+    #[test]
+    fn sondeo_cb_configurable() {
+        let s = SAMPLE.replace(
+            "base_url = \"http://192.168.1.156:60064\"",
+            "base_url = \"http://192.168.1.156:60064\"
+sondeo_cb = false
+sondeo_max = 500",
+        );
+        let c = Config::from_toml(&s).unwrap();
+        assert!(!c.erp.sondeo_cb);
+        assert_eq!(c.erp.sondeo_max, 500);
     }
 
     #[test]

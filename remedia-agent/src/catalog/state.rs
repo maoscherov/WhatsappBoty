@@ -22,6 +22,12 @@ pub const META_LAST_HEARTBEAT_ERROR: &str = "last_heartbeat_error";
 pub const META_METRICS_JSON: &str = "metrics_json";
 pub const META_LAST_FULL_LIVE: &str = "last_full_live_at";
 pub const META_PAUSED: &str = "paused";
+/// Lotes / idProducto que fallaron en la última lectura del catálogo (JSON).
+pub const META_ERP_LOTES_FALLIDOS: &str = "erp_lotes_fallidos";
+pub const META_ERP_IDS_ROTOS: &str = "erp_ids_rotos";
+/// Sondeo por código de barras: última corrida completa y su resumen (JSON).
+pub const META_LAST_SONDEO: &str = "last_sondeo_at";
+pub const META_SONDEO_JSON: &str = "sondeo_json";
 
 pub const KIND_CATALOG: &str = "catalog";
 pub const KIND_MANIFEST: &str = "manifest";
@@ -61,6 +67,10 @@ CREATE TABLE IF NOT EXISTS live(
     id       INTEGER PRIMARY KEY,
     activo   INTEGER NOT NULL,
     visto_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS extras_cb(
+    barcode TEXT PRIMARY KEY,
+    id      INTEGER NOT NULL
 );
 ";
 
@@ -178,6 +188,51 @@ impl State {
         let mut stmt = conn.prepare("SELECT id FROM live")?;
         let rows = stmt.query_map([], |r| r.get::<_, i64>(0))?;
         rows.collect::<Result<HashSet<_>, _>>().map_err(Into::into)
+    }
+
+    // ---- extras_cb: productos que el lote no lista y el sondeo por código de
+    // barras encontró (0.3.5). `barcode -> idProducto`.
+
+    pub fn extras_cb(&self) -> anyhow::Result<HashMap<String, i64>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare("SELECT barcode, id FROM extras_cb")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+        rows.collect::<Result<HashMap<_, _>, _>>().map_err(Into::into)
+    }
+
+    pub fn extras_cb_add(&self, items: &[(String, i64)]) -> anyhow::Result<()> {
+        if items.is_empty() {
+            return Ok(());
+        }
+        let conn = self.lock();
+        let tx = conn.unchecked_transaction()?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO extras_cb(barcode, id) VALUES(?1, ?2)
+                 ON CONFLICT(barcode) DO UPDATE SET id = excluded.id",
+            )?;
+            for (cb, id) in items {
+                stmt.execute(params![cb, id])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn extras_cb_remove(&self, barcodes: &[String]) -> anyhow::Result<()> {
+        if barcodes.is_empty() {
+            return Ok(());
+        }
+        let conn = self.lock();
+        let tx = conn.unchecked_transaction()?;
+        {
+            let mut stmt = tx.prepare("DELETE FROM extras_cb WHERE barcode = ?1")?;
+            for cb in barcodes {
+                stmt.execute(params![cb])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     pub fn count_items(&self) -> anyhow::Result<i64> {
@@ -301,6 +356,19 @@ mod tests {
         s.set_meta(META_ERP_STATUS, "inalcanzable").unwrap();
         assert_eq!(s.get_meta(META_ERP_STATUS).unwrap().as_deref(), Some("inalcanzable"));
         assert_eq!(s.all_meta().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn extras_cb_add_remove_roundtrip() {
+        let s = State::open_in_memory().unwrap();
+        assert!(s.extras_cb().unwrap().is_empty());
+        s.extras_cb_add(&[("7791".into(), 12521), ("7792".into(), 12522)]).unwrap();
+        s.extras_cb_add(&[("7792".into(), 12523)]).unwrap();
+        let m = s.extras_cb().unwrap();
+        assert_eq!(m.len(), 2);
+        assert_eq!(m["7792"], 12523);
+        s.extras_cb_remove(&["7791".into()]).unwrap();
+        assert_eq!(s.extras_cb().unwrap().len(), 1);
     }
 
     #[test]
