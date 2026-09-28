@@ -891,6 +891,7 @@ class ConfigUpdate(BaseModel):
     cc_tope_monto: str | None = None             # tope por pedido, "0" = sin tope
     efectivo_enabled: str | None = None          # "true"/"false" — pago en efectivo
     efectivo_solo_socios: str | None = None      # "true" = solo socios del padrón
+    vender_fuera_horario: str | None = None      # "true" = el bot vende lo sin receta fuera de horario
     efectivo_con_envio: str | None = None        # "true" = también con envío a domicilio
     efectivo_tope_monto: str | None = None       # tope por pedido, "0" = sin tope
     efectivo_horas_reserva: str | None = None    # plazo informado para retirar ("0" = no se informa)
@@ -1417,10 +1418,12 @@ async def bo_dashboard(_=Depends(_auth), days: int = Query(7, ge=1, le=90)):
 
 @router.get("/conversaciones")
 async def bo_conversaciones(_=Depends(_auth), days: int = Query(30, ge=1, le=365),
-                            q: str = Query(""), limit: int = Query(50, le=200)):
+                            q: str = Query(""), limit: int = Query(50, le=200),
+                            con_marcas: bool = Query(False)):
     """
     Conversaciones históricas (Postgres): una fila por teléfono con actividad
     en el rango, ordenadas por última actividad. `q` filtra por teléfono.
+    `con_marcas=true` deja solo las que tienen alguna marca de error cargada.
     El detalle de cada una se abre con GET /bo/history/{phone}.
     """
     from app.services.metrics_store import get_metrics_store
@@ -1439,6 +1442,17 @@ async def bo_conversaciones(_=Depends(_auth), days: int = Query(30, ge=1, le=365
         days, q, limit, sufijos_tel=sufijos)
     for c in convs:
         c["nombre"] = _nombre_socio(c["phone"])
+    # Marcas de error por teléfono: best-effort, no debe romper la lista.
+    try:
+        from app.services import marcas_service
+        conteo = await marcas_service.contar_por_phones(
+            get_db(settings.database_url), [c["phone"] for c in convs])
+    except Exception:
+        conteo = {}
+    for c in convs:
+        c["marcas"] = conteo.get(c["phone"], 0)
+    if con_marcas:
+        convs = [c for c in convs if c["marcas"] > 0]
     return {"available": get_db(settings.database_url).available(), "conversaciones": convs}
 
 
@@ -1460,8 +1474,27 @@ async def bo_history(phone: str, _=Depends(_auth), limit: int = Query(200, ge=1,
     total = await store.contar(phone)
     hay_anteriores = len(mensajes) == limit and (
         await store.history(phone, 1, before_id=mensajes[0]["id"]) != [])
+    # Marcas de error de la conversación: una sola query, best-effort (no debe
+    # romper el historial si falla).
+    marcas_conversacion: list = []
+    try:
+        from app.services import marcas_service
+        todas = await marcas_service.marcas_de_phone(db, phone)
+        por_mensaje: dict[int, list] = {}
+        for m in todas:
+            if m["message_id"] is None:
+                marcas_conversacion.append(m)
+            else:
+                por_mensaje.setdefault(m["message_id"], []).append(m)
+        for msg in mensajes:
+            msg["marcas"] = por_mensaje.get(msg["id"], [])
+    except Exception:
+        for msg in mensajes:
+            msg.setdefault("marcas", [])
+        marcas_conversacion = []
     return {"available": True, "phone": phone, "nombre": _nombre_socio(phone),
-            "total": total, "hay_anteriores": hay_anteriores, "messages": mensajes}
+            "total": total, "hay_anteriores": hay_anteriores, "messages": mensajes,
+            "marcas_conversacion": marcas_conversacion}
 
 
 # ── RAG: indexación y estado ────────────────────────────────────────────────────
@@ -1562,6 +1595,114 @@ async def bo_kb_cargar_mutual(_=Depends(_auth), reemplazar: bool = Query(False))
 async def bo_kb_delete(doc_id: int, _=Depends(_auth)):
     await _rag().kb_delete(doc_id)
     return {"status": "ok"}
+
+
+# ── Marcas de error (operadores señalan equivocaciones del bot) ────────────────
+
+class MarcaIn(BaseModel):
+    phone: str
+    message_id: int | None = None
+    categoria: str
+    observacion: str
+    autor: str | None = None
+
+
+def _fecha_query(valor: str | None, nombre: str):
+    if not valor:
+        return None
+    from datetime import date as _date
+    try:
+        return _date.fromisoformat(valor)
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"{nombre} inválida (usar YYYY-MM-DD)")
+
+
+@router.get("/marcas/categorias")
+async def bo_marcas_categorias(_=Depends(_auth)):
+    from app.services import marcas_service
+    return marcas_service.categorias_lista()
+
+
+@router.post("/marcas")
+async def bo_marcas_crear(body: MarcaIn, _=Depends(_auth)):
+    from app.services import marcas_service
+    settings = get_settings()
+    db = get_db(settings.database_url)
+    if not db.available():
+        raise HTTPException(status_code=503, detail="Postgres no disponible")
+    try:
+        return await marcas_service.crear(
+            db, body.phone, body.categoria, body.observacion,
+            message_id=body.message_id, autor=body.autor)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@router.get("/marcas")
+async def bo_marcas_listar(_=Depends(_auth), phone: str | None = Query(None),
+                           desde: str | None = Query(None), hasta: str | None = Query(None),
+                           categoria: str | None = Query(None)):
+    from app.services import marcas_service
+    settings = get_settings()
+    db = get_db(settings.database_url)
+    if not db.available():
+        raise HTTPException(status_code=503, detail="Postgres no disponible")
+    marcas = await marcas_service.listar(
+        db, phone=phone, desde=_fecha_query(desde, "desde"),
+        hasta=_fecha_query(hasta, "hasta"), categoria=categoria)
+    return {"marcas": marcas}
+
+
+@router.delete("/marcas/{marca_id}")
+async def bo_marcas_eliminar(marca_id: int, _=Depends(_auth)):
+    from app.services import marcas_service
+    settings = get_settings()
+    db = get_db(settings.database_url)
+    if not db.available():
+        raise HTTPException(status_code=503, detail="Postgres no disponible")
+    ok = await marcas_service.eliminar(db, marca_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Marca no encontrada")
+    return {"status": "ok"}
+
+
+@router.get("/marcas/export.csv")
+async def bo_marcas_export(_=Depends(_auth), desde: str | None = Query(None),
+                           hasta: str | None = Query(None)):
+    import csv
+    import io
+    from fastapi.responses import StreamingResponse
+    from app.services import marcas_service
+
+    settings = get_settings()
+    db = get_db(settings.database_url)
+    if not db.available():
+        raise HTTPException(status_code=503, detail="Postgres no disponible")
+    marcas = await marcas_service.para_export(
+        db, desde=_fecha_query(desde, "desde"), hasta=_fecha_query(hasta, "hasta"))
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["fecha", "telefono", "categoria", "observacion", "autor", "message_id", "mensaje"])
+    for m in marcas:
+        writer.writerow([m["ts"], m["phone"], m["etiqueta"], m["observacion"],
+                         m["autor"] or "", m["message_id"] or "", m["mensaje"]])
+    contenido = "﻿" + buf.getvalue()
+    return StreamingResponse(
+        iter([contenido]), media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=marcas.csv"})
+
+
+@router.get("/marcas/indicadores")
+async def bo_marcas_indicadores(_=Depends(_auth), desde: str | None = Query(None),
+                                hasta: str | None = Query(None)):
+    from app.services import marcas_service
+    settings = get_settings()
+    db = get_db(settings.database_url)
+    if not db.available():
+        raise HTTPException(status_code=503, detail="Postgres no disponible")
+    return await marcas_service.indicadores(
+        db, desde=_fecha_query(desde, "desde"), hasta=_fecha_query(hasta, "hasta"))
 
 
 @router.post("/session/{phone}/attachment")
