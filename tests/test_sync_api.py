@@ -447,3 +447,53 @@ class TestDegradacion:
             assert r.status_code == 503
         finally:
             dbmod._instance = prev
+
+
+class TestDiagnosticoErp035:
+    """Agente 0.3.5 (28/9): informa productos que el ERP no puede servir y el
+    sondeo por código de barras; el servidor le pasa los códigos faltantes."""
+
+    async def test_heartbeat_guarda_rotos_y_sondeo_y_el_panel_los_muestra(
+            self, client, db, branch_token):
+        await client.post("/v1/sync/catalog", headers=_auth(branch_token),
+                          json=_batch([_item("19734", name="PLENITUD FEMME G/XG")]))
+        r = await client.post("/v1/sync/heartbeat", headers=_auth(branch_token), json={
+            "branch_id": BRANCH, "agent_version": "0.3.5", "erp_status": "ok",
+            "catalog_count": 10, "pending_batches": 0,
+            "erp_productos_rotos": [19734, 20526], "erp_lotes_fallidos": [11],
+            "sondeo": {"at": "2026-09-29T03:05:00-03:00", "consultados": 4950,
+                       "encontrados": 3, "activos": 3}})
+        assert r.status_code == 204
+        b = next(x for x in (await client.get("/bo/branches")).json() if x["branch_id"] == BRANCH)
+        assert b["erp_lotes_fallidos"] == [11]
+        assert b["erp_productos_rotos"] == [
+            {"id_producto": 19734, "nombre": "PLENITUD FEMME G/XG"},
+            {"id_producto": 20526, "nombre": None}]
+        assert b["sondeo"]["encontrados"] == 3
+
+        # Un agente viejo (sin los campos) no borra lo último informado;
+        # uno nuevo con listas vacías sí lo limpia.
+        await client.post("/v1/sync/heartbeat", headers=_auth(branch_token), json={
+            "branch_id": BRANCH, "agent_version": "0.3.4", "erp_status": "ok"})
+        b = next(x for x in (await client.get("/bo/branches")).json() if x["branch_id"] == BRANCH)
+        assert b["erp_lotes_fallidos"] == [11]
+        await client.post("/v1/sync/heartbeat", headers=_auth(branch_token), json={
+            "branch_id": BRANCH, "agent_version": "0.3.5", "erp_status": "ok",
+            "erp_productos_rotos": [], "erp_lotes_fallidos": []})
+        b = next(x for x in (await client.get("/bo/branches")).json() if x["branch_id"] == BRANCH)
+        assert b["erp_productos_rotos"] == [] and b["erp_lotes_fallidos"] == []
+        assert b["sondeo"]["encontrados"] == 3
+
+    async def test_codigos_faltantes(self, client, db, branch_token):
+        await db.execute("TRUNCATE receta_referencia")
+        await db.execute(
+            "INSERT INTO receta_referencia (barcode, nombre, requiere_receta) VALUES "
+            "('7795345013084', 'SESAREN XR 37.5', 'si'), ('7790000000017', 'Ya esta', 'no'), "
+            "('7795345012889', 'SESAREN XR 75', 'si')")
+        # El catálogo tiene el código con ceros adelante: igual cuenta como presente.
+        await client.post("/v1/sync/catalog", headers=_auth(branch_token),
+                          json=_batch([_item("p1", barcodes=["0007790000000017"])]))
+        r = await client.get("/v1/sync/codigos-faltantes", headers=_auth(branch_token))
+        assert r.status_code == 200
+        assert r.json() == {"codigos": ["7795345012889", "7795345013084"]}
+        assert (await client.get("/v1/sync/codigos-faltantes")).status_code == 401

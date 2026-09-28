@@ -86,8 +86,35 @@ async def bo_branch_list(_=Depends(_auth)):
             "pending_batches": row.get("pending_batches"),
             "last_catalog_push_at": row.get("last_catalog_push_at"),
             "last_manifest_at": row.get("last_manifest_at"),
+            # 0.3.5: productos que el ERP no puede servir (hay que corregirlos
+            # en ObServer), lotes que fallaron y el último sondeo por CB.
+            "erp_productos_rotos": await _productos_rotos(db, row),
+            "erp_lotes_fallidos": _json(row.get("erp_lotes_fallidos")) or [],
+            "sondeo": _json(row.get("sondeo")),
         })
     return out
+
+
+def _json(v):
+    import json
+    if isinstance(v, str):
+        try:
+            return json.loads(v)
+        except ValueError:
+            return None
+    return v
+
+
+async def _productos_rotos(db, row) -> list[dict]:
+    """ids que el ERP devuelve con error, con el nombre si alguna vez llegó."""
+    ids = [str(i) for i in (_json(row.get("erp_productos_rotos")) or [])]
+    if not ids:
+        return []
+    filas = await db.fetch(
+        "SELECT external_id, name FROM catalog_items WHERE branch_id = $1 "
+        "AND external_id = ANY($2::text[])", row["branch_id"], ids)
+    nombres = {f["external_id"]: f["name"] for f in filas}
+    return [{"id_producto": int(i), "nombre": nombres.get(i)} for i in ids]
 
 
 @router.post("/branches/{branch_id}/rotate-token")

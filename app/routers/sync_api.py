@@ -99,7 +99,28 @@ async def sync_heartbeat(body: HeartbeatIn, branch: Branch = Depends(require_bra
             last_sync_ok_at=body.last_sync_ok_at or "",
             catalog_count=body.catalog_count,
             pending_batches=body.pending_batches,
+            erp_productos_rotos=body.erp_productos_rotos,
+            erp_lotes_fallidos=body.erp_lotes_fallidos,
+            sondeo=body.sondeo,
         )
     except Exception as e:
         logger.error(f"sync/heartbeat {branch.branch_id} falló: {e}")
         raise HTTPException(status_code=500, detail="error registrando heartbeat")
+
+
+@router.get("/codigos-faltantes")
+async def sync_codigos_faltantes(branch: Branch = Depends(require_branch),
+                                 limit: int = 10_000):
+    """
+    Códigos de barras que la farmacia tiene en su referencia de recetas pero
+    que no están en el catálogo sincronizado de la sucursal. El agente los
+    consulta al ERP una vez por día: el listado por lotes de ObServer omite
+    productos que existen (caso real 28/9: SESAREN XR).
+    """
+    try:
+        codigos = await _store().codigos_faltantes(branch.branch_id, max(1, min(limit, 50_000)))
+    except Exception as e:
+        logger.error(f"sync/codigos-faltantes {branch.branch_id} falló: {e}")
+        raise HTTPException(status_code=500, detail="error calculando códigos faltantes")
+    logger.info(f"sync/codigos-faltantes {branch.branch_id}: {len(codigos)} códigos")
+    return {"codigos": codigos}

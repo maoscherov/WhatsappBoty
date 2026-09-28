@@ -89,7 +89,13 @@ class BranchStore:
     async def heartbeat(self, branch_id: str, agent_version: str = "",
                         erp_version: str = "", erp_status: str = "",
                         last_sync_ok_at: str = "", catalog_count: Optional[int] = None,
-                        pending_batches: Optional[int] = None) -> None:
+                        pending_batches: Optional[int] = None,
+                        erp_productos_rotos: Optional[list] = None,
+                        erp_lotes_fallidos: Optional[list] = None,
+                        sondeo: Optional[dict] = None) -> None:
+        import json
+        # Los campos del 0.3.5 solo se pisan si vienen: un agente viejo no
+        # los manda y no tiene que borrar lo último informado.
         await self._db.execute(
             """
             UPDATE branches SET
@@ -99,11 +105,17 @@ class BranchStore:
                 erp_status      = $4,
                 last_sync_ok_at = NULLIF($5, '')::timestamptz,
                 catalog_count   = $6,
-                pending_batches = $7
+                pending_batches = $7,
+                erp_productos_rotos = COALESCE($8::jsonb, erp_productos_rotos),
+                erp_lotes_fallidos  = COALESCE($9::jsonb, erp_lotes_fallidos),
+                sondeo              = COALESCE($10::jsonb, sondeo)
             WHERE branch_id = $1
             """,
             branch_id, agent_version or None, erp_version or None,
             erp_status or None, last_sync_ok_at or "", catalog_count, pending_batches,
+            json.dumps(erp_productos_rotos) if erp_productos_rotos is not None else None,
+            json.dumps(erp_lotes_fallidos) if erp_lotes_fallidos is not None else None,
+            json.dumps(sondeo) if sondeo is not None else None,
         )
 
     async def marcar_push(self, branch_id: str) -> None:

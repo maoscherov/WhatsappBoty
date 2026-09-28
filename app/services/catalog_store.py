@@ -116,6 +116,21 @@ class CatalogStore:
                 branch_id)
         return resend, deactivated
 
+    async def codigos_faltantes(self, branch_id: str, limit: int = 10_000) -> list[str]:
+        """Códigos de la referencia de recetas que ningún producto de la
+        sucursal tiene (normalizados: solo dígitos, sin ceros adelante)."""
+        async with self._db.transaction() as con:
+            filas = await con.fetch(
+                "SELECT barcodes FROM catalog_items WHERE branch_id = $1", branch_id)
+            ref = await con.fetch("SELECT barcode FROM receta_referencia ORDER BY barcode")
+        presentes = set()
+        for f in filas:
+            for b in f["barcodes"] or []:
+                d = "".join(ch for ch in str(b) if ch.isdigit()).lstrip("0")
+                if d:
+                    presentes.add(d)
+        return [r["barcode"] for r in ref if r["barcode"] not in presentes][:limit]
+
     # ── Lectura para el bot (best-effort: usa fetch, que traga errores) ──────
 
     async def load_rows(self, branch_id: str) -> tuple[list[dict], dict[str, dict]]:
