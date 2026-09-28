@@ -30,6 +30,10 @@ def _database_url() -> str:
         url = url.replace("postgres://", "postgresql://", 1)
     if url.startswith("postgresql+asyncpg://"):
         url = url.replace("postgresql+asyncpg://", "postgresql://", 1)
+    # Driver explícito: desde SQLAlchemy 2.1 "postgresql://" usa psycopg (v3),
+    # que no está instalado (28/9: las migraciones fallaban al arrancar).
+    if url.startswith("postgresql://"):
+        url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
     return url
 
 
