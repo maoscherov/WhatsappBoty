@@ -14,6 +14,7 @@ openai==1.57.0
 python-multipart==0.0.19
 asyncpg==0.30.0
 alembic==1.18.5
+SQLAlchemy==2.0.37
 psycopg2-binary==2.9.10
 # zeep==4.2.1  # descomentar al activar integración Mercurio ERP (SOAP)
 pdfplumber==0.11.4
