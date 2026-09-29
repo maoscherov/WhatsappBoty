@@ -1699,3 +1699,34 @@ async def nota_envio_fuera_horario(respuesta: str, tipo_entrega: str) -> str:
     nota = "🛵 Estamos fuera de horario: el envío sale apenas abramos" + (
         f" ({cuando})." if cuando else ".")
     return f"{respuesta}\n\n{nota}"
+
+
+# ── "¿Qué horario tienen?" (29/9) ───────────────────────────────────────────────
+_PREGUNTA_HORARIO = re.compile(
+    r"\bhorarios?\b|\ba\s+qu[eé]\s+hora\s+(abren|abr[ií]s|cierran|cerr[aá]s|atienden|atend[eé]s)"
+    r"|\bhasta\s+qu[eé]\s+hora\b|\best[aá]n\s+abiert[oa]s?\b|\babren\s+(hoy|ma[nñ]ana|el|los)\b"
+    r"|\bqu[eé]\s+d[ií]as\s+(abren|atienden)\b",
+    re.IGNORECASE)
+
+
+def pregunta_horario(texto: str) -> bool:
+    """El cliente pregunta por el horario de atención. Se contesta con el
+    horario cargado en el backoffice, nunca redacta el modelo (lo inventaba
+    o decía que no sabía — pedido de la farmacia 29/9)."""
+    return bool(_PREGUNTA_HORARIO.search(texto or ""))
+
+
+def responder_horario(cfg_svc, hours: dict) -> str:
+    """Respuesta fija con el horario y si ahora está abierto. Vacío si no hay
+    horario cargado (que conteste el modelo como siempre)."""
+    texto = cfg_svc.texto_horario(hours)
+    if not texto:
+        return ""
+    r = f"Atendemos {texto} 🕐"
+    if hours.get("enabled"):
+        if cfg_svc.is_open_now(hours):
+            r += " Ahora estamos abiertos 🙂"
+        else:
+            cuando = cfg_svc.proxima_apertura(hours)
+            r += " Ahora estamos cerrados" + (f": abrimos {cuando}." if cuando else ".")
+    return r + " ¿Te ayudo con algo más?"

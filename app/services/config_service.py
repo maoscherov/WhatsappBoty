@@ -22,6 +22,8 @@ CONFIG_KEY   = "bot:config"
 HOURS_KEY    = "bot:hours"
 TZ_ARG       = ZoneInfo("America/Argentina/Buenos_Aires")
 DAY_MAP      = {0: "mon", 1: "tue", 2: "wed", 3: "thu", 4: "fri", 5: "sat", 6: "sun"}
+DIAS_ES = {"mon": "lunes", "tue": "martes", "wed": "miércoles", "thu": "jueves",
+           "fri": "viernes", "sat": "sábado", "sun": "domingo"}
 
 DEFAULTS: dict[str, str] = {
     "send_images":    "always",
@@ -474,6 +476,11 @@ class ConfigService:
         return persistido
 
     # ── Horarios ──────────────────────────────────────────────────────────────
+    # Cada día: {"active", "open", "close"} y, opcional, "ranges": [{"open",
+    # "close"}, ...] para el horario cortado (29/9: la farmacia atiende de 7:30
+    # a 13 y de 16 a 19:30). Sin "ranges" vale open/close como una sola franja.
+    # Vive en Redis y, desde 29/9, también en Postgres (config "hours"): antes
+    # un reinicio de Redis lo borraba.
 
     async def get_hours(self) -> dict:
         if await self._usable():
@@ -483,100 +490,116 @@ class ConfigService:
                     return json.loads(raw)
             except Exception:
                 pass
+        durable = (await self._leer_postgres()).get("hours")
+        if durable:
+            try:
+                hours = json.loads(durable)
+                if await self._usable():
+                    await self._redis.set(HOURS_KEY, durable)
+                return hours
+            except Exception:
+                pass
         return dict(DEFAULT_HOURS)
 
     async def set_hours(self, hours: dict):
+        raw = json.dumps(hours)
+        if not await self._guardar_postgres({"hours": raw}):
+            logger.error("config: el horario NO se persistió en Postgres (vive solo en Redis)")
         if await self._usable():
             try:
-                await self._redis.set(HOURS_KEY, json.dumps(hours))
-                return
+                await self._redis.set(HOURS_KEY, raw)
             except Exception:
                 pass
 
+    @staticmethod
+    def franjas(cfg: dict) -> list[tuple[str, str]]:
+        """[(open, close), ...] de un día, ordenadas. Vacío si no atiende."""
+        if not cfg or not cfg.get("active"):
+            return []
+        rangos = cfg.get("ranges") or [{"open": cfg.get("open"), "close": cfg.get("close")}]
+        out = [((r.get("open") or "")[:5], (r.get("close") or "")[:5]) for r in rangos]
+        return sorted((a, c) for a, c in out if a and c)
+
     def is_open_now(self, hours: dict) -> bool:
-        """True si el horario está activo y el momento actual cae dentro del rango."""
+        """True si el horario está activo y el momento actual cae en alguna franja."""
         if not hours.get("enabled"):
             return True  # sin control de horario → siempre abierto
         now = datetime.now(TZ_ARG)
-        day = DAY_MAP[now.weekday()]
-        cfg = hours.get("schedule", {}).get(day, {})
-        if not cfg.get("active"):
-            return False
-        open_t  = cfg.get("open",  "00:00")
-        close_t = cfg.get("close", "23:59")
-        current = now.strftime("%H:%M")
-        return open_t <= current <= close_t
+        cfg = hours.get("schedule", {}).get(DAY_MAP[now.weekday()], {})
+        actual = now.strftime("%H:%M")
+        return any(a <= actual <= c for a, c in self.franjas(cfg))
+
+    @staticmethod
+    def _hora(t: str) -> str:
+        h = t[:5].lstrip("0") or "0:00"
+        return "0" + h if h.startswith(":") else h
 
     def proxima_apertura(self, hours: dict) -> str:
-        """Cuándo abre la farmacia: "hoy a las 8:00", "mañana a las 8:00",
-        "el lunes a las 8:00". Vacío si no hay horario cargado."""
-        dias = {"mon": "lunes", "tue": "martes", "wed": "miércoles", "thu": "jueves",
-                "fri": "viernes", "sat": "sábado", "sun": "domingo"}
+        """Cuándo abre la farmacia: "hoy a las 16:00", "mañana a las 7:30",
+        "el lunes a las 7:30". Vacío si no hay horario cargado."""
         schedule = hours.get("schedule", {})
         now = datetime.now(TZ_ARG)
+        actual = now.strftime("%H:%M")
         for offset in range(8):
             day = DAY_MAP[(now.weekday() + offset) % 7]
-            cfg = schedule.get(day, {})
-            open_t = (cfg.get("open") or "")[:5]
-            if not cfg.get("active") or not open_t:
-                continue
-            if offset == 0 and now.strftime("%H:%M") >= open_t:
-                continue
-            hora = open_t.lstrip("0") or "0:00"
-            if hora.startswith(":"):
-                hora = "0" + hora
-            cuando = "hoy" if offset == 0 else "mañana" if offset == 1 else f"el {dias[day]}"
-            return f"{cuando} a las {hora}"
+            for a, _c in self.franjas(schedule.get(day, {})):
+                if offset == 0 and actual >= a:
+                    continue
+                cuando = "hoy" if offset == 0 else "mañana" if offset == 1 else f"el {DIAS_ES[day]}"
+                return f"{cuando} a las {self._hora(a)}"
         return ""
+
+    def texto_horario(self, hours: dict) -> str:
+        """"de lunes a viernes de 7:30 a 13 y de 16 a 19:30, y los sábados de
+        8:30 a 12:30". Agrupa días seguidos con el mismo horario."""
+        schedule = hours.get("schedule", {})
+        orden = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+        grupos: list[tuple[list[str], list]] = []
+        for d in orden:
+            f = self.franjas(schedule.get(d, {}))
+            if not f:
+                continue
+            if grupos and grupos[-1][1] == f and orden.index(grupos[-1][0][-1]) + 1 == orden.index(d):
+                grupos[-1][0].append(d)
+            else:
+                grupos.append(([d], f))
+        partes = []
+        for dias, f in grupos:
+            if len(dias) == 1:
+                cuando = {"sat": "los sábados", "sun": "los domingos"}.get(dias[0], f"los {DIAS_ES[dias[0]]}")
+            else:
+                cuando = f"de {DIAS_ES[dias[0]]} a {DIAS_ES[dias[-1]]}"
+            rangos = " y ".join(f"de {self._hora(a)} a {self._hora(c)}" for a, c in f)
+            partes.append(f"{cuando} {rangos}")
+        if not partes:
+            return ""
+        return partes[0] if len(partes) == 1 else ", ".join(partes[:-1]) + " y " + partes[-1]
 
     def get_pickup_text(self, hours: dict, pickup_minutes: int = 30) -> str:
         """
-        Devuelve un texto de horario de retiro para incluir en mensajes al cliente.
-        Funciona siempre, independientemente de si enabled=True/False.
-        Ejemplos:
-          "Podés retirarlo hoy de 9:00 a 18:00 hs 🕐"
-          "Retiros mañana de 9:00 a 13:00 hs (hoy estamos cerrados) 🕐"
-          "Consultá nuestro horario de atención 🕐"
+        Texto de horario de retiro para los mensajes al cliente (siempre, con o
+        sin control de horario activo). Ejemplos:
+          "Podés retirarlo hoy de 16:00 a 19:30 hs 🕐"
+          "Retiros mañana de 7:30 a 13:00 y de 16:00 a 19:30 hs 🕐"
         """
         schedule = hours.get("schedule", {})
         mins_txt = f"⏱ Tiempo estimado: *{pickup_minutes} min*" if pickup_minutes else ""
-
-        DAY_ES = {
-            "mon": "lunes", "tue": "martes", "wed": "miércoles",
-            "thu": "jueves", "fri": "viernes", "sat": "sábado", "sun": "domingo",
-        }
-
+        prefix = f"{mins_txt} · " if mins_txt else ""
         now = datetime.now(TZ_ARG)
-
-        # Buscar el próximo día activo (hoy y los 6 siguientes)
+        actual = now.strftime("%H:%M")
         for offset in range(7):
-            idx = (now.weekday() + offset) % 7
-            day = DAY_MAP[idx]
-            cfg = schedule.get(day, {})
-            if not cfg.get("active"):
-                continue
-
-            open_t  = cfg.get("open", "")
-            close_t = cfg.get("close", "")
-            if not open_t or not close_t:
-                continue
-
-            # Formatear horas sin segundos
-            def fmt(t: str) -> str:
-                return t[:5].lstrip("0") or "0:00"
-
-            prefix = f"{mins_txt} · " if mins_txt else ""
-
+            day = DAY_MAP[(now.weekday() + offset) % 7]
+            f = self.franjas(schedule.get(day, {}))
             if offset == 0:
-                if now.strftime("%H:%M") >= close_t:
-                    continue
-                return f"{prefix}Podés retirarlo hoy de {fmt(open_t)} a {fmt(close_t)} hs 🕐"
-            elif offset == 1:
-                return f"{prefix}Retiros mañana de {fmt(open_t)} a {fmt(close_t)} hs 🕐"
-            else:
-                return f"{prefix}Próximos retiros el {DAY_ES[day]} de {fmt(open_t)} a {fmt(close_t)} hs 🕐"
-
-        # Sin schedule: mostrar solo el tiempo estimado si existe
+                f = [(a, c) for a, c in f if c > actual]      # lo que queda de hoy
+            if not f:
+                continue
+            rangos = " y ".join(f"de {self._hora(a)} a {self._hora(c)}" for a, c in f)
+            if offset == 0:
+                return f"{prefix}Podés retirarlo hoy {rangos} hs 🕐"
+            if offset == 1:
+                return f"{prefix}Retiros mañana {rangos} hs 🕐"
+            return f"{prefix}Próximos retiros el {DIAS_ES[day]} {rangos} hs 🕐"
         return mins_txt
 
 

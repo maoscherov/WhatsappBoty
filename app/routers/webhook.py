@@ -61,7 +61,7 @@ from app.services.checkout_helper import (
     quitar_confirmaciones_fantasma, pregunta_entrega, costo_envio_de,
     producto_respaldado, productos_con_precio, parece_direccion,
     personalizar_nombre, pide_cuenta_corriente, habilitado_cc,
-    aviso_fuera_horario, dice_ser_socio,
+    aviso_fuera_horario, dice_ser_socio, pregunta_horario, responder_horario,
 )
 
 logger = logging.getLogger(__name__)
@@ -1247,6 +1247,19 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 await deps["session"].add_message(phone, "user", texto)
                 await deps["session"].add_message(phone, "assistant", respuesta)
                 continue
+
+            # ── "¿Qué horario tienen?" → horario del backoffice (29/9) ────────
+            if pregunta_horario(texto):
+                _resp_h = responder_horario(deps["config"], _hours_msg)
+                if _resp_h:
+                    _intencion = "consulta_horario"
+                    respuesta = _resp_h
+                    _ts = _time.perf_counter()
+                    await deps["wa"].send_text(phone, respuesta)
+                    _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
+                    await deps["session"].add_message(phone, "user", texto)
+                    await deps["session"].add_message(phone, "assistant", respuesta)
+                    continue
 
             # ── "Soy socio" y no está en el padrón → validar con una persona ──
             # Plan a producción (24/9): al no socio el bot le vende sin el 15%;
