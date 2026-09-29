@@ -121,6 +121,25 @@ def _nombre_socio(phone: str) -> str | None:
         return None
 
 
+def _datos_cliente(phone: str) -> dict:
+    """
+    {"nombre", "tipo_cliente"} con el mismo criterio que el descuento del bot:
+    empleado primero (su descuento reemplaza al de socio), después socio.
+    Antes solo se miraba el padrón de socios: un empleado que el bot atendía
+    con su 20% aparecía en el backoffice sin nombre y como "No socio" (29/9).
+    """
+    try:
+        from app.services.empleado_service import get_empleado_service
+        emp = get_empleado_service().find_by_phone(phone)
+    except Exception:
+        emp = None
+    if emp:
+        nombre = f"{emp.get('apellido') or ''} {emp.get('nombre') or ''}".strip()
+        return {"nombre": nombre or emp.get("nombre_pila") or None, "tipo_cliente": "empleado"}
+    nombre = _nombre_socio(phone)
+    return {"nombre": nombre, "tipo_cliente": "socio" if nombre else "no_socio"}
+
+
 @router.get("/sessions")
 async def bo_sessions(_=Depends(_auth)):
     settings = get_settings()
@@ -139,7 +158,7 @@ async def bo_sessions(_=Depends(_auth)):
         )
         result.append({
             "phone": phone,
-            "nombre": _nombre_socio(phone),
+            **_datos_cliente(phone),
             "estado": s.get("estado", "idle"),
             "pending_sku_nombre": s.get("pending_sku_nombre"),
             "pending_precio": s.get("pending_precio"),
@@ -176,7 +195,7 @@ async def bo_derivadas(_=Depends(_auth)):
         ultimo = next((m["content"] for m in reversed(history) if m["role"] == "user"), None)
         derivadas.append({
             "phone": phone,
-            "nombre": _nombre_socio(phone),
+            **_datos_cliente(phone),
             "derivada_at": s.get("derivada_at"),
             "derivada_motivo": s.get("derivada_motivo"),
             "agente": s.get("agente"),
@@ -197,7 +216,7 @@ async def bo_session_detail(phone: str, _=Depends(_auth)):
     session = await session_svc.get(phone)
     # Los adjuntos van FIRMADOS: /media/chat no abre sin clave o firma.
     session["history"] = [_mensaje_en_vivo(m) for m in session.get("history", [])]
-    return {"phone": phone, "nombre": _nombre_socio(phone), **session}
+    return {"phone": phone, **_datos_cliente(phone), **session}
 
 
 def _mensaje_en_vivo(m: dict) -> dict:
@@ -1449,10 +1468,16 @@ async def bo_conversaciones(_=Depends(_auth), days: int = Query(30, ge=1, le=365
             sufijos = [s["celular"][-10:] for s in socios if s.get("celular")]
         except Exception:
             sufijos = []
+        try:
+            from app.services.empleado_service import get_empleado_service
+            empleados, _ = get_empleado_service().listar(q, page=1, page_size=500)
+            sufijos += [e["celular"][-10:] for e in empleados if e.get("celular")]
+        except Exception:
+            pass
     convs = await get_metrics_store(get_db(settings.database_url)).conversaciones(
         days, q, limit, sufijos_tel=sufijos)
     for c in convs:
-        c["nombre"] = _nombre_socio(c["phone"])
+        c.update(_datos_cliente(c["phone"]))
     # Marcas de error por teléfono: best-effort, no debe romper la lista.
     try:
         from app.services import marcas_service
@@ -1503,7 +1528,7 @@ async def bo_history(phone: str, _=Depends(_auth), limit: int = Query(200, ge=1,
         for msg in mensajes:
             msg.setdefault("marcas", [])
         marcas_conversacion = []
-    return {"available": True, "phone": phone, "nombre": _nombre_socio(phone),
+    return {"available": True, "phone": phone, **_datos_cliente(phone),
             "total": total, "hay_anteriores": hay_anteriores, "messages": mensajes,
             "marcas_conversacion": marcas_conversacion}
 
