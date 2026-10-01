@@ -113,40 +113,97 @@ async def marcas_de_phone(db, phone: str) -> list[dict]:
     return [_row_a_dict(r) for r in rows]
 
 
-async def contar_por_phones(db, phones: list[str]) -> dict[str, int]:
-    """Cantidad de marcas por teléfono (para /bo/conversaciones)."""
+async def contar_por_phones(db, phones: list[str], desde: Optional[date] = None,
+                            hasta: Optional[date] = None) -> dict[str, int]:
+    """
+    Marcas por teléfono (para /bo/conversaciones). Con desde/hasta cuenta solo
+    las del rango (fecha del mensaje marcado, o de la marca si es de toda la
+    conversación): antes eran todas las de la historia del cliente (1/10).
+    """
     if not phones:
         return {}
+    args: list = [phones]
+    conds = ["m.phone = ANY($1)"]
+    fecha = f"(COALESCE(msg.created_at, m.created_at) {TZ_SQL})::date"
+    if desde:
+        args.append(desde)
+        conds.append(f"{fecha} >= ${len(args)}")
+    if hasta:
+        args.append(hasta)
+        conds.append(f"{fecha} <= ${len(args)}")
     rows = await db.fetch(
-        "SELECT phone, COUNT(*) AS n FROM marcas WHERE phone = ANY($1) GROUP BY phone",
-        phones,
-    )
+        "SELECT m.phone, COUNT(*) AS n FROM marcas m "
+        "LEFT JOIN messages msg ON msg.id = m.message_id "
+        f"WHERE {' AND '.join(conds)} GROUP BY m.phone", *args)
     return {r["phone"]: int(r["n"]) for r in rows}
 
 
-async def para_export(db, desde: Optional[date] = None, hasta: Optional[date] = None) -> list[dict]:
-    """Marcas + contenido del mensaje referenciado (truncado), para el CSV."""
-    conds = []
-    args: list = []
+def _filtros_marcas(desde, hasta, categoria=None, autor=None) -> tuple[str, list]:
+    conds, args = [], []
+    fecha = f"(COALESCE(msg.created_at, m.created_at) {TZ_SQL})::date"
     if desde:
         args.append(desde)
-        conds.append(f"(m.created_at {TZ_SQL})::date >= ${len(args)}")
+        conds.append(f"{fecha} >= ${len(args)}")
     if hasta:
         args.append(hasta)
-        conds.append(f"(m.created_at {TZ_SQL})::date <= ${len(args)}")
-    where = f"WHERE {' AND '.join(conds)}" if conds else ""
+        conds.append(f"{fecha} <= ${len(args)}")
+    if categoria:
+        args.append(categoria)
+        conds.append(f"m.categoria = ${len(args)}")
+    if autor:
+        args.append(autor)
+        conds.append(f"m.autor ILIKE ${len(args)}")
+    return (f"WHERE {' AND '.join(conds)}" if conds else ""), args
+
+
+async def resumen_categorias(db, desde: Optional[date] = None, hasta: Optional[date] = None) -> dict:
+    """Errores por categoría y por quién los marcó en el período (1/10)."""
+    where, args = _filtros_marcas(desde, hasta)
+    filas = await db.fetch(
+        "SELECT m.categoria, COUNT(*) AS n FROM marcas m "
+        f"LEFT JOIN messages msg ON msg.id = m.message_id {where} "
+        "GROUP BY 1 ORDER BY 2 DESC", *args)
+    autores = await db.fetch(
+        "SELECT COALESCE(m.autor, '') AS autor, COUNT(*) AS n FROM marcas m "
+        f"LEFT JOIN messages msg ON msg.id = m.message_id {where} "
+        "GROUP BY 1 ORDER BY 2 DESC", *args)
+    por_cat = [{"categoria": f["categoria"], "etiqueta": CATEGORIAS.get(f["categoria"], f["categoria"]),
+                "cantidad": int(f["n"])} for f in filas]
+    return {"total": sum(c["cantidad"] for c in por_cat), "por_categoria": por_cat,
+            "por_autor": [{"autor": a["autor"] or None, "cantidad": int(a["n"])} for a in autores]}
+
+
+async def para_export(db, desde: Optional[date] = None, hasta: Optional[date] = None,
+                      categoria: Optional[str] = None, autor: Optional[str] = None) -> list[dict]:
+    """
+    Reporte de errores (1/10): cada marca con el mensaje marcado, el mensaje
+    del cliente que lo provocó y el motivo de derivación si la hubo, para
+    entender el error sin abrir el chat.
+    """
+    where, args = _filtros_marcas(desde, hasta, categoria, autor)
+    momento = "COALESCE(msg.created_at, m.created_at)"
     rows = await db.fetch(
         f"SELECT m.id, m.phone, m.message_id, m.categoria, m.observacion, m.autor, "
-        f"m.created_at, msg.content AS mensaje "
+        f"m.created_at, msg.content AS mensaje, msg.role AS mensaje_rol, "
+        f"msg.created_at AS mensaje_at, "
+        f"(SELECT p.content FROM messages p WHERE p.phone = m.phone AND p.role = 'user' "
+        f"   AND p.created_at <= {momento} AND (m.message_id IS NULL OR p.id < m.message_id) "
+        f"   ORDER BY p.created_at DESC, p.id DESC LIMIT 1) AS mensaje_cliente, "
+        f"(SELECT e.dato FROM eventos e WHERE e.phone = m.phone AND e.tipo = 'derivacion' "
+        f"   AND e.created_at BETWEEN {momento} - interval '1 day' AND {momento} + interval '1 hour' "
+        f"   ORDER BY e.created_at DESC LIMIT 1) AS derivacion "
         f"FROM marcas m LEFT JOIN messages msg ON msg.id = m.message_id "
-        f"{where} ORDER BY m.created_at DESC",
+        f"{where} ORDER BY {momento} DESC, m.id DESC",
         *args,
     )
     out = []
     for r in rows:
         d = _row_a_dict(r)
-        mensaje = r["mensaje"] or ""
-        d["mensaje"] = mensaje[:300]
+        d["mensaje"] = (r["mensaje"] or "")[:300]
+        d["mensaje_rol"] = r["mensaje_rol"]
+        d["mensaje_at"] = r["mensaje_at"].isoformat() if r["mensaje_at"] else None
+        d["mensaje_cliente"] = (r["mensaje_cliente"] or "")[:300]
+        d["derivacion"] = r["derivacion"]
         out.append(d)
     return out
 

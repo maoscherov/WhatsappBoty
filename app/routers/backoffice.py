@@ -1471,7 +1471,8 @@ async def bo_dashboard(_=Depends(_auth), days: int = Query(7, ge=1, le=90)):
 @router.get("/conversaciones")
 async def bo_conversaciones(_=Depends(_auth), days: int = Query(30, ge=1, le=365),
                             q: str = Query(""), limit: int = Query(50, le=200),
-                            con_marcas: bool = Query(False)):
+                            con_marcas: bool = Query(False),
+                            desde: str | None = Query(None), hasta: str | None = Query(None)):
     """
     Conversaciones históricas (Postgres): una fila por teléfono con actividad
     en el rango, ordenadas por última actividad. `q` filtra por teléfono.
@@ -1496,15 +1497,28 @@ async def bo_conversaciones(_=Depends(_auth), days: int = Query(30, ge=1, le=365
             sufijos += [e["celular"][-10:] for e in empleados if e.get("celular")]
         except Exception:
             pass
+    # Rango: desde/hasta (YYYY-MM-DD, día de Argentina) o los últimos `days`.
+    # Las marcas se cuentan en el MISMO rango (antes eran todas las históricas).
+    f_desde, f_hasta = _fecha_query(desde, "desde"), _fecha_query(hasta, "hasta")
+    if not (f_desde or f_hasta):
+        from datetime import datetime as _dt, timedelta as _td
+        from app.services.config_service import TZ_ARG
+        f_hasta = _dt.now(TZ_ARG).date()
+        f_desde = f_hasta - _td(days=days - 1)
+        rango_explicito = False
+    else:
+        rango_explicito = True
     convs = await get_metrics_store(get_db(settings.database_url)).conversaciones(
-        days, q, limit, sufijos_tel=sufijos)
+        days, q, limit, sufijos_tel=sufijos,
+        desde=f_desde if rango_explicito else None, hasta=f_hasta if rango_explicito else None)
     for c in convs:
         c.update(_datos_cliente(c["phone"]))
     # Marcas de error por teléfono: best-effort, no debe romper la lista.
     try:
         from app.services import marcas_service
         conteo = await marcas_service.contar_por_phones(
-            get_db(settings.database_url), [c["phone"] for c in convs])
+            get_db(settings.database_url), [c["phone"] for c in convs],
+            desde=f_desde, hasta=f_hasta)
     except Exception:
         conteo = {}
     for c in convs:
@@ -1753,7 +1767,8 @@ async def bo_marcas_eliminar(marca_id: int, _=Depends(_auth)):
 
 @router.get("/marcas/export.csv")
 async def bo_marcas_export(_=Depends(_auth), desde: str | None = Query(None),
-                           hasta: str | None = Query(None)):
+                           hasta: str | None = Query(None), categoria: str | None = Query(None),
+                           autor: str | None = Query(None)):
     import csv
     import io
     from fastapi.responses import StreamingResponse
@@ -1764,18 +1779,38 @@ async def bo_marcas_export(_=Depends(_auth), desde: str | None = Query(None),
     if not db.available():
         raise HTTPException(status_code=503, detail="Postgres no disponible")
     marcas = await marcas_service.para_export(
-        db, desde=_fecha_query(desde, "desde"), hasta=_fecha_query(hasta, "hasta"))
+        db, desde=_fecha_query(desde, "desde"), hasta=_fecha_query(hasta, "hasta"),
+        categoria=categoria or None, autor=autor or None)
 
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["fecha", "telefono", "categoria", "observacion", "autor", "message_id", "mensaje"])
+    writer.writerow(["fecha_mensaje", "fecha_marca", "cliente", "telefono", "tipo_cliente",
+                     "categoria", "observacion", "marcado_por", "mensaje_cliente",
+                     "mensaje_marcado", "quien_escribio", "motivo_derivacion", "message_id"])
     for m in marcas:
-        writer.writerow([m["ts"], m["phone"], m["etiqueta"], m["observacion"],
-                         m["autor"] or "", m["message_id"] or "", m["mensaje"]])
+        cli = _datos_cliente(m["phone"])
+        writer.writerow([m["mensaje_at"] or m["ts"], m["ts"], cli["nombre"] or "", m["phone"],
+                         cli["tipo_cliente"], m["etiqueta"], m["observacion"], m["autor"] or "",
+                         m["mensaje_cliente"], m["mensaje"],
+                         {"assistant": "bot", "operator": "operador", "user": "cliente"}.get(
+                             m["mensaje_rol"] or "", "" if not m["message_id"] else m["mensaje_rol"]),
+                         m["derivacion"] or "", m["message_id"] or ""])
     contenido = "﻿" + buf.getvalue()
     return StreamingResponse(
         iter([contenido]), media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=marcas.csv"})
+
+
+@router.get("/marcas/resumen")
+async def bo_marcas_resumen(_=Depends(_auth), desde: str | None = Query(None),
+                            hasta: str | None = Query(None)):
+    """Errores por categoría y por quién los marcó en el período."""
+    from app.services import marcas_service
+    db = get_db(get_settings().database_url)
+    if not db.available():
+        raise HTTPException(status_code=503, detail="Postgres no disponible")
+    return await marcas_service.resumen_categorias(
+        db, desde=_fecha_query(desde, "desde"), hasta=_fecha_query(hasta, "hasta"))
 
 
 @router.get("/marcas/indicadores")

@@ -322,3 +322,48 @@ async def test_crear_con_la_base_rechazando_da_error_claro():
             return None
     with pytest.raises(RuntimeError, match="No se pudo guardar la marca"):
         await marcas_service.crear(_DbQueFalla(), "549", "otro", "prueba")
+
+
+# ── 1/10: marcas por rango, reporte con contexto y resumen por categoría ────────
+async def test_marcas_por_rango_y_reporte_con_contexto(db):
+    await db.execute("DELETE FROM eventos WHERE phone = 'r1'")
+    d1, d2 = date(2026, 9, 28), date(2026, 9, 30)
+    await _msg(db, "r1", d1, "user", "tenés atenolol?")
+    viejo = await _msg(db, "r1", d1, "assistant", "sale $9.000")
+    await _msg(db, "r1", d2, "user", "y ibuprofeno?")
+    nuevo = await _msg(db, "r1", d2, "assistant", "no me figura")
+    await db.execute("INSERT INTO eventos (tipo, phone, dato, created_at) VALUES "
+                     "('derivacion', 'r1', 'receta', $1)",
+                     datetime(2026, 9, 28, 11, 0, tzinfo=timezone.utc))
+    await marcas_service.crear(db, "r1", "receta_sin_derivar", "no derivó", message_id=viejo, autor="Lore")
+    await marcas_service.crear(db, "r1", "entendio_mal", "no buscó bien", message_id=nuevo, autor="Clau")
+
+    # El conteo respeta el rango (antes eran todas las de la historia)
+    assert await marcas_service.contar_por_phones(db, ["r1"]) == {"r1": 2}
+    assert await marcas_service.contar_por_phones(db, ["r1"], desde=d2, hasta=d2) == {"r1": 1}
+
+    filas = await marcas_service.para_export(db, desde=d1, hasta=d1)
+    assert len(filas) == 1
+    f = filas[0]
+    assert f["mensaje"] == "sale $9.000" and f["mensaje_rol"] == "assistant"
+    assert f["mensaje_cliente"] == "tenés atenolol?"
+    assert f["derivacion"] == "receta"
+    assert [x["autor"] for x in await marcas_service.para_export(db, autor="clau")] == ["Clau"]
+    assert len(await marcas_service.para_export(db, categoria="entendio_mal")) == 1
+
+    r = await marcas_service.resumen_categorias(db, desde=d1, hasta=d2)
+    assert r["total"] == 2
+    assert {c["categoria"]: c["cantidad"] for c in r["por_categoria"]} == {
+        "receta_sin_derivar": 1, "entendio_mal": 1}
+    assert {a["autor"] for a in r["por_autor"]} == {"Lore", "Clau"}
+
+
+async def test_conversaciones_por_dia(db):
+    from app.services.metrics_store import MetricsStore
+    await _msg(db, "dia1", date(2026, 9, 28))
+    await _msg(db, "dia2", date(2026, 9, 30))
+    m = MetricsStore(db)
+    solo = await m.conversaciones(desde=date(2026, 9, 30), hasta=date(2026, 9, 30))
+    assert [c["phone"] for c in solo] == ["dia2"]
+    ambos = await m.conversaciones(desde=date(2026, 9, 28), hasta=date(2026, 9, 30), q="dia")
+    assert {c["phone"] for c in ambos} == {"dia1", "dia2"}
