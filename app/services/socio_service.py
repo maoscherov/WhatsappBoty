@@ -438,6 +438,39 @@ async def guardar_en_db(db, svc: "SocioService") -> int:
     return len(filas)
 
 
+class SocioYaExiste(Exception):
+    """El teléfono ya está en el padrón."""
+
+
+async def agregar_socio(db, svc: "SocioService", phone: str, nombre: str, apellido: str = "",
+                        dni: str = "", domicilio: str = "", nro_socio: str = "") -> dict:
+    """
+    Alta de UN socio desde el backoffice (1/10): alguien que es socio pero no
+    está en el padrón (línea nueva, padrón desactualizado). Se guarda en
+    Postgres y entra a memoria en el acto, así el bot ya lo reconoce (nombre,
+    descuento, domicilio). La subida completa del padrón lo reemplaza igual.
+    """
+    celular = normalizar_celular(phone)
+    if not celular:
+        raise ValueError("El teléfono no es un celular válido")
+    if svc.find_by_phone(phone):
+        raise SocioYaExiste(f"El {celular} ya está en el padrón")
+    if not (nombre or "").strip():
+        raise ValueError("Falta el nombre")
+    socio = {"celular": celular, "celular_original": phone, "nombre": nombre.strip(),
+             "apellido": (apellido or "").strip(), "nro_socio": (nro_socio or "").strip(),
+             "dni": _solo_digitos(dni), "domicilio": (domicilio or "").strip()}
+    socio["nombre_pila"] = nombre_de_pila(socio)
+    async with db.transaction() as con:
+        await con.execute(
+            "INSERT INTO socios (celular, celular_original, nombre, apellido, nombre_pila, "
+            "nro_socio, dni, domicilio) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+            socio["celular"], socio["celular_original"], socio["nombre"], socio["apellido"],
+            socio["nombre_pila"], socio["nro_socio"], socio["dni"], socio["domicilio"])
+    svc.cargar_desde_lista(svc._socios + [socio])
+    return socio
+
+
 async def cargar_desde_db(db, svc: "SocioService") -> int:
     """Llena `svc` desde la tabla `socios`. Devuelve cuántos se cargaron
     (0 si la tabla está vacía o Postgres no está disponible)."""

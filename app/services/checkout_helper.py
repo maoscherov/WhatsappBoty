@@ -747,7 +747,8 @@ async def _chequear_stock_vivo(session: dict, phone: str, session_svc,
 async def _cerrar_venta_cc(session_svc, phone: str, session: dict,
                            tipo_entrega: str, direccion: Optional[str],
                            total: float, costo_envio: float = 0.0,
-                           link_previo: bool = False) -> str:
+                           link_previo: bool = False,
+                           extra_pedido: Optional[dict] = None) -> str:
     """
     Cierra una venta con CUENTA CORRIENTE: crea el pedido (pago="cuenta_corriente",
     entra al backoffice como cualquier pedido pagado, con código de retiro) y
@@ -775,7 +776,7 @@ async def _cerrar_venta_cc(session_svc, phone: str, session: dict,
         phone=phone, sku_id=sku_id,
         sku_nombre=nombre, cantidad=cantidad, total=total,
         mp_payment_id="", tipo_entrega=tipo_entrega,
-        direccion_envio=direccion, pago="cuenta_corriente",
+        direccion_envio=direccion, pago="cuenta_corriente", extra=extra_pedido,
     )
     logger.info(f"Pedido con cuenta corriente: {order['order_id']} phone={phone} "
                 f"total=${total:,.2f}")
@@ -797,6 +798,7 @@ async def _cerrar_venta_cc(session_svc, phone: str, session: dict,
     # El medio elegido es POR PEDIDO: si mañana compra otra cosa, se le vuelve
     # a mandar link salvo que pida cuenta corriente de nuevo.
     _s_fin = await session_svc.get(phone)
+    _s_fin["_ultimo_pedido"] = order["order_id"]
     if _s_fin.pop("pago_metodo", None):
         await session_svc.save(phone, _s_fin)
 
@@ -1395,7 +1397,8 @@ def habilitado_efectivo(phone: str, cfg: dict, socio_svc, monto: float = 0.0) ->
 async def _cerrar_venta_efectivo(session_svc, phone: str, session: dict,
                                  tipo_entrega: str, direccion: Optional[str],
                                  total: float, costo_envio: float = 0.0,
-                                 cfg: Optional[dict] = None, link_previo: bool = False) -> str:
+                                 cfg: Optional[dict] = None, link_previo: bool = False,
+                                 extra_pedido: Optional[dict] = None) -> str:
     """
     Cierra una venta a pagar en EFECTIVO: crea el pedido (pago="efectivo", cobro
     pendiente) y devuelve la confirmación. A diferencia de cuenta corriente NO
@@ -1422,7 +1425,7 @@ async def _cerrar_venta_efectivo(session_svc, phone: str, session: dict,
     order = await get_order_service(settings.redis_url).create(
         phone=phone, sku_id=sku_id, sku_nombre=nombre, cantidad=cantidad, total=total,
         mp_payment_id="", tipo_entrega=tipo_entrega, direccion_envio=direccion,
-        pago="efectivo",
+        pago="efectivo", extra=extra_pedido,
     )
     logger.info(f"Pedido en efectivo: {order['order_id']} phone={phone} total=${total:,.2f}")
 
@@ -1437,6 +1440,7 @@ async def _cerrar_venta_efectivo(session_svc, phone: str, session: dict,
     await session_svc.set_entrega(phone, tipo_entrega, direccion)
     await session_svc.set_estado(phone, "pedido_confirmado")
     _s_fin = await session_svc.get(phone)
+    _s_fin["_ultimo_pedido"] = order["order_id"]
     _s_fin.pop("_efectivo_envio_avisado", None)
     if _s_fin.pop("pago_metodo", None) is not None or True:
         await session_svc.save(phone, _s_fin)

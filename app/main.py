@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
 from app.routers import (webhook, simulate, backoffice, mp_webhook, orders_api,
                          media, payway, sync_api, agent_ws, backoffice_branches,
-                         backoffice_receta)
+                         backoffice_receta, backoffice_pedidos)
 from app.services.sku_service import get_sku_service
 from app.services.session_service import get_session_service
 from app.services.blob_store import get_blob_store
@@ -375,6 +375,7 @@ app.include_router(sync_api.router)
 app.include_router(agent_ws.router)
 app.include_router(backoffice_branches.router)
 app.include_router(backoffice_receta.router)
+app.include_router(backoffice_pedidos.router)
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 

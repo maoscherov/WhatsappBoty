@@ -91,7 +91,8 @@ async def export_orders(_=Depends(_auth), pago: str = Query(None),
     w = _csv.writer(buf, lineterminator="\n")
     w.writerow(["fecha", "pedido", "telefono", "producto", "cantidad", "total",
                 "pago", "entrega", "direccion", "estado", "codigo",
-                "cc_cargado", "cc_cargado_por", "cobrado", "cobrado_por", "agente"])
+                "cc_cargado", "cc_cargado_por", "cobrado", "cobrado_por", "agente",
+                "origen", "armado_por", "cobra", "repartidor"])
     for o in orders:
         w.writerow([
             o.get("created_at", ""), o.get("order_id", ""), o.get("phone", ""),
@@ -104,6 +105,8 @@ async def export_orders(_=Depends(_auth), pago: str = Query(None),
             # Cobrado: online y cta. cte. nacen cobrados; efectivo, al marcarlo.
             "si" if (o.get("cobrado_at") or (o.get("pago") or "online") != "efectivo") else "no",
             o.get("cobrado_por") or "", o.get("agente") or "",
+            o.get("origen") or "bot", o.get("armado_por") or "",
+            o.get("cobra") or "", o.get("repartidor") or "",
         ])
     return PlainTextResponse(
         buf.getvalue(), media_type="text/csv",
