@@ -1044,11 +1044,25 @@ async def bo_takeover(phone: str, _=Depends(_auth)):
 
 
 @router.post("/session/{phone}/release")
-async def bo_release(phone: str, _=Depends(_auth)):
-    """Devuelve la conversación al bot."""
+async def bo_release(phone: str, _=Depends(_auth), agente: str | None = Query(None)):
+    """
+    Devuelve la conversación al bot. Usa `liberar()`, igual que la devolución
+    automática: antes solo pasaba el estado a idle y quedaban el operador
+    asignado y el motivo de la derivación (caso 1/10: Idle con "Atiende: Lore"
+    y "No entendido", y el bot respondiendo igual). `agente` = quién la
+    devolvió, para la línea de tiempo.
+    """
     settings = get_settings()
     session_svc = get_session_service(settings.redis_url)
-    await session_svc.set_estado(phone, "idle")
+    previo = dict(await session_svc.get(phone))      # copia: liberar() la limpia
+    await session_svc.liberar(phone)
+    try:
+        await get_metrics_store(get_db(settings.database_url)).evento(
+            "conversacion_devuelta", phone=phone,
+            dato=(previo.get("derivada_motivo") or "")[:80] or None,
+            ref=(agente or previo.get("agente") or "")[:40] or None)
+    except Exception as e:
+        logger.debug(f"evento conversacion_devuelta: {e}")
     return {"status": "ok", "estado": "idle", "phone": phone}
 
 
@@ -1243,6 +1257,14 @@ async def bo_take(phone: str, agente: str = Query(...), _=Depends(_auth)):
         except Exception as e:
             logger.debug(f"evento derivacion_atendida: {e}")
     await session_svc.save(phone, session)
+    # Línea de tiempo: quién la tomó, también si no estaba derivada (1/10).
+    try:
+        await get_metrics_store(get_db(settings.database_url)).evento(
+            "conversacion_tomada", phone=phone,
+            dato=(session.get("derivada_motivo") or "")[:80] or None,
+            ref=agente.strip()[:40])
+    except Exception as e:
+        logger.debug(f"evento conversacion_tomada: {e}")
     return {"status": "ok", "phone": phone, "agente": agente.strip(), "estado": "operador"}
 
 
@@ -1530,7 +1552,32 @@ async def bo_history(phone: str, _=Depends(_auth), limit: int = Query(200, ge=1,
         marcas_conversacion = []
     return {"available": True, "phone": phone, **_datos_cliente(phone),
             "total": total, "hay_anteriores": hay_anteriores, "messages": mensajes,
-            "marcas_conversacion": marcas_conversacion}
+            "marcas_conversacion": marcas_conversacion,
+            "linea_de_tiempo": await _linea_de_tiempo(db, phone)}
+
+
+_EVENTOS_ATENCION = {
+    "derivacion": "Derivada a una persona",
+    "derivacion_atendida": "Derivación atendida",
+    "conversacion_tomada": "Tomada por un operador",
+    "conversacion_devuelta": "Devuelta al bot",
+}
+
+
+async def _linea_de_tiempo(db, phone: str) -> list[dict]:
+    """Derivaciones, quién tomó la conversación y quién la devolvió al bot
+    (eventos en Postgres: la sesión de Redis se pierde al cerrarse)."""
+    try:
+        filas = await db.fetch(
+            "SELECT tipo, dato, ref, created_at FROM eventos WHERE phone = $1 "
+            "AND tipo = ANY($2::text[]) AND created_at > now() - interval '90 days' "
+            "ORDER BY created_at", phone, list(_EVENTOS_ATENCION))
+    except Exception:
+        return []
+    return [{"tipo": f["tipo"], "etiqueta": _EVENTOS_ATENCION[f["tipo"]],
+             "motivo": f["dato"] if f["tipo"] != "derivacion_atendida" else None,
+             "agente": f["ref"] if f["tipo"] != "derivacion" else None,
+             "ts": f["created_at"].isoformat()} for f in filas]
 
 
 # ── RAG: indexación y estado ────────────────────────────────────────────────────

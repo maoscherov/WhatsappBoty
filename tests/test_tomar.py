@@ -55,3 +55,27 @@ async def test_tomar_una_derivada_mide_el_sla_y_conserva_el_motivo(cli):
     s = await ss.get(PHONE)
     assert s["estado"] == "operador" and s["derivada_motivo"] == "receta"
     assert [e for e in eventos if e[0] == "derivacion_atendida"]
+
+
+async def test_tomar_registra_quien_la_tomo(cli):
+    c, ss, eventos = cli
+    await ss.add_message(PHONE, "user", "hola")
+    _tomar(c, "Lore")
+    tomadas = [k for t, k in eventos if t == "conversacion_tomada"]
+    assert tomadas and tomadas[-1]["ref"] == "Lore"
+
+
+async def test_devolver_al_bot_limpia_operador_y_derivacion(cli):
+    """Caso 1/10: tras "Devolver al bot" quedaba Idle con "Atiende: Lore" y
+    "No entendido"; ahora queda limpia y se registra quién la devolvió."""
+    c, ss, eventos = cli
+    await ss.set_estado(PHONE, "operador", motivo="no_entendido")
+    _tomar(c, "Lore")
+    r = c.post(f"/bo/session/{PHONE}/release", params={"agente": "Lore"},
+               headers={"x-bo-key": "CLAVE"})
+    assert r.status_code == 200 and r.json()["estado"] == "idle"
+    s = await ss.get(PHONE)
+    assert s["estado"] == "idle"
+    assert not s.get("agente") and not s.get("derivada_motivo") and not s.get("atendida_at")
+    dev = [k for t, k in eventos if t == "conversacion_devuelta"]
+    assert dev and dev[-1]["ref"] == "Lore" and dev[-1]["dato"] == "no_entendido"
