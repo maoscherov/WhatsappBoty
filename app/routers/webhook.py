@@ -198,6 +198,31 @@ def _es_afirmacion_pura(t: str) -> bool:
     return len(resto.replace(" ", "")) <= 3
 
 
+_PIDE_CONSULTA = _re.compile(
+    r"confirm|consult|avis|presupuest|preci|encarg|cu[aá]nto|consegu|cu[aá]les|averigu|sale\b",
+    _re.IGNORECASE)
+_QUIERE_SABER = _re.compile(
+    r"\b(me gustar[ií]a|quiero|quisiera|necesito)\b.*\b(saber|preci|presupuest|encarg|consegu)",
+    _re.IGNORECASE)
+
+
+def acepta_consulta_ofrecida(t: str) -> bool:
+    """
+    Respuesta a "¿querés que lo consulte con el equipo o te lo encargo?". Además
+    del sí a secas, vale un sí que pide justamente eso ("Si. Confirmame cuales
+    tenés", "si, necesito un presupuesto si lo consiguen") o "me gustaría saber
+    el precio". Casos reales 1/10: esas respuestas no derivaban y la charla se
+    cerraba a los 15 min como "sin respuesta" del cliente.
+    """
+    if _es_afirmacion_pura(t):
+        return True
+    if _match_no(t):
+        return False
+    if _match_si(t) and _PIDE_CONSULTA.search(t or ""):
+        return True
+    return bool(_QUIERE_SABER.search(t or ""))
+
+
 def _match_no(t: str) -> bool:
     t = t.strip()
     if any(_re.fullmatch(p, t, _re.IGNORECASE) for p in _NO_EXACTO):
@@ -677,6 +702,7 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
         _origen = "texto"     # texto | audio | imagen | documento (historial)
         _media_ref = None     # archivo guardado para el operador (/media/chat/…)
         _media_nombre = None  # nombre original del archivo (documentos)
+        _bot_off = False      # se lee de la config más abajo; la red de seguridad lo usa
         respuesta = None      # respuesta del bot (para historial en finally)
 
         # Serializar por teléfono: los mensajes del mismo usuario se procesan
@@ -1078,11 +1104,11 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
             _ofrecida = session.get("derivacion_ofrecida")
             if _ofrecida and not session.get("pending_sku_id"):
                 _cfg_ss = await deps["config"].get_all()
-                if _es_afirmacion_pura(texto):
+                if acepta_consulta_ofrecida(texto):
                     _intencion = "sin_stock_derivado"
-                    _s = await deps["session"].get(phone)
-                    _s.pop("derivacion_ofrecida", None)
-                    await deps["session"].save(phone, _s)
+                    _ses = await deps["session"].get(phone)
+                    _ses.pop("derivacion_ofrecida", None)
+                    await deps["session"].save(phone, _ses)
                     await deps["session"].set_estado(phone, "operador", motivo="sin_stock")
                     respuesta = _cfg_ss.get("sin_stock_derivar_message") or (
                         "Te paso con alguien del equipo para ver si podemos conseguirlo 🙌"
@@ -1094,9 +1120,9 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     await deps["session"].add_message(phone, "assistant", respuesta)
                     continue
                 # No aceptó: la oferta vale sólo para el turno siguiente.
-                _s = await deps["session"].get(phone)
-                _s.pop("derivacion_ofrecida", None)
-                await deps["session"].save(phone, _s)
+                _ses = await deps["session"].get(phone)
+                _ses.pop("derivacion_ofrecida", None)
+                await deps["session"].save(phone, _ses)
 
             # ── Pide transferencia/efectivo → según config del backoffice ────
             #   "derivar" (default) → atención humana.
@@ -2138,9 +2164,9 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                             _agregar = solo_la_pregunta(_oferta) if ya_dice_no_disponible(respuesta) \
                                 else _oferta
                             respuesta = f"{respuesta}\n\n{_agregar}".strip()
-                        _s = await deps["session"].get(phone)
-                        _s["derivacion_ofrecida"] = entidad or texto[:60]
-                        await deps["session"].save(phone, _s)
+                        _ses = await deps["session"].get(phone)
+                        _ses["derivacion_ofrecida"] = entidad or texto[:60]
+                        await deps["session"].save(phone, _ses)
 
             elif ya_tiene_pending:
                 pending_opciones = session.get("pending_opciones", [])
@@ -2210,6 +2236,25 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
 
             await deps["session"].add_message(phone, "user", texto)
             await deps["session"].add_message(phone, "assistant", respuesta)
+
+        except Exception as e:
+            # Red de seguridad (1/10): un error en un mensaje lo dejaba sin
+            # respuesta, cortaba el resto del lote y a los 15 min la charla se
+            # cerraba "por falta de respuesta" del cliente. Ahora queda
+            # derivada (no se cierra sola) y el cliente sabe que sigue alguien.
+            logger.exception(f"Error procesando mensaje de {phone}: {e}")
+            _intencion = "error_bot"
+            try:
+                if session_actual := await deps["session"].get(phone):
+                    if session_actual.get("estado") != "operador":
+                        await deps["session"].set_estado(phone, "operador", motivo="error_bot")
+                        if not _bot_off:
+                            respuesta = ("Disculpá, tuve un problema para responderte 🙏 "
+                                         "Te paso con alguien del equipo que sigue con vos.")
+                            await deps["wa"].send_text(phone, respuesta)
+                            await deps["session"].add_message(phone, "assistant", respuesta)
+            except Exception as e2:
+                logger.error(f"Tampoco se pudo derivar a {phone} tras el error: {e2}")
 
         finally:
             _lock.release()

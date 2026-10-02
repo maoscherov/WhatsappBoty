@@ -628,3 +628,47 @@ async def test_nota_envio_fuera_horario(monkeypatch):
     assert await ch.nota_envio_fuera_horario("Link: x", "retiro") == "Link: x"
     c.abierto = True
     assert await ch.nota_envio_fuera_horario("Link: x", "envio") == "Link: x"
+
+
+# ── 1/10: "sí" a la consulta ofrecida → deriva (antes se perdía el mensaje) ─────
+@pytest.mark.parametrize("respuesta", [
+    "Si. Confirmame cuales tenes",
+    "si, necesito un presupuesto si es que lo llegan a conseguir",
+    "Me gustaría saber el precio",
+    "dale",
+])
+async def test_acepta_la_consulta_ofrecida_y_deriva(entorno, respuesta):
+    deps = entorno()
+    s = await deps["session"].get(PHONE)
+    s["derivacion_ofrecida"] = "perfumes para mujer"
+    await deps["session"].save(PHONE, s)
+    await wh.procesar_mensajes([_msg(respuesta)])
+    assert deps["wa"].enviados, "no puede quedar sin respuesta"
+    s = await deps["session"].get(PHONE)
+    assert s["estado"] == "operador" and s["derivada_motivo"] == "sin_stock"
+
+
+async def test_otra_cosa_tras_la_oferta_responde_igual(entorno):
+    """Caso real 1/10: la variable de la sesión pisaba la de configuración y
+    el mensaje siguiente a la oferta explotaba sin respuesta."""
+    deps = entorno()
+    s = await deps["session"].get(PHONE)
+    s["derivacion_ofrecida"] = "perfumes para mujer"
+    await deps["session"].save(PHONE, s)
+    await wh.procesar_mensajes([_msg("dale, mandame un Dove")])
+    assert deps["wa"].enviados
+    assert (await deps["session"].get(PHONE)).get("estado") != "operador"
+
+
+async def test_error_inesperado_deriva_y_avisa(entorno, monkeypatch):
+    """Red de seguridad 1/10: un error no deja al cliente sin respuesta."""
+    deps = entorno()
+
+    async def _explota(*a, **k):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(deps["intent"], "procesar_rapido", _explota)
+    monkeypatch.setattr(deps["intent"], "procesar", _explota)
+    await wh.procesar_mensajes([_msg("tenés algo para el dolor de cabeza?")])
+    assert deps["wa"].enviados and "alguien del equipo" in deps["wa"].enviados[-1]
+    s = await deps["session"].get(PHONE)
+    assert s["estado"] == "operador" and s["derivada_motivo"] == "error_bot"
