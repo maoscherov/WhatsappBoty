@@ -1354,7 +1354,10 @@ _EFECTIVO = [
     r"\b(retir\w+|sucursal|recib\w+)\b.{0,30}\bpag\w+",
     r"\bcontra\s*(entrega|reembolso)\b",
 ]
-_NO_EFECTIVO = [r"\bno\s+(tengo|uso|manejo|quiero)\s+efectivo\b", r"\bsin\s+efectivo\b"]
+_NO_EFECTIVO = [r"\bno\s+(tengo|uso|manejo|quiero)\s+efectivo\b", r"\bsin\s+efectivo\b",
+                # "¿o será más efectivo la laca?": eficaz, no medio de pago (1/10)
+                r"\b(mas|menos|tan|muy|bastante|igual\s+de|sera|seria|es|sea|son|resulta\w*)"
+                r"\s+efectiv[oa]s?\b"]
 
 
 def _flag(cfg: dict, clave: str, default: bool) -> bool:

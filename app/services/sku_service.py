@@ -38,7 +38,14 @@ TOP_N_DEFAULT = 3
 # escribir el cliente; los valores son términos adicionales a buscar (marcas
 # equivalentes presentes en el catálogo). Si algún valor no existe, la búsqueda
 # extra simplemente no devuelve nada (inofensivo). Ampliable a medida que surjan.
+# Marca con pocos productos (Unesia: 5): si no tiene la presentación pedida,
+# se ofrece la que tenga. Ver SKUService.buscar.
+MARCA_CHICA = 30
+
 SINONIMOS: dict[str, list[str]] = {
+    # Los protectores solares se llaman por la línea: Eximia "SOLAIRE",
+    # "... FPS 50" (caso real 1/10: "protector facial eximia" daba Lucy Anderson).
+    "protector":    ["solaire", "solar", "fps"],
     "ibuprofeno":   ["ibupirac", "actron"],
     "omeprazol":    ["aziatop"],
     "escopolamina": ["buscapina", "sertal"],
@@ -530,8 +537,56 @@ class SKUService:
         # Guarda determinista: lo que no comparte ningún término con lo pedido
         # (ni con sus sinónimos) no se ofrece, por más que el fuzzy lo puntúe.
         candidatos = [c for c in candidatos if resultado_coincide(variantes, self._search_index[c[0]])]
+
+        # Marca pedida (1/10): un término poco común del pedido que existe en
+        # el catálogo es una marca o línea ("unesia", "eximia", "lefmar"). Se
+        # busca directo entre sus productos —el fuzzy los perdía detrás de
+        # otros que comparten "crema" o "protector facial"— y no se ofrecen
+        # otras marcas. Si la marca no tiene la presentación pedida con stock
+        # y es una marca CHICA, se ofrece en otra presentación ("unesia crema"
+        # → UNESIA UNG). Las marcas grandes respetan el tipo: "talco rexona"
+        # no es un desodorante Rexona (caso 21/8).
+        umbral_marca = max(30, total_docs // 100)
+        marcas = [t for t in q_tokens
+                  if 0 < self._token_df.get(t, 0) <= umbral_marca and not tipos_mencionados(t)]
+        if marcas:
+            # Una sola marca manda: la que ENCABEZA el nombre de sus productos
+            # ("EXIMIA …", "UNESIA …") y, a igualdad, la más rara. En
+            # "protector solar eximia", "solar" también es poco común pero
+            # va en el medio del nombre ("BAGOVIT SOLAR").
+            # Una sola pasada por el catálogo para todos los candidatos.
+            idx_por_marca: dict[str, list[int]] = {t: [] for t in marcas}
+            for i, txt in enumerate(self._search_index):
+                for t in marcas:
+                    if t in txt:
+                        idx_por_marca[t].append(i)
+
+            def _encabeza(t: str) -> float:
+                idxs = idx_por_marca[t]
+                lideran = sum(self._skus[i].sku_nombre.lower().startswith(t) for i in idxs)
+                return lideran / max(len(idxs), 1)
+            marcas = [max(marcas, key=lambda t: (_encabeza(t), -self._token_df.get(t, 0)))]
+            pool = [(i, self._skus[i], _relevancia(i)) for i in idx_por_marca[marcas[0]]
+                    if not self._skus[i].pausado]
+            con_tipo = [c for c in pool if resultado_coincide(variantes, self._search_index[c[0]])]
+            if any(c[1].vendible for c in con_tipo):
+                elegidos = con_tipo
+            elif all(self._token_df.get(m, 0) <= MARCA_CHICA for m in marcas):
+                elegidos = pool
+            else:
+                elegidos = con_tipo
+            if elegidos:
+                candidatos = elegidos
         # Relevancia primero; disponibilidad y ventas sólo desempatan matches parejos.
         candidatos.sort(key=lambda x: (-x[2], 0 if x[1].disponible else 1, -(x[1].ventas_mes or 0)))
+        # El más parecido queda primero aunque no tenga stock (el bot dice "ese
+        # no lo tengo"), pero los que SÍ se pueden vender no quedan afuera del
+        # corte detrás de otros sin stock (caso real 1/10: "óleo calcáreo"
+        # traía tres sin stock y el bot decía que no había).
+        if candidatos:
+            ventana = candidatos[1:]          # ya filtrados: todos son del pedido
+            candidatos = ([candidatos[0]] + [c for c in ventana if c[1].vendible]
+                          + [c for c in ventana if not c[1].vendible])
 
         return [self._to_response(s) for _i, s, _sc in candidatos[:top_n]]
 
