@@ -171,9 +171,11 @@ DEFAULTS: dict[str, str] = {
     # nunca la redacta el modelo (dijo "sí" a OSDE, "no" a AMUR, al revés).
     "obras_sociales": "",
     "obras_sociales_si_message": "Sí, trabajamos con {obra_social} 🙂 ¿Qué necesitás?",
+    # No listada ≠ sin convenio: la lista puede estar incompleta (le dijo "no
+    # tenemos convenio con PAMI" a una clienta de PAMI, 28/9). Nunca se niega.
     "obras_sociales_no_message": (
-        "Por ahora no tenemos convenio con {obra_social}. ¿Querés que lo consulte "
-        "con el equipo por si hay alguna forma?"
+        "{obra_social} no la tengo en mi lista, lo confirma el equipo. ¿Querés que "
+        "te pase con alguien para que lo vea con vos?"
     ),
     "obras_sociales_lista_message": "Trabajamos con: {lista}. ¿Con cuál sería?",
     "obras_sociales_sin_lista_message": (
@@ -291,6 +293,10 @@ DEFAULTS: dict[str, str] = {
     # en el backoffice paciente, medicamento, candidato del catálogo y cruce
     # con el padrón. Apagado hasta que la farmacia lo pruebe.
     "receta_ocr_enabled": "false",
+    # Precio mínimo para que el bot cotice y cobre (auditoría 2/10): el ERP
+    # tiene precios viejos absurdos (shampoo Dove $56,90, algodón $84). Debajo
+    # de este valor el precio lo confirma el equipo. 0 = sin control.
+    "precio_minimo_venta": "300",
     "socio_discount_pct": "0",
     # true  = el socio ve el precio ya bonificado desde que se le ofrece el
     #         producto (y el link cobra ese mismo importe).

@@ -766,3 +766,19 @@ def test_numeros_que_no_son_precios_no_cuentan():
     from app.services.checkout_helper import precios_inventados
     assert precios_inventados("Tengo Ibuprofeno 600 x 100 y Aspirina 500 mg", [], []) == []
     assert precios_inventados("2 unidades a $1.000 son $2.000", [1000], []) == []
+
+
+# ── Auditoría 2/10: "encargalo" tras "no lo tengo" no cobra el sustituto ────────
+async def test_encargalo_deriva_y_no_cobra_el_sustituto(entorno):
+    deps = entorno()
+    await _pendiente_colpuril(deps["session"])
+    await deps["session"].add_message(
+        PHONE, "assistant",
+        "No me figura disponible el Colpuril x30, te lo puedo encargar. "
+        "Tengo el Colpuril Retard x50 a $31.408,79.")
+    await wh.procesar_mensajes([_msg("sí, encargalo")])
+    s = await deps["session"].get(PHONE)
+    assert s["estado"] == "operador" and s["derivada_motivo"] == "encargo"
+    assert not s.get("pending_sku_id")
+    assert "encargarlo" in deps["wa"].enviados[-1]
+    assert not any("retiro" in t.lower() for t in deps["wa"].enviados)

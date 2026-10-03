@@ -52,6 +52,7 @@ from app.services.checkout_helper import (
     referencia_ambigua_bloquea, cumplir_derivacion_prometida,
     quitar_cierres_vagos, ya_dice_no_disponible, solo_la_pregunta,
     alternativas_con_precio, texto_alternativas, precios_inventados, referencias_de_precio,
+    quitar_receta_inventada, quitar_saludo_repetido, pide_encargo, marcar_precio_dudoso,
     pide_cancelar_pedido, pregunta_obra_social, responder_obra_social, parsear_lista,
     pregunta_bono, responder_bono, agregar_oferta_farmaceutico, acepta_farmaceutico,
     entidad_contradice_pendiente, debe_derivar_desconocido,
@@ -1182,6 +1183,24 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 await deps["session"].add_message(phone, "assistant", respuesta)
                 continue
 
+            # ── "Encargalo" tras un "no lo tengo" → encargo con una persona ──
+            # Antes confirmaba el sustituto que el bot había nombrado con
+            # precio y pasaba a cobrarlo (auditoría 2/10).
+            if pide_encargo(texto, session.get("history") or []):
+                _intencion = "encargo"
+                await deps["session"].clear_pending(phone)
+                await deps["session"].set_estado(phone, "operador", motivo="encargo")
+                _cfg_enc = await deps["config"].get_all()
+                respuesta = _cfg_enc.get("encargo_message") or (
+                    "¡Dale! Te paso con alguien del equipo para encargarlo 🙌 "
+                    "En un momento te contactamos.")
+                _ts = _time.perf_counter()
+                await deps["wa"].send_text(phone, respuesta)
+                _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
+                await deps["session"].add_message(phone, "user", texto)
+                await deps["session"].add_message(phone, "assistant", respuesta)
+                continue
+
             # ── Pide transferencia/efectivo → según config del backoffice ────
             #   "derivar" (default) → atención humana.
             #   "solo_tarjeta"      → avisa que solo hay tarjeta, sin derivar.
@@ -1841,6 +1860,8 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
             # ── Flujo normal ─────────────────────────────────────────────────
             resultados_sku = None
             _sku_pendiente_nuevo = None   # sku elegido este turno (para chequeo de receta)
+            _sku_receta_agregado = None   # "agregame X" con receta: deriva con el carrito
+            _extras_guardar = []          # adicionales de venta libre de este mensaje
 
             # Claude 1 — Haiku (rápido): clasifica intención + extrae entidad.
             # Para intenciones simples (saludo, social, agradecimiento) su
@@ -1959,6 +1980,7 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 _cfg_desc = await deps["config"].get_all()
                 resultados_sku, _pct_socio = aplicar_descuento_socio(
                     resultados_sku, phone, _cfg_desc)
+                resultados_sku = marcar_precio_dudoso(resultados_sku, _cfg_desc)
                 _steps["sku_ms"] = int((_time.perf_counter() - _tsku) * 1000)
                 if not resultados_sku:
                     # Nos pidieron algo que no tenemos (ni por texto ni por
@@ -2092,13 +2114,10 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                         _cfg_rec = await deps["config"].get_all()
                         if necesita_receta(deps["sku"], producto_elegido["sku_id"],
                                            _cfg_rec.get("receta_mode", "conservador")):
-                            from app.services.receta_marcas import recordar_producto_por_receta
-                            await recordar_producto_por_receta(
-                                deps["session"], deps["sku"], phone, producto_elegido["sku_id"],
-                                cantidad)
-                            respuesta = (f"{producto_elegido['nombre']} requiere receta 🩺, así que "
-                                         "ese no lo puedo sumar al pedido. El resto sigue como está "
-                                         "— ¿lo confirmamos?")
+                            # Decisión 3/10: con un producto con receta pasa todo
+                            # al operador, con lo de venta libre ya elegido (se
+                            # deriva abajo, junto con los adicionales).
+                            _sku_receta_agregado = producto_elegido["sku_id"]
                         else:
                             items = await deps["session"].agregar_item(
                                 phone, producto_elegido["sku_id"], producto_elegido["nombre"],
@@ -2163,11 +2182,27 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                         # Mismo descuento que en la búsqueda principal: estos
                         # precios también los ve el cliente en el mensaje.
                         _r2, _ = aplicar_descuento_socio(_r2, phone, _cfg_desc)
+                        _r2 = marcar_precio_dudoso(_r2, _cfg_desc)
                         _top2 = next((r for r in _r2 if r.get("vendible")
                                       and r.get("requiere_receta") not in ("si", "ambiguo")), None)
+                        _top_rec = next((r for r in _r2 if r.get("vendible")
+                                         and r.get("requiere_receta") in ("si", "ambiguo")), None)
                         # El tipo solo ("crema") no alcanza para darlo por lo pedido:
                         # "crema Topics" matcheaba con cualquier crema (23/9).
-                        if _top2 and nombre_coincide(_ent2, _top2["nombre"])                                 and alguna_palabra_coincide(_ent2, _top2["nombre"]):
+                        _coincide = (_top2 and nombre_coincide(_ent2, _top2["nombre"])
+                                     and alguna_palabra_coincide(_ent2, _top2["nombre"]))
+                        if not _coincide and _top_rec and nombre_coincide(_ent2, _top_rec["nombre"]) \
+                                and alguna_palabra_coincide(_ent2, _top_rec["nombre"]):
+                            # Lo pedido lleva receta: todo el pedido pasa al
+                            # operador (decisión 3/10). Antes salía "no lo
+                            # encontré en el catálogo".
+                            from app.services.receta_marcas import recordar_producto_por_receta
+                            await recordar_producto_por_receta(
+                                deps["session"], deps["sku"], phone, _top_rec["sku_id"])
+                            if not _sku_receta_agregado:
+                                _sku_receta_agregado = _top_rec["sku_id"]
+                            continue
+                        if _coincide:
                             _lineas_extra.append(
                                 f"• {_ent2}: {_top2['nombre']} — ${_top2['precio']:,.2f}")
                             _extras_guardar.append({
@@ -2278,15 +2313,29 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
 
             # Si el producto recién elegido requiere receta, derivar ahora
             # (no ofrecer link). Reemplaza el mensaje de confirmación de Claude.
-            if _sku_pendiente_nuevo:
+            if _sku_pendiente_nuevo or _sku_receta_agregado:
                 cfg_all = await deps["config"].get_all()
                 _deriv = await derivar_si_receta(
-                    deps["sku"], deps["session"], cfg_all, phone, _sku_pendiente_nuevo,
-                    nombre=_nombre_socio,
+                    deps["sku"], deps["session"], cfg_all, phone,
+                    _sku_receta_agregado or _sku_pendiente_nuevo,
+                    nombre=_nombre_socio, extras=_extras_guardar,
                 )
                 if _deriv:
                     respuesta = _deriv
                     _intencion = "derivado_receta"
+
+            # Charla en curso: sin "¡Hola X! Qué bueno verte de nuevo" en cada
+            # turno (auditoría 2/10).
+            respuesta = quitar_saludo_repetido(respuesta, session.get("history") or [])
+
+            # "Requiere receta" dicho por el modelo de productos que el catálogo
+            # vende libre: manda el catálogo (auditoría 2/10).
+            if resultados_sku and _intencion != "derivado_receta":
+                _ofrecidos = productos_con_precio(respuesta, resultados_sku)
+                _modo_rec = (await deps["config"].get_all()).get("receta_mode", "conservador")
+                if _ofrecidos and not any(necesita_receta(deps["sku"], o["sku_id"], _modo_rec)
+                                          for o in _ofrecidos):
+                    respuesta = quitar_receta_inventada(respuesta)
 
             # Respuesta directa del modelo sin búsqueda (saludo, consulta
             # general): tampoco puede traer precios que no salen de ningún dato.

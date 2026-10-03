@@ -274,6 +274,25 @@ class SessionService:
         session["estado"] = estado
         await self.save(phone, session)
 
+    async def operador_escribio(self, phone: str, agente: str | None = None):
+        """
+        El operador le escribió al cliente desde el backoffice: atiende una
+        persona y el bot se calla hasta que la devuelvan (como "Tomar").
+        Antes el bot seguía contestando encima ("¡Hola Florencia! Qué bueno
+        verte de nuevo") y mandaba "mucha demanda" con el operador ya
+        hablando (auditoría 2/10). `_operador_at` es la última vez que habló.
+        """
+        session = await self.get(phone)
+        if session.get("estado") != "operador":
+            await self.set_estado(phone, "operador", motivo="operador_escribio")
+            session = await self.get(phone)
+        ahora = time.time()
+        session["_operador_at"] = ahora
+        session.setdefault("atendida_at", ahora)
+        if agente and not session.get("agente"):
+            session["agente"] = agente
+        await self.save(phone, session)
+
     async def delete(self, phone: str):
         """Cierra la conversación: elimina la sesión (sale de la lista de activas)."""
         if await self._use_redis():
@@ -396,6 +415,10 @@ class SessionService:
             if session.get("_derivada_fuera_horario"):
                 continue
             derivada = session.get("derivada_at")
+            # El operador ya le escribió desde el backoffice: está atendida
+            # ("mucha demanda" sería falso — auditoría 2/10).
+            if derivada and float(session.get("_operador_at") or 0) >= float(derivada):
+                continue
             if derivada and now - float(derivada) >= threshold_secs:
                 out.append(phone)
         return out
@@ -470,6 +493,10 @@ class SessionService:
             if session.get("_derivada_fuera_horario"):
                 continue
             derivada = session.get("derivada_at")
+            # El operador ya le escribió desde el backoffice: está atendida
+            # ("mucha demanda" sería falso — auditoría 2/10).
+            if derivada and float(session.get("_operador_at") or 0) >= float(derivada):
+                continue
             if derivada and now - float(derivada) >= threshold_secs:
                 out.append(phone)
         return out

@@ -562,11 +562,17 @@ def necesita_receta(sku_svc, sku_id: str, modo: str) -> bool:
 
 
 async def derivar_si_receta(sku_svc, session_svc, cfg: dict, phone: str, sku_id: str,
-                            nombre: str = ""):
+                            nombre: str = "", extras: Optional[list[dict]] = None):
     """
     Si el producto recién elegido requiere receta, deriva a una persona en el
     acto (sin ofrecer link de pago) y devuelve el mensaje para el cliente.
     Si no, devuelve None y el flujo sigue normal.
+
+    Los productos de venta libre del mismo pedido (el carrito en curso y los
+    `extras` que pidió en el mismo mensaje) pasan al operador ya elegidos:
+    quedan en el pedido de la sesión, que el backoffice muestra. Antes la
+    derivación borraba todo y "envíame lo otro" quedaba sin respuesta
+    (decisión 3/10: con un producto con receta, todo va al operador).
     """
     modo = cfg.get("receta_mode", "conservador")
     if necesita_receta(sku_svc, sku_id, modo):
@@ -580,11 +586,46 @@ async def derivar_si_receta(sku_svc, session_svc, cfg: dict, phone: str, sku_id:
         # receta y ahora pide que se lo anotemos, "te derivo" alcanza —
         # repetir "requiere receta" suena a que no lo escuchamos.
         _ya_dicho = receta_ya_mencionada(_s.get("history") or [])
-        # Qué producto frenó la venta: el operador lo marca desde el chat (28/9).
+        carrito = list(_s.get("pending_items") or [])
+        if not carrito and _s.get("pending_sku_id"):
+            carrito = [{"sku_id": _s["pending_sku_id"], "nombre": _s.get("pending_sku_nombre") or "",
+                        "precio": _s.get("pending_precio") or 0,
+                        "cantidad": _s.get("pending_cantidad", 1)}]
         from app.services.receta_marcas import recordar_producto_por_receta
+        conservar: list[dict] = []
+        for it in carrito + list(extras or []):
+            sid = str(it.get("sku_id") or "")
+            if not sid or sid == str(sku_id) or any(c["sku_id"] == sid for c in conservar):
+                continue
+            if necesita_receta(sku_svc, sid, modo):
+                # Otro del pedido que también lleva receta: el operador lo ve.
+                await recordar_producto_por_receta(session_svc, sku_svc, phone, sid)
+                continue
+            conservar.append({"sku_id": sid, "nombre": it.get("nombre") or "",
+                              "precio": float(it.get("precio") or 0),
+                              "cantidad": int(it.get("cantidad", 1) or 1)})
+        # Qué producto frenó la venta: el operador lo marca desde el chat (28/9).
         await recordar_producto_por_receta(session_svc, sku_svc, phone, sku_id)
         await session_svc.clear_pending(phone)
         await session_svc.set_estado(phone, "operador", motivo="receta")
+        if conservar:
+            _s2 = await session_svc.get(phone)
+            primero = conservar[0]
+            _s2.update({
+                "pending_sku_id": primero["sku_id"], "pending_sku_nombre": primero["nombre"],
+                "pending_precio": primero["precio"], "pending_cantidad": primero["cantidad"],
+                "pending_items": conservar, "pending_opciones": [],
+            })
+            await session_svc.save(phone, _s2)          # sigue en modo operador
+            sku = sku_svc.get_by_id(sku_id)
+            prod = (getattr(sku, "sku_nombre_original", None) or getattr(sku, "sku_nombre", None)
+                    or "ese producto") if sku else "ese producto"
+            lineas = "\n".join(f"• {c['nombre']} — ${c['precio'] * c['cantidad']:,.2f}"
+                               for c in conservar)
+            saludo = f"{nombre}, el" if nombre else "El"
+            return (f"{saludo} {prod} requiere receta 🩺. Te paso con alguien del equipo "
+                    f"con todo tu pedido, así lo gestiona junto con lo demás:\n{lineas}\n\n"
+                    "¡En un momento te contactamos!")
         if _ya_dicho:
             inicio = f"Dale {nombre}, te" if nombre else "Dale, te"
             return f"{inicio} paso con alguien del equipo para gestionarlo con vos. ¡En un momento te contactamos!"
@@ -1367,9 +1408,14 @@ def responder_obra_social(mencionada: str, cfg: dict) -> tuple[str, bool]:
     if hit:
         return (cfg.get("obras_sociales_si_message")
                 or "Sí, trabajamos con {obra_social} 🙂 ¿Qué necesitás?").replace("{obra_social}", hit), False
-    return (cfg.get("obras_sociales_no_message")
-            or "Por ahora no tenemos convenio con {obra_social}. ¿Querés que lo consulte con el "
-               "equipo por si hay alguna forma?").replace("{obra_social}", mencionada.strip()), True
+    # No listada ≠ sin convenio (la lista puede estar incompleta: "no tenemos
+    # convenio con PAMI" a una clienta de PAMI, 28/9). Un texto viejo que
+    # niega el convenio se reemplaza por el que deriva.
+    no_msg = cfg.get("obras_sociales_no_message") or ""
+    if not no_msg or re.search(r"\bno\s+(tenemos|trabajamos|hay)\b", no_msg, re.IGNORECASE):
+        no_msg = ("{obra_social} no la tengo en mi lista, lo confirma el equipo. ¿Querés que "
+                  "te pase con alguien para que lo vea con vos?")
+    return no_msg.replace("{obra_social}", mencionada.strip()), True
 
 
 # ── 61: bonos de laboratorio — la foto se cotizaba renglón por renglón ─────────
@@ -1921,6 +1967,8 @@ def referencias_de_precio(resultados, session: dict, cfg: dict,
               else ("precio",))
     unit: list[float] = []
     for r in list(resultados or []) + list(session.get("pending_opciones") or []):
+        if r.get("precio_dudoso"):
+            continue
         for k in claves:
             try:
                 if r.get(k):
@@ -1942,3 +1990,130 @@ def referencias_de_precio(resultados, session: dict, cfg: dict,
     for m in (session.get("history") or [])[-8:]:
         totales.extend(precios_con_signo(str(m.get("content") or "")))
     return unit, totales
+
+
+# Auditoría 2/10: el modelo decía "ese requiere receta" de productos que el
+# catálogo marca de venta libre (Hipoglós, curitas, Ultraflex) y después
+# igual salía el link. Manda la marca del catálogo: la frase se saca.
+_FRASE_RE = re.compile(r"[^.!?\n]*[.!?]?\s*")
+_RECETA_AFIRMA = re.compile(
+    r"(requier\w*|necesit\w*|lleva\w*|va|es|son|piden?|bajo|con)\s+(una\s+|la\s+)?receta",
+    re.IGNORECASE)
+
+
+def quitar_receta_inventada(respuesta: str) -> str:
+    """Saca las frases que afirman que algo lleva receta."""
+    if not respuesta or not _RECETA_AFIRMA.search(respuesta):
+        return respuesta
+    partes = [p for p in _FRASE_RE.findall(respuesta) if p]
+    limpio = "".join(p for p in partes if not _RECETA_AFIRMA.search(p)).strip()
+    return limpio or respuesta
+
+
+# ── Cierre por inactividad según quién habló último (auditoría 2/10) ──────────
+_DESPEDIDA_RE = re.compile(
+    r"\b(gracias|grax|chau|chao|adi[oó]s|nos vemos|hasta (luego|ma[nñ]ana|pronto|la pr[oó]xima)|"
+    r"(lo |los |la |las )?paso a buscar|(despu[eé]s|luego|ma[nñ]ana|m[aá]s tarde) paso|"
+    r"paso (despu[eé]s|luego|ma[nñ]ana|m[aá]s tarde)|lo pienso|lo voy a pensar|"
+    r"buen (d[ií]a|fin de semana)|saludos|abrazo|besos?)\b",
+    re.IGNORECASE)
+
+
+def es_despedida(t: str) -> bool:
+    return bool(_DESPEDIDA_RE.search(t or ""))
+
+
+def cierre_por_inactividad(history: list) -> str:
+    """
+    Qué hacer con una conversación inactiva, según el último mensaje:
+      "derivar"  → habló el cliente y nadie le contestó: que lo vea una
+                   persona (antes recibía "como no tuvimos respuesta").
+      "silencio" → se despidió el cliente, o el último fue el operador: se
+                   cierra sin aviso.
+      "avisar"   → el bot le preguntó algo y no contestó: aviso de cierre.
+    """
+    if not history:
+        return "silencio"
+    ultimo = history[-1]
+    rol = ultimo.get("role")
+    if rol == "user":
+        return "silencio" if es_despedida(ultimo.get("content") or "") else "derivar"
+    if rol != "assistant":
+        return "silencio"
+    ult_cliente = next((m for m in reversed(history) if m.get("role") == "user"), None)
+    if ult_cliente and es_despedida(ult_cliente.get("content") or ""):
+        return "silencio"
+    return "avisar"
+
+
+
+# ── Saludo repetido en medio de la charla (auditoría 2/10) ────────────────────
+# "¡Hola Claudia! Qué bueno verte de nuevo 😊" aparecía en cualquier turno,
+# a veces con el nombre equivocado ("Muff", "Luna", "Gasperi").
+_SALUDO_INICIO_RE = re.compile(
+    r"^\s*¡?\s*(hola|buen[oa]s(\s+(d[ií]as|tardes|noches))?|buen\s+d[ií]a)\b(\s+[^\s!.,?]+){0,2}?\s*[!.,]\s*"
+    r"([\U0001F300-\U0001FAFF\u2600-\u27BF]\s*)*"
+    r"(¡?\s*qu[eé]\s+(bueno|lindo|gusto)\s+(verte|leerte|saludarte)(\s+de\s+nuevo|\s+otra\s+vez)?\s*[!.]?\s*"
+    r"([\U0001F300-\U0001FAFF\u2600-\u27BF]\s*)*)?",
+    re.IGNORECASE)
+
+
+def quitar_saludo_repetido(respuesta: str, history: list) -> str:
+    """Saca el saludo del principio si la conversación ya está en curso."""
+    if not respuesta or not any(m.get("role") in ("assistant", "operator") for m in history or []):
+        return respuesta
+    m = _SALUDO_INICIO_RE.match(respuesta)
+    if not m or not m.group(0).strip():
+        return respuesta
+    resto = respuesta[m.end():].lstrip(" ,.!")
+    if len(resto) < 3:
+        return respuesta
+    return resto[0].upper() + resto[1:]
+
+
+
+# ── "Sí, encargalo" (auditoría 2/10) ──────────────────────────────────────────
+# El bot decía "no lo tengo, ¿lo encargamos?" y en la misma respuesta ofrecía
+# un sustituto con precio: el "encargalo" confirmaba el SUSTITUTO y pedía
+# retiro/envío del Bagovit corporal, de la tintura o del jabón equivocado.
+_ENCARGO_RE = re.compile(
+    r"\b(encarg\w*|ped[ií](lo|la|los|las|melo|mela|melos)|p[ií]dan(lo|la|melo)?|"
+    r"que (lo|la|los|las|me lo|me la) traigan|traigan(lo|la|melo)|"
+    r"consegu[ií](lo|la|melo|mela)|consigan(lo|la|melo|mela)?)\b",
+    re.IGNORECASE)
+_NO_ENCARGO_RE = re.compile(r"\bno\b.{0,12}\b(encarg|ped[ií]|traig|consig)", re.IGNORECASE)
+_FALTA_STOCK_RE = re.compile(
+    r"(no (me )?(figura|tengo|tenemos|hay|queda|quedan|encontr)|sin stock|agotad|encarg)",
+    re.IGNORECASE)
+
+
+def pide_encargo(texto: str, history: list) -> bool:
+    """True si pide encargar algo que el bot acaba de decir que no tiene."""
+    if not texto or not _ENCARGO_RE.search(texto) or _NO_ENCARGO_RE.search(texto):
+        return False
+    ult_bot = next((m for m in reversed(history or []) if m.get("role") == "assistant"), None)
+    return bool(ult_bot and _FALTA_STOCK_RE.search(ult_bot.get("content") or ""))
+
+
+
+# ── Precios absurdos del ERP (auditoría 2/10) ─────────────────────────────────
+def marcar_precio_dudoso(resultados: list[dict], cfg: dict) -> list[dict]:
+    """
+    Productos con precio por debajo de `precio_minimo_venta` (precio viejo del
+    ERP: shampoo Dove $56,90, Head & Shoulders $49,66): el bot no los cotiza
+    ni los cobra — quedan no vendibles y el modelo ofrece consultarlos.
+    Devuelve copias.
+    """
+    try:
+        minimo = float(cfg.get("precio_minimo_venta") or 0)
+    except (TypeError, ValueError):
+        minimo = 0.0
+    if minimo <= 0 or not resultados:
+        return resultados
+    out = []
+    for r in resultados:
+        precio = float(r.get("precio_lista") or r.get("precio") or 0)
+        if 0 < precio < minimo:
+            r = dict(r, vendible=False, precio_dudoso=True)
+        out.append(r)
+    return out

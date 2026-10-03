@@ -280,6 +280,22 @@ async def _cerrar_sesiones_inactivas():
             for phone, session in await session_svc.inactivas(minutos * 60, minutos_pago * 60):
                 con_link = session.get("estado") == "esperando_pago"
                 texto_cierre = mensaje_pago if con_link else mensaje
+                # Quién habló último decide (auditoría 2/10): "como no tuvimos
+                # respuesta" salía cuando el que esperaba era el CLIENTE, o
+                # después de que se despidió o lo atendió el operador.
+                from app.services.checkout_helper import cierre_por_inactividad
+                accion = cierre_por_inactividad(session.get("history") or [])
+                if accion == "derivar" and _bot_on:
+                    await session_svc.set_estado(phone, "operador",
+                                                 motivo="cliente_sin_respuesta")
+                    # Sin "mucha demanda" después (puede ser de noche): ya
+                    # esperó lo suyo, que lo vea alguien en la cola.
+                    await session_svc.marcar_handoff_avisado(phone)
+                    logger.warning(f"Inactiva con el cliente esperando respuesta: {phone} "
+                                   "→ derivada en vez de cerrada")
+                    continue
+                if accion != "avisar":
+                    texto_cierre = ""
                 if texto_cierre and session.get("history"):
                     # Una sola vez por cliente: si la sesión reaparece, no se
                     # le repite el mismo aviso de cierre.

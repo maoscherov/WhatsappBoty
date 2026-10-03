@@ -2984,7 +2984,10 @@ class TestFeedback16Sep:
         si, ofrece = ch.responder_obra_social("amur", cfg)
         assert "Sí" in si and "AMUR" in si and ofrece is False
         no, ofrece = ch.responder_obra_social("osde", cfg)
-        assert "no tenemos convenio" in no and "osde" in no and ofrece is True
+        assert "no la tengo en mi lista" in no and "osde" in no and ofrece is True
+        assert "no tenemos convenio" not in no          # nunca niega (PAMI 28/9)
+        viejo = dict(cfg, obras_sociales_no_message="Por ahora no tenemos convenio con {obra_social}.")
+        assert "no tenemos" not in ch.responder_obra_social("osde", viejo)[0]
         lista, _ = ch.responder_obra_social("", cfg)
         assert "AMUR, PAMI, Mutual Carcarañá" in lista
 

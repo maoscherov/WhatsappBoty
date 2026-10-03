@@ -941,6 +941,7 @@ class ConfigUpdate(BaseModel):
     imagen_no_reconocida_message: str | None = None   # imagen que el bot no reconoce → deriva
     obras_sociales: str | None = None            # lista (coma/renglón) de obras sociales con convenio
     obras_sociales_si_message: str | None = None       # {obra_social}
+    precio_minimo_venta: str | None = None             # debajo, el precio lo confirma el equipo
     obras_sociales_no_message: str | None = None       # {obra_social}
     obras_sociales_lista_message: str | None = None    # {lista}
     obras_sociales_sin_lista_message: str | None = None
@@ -1873,6 +1874,7 @@ async def bo_send_attachment(phone: str, file: UploadFile = File(...), caption: 
     texto = (f"📷 {ref}" if tipo == "imagen" else f"📎 {nombre} {ref}") + (
         f"\n{caption}" if caption else "")
     await session_svc.add_message(phone, "operator", texto)
+    await session_svc.operador_escribio(phone, agente)
     _autor = agente or (await session_svc.get(phone)).get("agente")
     await guardar_historico(phone, "operator", caption or f"📎 {nombre}", autor=_autor,
                             origen="imagen" if tipo == "imagen" else "documento",
@@ -1893,6 +1895,7 @@ async def bo_send_message(phone: str, body: OperatorMessage, _=Depends(_auth)):
     if not sent:
         raise HTTPException(status_code=502, detail="Error enviando mensaje por WhatsApp")
     await session_svc.add_message(phone, "operator", body.text.strip())
+    await session_svc.operador_escribio(phone, body.agente)
     # Historial permanente: sin esto, tras una derivación el histórico mostraba
     # al cliente hablando solo (los mensajes del operador vivían solo en Redis).
     from app.services.message_store import guardar_historico

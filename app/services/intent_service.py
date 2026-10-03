@@ -359,8 +359,11 @@ class IntentService:
             if p.get("requiere_receta") in ("si", "ambiguo"):
                 extras.append("REQUIERE RECETA")
             extra_txt = f" | {' | '.join(extras)}" if extras else ""
+            # Precio viejo del ERP: no se informa (lo confirma el equipo).
+            precio_txt = ("PRECIO A CONFIRMAR - no informar precio, ofrecer consultarlo con el equipo"
+                          if p.get("precio_dudoso") else f"${p['precio']:.2f}")
             # Número explícito para que sku_seleccionado_index coincida sin ambigüedad
-            lines.append(f"{i}. {p['nombre']} | ${p['precio']:.2f} | {estado_txt}{extra_txt} | ID: {p['sku_id']}")
+            lines.append(f"{i}. {p['nombre']} | {precio_txt} | {estado_txt}{extra_txt} | ID: {p['sku_id']}")
         return "\n".join(lines)
 
     @staticmethod
