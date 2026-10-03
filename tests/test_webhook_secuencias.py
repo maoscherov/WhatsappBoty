@@ -672,3 +672,97 @@ async def test_error_inesperado_deriva_y_avisa(entorno, monkeypatch):
     assert deps["wa"].enviados and "alguien del equipo" in deps["wa"].enviados[-1]
     s = await deps["session"].get(PHONE)
     assert s["estado"] == "operador" and s["derivada_motivo"] == "error_bot"
+
+
+# ── Auditoría 2/10: consulta de saldo de cuenta corriente → persona ─────────────
+@pytest.mark.parametrize("txt", [
+    "Hola chicas, me dirian lo que debo asi les pago",
+    "Saldo de cuenta corriente",
+    "me pasás el resumen de mi cuenta?",
+    "cuánto te debo?",
+    "les debo recetas?",
+    "cuanto es la cuota de socio",
+])
+def test_consulta_saldo_detecta(txt):
+    from app.services.checkout_helper import consulta_saldo
+    assert consulta_saldo(txt)
+
+
+@pytest.mark.parametrize("txt", ["anotámelo en la cuenta", "quiero pagar con cuenta corriente",
+                                 "tenés ibuprofeno?", "debo tomarlo con comida?"])
+def test_consulta_saldo_no_confunde(txt):
+    from app.services.checkout_helper import consulta_saldo
+    assert not consulta_saldo(txt)
+
+
+def test_cuanto_debo_con_pedido_es_el_total():
+    from app.services.checkout_helper import consulta_saldo
+    assert not consulta_saldo("cuánto te debo?", hay_pedido=True)
+    assert consulta_saldo("saldo de mi cuenta", hay_pedido=True)
+
+
+async def test_saldo_de_cuenta_corriente_deriva(entorno):
+    deps = entorno()
+    await wh.procesar_mensajes([_msg("Saldo de cuenta corriente")])
+    assert "revisar tu cuenta" in deps["wa"].enviados[-1]
+    s = await deps["session"].get(PHONE)
+    assert s["estado"] == "operador" and s["derivada_motivo"] == "consulta_cuenta_corriente"
+
+
+# ── Auditoría 2/10: precios inventados no llegan al cliente ─────────────────────
+def _bloqueos(deps):
+    return [c for c in deps["metrics"].llamadas
+            if c[0] == "evento" and c[1] and c[1][0] == "respuesta_bloqueada"]
+
+
+async def test_perfumes_inventados_no_se_envian(entorno):
+    txt = "tenés perfumes importados?"
+    guion = {txt: {"intencion": "consulta_stock", "entidad_producto": "perfumes importados",
+                   "respuesta": "Tenemos Chanel No. 5 - $7.200 y Dior Sauvage $6.400. ¿Cuál querés?"}}
+    deps = entorno(guion)
+    await wh.procesar_mensajes([_msg(txt)])
+    enviado = deps["wa"].enviados[-1]
+    assert "7.200" not in enviado and "Chanel" not in enviado
+    assert "consulte con el equipo" in enviado
+    assert _bloqueos(deps)
+    # El "sí" siguiente deriva
+    await wh.procesar_mensajes([_msg("dale")])
+    assert (await deps["session"].get(PHONE))["estado"] == "operador"
+
+
+async def test_precio_real_del_catalogo_pasa(entorno):
+    txt = "precio del taural"
+    guion = {txt: {"intencion": "consulta_precio", "entidad_producto": "taural",
+                   "sku_seleccionado_index": 1,
+                   "respuesta": "El Taural F 20 mg Com X30 está $12.000."}}
+    deps = entorno(guion)
+    await wh.procesar_mensajes([_msg(txt)])
+    assert not _bloqueos(deps)
+
+
+async def test_precio_inventado_con_resultados_lista_los_reales(entorno):
+    txt = "precio del taural"
+    guion = {txt: {"intencion": "consulta_precio", "entidad_producto": "taural",
+                   "respuesta": "El Taural sale $9.999 y el genérico $3.500."}}
+    deps = entorno(guion)
+    await wh.procesar_mensajes([_msg(txt)])
+    assert _bloqueos(deps)
+    assert not any("9.999" in t or "3.500" in t for t in deps["wa"].enviados)
+
+
+def test_precio_de_lista_como_si_tuviera_descuento():
+    """Nivea 1/10: "$36.221 ya con tu 20%" cuando bonificado sale $28.977."""
+    from app.services.checkout_helper import precios_inventados, referencias_de_precio
+    res = [{"precio": 28977.32, "precio_lista": 36221.65}]
+    malo = "La Nivea Q10 está a $36.221,65, ya con tu 20% de descuento."
+    unit, tot = referencias_de_precio(res, {}, {}, malo)
+    assert precios_inventados(malo, unit, tot) == [36221.65]
+    bien = "Precio de lista $36.221,65; con tu 20% te queda $28.977,32."
+    unit, tot = referencias_de_precio(res, {}, {}, bien)
+    assert precios_inventados(bien, unit, tot) == []
+
+
+def test_numeros_que_no_son_precios_no_cuentan():
+    from app.services.checkout_helper import precios_inventados
+    assert precios_inventados("Tengo Ibuprofeno 600 x 100 y Aspirina 500 mg", [], []) == []
+    assert precios_inventados("2 unidades a $1.000 son $2.000", [1000], []) == []

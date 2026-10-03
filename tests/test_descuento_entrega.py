@@ -99,3 +99,30 @@ def test_aviso_presentacion():
     assert r.startswith("No tengo Atenolol 50 x50 en esa presentación.")
     ya = "Justo no tengo el de 50, tengo el de 30 a $20.174,01."
     assert ch.aviso_presentacion("Atenolol 50 x50", ya) == ya
+
+
+# ── Auditoría 2/10: la línea del descuento solo si el precio lo tiene ───────────
+class _SkuLista:
+    def __init__(self, precios):
+        self.precios = precios
+
+    def get_by_id(self, sku_id):
+        p = self.precios.get(sku_id)
+        return type("S", (), {"precio_venta": p})() if p is not None else None
+
+
+def test_precio_sin_descuento_receta_sin_bonificar():
+    """Femiden: cobrado a precio de lista → no hay descuento que anunciar."""
+    from app.services.checkout_helper import precio_sin_descuento
+    svc = _SkuLista({"F": 35619.17})
+    antes = precio_sin_descuento([{"sku_id": "F", "precio": 35619.17, "cantidad": 1}], 20, svc)
+    assert antes == 35619.17          # igual al cobrado → sin línea de descuento
+
+
+def test_precio_sin_descuento_con_bonificacion_y_mixto():
+    from app.services.checkout_helper import precio_sin_descuento
+    svc = _SkuLista({"N": 36221.65, "F": 35619.17})
+    items = [{"sku_id": "N", "precio": 28977.32, "cantidad": 1},     # con 20%
+             {"sku_id": "F", "precio": 35619.17, "cantidad": 1},     # receta, sin
+             {"sku_id": "LIBRE1", "precio": 1000, "cantidad": 2}]    # ítem libre
+    assert precio_sin_descuento(items, 20, svc) == round(36221.65 + 35619.17 + 2000, 2)

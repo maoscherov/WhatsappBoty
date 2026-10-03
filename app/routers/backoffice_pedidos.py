@@ -151,7 +151,10 @@ async def bo_pedido(body: PedidoIn, _=Depends(_auth)):
     pct = 0.0
     if body.aplicar_descuento:
         de_lista = [l for l in lineas if not l["_precio_fijo"]]
-        con_desc, pct = aplicar_descuento_socio(de_lista, phone, cfg, socios)
+        # Con receta también: el operador ya la validó, y la cotización de
+        # receta del backoffice aplica el mismo descuento (Femiden 2/10).
+        con_desc, pct = aplicar_descuento_socio(de_lista, phone, cfg, socios,
+                                                incluir_receta=True)
         por_id = {l["sku_id"]: l for l in con_desc}
         lineas = [por_id.get(l["sku_id"], l) if not l["_precio_fijo"] else l for l in lineas]
 

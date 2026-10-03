@@ -51,7 +51,7 @@ from app.services.checkout_helper import (
     presentacion_distinta, aviso_presentacion,
     referencia_ambigua_bloquea, cumplir_derivacion_prometida,
     quitar_cierres_vagos, ya_dice_no_disponible, solo_la_pregunta,
-    alternativas_con_precio, texto_alternativas,
+    alternativas_con_precio, texto_alternativas, precios_inventados, referencias_de_precio,
     pide_cancelar_pedido, pregunta_obra_social, responder_obra_social, parsear_lista,
     pregunta_bono, responder_bono, agregar_oferta_farmaceutico, acepta_farmaceutico,
     entidad_contradice_pendiente, debe_derivar_desconocido,
@@ -60,7 +60,7 @@ from app.services.checkout_helper import (
     pregunta_descuento, aplicar_descuento_socio, pide_todos, texto_deictico,
     quitar_confirmaciones_fantasma, pregunta_entrega, costo_envio_de,
     producto_respaldado, productos_con_precio, parece_direccion,
-    personalizar_nombre, pide_cuenta_corriente, habilitado_cc,
+    personalizar_nombre, pide_cuenta_corriente, habilitado_cc, consulta_saldo,
     aviso_fuera_horario, dice_ser_socio, pregunta_horario, responder_horario,
 )
 
@@ -173,7 +173,10 @@ def _empieza_con_no(t: str) -> bool:
     """
     return bool(_re.match(r"^\s*no\b", t or "", _re.IGNORECASE))
 _NO_FRASE  = [r"\bno quiero\b", r"\bno gracias\b", r"\bmejor no\b",
-              r"\bcancela(r|me)?\b", r"\bnope\b"]
+              r"\bcancela(r|me)?\b", r"\bnope\b",
+              # Caso real 1/10: "desestimalo" / "no continúo" seguían en el
+              # flujo de entrega y el bot pidió la dirección 4 veces más.
+              r"\bdesestim\w*", r"\bno\s+contin[uú]\w*"]
 
 def _match_si(t: str) -> bool:
     return any(_re.search(p, t, _re.IGNORECASE) for p in _PALABRAS_SI)
@@ -477,6 +480,41 @@ async def _flujo_mutual(deps, phone: str, session: dict, texto: str,
         respuesta += "\n\nSi preferís te paso con un asesor."
 
     return respuesta, intencion
+
+
+async def _sin_precios_inventados(deps, phone: str, session: dict, respuesta: str,
+                                  resultados, cfg: dict, entidad: "str | None" = None) -> str:
+    """
+    Verifica que todo precio de la respuesta del modelo salga de un dato real
+    (catálogo, pedido en curso, envío, lo ya dicho). Si inventó alguno
+    ("Chanel N°5 $7.200", "Venotonic $3.200" — auditoría 2/10), la respuesta
+    NO se envía: va la lista real de lo que hay, o el ofrecimiento de
+    consultarlo con el equipo (y el "sí" siguiente deriva).
+    """
+    try:
+        unit, totales = referencias_de_precio(resultados, session, cfg, respuesta)
+        malos = precios_inventados(respuesta, unit, totales)
+    except Exception as e:
+        logger.warning(f"Control de precios falló para {phone}: {e}")
+        return respuesta
+    if not malos:
+        return respuesta
+    logger.warning(f"Respuesta con precios inventados bloqueada ({phone}): {malos[:5]} "
+                   f"— {respuesta[:160]!r}")
+    try:
+        await deps["metrics"].evento(
+            "respuesta_bloqueada", phone=phone,
+            dato=f"{', '.join(f'${p:,.2f}' for p in malos[:3])} | {respuesta[:150]}")
+    except Exception:
+        pass
+    alts = alternativas_con_precio(resultados or [])
+    if alts:
+        return texto_alternativas(alts)
+    _ses = await deps["session"].get(phone)
+    _ses["derivacion_ofrecida"] = (entidad or "consulta")[:60]
+    await deps["session"].save(phone, _ses)
+    return ("No lo encuentro en nuestro catálogo 😕 "
+            "¿Querés que lo consulte con el equipo?")
 
 
 async def _responder_consulta_en_flujo(deps, phone: str, session: dict, texto: str,
@@ -1123,6 +1161,26 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 _ses = await deps["session"].get(phone)
                 _ses.pop("derivacion_ofrecida", None)
                 await deps["session"].save(phone, _ses)
+
+            # ── Consulta de saldo / deuda de cuenta corriente → persona ──────
+            # Antes que el flujo de cuenta corriente: "saldo de mi cuenta
+            # corriente" matcheaba pide_cuenta_corriente y el bot contestaba
+            # "cuando armemos tu pedido lo cargamos a tu cuenta".
+            if consulta_saldo(texto, hay_pedido=bool(
+                    session.get("pending_sku_id") or session.get("pending_items"))):
+                _intencion = "consulta_cuenta_corriente"
+                await deps["session"].set_estado(phone, "operador",
+                                                 motivo="consulta_cuenta_corriente")
+                _cfg_sal = await deps["config"].get_all()
+                respuesta = _cfg_sal.get("consulta_saldo_message") or (
+                    "Te paso con alguien del equipo para revisar tu cuenta 🙌 "
+                    "En un momento te contactamos.")
+                _ts = _time.perf_counter()
+                await deps["wa"].send_text(phone, respuesta)
+                _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
+                await deps["session"].add_message(phone, "user", texto)
+                await deps["session"].add_message(phone, "assistant", respuesta)
+                continue
 
             # ── Pide transferencia/efectivo → según config del backoffice ────
             #   "derivar" (default) → atención humana.
@@ -1926,6 +1984,10 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 cantidad = max(1, int(intent_result.get("cantidad") or 1))
                 respuesta = quitar_confirmaciones_fantasma(
                 quitar_frases_de_espera(intent_result.get("respuesta", "")))
+                # Antes de decidir qué producto se ofreció: un precio inventado
+                # no llega al cliente (auditoría 2/10).
+                respuesta = await _sin_precios_inventados(
+                    deps, phone, session, respuesta, resultados_sku, _cfg_desc, entidad)
 
                 # El modelo detectó que pide una foto (frases que el matcher no
                 # cubre): misma regla, lo atiende una persona.
@@ -2184,6 +2246,9 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 cantidad_nueva = intent_result.get("cantidad")
                 respuesta = quitar_confirmaciones_fantasma(
                 quitar_frases_de_espera(intent_result.get("respuesta", "")))
+                respuesta = await _sin_precios_inventados(
+                    deps, phone, session, respuesta, pending_opciones,
+                    await deps["config"].get_all(), intent_result.get("entidad_producto"))
 
                 if sku_index is not None and pending_opciones:
                     try:
@@ -2222,6 +2287,14 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 if _deriv:
                     respuesta = _deriv
                     _intencion = "derivado_receta"
+
+            # Respuesta directa del modelo sin búsqueda (saludo, consulta
+            # general): tampoco puede traer precios que no salen de ningún dato.
+            if resultados_sku is None and _intencion in (
+                    "saludo", "social", "agradecimiento", "desconocido", "consulta_abierta"):
+                respuesta = await _sin_precios_inventados(
+                    deps, phone, session, respuesta, None,
+                    await deps["config"].get_all(), entidad)
 
             # El modelo dijo "te paso con alguien del equipo": se cumple. Antes
             # quedaba solo en el texto, nadie lo veía y el producto seguía

@@ -74,7 +74,9 @@ def _filas():
             "therapeutic_actions": [], "stock": 5, "visible": True, "active": True,
             "requiere_receta": "no", "source": "t"}
     return [{**base, "external_id": "1", "name": "COLGATE ULTRA BLANCO x 90", "price": 1000.0},
-            {**base, "external_id": "2", "name": "JABON DOVE x 90", "price": 500.0}]
+            {**base, "external_id": "2", "name": "JABON DOVE x 90", "price": 500.0},
+            {**base, "external_id": "3", "name": "FEMIDEN COM x 28", "price": 35619.17,
+             "requiere_receta": "si", "category": "Medicamentos Bajo Receta"}]
 
 
 @pytest.fixture
@@ -184,3 +186,13 @@ async def test_alta_de_socio(cli, db, monkeypatch, tmp_path):
     assert [(f["celular"], f["dni"]) for f in filas] == [("3415807742", "20123456")]
     r2 = await cli.post("/bo/socios/alta", json={"phone": PHONE, "nombre": "Otra"})
     assert r2.status_code == 409
+
+
+async def test_receta_validada_por_el_operador_lleva_el_descuento(cli, entorno):
+    """Femiden 2/10: la cotización de receta aplicaba el 20% y el pedido
+    armado no — el cliente vio un precio y el link cobró otro."""
+    entorno["socios"].socios[PHONE] = {"nombre": "Laura"}
+    r = await cli.post("/bo/pedido", json={
+        "phone": PHONE, "items": [{"sku_id": "3"}], "pago": "link"})
+    assert r.status_code == 200, r.text
+    assert r.json()["total"] == round(35619.17 * 0.9, 2)

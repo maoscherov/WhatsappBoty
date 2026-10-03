@@ -48,10 +48,35 @@ def afirma_envio(t: str) -> bool:
 _CAMBIO_DIR = [r"otra direcci[oó]n", r"cambiar.{0,12}direcci[oó]n", r"distinta direcci[oó]n",
                r"a otra parte", r"a otro lado", r"otro domicilio", r"cambiar.{0,8}env[ií]o",
                r"nueva direcci[oó]n"]
-# Una dirección escrita: nombre de calle + número (ej: "donado 608", "16 de enero 9279").
-_DIR_RE = re.compile(r"[a-záéíóúñ]{2,}\.?\s+\d+", re.IGNORECASE)
-_CONECTORES = [r"\blo quiero\b", r"\bquiero\b", r"\benv[ií]a?r?\b", r"\bmandar?\b",
-               r"\ba\b", r"\ben\b", r"\bla\b", r"\bel\b", r"\bmi\b"]
+# Una dirección escrita: nombre de calle + número de 2 a 5 dígitos (ej: "donado
+# 608", "16 de enero 9279"). Antes bastaba "palabra + número" y se tomaban como
+# domicilio "te pedi 1 blister", "sertal 10 comprimidos" u "optiser de 20 mg":
+# el link salía "a domicilio a *Esta perfecto, pero solo te pedi 1 blister*"
+# (casos reales 6/8, 26/8, 1/10).
+_NO_DIR = re.compile(
+    r"\?|\d\s*(mg|ml|gr?s?|cc|mcg|ui|%)\b|\bx\s*\d+|"
+    r"\b(comprimid\w*|comp|c[aá]psul\w*|bl[ií]ster\w*|caja\w*|tiras?|unidad\w*|frasco\w*|"
+    r"ped[ií]\w*|quiero|quer[ií]a|precio\w*|link|cu[aá]nto|stock|ten[eé]s|tendr[aá]s|"
+    r"receta\w*|veces|producto\w*)\b",
+    re.IGNORECASE)
+# Palabras que cortan la calle hacia atrás: "por favor me lo envías san javier
+# 837" → "san javier 837".
+_STOP_DIR = {
+    "por", "favor", "me", "lo", "la", "el", "a", "al", "en", "mi", "es", "y", "que",
+    "te", "seria", "sería", "ahora", "ok", "dale", "si", "sí", "bueno", "perfecto",
+    "mejor", "entonces", "para", "otra", "nueva", "distinta", "direccion", "dirección",
+    "domicilio", "envias", "envías", "envia", "envía", "envialo", "envíalo", "enviamelo",
+    "envíamelo", "enviame", "envíame", "enviar", "enviarlo", "manda", "mandá", "mandalo",
+    "mandálo", "mandamelo", "mandámelo", "mandame", "mandar", "mandarlo", "traelo",
+    "traémelo", "traemelo", "vivo", "casa", "queda",
+}
+_SUFIJO_DIR = {"bis", "piso", "dto", "dpto", "depto", "timbre", "casa", "lote"}
+# Esquina: solo con "esquina" explícito o el lado "9 de julio" — "jabón y crema"
+# no es una dirección.
+_ESQUINA_RE = re.compile(
+    r"\b((?:calle|av\.?|avenida|bv\.?|bulevar|pje\.?|pasaje)?\s*[a-záéíóúñ.]{3,}(?:\s+[a-záéíóúñ.]{2,})?)"
+    r"\s+(?:y|e|esquina)\s+(\d{1,2}\s+de\s+[a-záéíóúñ]+|[a-záéíóúñ.]{3,}(?:\s+[a-záéíóúñ.]{2,})?)",
+    re.IGNORECASE)
 
 
 def quiere_cambiar_direccion(t: str) -> bool:
@@ -59,20 +84,44 @@ def quiere_cambiar_direccion(t: str) -> bool:
 
 
 def parece_direccion(t: str) -> bool:
-    return bool(_DIR_RE.search(t))
+    return extraer_direccion_de(t) is not None
 
 
 def extraer_direccion_de(t: str) -> Optional[str]:
     """
-    Extrae una dirección escrita del mensaje (calle + número), quitando frases
-    de cambio y conectores. Devuelve None si el mensaje no contiene una dirección
-    reconocible (evita tomar cualquier texto como dirección).
+    Extrae SOLO la dirección escrita en el mensaje (calle + número, con piso /
+    depto / bis, o una esquina). Devuelve None si el mensaje no la contiene o
+    habla de productos, cantidades o precios: un texto cualquiera nunca se
+    toma como domicilio de entrega.
     """
-    s = t
-    for p in _CAMBIO_DIR + _CONECTORES:
-        s = re.sub(p, " ", s, flags=re.IGNORECASE)
-    s = re.sub(r"\s+", " ", s).strip(" ,.")
-    return s if s and parece_direccion(s) else None
+    if not t or _NO_DIR.search(t):
+        return None
+    toks = re.findall(r"[\wáéíóúñÁÉÍÓÚÑ.°º]+", t)
+    for i in range(len(toks) - 1, 0, -1):
+        if not re.fullmatch(r"\d{2,5}", toks[i]):
+            continue
+        k = i - 1
+        while k >= 0 and i - k <= 4 and toks[k].lower().strip(".") not in _STOP_DIR:
+            k -= 1
+        calle = toks[k + 1:i]
+        if not calle or not re.search(r"[a-záéíóúñ]{2,}", " ".join(calle), re.IGNORECASE):
+            continue
+        fin = i + 1
+        while fin < len(toks) and (
+                toks[fin].lower().strip(".") in _SUFIJO_DIR
+                or (re.fullmatch(r"\w{1,3}", toks[fin])
+                    and toks[fin - 1].lower().strip(".") in _SUFIJO_DIR)):
+            fin += 1
+        return " ".join(toks[k + 1:fin])
+    m = _ESQUINA_RE.search(t)
+    if m and len(toks) <= 8 and (
+            re.search(r"\besquina\b", t, re.IGNORECASE)
+            or re.match(r"\d{1,2}\s+de\s+", m.group(2))
+            or re.match(r"(calle|av|avenida|bv|bulevar|pje|pasaje)\b", m.group(1).strip(), re.IGNORECASE)):
+        lado1 = " ".join(w for w in m.group(1).split() if w.lower().strip(".") not in _STOP_DIR)
+        if lado1:
+            return f"{lado1} y {m.group(2)}".strip()
+    return None
 
 
 # Pedido explícito de hablar con una persona → derivar al operador.
@@ -210,6 +259,36 @@ def _sin_tildes(t: str) -> str:
                  ("Á", "A"), ("É", "E"), ("Í", "I"), ("Ó", "O"), ("Ú", "U")):
         s = s.replace(a, b)
     return s
+
+
+# Consulta de saldo / deuda de cuenta corriente. El bot no tiene esos datos:
+# "me dirían lo que debo", "saldo de mi cuenta corriente", "resumen de cuenta"
+# recibían "cuando armemos tu pedido lo cargamos a tu cuenta" o un "no te
+# entendí" (~10 casos reales entre 25/9 y 2/10). Va siempre a una persona.
+_SALDO_FUERTE = [
+    r"\bsaldo\b",
+    r"\bresumen\b.{0,25}\bcuenta\b",
+    r"\bestado\s+de\s+(mi\s+)?cuenta\b",
+    r"\bmi\s+deuda\b",
+    r"\bcuota\b.{0,15}\bsocio\b",
+    r"\b(les|le|te)\s+debo\s+(algo|plata|recetas?|de\s+antes)\b",
+]
+# "Cuánto te debo" con un pedido en curso es el total de ESE pedido: solo
+# cuenta como consulta de saldo sin compra abierta.
+_SALDO_DEBIL = [
+    r"\bcu[aá]nto\s+(te\s+|les\s+|le\s+)?deb\w*",
+    r"\blo\s+que\s+(te\s+|les\s+|le\s+)?debo\b",
+    r"\b(les|le|te)\s+debo\b",
+    r"\bdebo\s+algo\b",
+]
+
+
+def consulta_saldo(t: str, hay_pedido: bool = False) -> bool:
+    """True si el cliente pregunta su saldo / deuda de cuenta corriente."""
+    s = _sin_tildes(t or "").lower()
+    if any(re.search(p, s) for p in _SALDO_FUERTE):
+        return True
+    return not hay_pedido and any(re.search(p, s) for p in _SALDO_DEBIL)
 
 
 _ANOTAR = r"\b(anot[ae](?!d)\w*|apunt[ae](?!d)\w*)\b"   # "anotado" no es un pedido
@@ -562,7 +641,8 @@ def descuento_para(phone: str, cfg: dict, socio_svc=None) -> tuple[float, str]:
 
 
 def aplicar_descuento_socio(resultados: list[dict], phone: str, cfg: dict,
-                            socio_svc=None) -> tuple[list[dict], float]:
+                            socio_svc=None, incluir_receta: bool = False
+                            ) -> tuple[list[dict], float]:
     """
     Devuelve (resultados_con_descuento, pct_aplicado) para un socio del padrón.
 
@@ -589,7 +669,9 @@ def aplicar_descuento_socio(resultados: list[dict], phone: str, cfg: dict,
     salida = []
     for r in resultados:
         item = dict(r)
-        if not requiere_derivacion(item.get("requiere_receta", "no"), modo):
+        # incluir_receta: el operador ya validó la receta (pedido armado desde
+        # el backoffice) y el descuento va igual que en la cotización.
+        if incluir_receta or not requiere_derivacion(item.get("requiere_receta", "no"), modo):
             lista = item.get("precio") or 0.0
             if lista > 0:
                 item["precio_lista"] = lista
@@ -824,6 +906,39 @@ async def _cerrar_venta_cc(session_svc, phone: str, session: dict,
     )
 
 
+def precio_sin_descuento(items: list[dict], pct: float, sku_svc=None) -> Optional[float]:
+    """
+    Total de los ítems a precio de lista: el de catálogo para los que se
+    cobran con el descuento aplicado, el cobrado para los que no lo tienen
+    (receta, precio fijado por el operador, ítems libres). None si no se
+    puede leer el catálogo.
+    """
+    if pct <= 0 or not items:
+        return None
+    try:
+        if sku_svc is None:
+            from app.config import get_settings as _gs
+            from app.services.sku_service import get_sku_service
+            sku_svc = get_sku_service(_gs().sku_csv_path)
+    except Exception as e:
+        logger.warning(f"Sin catálogo para el precio de lista: {e}")
+        return None
+    total = 0.0
+    for it in items:
+        precio = float(it.get("precio") or 0)
+        cant = int(it.get("cantidad", 1) or 1)
+        lista = None
+        try:
+            sku = sku_svc.get_by_id(str(it.get("sku_id"))) if it.get("sku_id") else None
+            lista = float(sku.precio_venta or 0) if sku else None
+        except Exception:
+            lista = None
+        con_desc = (lista and abs(precio - round(lista * (1 - pct / 100), 2))
+                    <= max(0.02, lista * 0.002))
+        total += (lista if con_desc else precio) * cant
+    return round(total, 2)
+
+
 async def crear_link_y_responder(
     payment_svc,
     session_svc,
@@ -881,11 +996,16 @@ async def crear_link_y_responder(
     descuento_line = ""
     try:
         pct, _tipo = descuento_para(phone, _cfg)
-        if pct > 0:
-            # Precio de lista reconstruido desde el total ya bonificado, sólo
-            # para mostrarlo en el mensaje.
-            antes = (round(total_productos / (1 - pct / 100), 2)
-                     if pct < 100 else total_productos)
+        # La línea sale SOLO si el precio cobrado tiene el descuento: los
+        # productos con receta no se bonifican en el catálogo, y antes el link
+        # decía "te aplicamos un 20% (precio de lista $44.523)" cobrando el
+        # precio de lista de $35.619 (caso real Femiden 2/10).
+        antes = precio_sin_descuento(
+            items or [{"sku_id": session.get("pending_sku_id"),
+                       "precio": session.get("pending_precio") or 0,
+                       "cantidad": session.get("pending_cantidad", 1)}],
+            pct) if pct > 0 else None
+        if antes is not None and antes - total_productos > 0.01:
             if _tipo == "empleado":
                 plantilla = (_cfg.get("empleado_discount_message")
                              or "🎉 Como empleado te aplicamos un {pct}% de descuento "
@@ -1119,7 +1239,10 @@ async def capturar_direccion(
     Captura la dirección de envío (estado esperando_direccion) y genera el link.
     Devuelve (respuesta, intencion).
     """
-    direccion = texto.strip()
+    # Solo la parte que es dirección ("por favor me lo envías san javier 837"
+    # → "san javier 837"); si no se reconoce, el texto tal cual (el llamador ya
+    # validó que hay una dirección).
+    direccion = extraer_direccion_de(texto) or texto.strip()
     respuesta, _ = await crear_link_y_responder(
         payment_svc, session_svc, phone, session, "envio", direccion
     )
@@ -1737,3 +1860,85 @@ def responder_horario(cfg_svc, hours: dict) -> str:
             cuando = cfg_svc.proxima_apertura(hours)
             r += " Ahora estamos cerrados" + (f": abrimos {cuando}." if cuando else ".")
     return r + " ¿Te ayudo con algo más?"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Auditoría de chats 2/10: precios inventados. Ante consultas genéricas
+# ("perfumes importados", "algo para várices", "protectores solares") el modelo
+# respondía marcas y precios que no existen ("Chanel N°5 $7.200", "Venotonic
+# $3.200"). El prompt ya lo prohíbe; esto lo verifica antes de enviar.
+# ══════════════════════════════════════════════════════════════════════════════
+_PRECIO_SIGNO_RE = re.compile(r"\$\s?(\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,2})?)")
+
+
+def precios_con_signo(texto: str) -> list[float]:
+    """Precios escritos con "$" (los números sueltos son dosis o tamaños:
+    "Ibuprofeno 600", "x 100")."""
+    out = []
+    for crudo in _PRECIO_SIGNO_RE.findall(texto or ""):
+        s = crudo.strip()
+        if len(s) > 3 and s[-3] in ".,":
+            s = f"{re.sub(r'[.,]', '', s[:-3])}.{s[-2:]}"
+        elif len(s) > 2 and s[-2] in "," and s.count(",") == 1 and "." not in s:
+            s = f"{s[:-2]}.{s[-1]}"
+        else:
+            s = re.sub(r"[.,]", "", s)
+        try:
+            out.append(round(float(s), 2))
+        except ValueError:
+            continue
+    return out
+
+
+def precios_inventados(respuesta: str, referencias, extras=()) -> list[float]:
+    """
+    Precios de la respuesta que no salen de ningún dato real. `referencias`
+    son precios unitarios (se aceptan múltiplos por cantidad y sumas de a dos);
+    `extras` se aceptan tal cual (totales, envío). Tolera el redondeo a pesos.
+    """
+    refs = sorted({round(float(v), 2) for v in referencias if v and float(v) > 0})
+    validos = {round(v * q, 2) for v in refs for q in range(1, 21)}
+    validos |= {round(a + b, 2) for i, a in enumerate(refs) for b in refs[i + 1:]}
+    validos |= {round(float(e), 2) for e in extras if e and float(e) > 0}
+    malos = []
+    for p in precios_con_signo(respuesta):
+        if p <= 0:
+            continue
+        if any(abs(p - v) <= max(1.0, v * 0.001) for v in validos):
+            continue
+        malos.append(p)
+    return malos
+
+
+def referencias_de_precio(resultados, session: dict, cfg: dict,
+                          respuesta: str = "") -> tuple[list[float], list[float]]:
+    """(unitarios, totales) válidos para citar en una respuesta: resultados de
+    la búsqueda, pedido en curso, opciones mostradas, envío y lo que ya se dijo
+    en la conversación. El precio de lista de un producto bonificado vale solo
+    si la respuesta habla del precio "de lista": decir "$36.221 ya con tu 20%"
+    cuando con el descuento sale $28.977 es dar un precio falso (Nivea, 1/10)."""
+    claves = (("precio", "precio_lista") if re.search(r"\blista\b", respuesta or "", re.I)
+              else ("precio",))
+    unit: list[float] = []
+    for r in list(resultados or []) + list(session.get("pending_opciones") or []):
+        for k in claves:
+            try:
+                if r.get(k):
+                    unit.append(float(r[k]))
+            except (TypeError, ValueError):
+                pass
+    items = session.get("pending_items") or []
+    for i in items:
+        unit.append(float(i.get("precio") or 0))
+    if session.get("pending_precio"):
+        unit.append(float(session["pending_precio"]))
+    envio = costo_envio_de(cfg)
+    total = sum(float(i.get("precio") or 0) * int(i.get("cantidad", 1) or 1) for i in items)
+    if not total and session.get("pending_precio"):
+        total = float(session["pending_precio"]) * int(session.get("pending_cantidad", 1) or 1)
+    totales = [envio, total, total + envio if total else 0]
+    # Lo que ya se dijo (el operador cotizó una receta, el cliente citó un
+    # precio): repetirlo no es inventar.
+    for m in (session.get("history") or [])[-8:]:
+        totales.extend(precios_con_signo(str(m.get("content") or "")))
+    return unit, totales
