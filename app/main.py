@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
 from app.routers import (webhook, simulate, backoffice, mp_webhook, orders_api,
                          media, payway, sync_api, agent_ws, backoffice_branches,
-                         backoffice_receta, backoffice_pedidos)
+                         backoffice_receta, backoffice_pedidos, backoffice_diccionario)
 from app.services.sku_service import get_sku_service
 from app.services.session_service import get_session_service
 from app.services.blob_store import get_blob_store
@@ -136,6 +136,16 @@ async def lifespan(app: FastAPI):
             logger.info(f"Referencia de receta: {_r}")
         except Exception as e:
             logger.error(f"No se pudo inicializar la referencia de receta: {e}")
+
+        # Diccionario del catálogo (2/10): abreviaturas y sinónimos desde
+        # Postgres ANTES de armar el índice de búsqueda del catálogo ERP.
+        try:
+            from app.services.diccionario_service import cargar as _cargar_dic
+            _d = await asyncio.wait_for(_cargar_dic(get_db(settings.database_url)), timeout=30.0)
+            logger.info(f"Diccionario del catálogo: {_d}")
+        except Exception as e:
+            logger.warning(f"No se pudo cargar el diccionario del catálogo: {e} — "
+                           "se usa la lista base")
 
         # Catálogo ERP: si hay una sucursal sincronizada por el agente (o la
         # que fija DEFAULT_BRANCH_ID), gana Postgres sobre el CSV, que ya
@@ -392,6 +402,7 @@ app.include_router(agent_ws.router)
 app.include_router(backoffice_branches.router)
 app.include_router(backoffice_receta.router)
 app.include_router(backoffice_pedidos.router)
+app.include_router(backoffice_diccionario.router)
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 

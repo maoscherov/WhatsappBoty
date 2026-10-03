@@ -477,9 +477,11 @@ class SKUService:
         # Expandir con sinónimos: si el cliente escribió un genérico cuyo nombre
         # no está en el catálogo (ej. "ibuprofeno"), agregamos las marcas equivalentes.
         variantes = [clean_query]
+        _de_sinonimo: set[str] = set()     # palabras que tradujo un sinónimo
         for generico, marcas in SINONIMOS.items():
             if generico in clean_query:
                 variantes.extend(marcas)
+                _de_sinonimo.update(_tokens(generico))
 
         # Se guarda el mejor score de CADA scorer por separado (entre todas las
         # variantes). Importa mantenerlos separados: con nombres largos del
@@ -547,8 +549,12 @@ class SKUService:
         # → UNESIA UNG). Las marcas grandes respetan el tipo: "talco rexona"
         # no es un desodorante Rexona (caso 21/8).
         umbral_marca = max(30, total_docs // 100)
+        # Una palabra que el diccionario tradujo no es una marca: "suero" es
+        # poco común en el catálogo y filtraba todo a "suero de leche" en vez
+        # de buscar "solución fisiológica" (medición 2/10).
         marcas = [t for t in q_tokens
-                  if 0 < self._token_df.get(t, 0) <= umbral_marca and not tipos_mencionados(t)]
+                  if 0 < self._token_df.get(t, 0) <= umbral_marca and not tipos_mencionados(t)
+                  and t not in _de_sinonimo]
         if marcas:
             # Una sola marca manda: la que ENCABEZA el nombre de sus productos
             # ("EXIMIA …", "UNESIA …") y, a igualdad, la más rara. En

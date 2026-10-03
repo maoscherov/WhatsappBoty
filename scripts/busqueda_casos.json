@@ -1,0 +1,816 @@
+{
+ "_doc": "Set de prueba de la búsqueda (2/10). Cada caso: lo que escribió (o escribiría) un cliente y qué cuenta como acierto. 'debe' es una lista de alternativas; cada alternativa es una lista de fragmentos que TODOS tienen que estar en el nombre del producto (sin importar mayúsculas). 'origen': auditoria = búsqueda que falló en un chat real; venta = consulta real que terminó en venta; control = consulta común que no debe romperse.",
+ "casos": [
+  {
+   "q": "hisopos estrella",
+   "debe": [
+    [
+     "estrella",
+     "his"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "hisopos",
+   "debe": [
+    [
+     "his"
+    ],
+    [
+     "hisopo"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "cotonetes",
+   "debe": [
+    [
+     "his"
+    ],
+    [
+     "hisopo"
+    ],
+    [
+     "cotonete"
+    ]
+   ],
+   "origen": "control"
+  },
+  {
+   "q": "suero fisiologico",
+   "debe": [
+    [
+     "fisiolog"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "solucion fisiologica 500ml",
+   "debe": [
+    [
+     "fisiolog"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "off bebe",
+   "debe": [
+    [
+     "off",
+     "beb"
+    ],
+    [
+     "off",
+     "kids"
+    ],
+    [
+     "off",
+     "niñ"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "caramelos lefmar",
+   "debe": [
+    [
+     "lefmar"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "perfume shakira",
+   "debe": [
+    [
+     "shakira"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "protector facial eximia",
+   "debe": [
+    [
+     "eximia",
+     "solaire"
+    ],
+    [
+     "eximia",
+     "fps"
+    ],
+    [
+     "solaire"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "corega",
+   "debe": [
+    [
+     "corega"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "jabon aveno",
+   "debe": [
+    [
+     "aveno",
+     "jab"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "talco rexona",
+   "debe": [
+    [
+     "rexona",
+     "tal"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "desodorante dove",
+   "debe": [
+    [
+     "dove",
+     "des"
+    ],
+    [
+     "dove",
+     "deo"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "hipoglos",
+   "debe": [
+    [
+     "hipoglos"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "dipirona",
+   "debe": [
+    [
+     "novalgina"
+    ],
+    [
+     "novacler"
+    ],
+    [
+     "dipiron"
+    ],
+    [
+     "ditral"
+    ],
+    [
+     "dipifebral"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "ketorolac",
+   "debe": [
+    [
+     "ketorol"
+    ],
+    [
+     "dolten"
+    ],
+    [
+     "sinalgico"
+    ],
+    [
+     "dorixina"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "aspirina prevent 100",
+   "debe": [
+    [
+     "prevent"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "ibuprofeno 600",
+   "debe": [
+    [
+     "ibupirac",
+     "600"
+    ],
+    [
+     "actron",
+     "600"
+    ],
+    [
+     "ibuprofeno",
+     "600"
+    ],
+    [
+     "ibu",
+     "600"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "ibuprofeno suspension",
+   "debe": [
+    [
+     "sus",
+     "ibu"
+    ],
+    [
+     "sus",
+     "ibulgia"
+    ],
+    [
+     "sus",
+     "ibumar"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "buscapina compuesta",
+   "debe": [
+    [
+     "buscapina",
+     "compos"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "vendas cambrico",
+   "debe": [
+    [
+     "cambric"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "crema dental colgate",
+   "debe": [
+    [
+     "colgate",
+     "den"
+    ]
+   ],
+   "origen": "control"
+  },
+  {
+   "q": "pasta de dientes",
+   "debe": [
+    [
+     "den"
+    ]
+   ],
+   "origen": "control"
+  },
+  {
+   "q": "cepillo de dientes",
+   "debe": [
+    [
+     "cep"
+    ]
+   ],
+   "origen": "control"
+  },
+  {
+   "q": "esmalte de uñas",
+   "debe": [
+    [
+     "esm"
+    ],
+    [
+     "esmalte"
+    ]
+   ],
+   "origen": "control"
+  },
+  {
+   "q": "tintura rubio oscuro",
+   "debe": [
+    [
+     "tin",
+     "rub"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "toallitas femeninas",
+   "debe": [
+    [
+     "hig"
+    ],
+    [
+     "toall",
+     "fem"
+    ]
+   ],
+   "origen": "control"
+  },
+  {
+   "q": "maquinita de afeitar",
+   "debe": [
+    [
+     "maq"
+    ],
+    [
+     "afe"
+    ]
+   ],
+   "origen": "control"
+  },
+  {
+   "q": "unesia",
+   "debe": [
+    [
+     "unesia"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "crema eximia de dia",
+   "debe": [
+    [
+     "eximia"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "aveno protector solar 65",
+   "debe": [
+    [
+     "aveno",
+     "65"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "oleo calcareo",
+   "debe": [
+    [
+     "oleo"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "alcohol en gel",
+   "debe": [
+    [
+     "alcohol",
+     "gel"
+    ]
+   ],
+   "origen": "control"
+  },
+  {
+   "q": "pañales para adultos",
+   "debe": [
+    [
+     "pañ",
+     "ad"
+    ]
+   ],
+   "origen": "control"
+  },
+  {
+   "q": "preservativos",
+   "debe": [
+    [
+     "preserv"
+    ],
+    [
+     "prime"
+    ],
+    [
+     "tulipan"
+    ]
+   ],
+   "origen": "control"
+  },
+  {
+   "q": "protector diario",
+   "debe": [
+    [
+     "prot"
+    ],
+    [
+     "protec"
+    ]
+   ],
+   "origen": "control"
+  },
+  {
+   "q": "mylanta",
+   "debe": [
+    [
+     "mylanta"
+    ]
+   ],
+   "origen": "venta"
+  },
+  {
+   "q": "migral",
+   "debe": [
+    [
+     "migral"
+    ]
+   ],
+   "origen": "venta"
+  },
+  {
+   "q": "tafirol",
+   "debe": [
+    [
+     "tafirol"
+    ]
+   ],
+   "origen": "venta"
+  },
+  {
+   "q": "paracetamol",
+   "debe": [
+    [
+     "tafirol"
+    ],
+    [
+     "paracetamol"
+    ]
+   ],
+   "origen": "control"
+  },
+  {
+   "q": "amoxicilina 500",
+   "debe": [
+    [
+     "amox",
+     "500"
+    ]
+   ],
+   "origen": "control"
+  },
+  {
+   "q": "omeprazol 20",
+   "debe": [
+    [
+     "omepra"
+    ],
+    [
+     "aziatop"
+    ],
+    [
+     "ulcozol"
+    ],
+    [
+     "treg"
+    ],
+    [
+     "acimed"
+    ],
+    [
+     "gastec"
+    ]
+   ],
+   "origen": "control",
+   "_nota": "TREG, ACIMED y GASTEC son omeprazol (campo principio activo)"
+  },
+  {
+   "q": "repelente off",
+   "debe": [
+    [
+     "off"
+    ]
+   ],
+   "origen": "control"
+  },
+  {
+   "q": "algodon",
+   "debe": [
+    [
+     "algod"
+    ]
+   ],
+   "origen": "venta"
+  },
+  {
+   "q": "curitas",
+   "debe": [
+    [
+     "curita"
+    ],
+    [
+     "apos"
+    ]
+   ],
+   "origen": "venta"
+  },
+  {
+   "q": "gasas",
+   "debe": [
+    [
+     "gasa"
+    ]
+   ],
+   "origen": "control"
+  },
+  {
+   "q": "termometro",
+   "debe": [
+    [
+     "termom"
+    ]
+   ],
+   "origen": "control"
+  },
+  {
+   "q": "agua oxigenada",
+   "debe": [
+    [
+     "oxigenada"
+    ]
+   ],
+   "origen": "control"
+  },
+  {
+   "q": "crema nivea",
+   "debe": [
+    [
+     "nivea",
+     "cre"
+    ]
+   ],
+   "origen": "control"
+  },
+  {
+   "q": "shampoo sedal",
+   "debe": [
+    [
+     "sedal",
+     "sha"
+    ]
+   ],
+   "origen": "control"
+  },
+  {
+   "q": "jabon liquido",
+   "debe": [
+    [
+     "jli"
+    ],
+    [
+     "jab",
+     "liq"
+    ]
+   ],
+   "origen": "control"
+  },
+  {
+   "q": "bucoangin",
+   "debe": [
+    [
+     "bucoangin"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "hepatalgina",
+   "debe": [
+    [
+     "hepatalgina"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "atenolol 50",
+   "debe": [
+    [
+     "atenolol",
+     "50"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "levotiroxina 50",
+   "debe": [
+    [
+     "levotirox"
+    ],
+    [
+     "t4",
+     "50"
+    ],
+    [
+     "eutirox"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "perfume cher",
+   "debe": [
+    [
+     "cher"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "colonia johnson bebe",
+   "debe": [
+    [
+     "johnson",
+     "col"
+    ]
+   ],
+   "origen": "control"
+  },
+  {
+   "q": "acemuk",
+   "debe": [
+    [
+     "acemuk"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "dermaglos protector solar",
+   "debe": [
+    [
+     "dermaglos",
+     "sol"
+    ],
+    [
+     "dermaglos",
+     "fps"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "ultraflex",
+   "debe": [
+    [
+     "ultraflex"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "magnesio",
+   "debe": [
+    [
+     "magnesio"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "caladryl",
+   "debe": [
+    [
+     "caladryl"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "femiden",
+   "debe": [
+    [
+     "femiden"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "toddler",
+   "debe": [
+    [
+     "toddler"
+    ]
+   ],
+   "origen": "venta"
+  },
+  {
+   "q": "roby gel",
+   "debe": [
+    [
+     "roby"
+    ]
+   ],
+   "origen": "venta"
+  },
+  {
+   "q": "agua micelar",
+   "debe": [
+    [
+     "micelar"
+    ]
+   ],
+   "origen": "venta"
+  },
+  {
+   "q": "parches para ojeras",
+   "debe": [
+    [
+     "parche"
+    ],
+    [
+     "ojera"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "autobronceante dermaglos corporal",
+   "debe": [
+    [
+     "dermaglos",
+     "bronce",
+     "corp"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "crema para talones",
+   "debe": [
+    [
+     "talon"
+    ],
+    [
+     "pies"
+    ],
+    [
+     "pie"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "spray para el pelo",
+   "debe": [
+    [
+     "spray",
+     "pelo"
+    ],
+    [
+     "spr",
+     "cap"
+    ],
+    [
+     "laca"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "shampoo en sobre",
+   "debe": [
+    [
+     "sha",
+     "sch"
+    ],
+    [
+     "sachet"
+    ],
+    [
+     "sha",
+     "sob"
+    ]
+   ],
+   "origen": "auditoria"
+  }
+ ]
+}
