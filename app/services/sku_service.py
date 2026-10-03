@@ -361,9 +361,13 @@ class SKUService:
                 tipo_producto=ex.get("tipo_producto") or "regular",
             )
             # rubro/subrubro/droga entran al índice de búsqueda, no al modelo.
+            # Alias (3/10): "Hisopos Estrella pote x 125", "cotonetes" — solo
+            # si el nombre del ERP sigue siendo el que se tradujo.
+            from app.services.alias_service import texto_indice
             texto_extra = " ".join(filter(None, [
                 row.get("drug") or "", row.get("rubro") or "",
                 row.get("subrubro") or "",
+                normalizar_numeros(texto_indice(ex.get("_alias"), row.get("name") or "")),
             ]))
             svc._indexar(sku, texto_extra=texto_extra, barcodes=barcodes)
         svc._build_df()

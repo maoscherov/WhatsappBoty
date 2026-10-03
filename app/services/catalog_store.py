@@ -144,6 +144,12 @@ class CatalogStore:
         extras_rows = await self._db.fetch(
             "SELECT * FROM catalog_extras WHERE branch_id = $1", branch_id)
         extras = {r["external_id"]: dict(r) for r in extras_rows}
+        # Alias de búsqueda (nombre legible + términos de cliente, 3/10). Sin
+        # la tabla (migración pendiente) fetch devuelve [] y no pasa nada.
+        for a in await self._db.fetch(
+                "SELECT external_id, nombre_base, nombre_legible, tipo, terminos, seguro "
+                "FROM sku_alias WHERE branch_id = $1", branch_id) or []:
+            extras.setdefault(a["external_id"], {})["_alias"] = dict(a)
         return [dict(r) for r in rows], extras
 
     async def count_items(self, branch_id: str) -> int:

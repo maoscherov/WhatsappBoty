@@ -48,6 +48,25 @@ def _semilla() -> list[dict]:
     return filas
 
 
+def cargar_alias(carpeta: str, rows: list[dict], extras: dict) -> int:
+    """Suma a `extras` los alias de los resultado_*.csv (como si estuvieran importados)."""
+    import glob
+    from app.services.alias_service import parsear_csv
+    nombres = {str(r["external_id"]): r.get("name") or "" for r in rows}
+    n = 0
+    for ruta in sorted(glob.glob(os.path.join(carpeta, "resultado_*.csv"))):
+        filas, errores = parsear_csv(open(ruta, "rb").read())
+        if errores:
+            print(f"  {os.path.basename(ruta)}: {len(errores)} errores, ej. {errores[0]}")
+        for f in filas:
+            if f["external_id"] in nombres:
+                ex = dict(extras.get(f["external_id"]) or {})
+                ex["_alias"] = {**f, "nombre_base": nombres[f["external_id"]]}
+                extras[f["external_id"]] = ex
+                n += 1
+    return n
+
+
 def correcto(nombre: str, debe: list[list[str]]) -> bool:
     n = (nombre or "").lower()
     return any(all(f.lower() in n for f in alternativa) for alternativa in debe)
@@ -72,6 +91,7 @@ def main():
     ap.add_argument("--diccionario", default="tabla", choices=["base", "tabla", "todo"])
     ap.add_argument("--casos", default=os.path.join(os.path.dirname(__file__), "busqueda_casos.json"))
     ap.add_argument("--detalle", action="store_true")
+    ap.add_argument("--alias", help="carpeta con resultado_*.csv de la traducción por prompt")
     a = ap.parse_args()
 
     with open(a.catalogo, "rb") as f:
@@ -82,7 +102,11 @@ def main():
     elif a.diccionario == "todo":
         filas = [dict(f, estado="activa") if f["estado"] == "propuesta" else f for f in filas]
     dic.aplicar(filas)
-    svc = SKUService.from_rows(data["rows"], data.get("extras"))
+    extras = dict(data.get("extras") or {})
+    if a.alias:
+        n = cargar_alias(a.alias, data["rows"], extras)
+        print(f"Alias de {a.alias}: {n} productos")
+    svc = SKUService.from_rows(data["rows"], extras)
     casos = json.load(open(a.casos, encoding="utf-8"))["casos"]
     r = evaluar(svc, casos)
 

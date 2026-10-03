@@ -8,7 +8,7 @@ import asyncio
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 
 from app.config import get_settings
@@ -118,3 +118,59 @@ async def bo_diccionario_probar(_=Depends(_auth), q: str = Query(..., min_length
     return {"q": q, "items": [{"sku_id": r["sku_id"], "nombre": r["nombre"],
                                "precio": r["precio"], "estado": r.get("estado"),
                                "requiere_receta": r.get("requiere_receta")} for r in res]}
+
+
+# ── Alias de productos (capa B, 3/10) ──────────────────────────────────────────
+async def _branch() -> str:
+    from app.services.catalog_source import resolver_branch_default
+    branch = await resolver_branch_default()
+    if not branch:
+        raise HTTPException(status_code=409, detail="Sin catálogo del ERP activo")
+    return branch
+
+
+@router.post("/sku/alias/importar")
+async def bo_alias_importar(archivos: list[UploadFile] = File(...),
+                            autor: Optional[str] = Form(None), _=Depends(_auth)):
+    """
+    Importa uno o varios CSV de la traducción por prompt
+    (id;nombre_legible;tipo;terminos;seguro). Reconstruye el índice al final.
+    """
+    from app.services import alias_service
+    db, branch = _db(), await _branch()
+    nombres = {r["external_id"]: r["name"] for r in await db.fetch(
+        "SELECT external_id, name FROM catalog_items WHERE branch_id = $1", branch)}
+    por_archivo, filas_todas = [], []
+    for a in archivos:
+        filas, errores = alias_service.parsear_csv(await a.read())
+        por_archivo.append({"archivo": a.filename, "filas": len(filas),
+                            "errores": errores[:20], "total_errores": len(errores)})
+        filas_todas.extend(filas)
+    if not filas_todas:
+        raise HTTPException(status_code=422, detail={"mensaje": "Ningún archivo tenía filas válidas",
+                                                     "archivos": por_archivo})
+    res = await alias_service.importar(db, branch, filas_todas, nombres, autor=autor)
+    _programar(db)
+    return {**res, "archivos": por_archivo,
+            "cobertura": await alias_service.cobertura(db, branch)}
+
+
+@router.get("/sku/alias")
+async def bo_alias_listar(_=Depends(_auth), q: str = Query(""), solo_dudosos: bool = Query(False),
+                          page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=200)):
+    from app.services import alias_service
+    db, branch = _db(), await _branch()
+    res = await alias_service.listar(db, branch, q, solo_dudosos, page, page_size)
+    return {**res, "cobertura": await alias_service.cobertura(db, branch)}
+
+
+@router.delete("/sku/alias/{external_id}")
+async def bo_alias_borrar(external_id: str, _=Depends(_auth)):
+    db, branch = _db(), await _branch()
+    async with db.transaction() as con:
+        r = await con.execute("DELETE FROM sku_alias WHERE branch_id = $1 AND external_id = $2",
+                              branch, external_id)
+    if not r.endswith(" 1"):
+        raise HTTPException(status_code=404, detail="Ese producto no tiene alias")
+    _programar(db)
+    return {"ok": True}
