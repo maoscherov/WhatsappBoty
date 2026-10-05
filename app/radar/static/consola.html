@@ -15,6 +15,41 @@
 </header>
 <p id="error" class="error" role="alert"></p>
 
+<section id="alta">
+  <h2>Alta</h2>
+  <p id="alta-aviso" role="status"></p>
+
+  <form id="form-alta">
+    <h3>Cliente nuevo</h3>
+    <label>Nombre del cliente <input type="text" id="alta-nombre" maxlength="120" required autocomplete="off"></label>
+    <label>Rubro <input type="text" id="alta-rubro" maxlength="40" pattern="[a-z_]{1,40}" title="minúsculas y guion bajo, ej.: farmacia" required autocomplete="off"></label>
+    <span class="nota">minúsculas y guion bajo, ej.: farmacia</span>
+    <p id="alta-propuesta" class="nota"></p>
+    <label>Email del dueño <input type="email" id="alta-dueno-email" maxlength="254" required autocomplete="off"></label>
+    <label>Nombre del dueño <input type="text" id="alta-dueno-nombre" maxlength="120" autocomplete="off"></label>
+    <label>Primera línea <input type="text" id="alta-linea-nombre" maxlength="80" required autocomplete="off"></label>
+    <button type="submit" id="btn-alta">Crear cliente y mandar la invitación</button>
+  </form>
+
+  <form id="form-linea">
+    <h3>Agregar línea</h3>
+    <label>Cliente
+      <select id="linea-cliente" required><option value="">Elegí un cliente</option></select>
+    </label>
+    <label>Nombre de la línea <input type="text" id="linea-nombre" maxlength="80" required autocomplete="off"></label>
+    <button type="submit" id="btn-agregar-linea">Agregar línea</button>
+  </form>
+
+  <form id="form-invitacion">
+    <h3>Reenviar invitación</h3>
+    <label>Cliente
+      <select id="inv-cliente" required><option value="">Elegí un cliente</option></select>
+    </label>
+    <label>Email del usuario <input type="email" id="inv-email" maxlength="254" required autocomplete="off"></label>
+    <button type="submit" id="btn-invitar">Reenviar</button>
+  </form>
+</section>
+
 <section>
   <h2>Líneas</h2>
   <div class="filtros">

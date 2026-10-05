@@ -213,3 +213,34 @@ async def test_alta_y_reenvio_con_mailer_que_falla(cliente, radar_ctx, monkeypat
         assert await con.fetchval("SELECT count(*) FROM product_events WHERE evento = 'invitacion_enviada'") == 0
     r = await cliente.post(f"/radar/admin/tenants/{tid}/invitaciones", json={"email": "dueno@farmacia.com"})
     assert r.status_code == 202 and r.json() == {"enviada": False}
+
+
+async def test_flujo_de_la_pantalla_de_alta_de_la_consola(cliente, radar_ctx):
+    """Lo que hace la sección "Alta" de la Consola, en su orden y con los cuerpos que ella manda (sin parámetros ni
+    perfil: los pone el servidor): cliente con su línea, la línea en la tabla, otra línea y el reenvío al dueño."""
+    await _admin(cliente, radar_ctx)
+    r = await cliente.post("/radar/admin/tenants", json={
+        "nombre": "Farmacia del Centro", "rubro": "farmacia",
+        "dueno": {"email": "Dueno@Farmacia.com", "nombre": "Ana"}, "linea": {"nombre": "Local centro"}})
+    assert r.status_code == 201, r.text
+    tid, lid = r.json()["tenant_id"], r.json()["line_id"]
+    assert r.json()["invitacion_enviada"] is True
+    assert len(radar_ctx.mailer.enviados) == 1
+
+    # los selects de cliente salen de /tenants; "Operar" necesita los cuatro datos de la fila de la tabla
+    assert [(c["id"], c["nombre"]) for c in (await cliente.get("/radar/admin/tenants")).json()] == \
+           [(tid, "Farmacia del Centro")]
+    filas = (await cliente.get("/radar/admin/consola/lineas")).json()
+    assert [(f["tenant_id"], f["tenant_nombre"], f["line_id"], f["line_nombre"]) for f in filas] == \
+           [(tid, "Farmacia del Centro", lid, "Local centro")]
+
+    r = await cliente.post(f"/radar/admin/tenants/{tid}/lineas", json={"nombre": "Sucursal norte"})
+    assert r.status_code == 201
+    filas = (await cliente.get("/radar/admin/consola/lineas")).json()
+    assert {f["line_nombre"] for f in filas} == {"Local centro", "Sucursal norte"}
+    assert {f["line_id"] for f in filas} == {lid, r.json()["line_id"]} and {f["tenant_id"] for f in filas} == {tid}
+
+    # el admin escribe el email como quiere: el servidor lo normaliza y manda otra invitación al mismo dueño
+    r = await cliente.post(f"/radar/admin/tenants/{tid}/invitaciones", json={"email": " DUENO@farmacia.com "})
+    assert r.status_code == 202 and r.json() == {"enviada": True}
+    assert len(radar_ctx.mailer.enviados) == 2 and radar_ctx.mailer.enviados[-1].para == "dueno@farmacia.com"

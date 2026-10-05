@@ -31,6 +31,11 @@
     sin_dueno: "La cuenta no tiene un dueño cargado.",
     linea_invalida: "El link no indica una línea válida.",
     pedido_no_enviado: "No pudimos enviar el pedido. Revisá tu conexión y probá de nuevo.",
+    // /radar/admin: el 422 propio de FastAPI llega sin texto (error_422) y los 404 traen un texto suelto. Los 422 que
+    // sí traen texto (email inválido, valor fuera de rango…) se muestran tal cual.
+    error_422: "Revisá los datos: algún campo está vacío o no tiene el formato pedido.",
+    "tenant inexistente": "El cliente no existe.",
+    "usuario inexistente en este tenant": "Ese email no corresponde a ningún usuario de este cliente.",
   };
   const TEXTOS_ESTADO = {
     sin_vinculo: "Sin conexión.",
@@ -255,17 +260,25 @@
     }
   }
 
-  function llenarClientes(filas) {
-    const sel = $("filtro-cliente");
-    if (sel.options.length > 1) return;
-    const vistos = new Map();
-    for (const f of filas) vistos.set(f.tenant_id, f.tenant_nombre);
-    for (const [id, nombre] of vistos) {
-      const op = document.createElement("option");
-      op.value = id;
-      op.textContent = nombre;
-      sel.appendChild(op);
+  // Las tres listas de clientes (filtro, alta de línea, reenvío de invitación) salen de /tenants, que trae todos los
+  // clientes y no solo los que ya tienen líneas, y se rearman enteras. La primera opción ("Todos" / "Elegí un
+  // cliente") es la del HTML; cada lista conserva el cliente elegido mientras ese cliente exista.
+  function llenarClientes(clientes) {
+    for (const sel of [$("filtro-cliente"), $("linea-cliente"), $("inv-cliente")]) {
+      const elegido = sel.value;
+      const opciones = clientes.map((c) => {
+        const op = document.createElement("option");
+        op.value = c.id;
+        op.textContent = c.nombre;
+        return op;
+      });
+      sel.replaceChildren(sel.options[0], ...opciones);
+      sel.value = clientes.some((c) => c.id === elegido) ? elegido : "";
     }
+  }
+
+  async function cargarClientes() {
+    llenarClientes(await pedir("GET", "/radar/admin/tenants"));
   }
 
   async function cargarLineas() {
@@ -274,7 +287,14 @@
     if ($("filtro-cliente").value) p.set("tenant_id", $("filtro-cliente").value);
     const filas = await pedir("GET", "/radar/admin/consola/lineas" + (p.toString() ? "?" + p.toString() : ""));
     pintarTabla(filas);
-    llenarClientes(filas);
+  }
+
+  // Al abrir la pantalla, con «Refrescar» y tras un alta. Primero los clientes: si el del filtro ya no existe, el
+  // filtro vuelve a «Todos» antes de pedir las líneas. El refresco automático de la tabla no pasa por acá porque
+  // cada GET /tenants deja una fila en el log de auditoría.
+  async function refrescar() {
+    await cargarClientes();
+    await cargarLineas();
   }
 
   function abrirPanel(f) {
@@ -305,6 +325,69 @@
     actual = null;
   }
 
+  // ---- Alta (solo Consola): cliente nuevo con su primera línea, línea nueva y reenvío de invitación
+  // Perfil de datos y parámetros que el servidor propone para el rubro. Solo informa: el alta manda el rubro y es el
+  // servidor quien arma el perfil y los parámetros.
+  async function mostrarPropuesta() {
+    const rubro = $("alta-rubro").value.trim();
+    $("alta-propuesta").textContent = "";
+    if (!/^[a-z_]{1,40}$/.test(rubro)) return;          // el servidor exige este formato: otro sería un 422
+    const p = await pedir("GET", "/radar/admin/propuesta?rubro=" + encodeURIComponent(rubro));
+    if ($("alta-rubro").value.trim() !== rubro) return;  // el rubro cambió mientras tanto: esta respuesta ya no vale
+    const parametros = Object.entries({ ...p.parametros_tenant, ...p.parametros_linea }).map(([k, v]) => k + " = " + v);
+    $("alta-propuesta").textContent = "Perfil de datos: " + p.perfil_de_datos + " · Parámetros propuestos: " +
+      (parametros.length ? parametros.join(", ") : "ninguno");
+  }
+
+  async function crearCliente() {
+    $("alta-aviso").textContent = "";
+    // El servidor devuelve solo los ids: los nombres para el título del panel se leen antes de limpiar el formulario.
+    const tenantNombre = $("alta-nombre").value.trim();
+    const lineaNombre = $("alta-linea-nombre").value.trim();
+    const r = await pedir("POST", "/radar/admin/tenants", {
+      nombre: tenantNombre,
+      rubro: $("alta-rubro").value.trim(),
+      dueno: { email: $("alta-dueno-email").value.trim(), nombre: $("alta-dueno-nombre").value.trim() },
+      linea: { nombre: lineaNombre },
+    });
+    // El cliente ya existe aunque el mail no haya salido: se avisa lo que pasó y el formulario se limpia antes de
+    // refrescar nada, así ni un mail caído ni un refresco que falle dejan el formulario lleno para crear otro igual.
+    $("alta-aviso").textContent = r.invitacion_enviada
+      ? "Cliente creado. Invitación al dueño: enviada."
+      : "Cliente creado. Invitación al dueño: no salió: reenviala desde «Reenviar invitación».";
+    $("form-alta").reset();
+    $("alta-propuesta").textContent = "";
+    abrirPanel({ tenant_id: r.tenant_id, line_id: r.line_id, tenant_nombre: tenantNombre, line_nombre: lineaNombre });
+    await refrescar();
+  }
+
+  async function agregarLinea() {
+    $("alta-aviso").textContent = "";
+    await pedir("POST", "/radar/admin/tenants/" + encodeURIComponent($("linea-cliente").value) + "/lineas",
+                { nombre: $("linea-nombre").value.trim() });
+    $("alta-aviso").textContent = "Línea agregada.";
+    $("linea-nombre").value = "";
+    await refrescar();
+  }
+
+  async function reenviarInvitacion() {
+    $("alta-aviso").textContent = "";
+    const r = await pedir("POST", "/radar/admin/tenants/" + encodeURIComponent($("inv-cliente").value) + "/invitaciones",
+                          { email: $("inv-email").value.trim() });
+    $("alta-aviso").textContent = r.enviada ? "Invitación enviada." : "No salió: revisá el email o el correo saliente.";
+    if (r.enviada) $("inv-email").value = "";            // si no salió, el email queda para reintentar
+  }
+
+  // El envío nativo de un formulario lo bloquea la CSP (form-action 'none'), así que lo manda este JS, como en el
+  // login. Un doble clic duplicaría un cliente que no se puede borrar: el botón queda inactivo mientras viaja el pedido.
+  function alEnviar(form, boton, fn) {
+    form.addEventListener("submit", (ev) => {
+      ev.preventDefault();
+      boton.disabled = true;
+      accion(fn).finally(() => { boton.disabled = false; });
+    });
+  }
+
   // ---- arranque
   enlazar("btn-salir", salir);
   enlazar("btn-consentir", consentir);
@@ -317,11 +400,15 @@
   if (modo === "consola") {
     enlazar("btn-restriccion", marcarRestriccion);
     enlazar("btn-levantar", levantarRestriccion);
-    enlazar("btn-refrescar", cargarLineas);
+    enlazar("btn-refrescar", refrescar);
     enlazar("btn-cerrar-panel", cerrarPanel);
+    alEnviar($("form-alta"), $("btn-alta"), crearCliente);
+    alEnviar($("form-linea"), $("btn-agregar-linea"), agregarLinea);
+    alEnviar($("form-invitacion"), $("btn-invitar"), reenviarInvitacion);
+    $("alta-rubro").addEventListener("change", () => accion(mostrarPropuesta));
     $("filtro-estado").addEventListener("change", () => accion(cargarLineas));
     $("filtro-cliente").addEventListener("change", () => accion(cargarLineas));
-    accion(cargarLineas);
+    accion(refrescar);
     setInterval(() => { cargarLineas().catch(mostrarError); }, REFRESCO_LINEAS_MS);
   } else {
     const linea = new URLSearchParams(window.location.search).get("linea") || "";

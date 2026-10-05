@@ -19,6 +19,10 @@ IDS_CLIENTE = {"error", "panel", "texto-consentimiento", "parametros", "version"
                "btn-borrar"}
 # Los que solo usa el modo "login" (login.html); `error` y `aviso` los comparte con las otras dos pantallas.
 IDS_LOGIN = {"form-login", "email", "btn-entrar"}
+# La sección "Alta" de la Consola: cliente nuevo con su primera línea, línea nueva y reenvío de invitación.
+IDS_ALTA = {"alta-nombre", "alta-rubro", "alta-dueno-email", "alta-dueno-nombre", "alta-linea-nombre",
+            "alta-propuesta", "btn-alta", "linea-cliente", "linea-nombre", "btn-agregar-linea", "inv-cliente",
+            "inv-email", "btn-invitar", "alta-aviso"}
 
 
 def _ids_html(nombre: str) -> set[str]:
@@ -221,11 +225,59 @@ def test_consola_y_conectar_tienen_salir():
     assert "btn-salir" not in _ids_html("login.html")          # sin sesión no hay de qué salir
 
 
+def test_consola_tiene_alta():
+    html = (ESTATICOS / "consola.html").read_text(encoding="utf-8")
+    _sin_inline(html)
+    ids = re.findall(r'\bid="([a-z0-9-]+)"', html)
+    assert IDS_ALTA <= set(ids), IDS_ALTA - set(ids)
+    assert len(ids) == len(set(ids)), "ids repetidos"           # tres formularios parecidos: un id copiado se cuela fácil
+    # la sección va arriba de las líneas; el rubro lleva el mismo formato que exige el servidor (^[a-z_]{1,40}$)
+    alta = re.search(r'<section\b[^>]*\bid="alta"', html)
+    assert alta and alta.start() < html.index("<h2>Líneas</h2>")
+    assert 'pattern="[a-z_]{1,40}"' in html and "minúsculas y guion bajo, ej.: farmacia" in html
+    # los tres selects de cliente: el de siempre más los dos del alta
+    for id_ in ("filtro-cliente", "linea-cliente", "inv-cliente"):
+        assert re.search(rf'<select\b[^>]*\bid="{id_}"', html), id_
+    assert IDS_ALTA.isdisjoint(_ids_html("conectar.html"))      # el dueño no ve el alta
+
+
 def test_el_js_pide_el_link_y_cierra_la_sesion_por_la_api():
     js = (ESTATICOS / "radar.js").read_text(encoding="utf-8")
     assert "Si el email está registrado, te mandamos un link para entrar. Revisá tu correo." in js
     assert '"/radar/login"' in js and '"/radar/logout"' in js
     assert 'window.location.assign("/radar/login")' in js      # también si el logout falla
+
+
+def test_el_js_del_alta_avisa_lo_que_paso_con_la_invitacion():
+    js = (ESTATICOS / "radar.js").read_text(encoding="utf-8")
+    # el alta ya está hecha aunque el mail no salga: el aviso sale del flag que contesta el servidor, no se supone
+    assert "r.invitacion_enviada" in js and "r.enviada" in js
+    assert "Cliente creado. Invitación al dueño: enviada." in js
+    assert "no salió: reenviala desde «Reenviar invitación»." in js
+    assert "Invitación enviada." in js and "No salió: revisá el email o el correo saliente." in js
+    # lo que devuelven estos endpoints se lee en castellano: el 422 propio de FastAPI y los 404 con texto
+    # (como claves de MENSAJES: "error_422:" y no solo el nombre, que también aparece en un comentario)
+    for clave in ("error_422:", '"tenant inexistente":', '"usuario inexistente en este tenant":'):
+        assert clave in js, clave
+
+
+def test_el_js_del_alta_usa_los_endpoints_que_ya_existen():
+    js = (ESTATICOS / "radar.js").read_text(encoding="utf-8")
+    assert re.search(r'pedir\("GET",\s*"/radar/admin/tenants"\)', js)        # los tres selects: todos los clientes
+    assert re.search(r'pedir\("POST",\s*"/radar/admin/tenants",', js)        # cliente nuevo
+    assert '"/radar/admin/propuesta?rubro="' in js                          # perfil y parámetros del rubro
+    assert re.search(r'"/radar/admin/tenants/"\s*\+[^;]*\+\s*"/lineas"', js)
+    assert re.search(r'"/radar/admin/tenants/"\s*\+[^;]*\+\s*"/invitaciones"', js)
+
+
+def test_el_refresco_automatico_no_vuelve_a_pedir_los_clientes():
+    """GET /radar/admin/tenants deja una fila en access_audit_log por pedido: cada 15 s serían miles por día.
+    Los selects se rearman al cargar, al refrescar a mano y tras un alta, no con la tabla."""
+    js = (ESTATICOS / "radar.js").read_text(encoding="utf-8")
+    fin = js.index("REFRESCO_LINEAS_MS)")                     # el único setInterval que usa ese período
+    automatico = js[js.rindex("setInterval(", 0, fin):fin]
+    assert "cargarLineas()" in automatico
+    assert "cargarClientes" not in automatico and "refrescar()" not in automatico
 
 
 def test_el_js_no_arma_html():
