@@ -132,7 +132,8 @@ def cliente_de(ctx: RadarContexto, w: Worker) -> WahaCliente:
 
 async def registrar_worker(ctx: RadarContexto, *, nombre: str, base_url: str, engine: str, max_sesiones: int,
                            disco_max_gb: float, admin_key: str,
-                           actor_user_id: Optional[uuid.UUID] = None) -> uuid.UUID:
+                           actor_user_id: Optional[uuid.UUID] = None, ip: Optional[str] = None) -> uuid.UUID:
+    """`ip`: la del pedido de la Consola, para la auditoría; desde scripts/radar_workers.py no hay."""
     if engine not in MOTORES:
         raise ValueError(f"motor desconocido: {engine}")
     if len(admin_key) < 16:
@@ -144,7 +145,7 @@ async def registrar_worker(ctx: RadarContexto, *, nombre: str, base_url: str, en
             nombre, base_url, engine, max_sesiones, Decimal(str(disco_max_gb)))
         await auditoria.registrar(con, tenant_id=TENANT_KIS, actor_user_id=actor_user_id,
                                   actor_rol="admin" if actor_user_id else "sistema", accion="worker_registrado",
-                                  tipo_objeto="waha_worker", objeto_id=wid)
+                                  tipo_objeto="waha_worker", objeto_id=wid, ip=ip)
     ctx.secretos.set(nombre_clave_admin(wid), admin_key.encode())
     return wid
 
@@ -167,7 +168,8 @@ async def verificar_clave_worker(ctx: RadarContexto, *, base_url: str, engine: s
     return info
 
 
-async def reemplazar_clave(ctx: RadarContexto, worker_id: uuid.UUID, admin_key: str, actor_user_id: uuid.UUID) -> dict:
+async def reemplazar_clave(ctx: RadarContexto, worker_id: uuid.UUID, admin_key: str, actor_user_id: uuid.UUID, *,
+                           ip: Optional[str] = None) -> dict:
     """Cambia la clave admin de un worker que ya existe (la rotó el dueño de WAHA, o nunca se cargó). Se prueba contra
     el base_url y el motor del propio worker; con una clave que WAHA no acepta no cambia nada. Devuelve lo mismo que
     verificar_clave_worker; LookupError si el worker no existe."""
@@ -175,7 +177,8 @@ async def reemplazar_clave(ctx: RadarContexto, worker_id: uuid.UUID, admin_key: 
     info = await verificar_clave_worker(ctx, base_url=w.base_url, engine=w.engine, admin_key=admin_key)
     async with ctx.db.tenant_tx(TENANT_KIS) as con:
         await auditoria.registrar(con, tenant_id=TENANT_KIS, actor_user_id=actor_user_id, actor_rol="admin",
-                                  accion="worker_clave_reemplazada", tipo_objeto="waha_worker", objeto_id=worker_id)
+                                  accion="worker_clave_reemplazada", tipo_objeto="waha_worker", objeto_id=worker_id,
+                                  ip=ip)
         # Dentro de la transacción: si el volumen no deja escribir, el rollback no deja una auditoría de un cambio
         # que no ocurrió.
         ctx.secretos.set(nombre_clave_admin(worker_id), admin_key.encode())
@@ -188,7 +191,7 @@ def clave_cargada(ctx: RadarContexto, worker_id: uuid.UUID) -> bool:
 
 
 async def actualizar_disco(ctx: RadarContexto, worker_id: uuid.UUID, usado_gb: float,
-                           actor_user_id: Optional[uuid.UUID] = None) -> None:
+                           actor_user_id: Optional[uuid.UUID] = None, *, ip: Optional[str] = None) -> None:
     async with ctx.db.tenant_tx(TENANT_KIS) as con:
         estado = await con.execute(
             "UPDATE waha_workers SET disco_usado_gb = $2, updated_at = now() WHERE id = $1",
@@ -197,4 +200,5 @@ async def actualizar_disco(ctx: RadarContexto, worker_id: uuid.UUID, usado_gb: f
             raise LookupError("worker inexistente")
         await auditoria.registrar(con, tenant_id=TENANT_KIS, actor_user_id=actor_user_id,
                                   actor_rol="admin" if actor_user_id else "sistema",
-                                  accion="worker_disco_actualizado", tipo_objeto="waha_worker", objeto_id=worker_id)
+                                  accion="worker_disco_actualizado", tipo_objeto="waha_worker", objeto_id=worker_id,
+                                  ip=ip)

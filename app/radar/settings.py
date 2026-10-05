@@ -34,8 +34,9 @@ class RadarSettings(BaseSettings):
     # fuera de los backups de Postgres). Ver docs/radar-despliegue.md.
     secrets_dir: str = "/data/radar-secrets"
 
-    # Cookie de sesión firmada. Vacío = la app no arranca en modo radar.
-    cookie_secret: str = ""
+    # Cookie de sesión firmada. Vacío = la app no arranca en modo radar. Firma
+    # todas las sesiones: repr=False, como las URLs.
+    cookie_secret: str = Field("", repr=False)
     cookie_secure: bool = True
 
     # Base pública para armar links mágicos, ej. https://radar.keepitsimple.com.ar
@@ -60,10 +61,11 @@ class RadarSettings(BaseSettings):
     admins_iniciales: str = ""
 
     # WAHA (tramo 2). La clave admin de cada worker NO va acá: vive en el
-    # SecretStore (ver app.radar.workers.nombre_clave_admin) y la registra
-    # scripts/radar_workers.py.
+    # SecretStore (ver app.radar.workers.nombre_clave_admin) y la registra la
+    # Consola ("Servidores WAHA") o scripts/radar_workers.py.
     waha_webhook_url: str = ""        # URL de /webhook/waha que alcanza WAHA (red privada de Railway)
-    waha_webhook_hmac_key: str = ""   # 32+ caracteres; vacía = el receptor rechaza todo (fail-closed)
+    # 32+ caracteres; vacía = el receptor rechaza todo (fail-closed). Secreta: repr=False.
+    waha_webhook_hmac_key: str = Field("", repr=False)
     waha_timeout_s: float = 20.0
 
     # Worker de la cola dentro del servicio web (ver app/radar/worker.py).

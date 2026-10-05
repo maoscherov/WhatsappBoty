@@ -101,10 +101,10 @@ async def test_actualizar_disco_sin_actor_se_audita_como_sistema(radar_ctx):
                                  max_sesiones=5, disco_max_gb=10, admin_key="clave-admin-larga-123")
     await actualizar_disco(radar_ctx, wid, 3.5)
     async with radar_ctx.db.tenant_tx(TENANT_KIS) as con:
-        [fila] = await con.fetch("SELECT actor_user_id, actor_rol, tipo_objeto, objeto_id FROM access_audit_log "
+        [fila] = await con.fetch("SELECT actor_user_id, actor_rol, tipo_objeto, objeto_id, ip FROM access_audit_log "
                                  "WHERE accion = 'worker_disco_actualizado'")
-    assert (fila["actor_user_id"], fila["actor_rol"], fila["tipo_objeto"], fila["objeto_id"]) == \
-           (None, "sistema", "waha_worker", wid)
+    assert (fila["actor_user_id"], fila["actor_rol"], fila["tipo_objeto"], fila["objeto_id"], fila["ip"]) == \
+           (None, "sistema", "waha_worker", wid, None)                 # desde la shell no hay IP de un pedido
     [w] = await listar_workers(radar_ctx)
     assert w.disco_usado_gb == 3.5
 

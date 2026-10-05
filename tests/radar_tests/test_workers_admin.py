@@ -400,6 +400,19 @@ async def test_actualizar_el_disco_de_un_worker_que_no_existe_es_404(cliente, ct
     assert await _auditadas(ctx, "worker_disco_actualizado") == []
 
 
+async def test_la_auditoria_de_los_workers_lleva_la_ip_del_pedido(cliente, ctx):
+    """Como el resto de las acciones de un admin: la IP es evidencia (el último salto de X-Forwarded-For, ip_de)."""
+    await _admin(cliente, ctx)
+    desde = {"X-Forwarded-For": "198.51.100.9, 203.0.113.7"}          # el primero lo puede inventar el cliente
+    wid = (await cliente.post(URL, json=_alta(), headers=desde)).json()["id"]
+    assert (await cliente.put(f"{URL}/{wid}/clave", json={"admin_key": CLAVE_B}, headers=desde)).status_code == 200
+    assert (await cliente.put(f"{URL}/{wid}/disco", json={"usado_gb": 1}, headers=desde)).status_code == 200
+    filas = await _filas(ctx, "SELECT accion, ip FROM access_audit_log ORDER BY id")
+    assert [(f["accion"], f["ip"]) for f in filas] == [("worker_registrado", "203.0.113.7"),
+                                                        ("worker_clave_reemplazada", "203.0.113.7"),
+                                                        ("worker_disco_actualizado", "203.0.113.7")]
+
+
 # --- la clave no se filtra ---------------------------------------------------------------------------------------
 
 async def test_la_clave_no_se_filtra_a_logs_salida_respuestas_ni_base(cliente, ctx, waha, caplog, capsys):

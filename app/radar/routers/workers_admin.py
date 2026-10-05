@@ -17,7 +17,7 @@ from fastapi.responses import JSONResponse, Response
 from fastapi.routing import APIRoute
 from pydantic import BaseModel, Field, SecretStr, field_validator
 
-from app.radar.auth import Sesion, requiere_rol
+from app.radar.auth import Sesion, ip_de, requiere_rol
 from app.radar.contexto import contexto
 from app.radar.workers import (VerificacionFallida, actualizar_disco, clave_cargada, listar_workers, registrar_worker,
                                reemplazar_clave, verificar_clave_worker)
@@ -106,7 +106,7 @@ async def registrar(body: WorkerIn, request: Request, admin: Sesion = Depends(re
         info = await verificar_clave_worker(ctx, base_url=body.base_url, engine=body.engine, admin_key=clave)
         wid = await registrar_worker(ctx, nombre=body.nombre, base_url=body.base_url, engine=body.engine,
                                      max_sesiones=body.max_sesiones, disco_max_gb=body.disco_max_gb, admin_key=clave,
-                                     actor_user_id=admin.user_id)
+                                     actor_user_id=admin.user_id, ip=ip_de(request))
     except VerificacionFallida as e:
         raise _rechazo(e) from None
     except asyncpg.UniqueViolationError:         # nombre repetido: falla el INSERT, antes de guardar la clave
@@ -118,7 +118,8 @@ async def registrar(body: WorkerIn, request: Request, admin: Sesion = Depends(re
 async def reemplazar(worker_id: uuid.UUID, body: ClaveIn, request: Request,
                      admin: Sesion = Depends(requiere_rol("admin"))):
     try:
-        info = await reemplazar_clave(contexto(request), worker_id, body.admin_key.get_secret_value(), admin.user_id)
+        info = await reemplazar_clave(contexto(request), worker_id, body.admin_key.get_secret_value(), admin.user_id,
+                                      ip=ip_de(request))
     except LookupError:
         raise _worker_inexistente() from None
     except VerificacionFallida as e:
@@ -129,7 +130,8 @@ async def reemplazar(worker_id: uuid.UUID, body: ClaveIn, request: Request,
 @router.put("/{worker_id}/disco")
 async def disco(worker_id: uuid.UUID, body: DiscoIn, request: Request, admin: Sesion = Depends(requiere_rol("admin"))):
     try:
-        await actualizar_disco(contexto(request), worker_id, body.usado_gb, actor_user_id=admin.user_id)
+        await actualizar_disco(contexto(request), worker_id, body.usado_gb, actor_user_id=admin.user_id,
+                               ip=ip_de(request))
     except LookupError:
         raise _worker_inexistente() from None
     return {"id": str(worker_id)}
