@@ -8,6 +8,7 @@ ninguna de estas URLs es DATABASE_URL.
 
 from functools import lru_cache
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -33,9 +34,19 @@ class RadarSettings(BaseSettings):
     # Base pública para armar links mágicos, ej. https://radar.keepitsimple.com.ar
     public_base_url: str = "http://localhost:8000"
 
-    # Backend de email: "log" (solo dominio y huella del token) o "memoria" (tests).
+    # Backend de email: "log" (solo dominio y huella del token), "memoria" (tests) o "smtp".
     mailer: str = "log"
     remitente: str = "radar@keepitsimple.com.ar"
+
+    # SMTP genérico (RADAR_MAILER=smtp): Google Workspace, Resend, SES, Brevo. La
+    # contraseña es un SecretStr para que ningún repr de los settings la muestre;
+    # se lee con .get_secret_value() (validar_settings y el mailer, nadie más).
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_usuario: str = ""            # vacío = sin autenticar (relay de una red privada)
+    smtp_password: SecretStr = SecretStr("")
+    smtp_seguridad: str = "starttls"  # starttls | ssl | ninguna
+    smtp_timeout_s: float = 20.0
 
     # WAHA (tramo 2). La clave admin de cada worker NO va acá: vive en el
     # SecretStore (ver app.radar.workers.nombre_clave_admin) y la registra

@@ -16,7 +16,7 @@ from app.middleware import log_errores
 from app.radar.contexto import RadarContexto
 from app.radar.db import RadarDB
 from app.radar.fuente import FuenteStore
-from app.radar.mailer import construir_mailer
+from app.radar.mailer import SEGURIDADES_SMTP, construir_mailer
 from app.radar.migrate import migrar_fuente, migrar_resultados
 from app.radar.routers import (admin, consola, cuenta, health, login, paginas, parametros, soporte, vinculo,
                                webhook_waha, workers_admin)
@@ -39,6 +39,27 @@ def validar_settings(rs: RadarSettings) -> None:
     # Vacía se admite (el receptor responde 401 a todo); corta no: sería una firma débil.
     if rs.waha_webhook_hmac_key and len(rs.waha_webhook_hmac_key) < MIN_WEBHOOK_HMAC:
         raise RuntimeError(f"RADAR_WAHA_WEBHOOK_HMAC_KEY: mínimo {MIN_WEBHOOK_HMAC} caracteres aleatorios")
+    if rs.mailer == "smtp":
+        _validar_smtp(rs)
+
+
+def _validar_smtp(rs: RadarSettings) -> None:
+    """Los mensajes nombran variables, nunca valores: ni el host, ni el usuario, ni la contraseña."""
+    if not rs.smtp_host:
+        raise RuntimeError("RADAR_SMTP_HOST: obligatoria con RADAR_MAILER=smtp")
+    if rs.smtp_seguridad not in SEGURIDADES_SMTP:
+        raise RuntimeError("RADAR_SMTP_SEGURIDAD: tiene que ser " + "|".join(SEGURIDADES_SMTP))
+    password = rs.smtp_password.get_secret_value()
+    if rs.smtp_usuario and not password:
+        raise RuntimeError("RADAR_SMTP_PASSWORD: obligatoria si hay RADAR_SMTP_USUARIO")
+    # "ninguna" es para un relay sin autenticar de una red privada: con usuario, la contraseña iría en claro.
+    if rs.smtp_usuario and rs.smtp_seguridad == "ninguna":
+        raise RuntimeError("RADAR_SMTP_SEGURIDAD=ninguna no admite RADAR_SMTP_USUARIO: "
+                           "la contraseña viajaría sin cifrar")
+    # smtplib codifica las credenciales en ASCII; con otros caracteres lanza un UnicodeEncodeError cuyo
+    # texto trae un pedazo de la contraseña. Mejor frenar acá, sin decir cuál.
+    if not (rs.smtp_usuario + password).isascii():
+        raise RuntimeError("RADAR_SMTP_USUARIO y RADAR_SMTP_PASSWORD: solo caracteres ASCII")
 
 
 async def construir_contexto(rs: RadarSettings) -> RadarContexto:
@@ -47,7 +68,7 @@ async def construir_contexto(rs: RadarSettings) -> RadarContexto:
     fuente = FuenteStore(rs.fuente_database_url)
     await fuente.connect()
     return RadarContexto(settings=rs, db=db, fuente=fuente,
-                         secretos=FileSecretStore(rs.secrets_dir), mailer=construir_mailer(rs.mailer))
+                         secretos=FileSecretStore(rs.secrets_dir), mailer=construir_mailer(rs.mailer, rs))
 
 
 @asynccontextmanager

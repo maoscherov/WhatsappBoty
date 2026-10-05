@@ -16,14 +16,65 @@ cliente de Remedia (spec §6.2, S7). En este tramo, Redis no se usa todavía.
 | `RADAR_COOKIE_SECRET` | 32+ caracteres aleatorios para firmar la cookie de sesión (`python -c "import secrets; print(secrets.token_urlsafe(48))"`). Con menos de 32 la app no arranca (`validar_settings`, `app/radar/app.py`). |
 | `RADAR_COOKIE_SECURE` | `true` en producción (default). `false` solo para http local. |
 | `RADAR_PUBLIC_BASE_URL` | Base de los links mágicos, ej. `https://radar.keepitsimple.com.ar`. Default `http://localhost:8000`. |
-| `RADAR_MAILER` | `log` (default: loguea solo dominio y huella del token) o `memoria` (tests). El proveedor de producción está por definir. |
-| `RADAR_REMITENTE` | Remitente de los emails. Default `radar@keepitsimple.com.ar`. |
+| `RADAR_MAILER` | `log` (default: no manda nada, loguea solo dominio y huella del token), `memoria` (tests) o `smtp` (manda de verdad; ver "Email por SMTP"). Otro valor: la app no arranca. |
+| `RADAR_REMITENTE` | Remitente (`From`) de los emails; puede ser `Nombre <dir@dominio>`. Default `radar@keepitsimple.com.ar`. Con `smtp`, el proveedor tiene que dejar usar esa dirección al usuario de `RADAR_SMTP_USUARIO`. |
+| `RADAR_SMTP_HOST` | Servidor SMTP: solo el nombre, sin puerto ni `smtp://`. Obligatoria con `RADAR_MAILER=smtp`. |
+| `RADAR_SMTP_PORT` | Puerto del servidor SMTP. Default `587` (con `RADAR_SMTP_SEGURIDAD=ssl`, en general `465`). |
+| `RADAR_SMTP_USUARIO` | Usuario con el que se autentica. Vacío = sin autenticar (relay de una red privada). |
+| `RADAR_SMTP_PASSWORD` | Contraseña de ese usuario (de aplicación o clave SMTP del proveedor). Obligatoria si hay usuario; solo ASCII. Nunca va a un log, a la base, a una respuesta HTTP ni a un mensaje de error, y no sale en el `repr` de los settings. |
+| `RADAR_SMTP_SEGURIDAD` | `starttls` (default: conecta y sube a TLS antes de autenticar), `ssl` (TLS desde el primer byte) o `ninguna` (sin cifrar: solo para un relay sin autenticar dentro de una red privada; junto con `RADAR_SMTP_USUARIO` la app no arranca). Con TLS se verifica el certificado y el nombre del servidor. Otro valor: la app no arranca. |
+| `RADAR_SMTP_TIMEOUT_S` | Timeout de cada operación del socket (conectar y cada comando). Default `20.0`. |
 
 Todas estas variables las lee `RadarSettings` (`app/radar/settings.py`, prefijo
 `RADAR_`); `RADAR_MIGRATOR_DATABASE_URL` la lee `app.radar.migrate` a través del
 mismo objeto. `validar_settings()` exige `database_url`, `migrator_database_url`,
 `fuente_database_url` y un `cookie_secret` de 32+ caracteres antes de arrancar el
 lifespan.
+
+## Email por SMTP
+
+Con `RADAR_MAILER=smtp`, Radar manda los mails (links de acceso, invitaciones, copia
+del consentimiento y avisos del vínculo) por SMTP con `smtplib` (`SmtpMailer`,
+`app/radar/mailer.py`): sirve para Google Workspace, Resend, Amazon SES o Brevo sin
+atarse a ninguno. Es una conexión por mail, en un hilo aparte para no frenar el servicio.
+
+`validar_settings()` frena el arranque, antes de las migraciones, si falta
+`RADAR_SMTP_HOST`, si hay usuario sin contraseña, si `RADAR_SMTP_SEGURIDAD` no es
+`starttls`, `ssl` o `ninguna`, si hay `ninguna` con usuario (la contraseña viajaría
+sin cifrar) o si el usuario o la contraseña tienen caracteres que no son ASCII
+(`smtplib` no autentica con otros). Los mensajes nombran la variable, nunca el valor.
+Radar no prueba la conexión al arrancar: la primera señal es el primer mail (pedí un
+link en `/radar/login` con un admin que ya exista y mirá el log). `scripts/radar_admin.py
+crear-admin` no usa SMTP aunque `RADAR_MAILER=smtp` esté en el entorno: sigue imprimiendo
+el link en la terminal.
+
+Los avisos del vínculo (caída y fin) los manda la cola de jobs: si corre como proceso
+aparte (`python -m app.radar.worker`, ver "Worker de la cola"), ese servicio necesita las
+mismas `RADAR_MAILER`, `RADAR_REMITENTE` y `RADAR_SMTP_*` que el web; sin ellas usa `log`
+y esos avisos no salen.
+
+**Google Workspace.** `RADAR_SMTP_HOST=smtp.gmail.com`, `RADAR_SMTP_PORT=587`,
+`RADAR_SMTP_SEGURIDAD=starttls`, `RADAR_SMTP_USUARIO` = la cuenta que manda (por
+ejemplo `radar@keepitsimple.com.ar`) y `RADAR_SMTP_PASSWORD` = una **contraseña de
+aplicación** de esa cuenta (hace falta la verificación en dos pasos; la contraseña
+normal de la cuenta no sirve). `RADAR_REMITENTE` tiene que ser esa cuenta o un alias
+suyo: con otra dirección, Google cambia el remitente o rechaza el mail.
+
+**Qué mirar en el log.** Si salió: `email enviado a *@dominio asunto=... huella=...`
+(el mismo formato que con `log`). Si no salió, quien mandaba (`link no enviado (...)`,
+`copia del consentimiento ... no enviada`, `aviso del vínculo ... no enviado`)
+escribe solo el nombre del tipo de error, nunca su texto (puede traer el email
+completo o la respuesta del servidor), la contraseña ni el cuerpo:
+
+- `SMTPAuthenticationError`: usuario o contraseña.
+- `SMTPSenderRefused`: `RADAR_REMITENTE` no está permitido para ese usuario.
+- `SMTPRecipientsRefused`: el servidor rechazó al destinatario.
+- `SSLError`, `SMTPServerDisconnected`: la seguridad no corresponde al puerto (587 con
+  `starttls`, 465 con `ssl`).
+- `SMTPNotSupportedError`: el servidor no ofrece STARTTLS o no ofrece autenticación;
+  revisá `RADAR_SMTP_SEGURIDAD` y `RADAR_SMTP_USUARIO`.
+- `TimeoutError`, `ConnectionRefusedError`, `gaierror`: host, puerto o red (revisá
+  también que el plan del hosting permita SMTP saliente).
 
 ## Primera vez
 
