@@ -1,13 +1,15 @@
 """
-Alta del primer admin de KIS en un despliegue de Radar. Se corre en el
-servidor (Railway shell) con las variables RADAR_* del entorno:
+Alta de un admin de KIS desde la shell del servidor (Railway shell), con las
+variables RADAR_* del entorno:
 
     python scripts/radar_admin.py crear-admin --email mariano@keepitsimple.com.ar --nombre "Mariano"
 
 Imprime UNA vez el link de invitación (7 días, un solo uso) en esta terminal
-en lugar de mandarlo por email: el primer admin no tiene todavía cómo pedir
-un link desde /radar/login. Es idempotente: repetirlo actualiza el nombre y
-reenvía la invitación (máximo 3 cada 15 minutos).
+en lugar de mandarlo por email, aunque RADAR_MAILER=smtp esté en el entorno:
+es el camino sin correo saliente. Con SMTP no hace falta la shell: el arranque
+crea los admins de RADAR_ADMINS_INICIALES y cada uno pide su link en
+/radar/login. Es idempotente: repetirlo actualiza el nombre y reenvía la
+invitación (máximo 3 cada 15 minutos), también a un admin que creó el arranque.
 """
 
 import argparse

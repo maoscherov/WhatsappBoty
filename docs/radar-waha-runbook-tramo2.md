@@ -21,8 +21,12 @@ archivo del repo; anotá solo estados y sí/no.
            --base-url https://TU-DOMINIO --engine GOWS --max-sesiones 5 --disco-max-gb 5
        python scripts/radar_workers.py listar
 
+   O desde la Consola, ya con la sesión del paso 4: sección «Servidores WAHA», con los mismos datos; por ahí la
+   clave se prueba contra el WAHA antes de guardarse. Igual dejá `WAHA_ADMIN_KEY` en la variable de la shell: la
+   usan los `curl` de verificación de los pasos siguientes.
 4. Creá el primer admin (`python scripts/radar_admin.py crear-admin --email ... --nombre ...`), entrá con el
-   link, y creá un cliente de prueba con su línea (`POST /radar/admin/tenants`).
+   link, y creá un cliente de prueba con su línea: desde la Consola, sección «Alta» → «Cliente nuevo», o con
+   `POST /radar/admin/tenants`.
 
 ## 1. Consola: consentimiento asistido y QR
 
@@ -142,8 +146,8 @@ Si los nombres de `actions` no son los que usa WAHA, corregí `ACCIONES_CLAVE_LE
 
 1. En la Consola, **Marcar restricción** sin fecha; **Reconectar** tiene que dar "La cuenta tiene una
    restricción activa"; **Desconectar** tiene que funcionar. Levantala.
-2. `python scripts/radar_workers.py disco --nombre gows-staging --usado-gb 4` (80 % de 5 GB) y generá QR en
-   otra línea. Esperado: "En este momento no hay lugar para una conexión nueva. Probá de nuevo más tarde o
+2. `python scripts/radar_workers.py disco --nombre gows-staging --usado-gb 4` (80 % de 5 GB; o el botón «Disco»
+   del servidor en la Consola, sección «Servidores WAHA») y generá QR en otra línea. Esperado: "En este momento no hay lugar para una conexión nueva. Probá de nuevo más tarde o
    escribinos." y ninguna sesión nueva en WAHA. Volvé el disco a 0.
 
 ## 8. Cierre

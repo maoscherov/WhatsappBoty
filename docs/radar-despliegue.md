@@ -9,7 +9,7 @@ cliente de Remedia (spec §6.2, S7). En este tramo, Redis no se usa todavía.
 | Variable | Qué es |
 |---|---|
 | `APP_MODE=radar` | Monta los routers de Radar y ninguno del bot. Por defecto `bot` (`app/config.py`). |
-| `UVICORN_HOST` | Dirección en la que escucha uvicorn. Opcional: la lee el `CMD` del `Dockerfile` (`--host ${UVICORN_HOST:-0.0.0.0}`), que comparten el bot y Radar, así que vale para el servicio donde la pongas. Default `0.0.0.0` (IPv4), como siempre. `::` para escuchar en IPv6, si la red privada de Railway lo pide (por ejemplo, para que el WAHA llegue al webhook por `<servicio-radar>.railway.internal`); con `::` uvicorn abre un socket solo IPv6 y deja de aceptar IPv4. El `Procfile` no la lee: Railway construye con el `Dockerfile` (`railway.json`). |
+| `UVICORN_HOST` | Dirección en la que escucha uvicorn. Opcional: la lee el `CMD` del `Dockerfile` (`--host ${UVICORN_HOST:-0.0.0.0}`), que comparten el bot y Radar, así que vale para el servicio donde la pongas. Default `0.0.0.0` (IPv4), como siempre. `::` para escuchar en IPv6, si la red privada de Railway lo pide (por ejemplo, para que el WAHA llegue al webhook por `<servicio-radar>.railway.internal`). Con `::`, según el event loop, uvicorn puede abrir un socket solo IPv6 y dejar de aceptar IPv4: después de cambiarla, verificá que `/health` siga respondiendo, por el dominio público y por la red privada. El `Procfile` no la lee: Railway construye con el `Dockerfile` (`railway.json`); un Start Command en el servicio la deja sin efecto (ver abajo). |
 | `RADAR_MIGRATOR_DATABASE_URL` | Rol dueño de las tablas (en Railway, el usuario por defecto). Solo lo usa Alembic en el arranque. |
 | `RADAR_DATABASE_URL` | Rol `radar_app`: `NOSUPERUSER`, `NOBYPASSRLS`, no dueño. La app aborta si conecta con un superusuario o con `BYPASSRLS`. |
 | `RADAR_BOOTSTRAP_ROLES` | `true`: el arranque crea `radar_admin` y `radar_app` si faltan y le pone a `radar_app` la contraseña de `RADAR_DATABASE_URL`, sin `psql` (ver "Roles al arrancar"). Con ella, `RADAR_DATABASE_URL` tiene que ser del usuario `radar_app`, con una contraseña de 16+ caracteres, y puede escribirse con las referencias de Railway: `postgresql://radar_app:<contraseña>@${{Postgres.PGHOST}}:${{Postgres.PGPORT}}/${{Postgres.PGDATABASE}}`. Default `false`: los roles se crean a mano con `scripts/radar_bootstrap_roles.sql`, como antes (ver "Primera vez"). |
@@ -34,6 +34,10 @@ mismo objeto. `APP_MODE` la lee `app/config.py` y `UVICORN_HOST`, el `CMD` del
 `Dockerfile`. `validar_settings()` exige `database_url`, `migrator_database_url`,
 `fuente_database_url` y un `cookie_secret` de 32+ caracteres antes de arrancar el
 lifespan.
+
+Si el servicio de Railway tiene un Start Command propio (en su configuración de deploy), ese comando reemplaza el
+`CMD` del `Dockerfile`: entonces los defaults de `UVICORN_HOST` (`0.0.0.0`) y de `PORT` (`8000`) no se aplican, y el
+host y el puerto son los que diga ese comando.
 
 ## Email por SMTP
 
@@ -318,16 +322,28 @@ Las lee `RadarSettings` (`app/radar/settings.py`), igual que las del tramo 1.
 
 ### Registrar un worker
 
-En la shell del servicio de Radar, con la clave admin **en claro** del WAHA (la del gestor de contraseñas, nunca en un archivo
-del repo):
+Desde la Consola (`/radar/consola`, rol `admin`), sección **Servidores WAHA**: nombre, URL base (la de la red privada, por
+ejemplo `http://waha-w1.railway.internal:3000`), motor (`NOWEB` o `GOWS`), máximo de sesiones, disco total y la clave admin
+**en claro** del WAHA (la del gestor de contraseñas, nunca en un archivo del repo). Antes de guardar nada, Radar prueba la
+clave contra el propio WAHA (`GET /api/server/version`): tiene que contestar con esa clave y con el motor elegido. Si no, no
+queda fila, ni clave, ni auditoría, y la Consola dice por qué («WAHA rechazó la clave.», «No se pudo conectar con ese
+servidor WAHA.», «El servidor WAHA usa otro motor.»). La clave viaja una sola vez, del navegador al servidor por HTTPS, y
+ninguna pantalla la muestra: la tabla dice solo si está cargada. En la misma sección se reemplaza la clave de un servidor
+(rotada, o uno que quedó sin clave; también se prueba antes de guardarla) y se carga el disco usado (botón «Disco» de cada
+fila). Cada acción queda en `access_audit_log` con el admin y su IP (`worker_registrado`, `worker_clave_reemplazada`,
+`worker_disco_actualizado`).
+
+La alternativa sin navegador, en la shell del servicio de Radar, sigue existiendo (la clave en la variable de entorno,
+nunca por argumento; este camino no la prueba contra WAHA):
 
     WAHA_ADMIN_KEY='...' python scripts/radar_workers.py registrar --nombre w1 \
         --base-url http://waha-w1.railway.internal:3000 --engine GOWS --max-sesiones 50 --disco-max-gb 20
     python scripts/radar_workers.py listar
     python scripts/radar_workers.py disco --nombre w1 --usado-gb 3.5
 
-La clave admin va al `SecretStore` como `waha_admin:<worker_id>` (`RADAR_SECRETS_DIR`, 0600), junto a las `k_tenant` del tramo 1
-y a las claves de lectura por vínculo (`waha_lectura:<link_id>`). Nunca en Postgres; solo la lee `app/radar/workers.py::cliente_de`.
+Por cualquiera de los dos caminos, la clave admin va al `SecretStore` como `waha_admin:<worker_id>` (`RADAR_SECRETS_DIR`,
+0600), junto a las `k_tenant` del tramo 1 y a las claves de lectura por vínculo (`waha_lectura:<link_id>`). Nunca en
+Postgres; solo la lee `app/radar/workers.py::cliente_de`.
 
 ### Worker de la cola
 
@@ -348,8 +364,21 @@ y a las claves de lectura por vínculo (`waha_lectura:<link_id>`). Nunca en Post
 
 ### Pantallas
 
-- Consola KIS: `https://<radar>/radar/consola` (rol `admin`).
+- Login: `https://<radar>/radar/login`. Se escribe el email y llega un link de un solo uso (vence en 15 minutos); la
+  pantalla dice siempre lo mismo, exista o no el email. El link abre la página de canje y, al confirmar, lleva a
+  `/radar/inicio`.
+- Aterrizaje por rol: `https://<radar>/radar/inicio`. `admin` va a la Consola; `dueno`, a
+  `/radar/conectar?linea=<line_id>` con su línea más antigua que no está de baja (o a `/radar/conectar` sin línea si no
+  tiene); `gestor`, `lector` y `soporte`, a `/radar/api/yo` hasta que llegue su pantalla con el tablero (tramo 4).
+  `GET /` y `GET /radar` redirigen a `/radar/inicio`.
+- Consola KIS: `https://<radar>/radar/consola` (rol `admin`): «Alta» (cliente nuevo con su primera línea y la
+  invitación al dueño, otra línea, reenvío de la invitación), «Líneas» (el vínculo de cada una, con «Operar») y
+  «Servidores WAHA» (ver "Registrar un worker").
 - Pantalla del dueño: `https://<radar>/radar/conectar?linea=<line_id>` (rol `dueno`).
+- Sin sesión válida, las pantallas (`/radar/consola`, `/radar/conectar`, `/radar/inicio`) llevan a `/radar/login`; con
+  la sesión de otro rol responden `403`. La API (`/radar/api/*`, `/radar/admin/*`) sigue con `401`. La Consola y la
+  pantalla del dueño tienen «Salir», y si la sesión se cierra con la pantalla abierta (vencida, o con «Salir» en otra
+  pestaña) vuelven solas al login.
 
 ### Desvíos del plan frente al código real
 
@@ -367,3 +396,29 @@ y a las claves de lectura por vínculo (`waha_lectura:<link_id>`). Nunca en Post
   de cada paso en vez de abortar en el primero. Así un fallo de lectura, por ejemplo, no impide intentar igual el `DELETE` y el
   borrado de claves; el job de fin de vínculo decide con ese resumen si reintentar.
 - **Worker embebido por defecto**: ver "Worker de la cola" arriba — decisión pendiente del dueño frente a §6.2 del spec.
+
+## Antes de dar staging por bueno
+
+Lo que la suite no puede probar: corre con un WAHA y un SMTP falsos, sin el proxy de Railway y con versiones más nuevas
+de las dependencias que las de `requirements.txt`.
+
+1. **WAHA rechaza una clave incorrecta.** La Consola prueba cada clave contra `GET /api/server/version`: si el WAHA
+   contestara esa ruta sin pedir clave, cualquier clave pasaría la prueba. Tiene que dar `401`:
+   `curl -s -o /dev/null -w "%{http_code}\n" -H "X-Api-Key: incorrecta" <url-base-del-waha>/api/server/version`
+   (si el WAHA solo está en la red privada, desde la shell del servicio de Radar, que no trae `curl`:
+   `python -c "import httpx; print(httpx.get('<url-base-del-waha>/api/server/version', headers={'X-Api-Key': 'incorrecta'}).status_code)"`).
+   Sin shell: registrá el servidor en la Consola primero con una clave inventada; tiene que decir «WAHA rechazó la
+   clave.».
+2. **El correo sale.** Pedí un link en `/radar/login` con el email de un admin y mirá el log: `email enviado a
+   *@dominio ...` si salió; si no, `link no enviado (login): ...` con el tipo de error (ver "Email por SMTP"). Algunos
+   hostings bloquean el SMTP saliente: un `TimeoutError` o un `ConnectionRefusedError` puede ser eso.
+3. **El primer arranque.** En el log del deploy: `RADAR_BOOTSTRAP_ROLES: roles creados: ...; contraseña de radar_app:
+   ...` (si se usa esa variable) y `RADAR_ADMINS_INICIALES: creados: N, promovidos: N, ya existían: N`.
+4. **Una pasada con el navegador.** Login → link del mail → canje → Consola → alta de un cliente de prueba (con un
+   email tuyo como dueño, para recibir la invitación) → Servidores WAHA → Salir. Y el camino del dueño: el link de la
+   invitación lleva a `/radar/conectar?linea=...`. Si algún paso da `403` con `origen_no_permitido`, la guarda de
+   origen está rechazando al propio navegador (ver "Pedidos desde otra página"): no sigas sin resolverlo.
+5. **La suite con las versiones fijadas.** `python -m pytest tests/radar_tests -q` en un venv nuevo (o una imagen)
+   armado con `pip install -r requirements-dev.txt`, que trae las versiones de `requirements.txt` más las herramientas
+   de test. El desarrollo usa versiones más nuevas, y hay diferencias que importan: FastAPI 0.115, por ejemplo, lee
+   como JSON un cuerpo sin `Content-Type`.
