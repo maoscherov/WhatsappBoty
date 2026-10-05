@@ -1,6 +1,7 @@
 """
 App de Radar (APP_MODE=radar). Misma imagen que el bot, routers distintos,
-sin CORS (la cookie de sesión es same-origin).
+sin CORS (la cookie de sesión es same-origin) y con una guarda de origen para
+todo lo que cambia algo bajo /radar/ (solo_mismo_origen).
 
 A diferencia del bot, una migración fallida o una base inaccesible IMPIDEN el
 arranque: RLS depende del esquema y no hay modo degradado que valga.
@@ -9,8 +10,10 @@ arranque: RLS depende del esquema y no hay modo degradado que valga.
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 
 from app.middleware import log_errores
 from app.radar.bootstrap import asegurar_admins_iniciales, asegurar_roles, parsear_admins_iniciales
@@ -122,12 +125,53 @@ async def sin_cache_en_la_api(request, call_next):
     return response
 
 
+# CSRF desde el mismo sitio. La cookie de sesión es SameSite=Lax: viaja en todo pedido same-site, y una página de
+# cualquier subdominio de keepitsimple.com.ar es del mismo sitio. Con la versión fijada de FastAPI (0.115,
+# requirements.txt) un cuerpo sin Content-Type se lee como JSON, así que ese pedido ni necesita preflight (un fetch
+# no-cors con un Blob, navigator.sendBeacon): sin esta guarda, esa página podría registrar un WAHA propio con la sesión
+# de un admin.
+METODOS_QUE_CAMBIAN = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+SITIOS_PERMITIDOS = frozenset({"same-origin", "none"})        # none: lo pidió la persona, no una página
+
+
+def origen_permitido(request) -> bool:
+    """Sec-Fetch-Site, si vino (lo pone el navegador y una página no lo puede cambiar): solo same-origin o none. Si no
+    vino y vino Origin (un navegador viejo): su host[:puerto] tiene que ser el Host del pedido, sin mirar el esquema
+    porque el proxy de Railway termina el TLS ("null" no tiene host: no pasa). Sin ninguno de los dos no es un
+    navegador (curl, los scripts, los tests, servidor a servidor): pasa."""
+    sitio = request.headers.get("sec-fetch-site")
+    if sitio is not None:
+        return sitio in SITIOS_PERMITIDOS
+    origen = request.headers.get("origin")
+    if origen is None:
+        return True
+    try:
+        host = urlsplit(origen).netloc
+    except ValueError:
+        return False
+    return bool(host) and host.lower() == request.headers.get("host", "").lower()
+
+
+async def solo_mismo_origen(request, call_next):
+    """403 sin llegar a la ruta para lo que cambia algo bajo /radar/ desde otro origen. No pasan por acá las lecturas
+    (GET, HEAD, OPTIONS) ni /webhook/waha (fuera de /radar/ y firmado con HMAC, sin cookie)."""
+    if (request.method in METODOS_QUE_CAMBIAN and request.url.path.startswith("/radar/")
+            and not origen_permitido(request)):
+        # %r: la ruta llega decodificada y un %0A no puede partir la línea del log.
+        logger.warning("pedido de otro origen rechazado: %s %r", request.method, request.url.path)
+        return JSONResponse({"detail": {"error": "origen_no_permitido"}}, status_code=403)
+    return await call_next(request)
+
+
 def crear_app_radar(rs: RadarSettings | None = None, contexto: RadarContexto | None = None) -> FastAPI:
     rs = rs or get_radar_settings()
     app = FastAPI(title="Radar", version="0.1.0", lifespan=_lifespan_radar)
     app.state.radar_settings = rs
     app.state.radar = contexto
     app.middleware("http")(log_errores)
+    # El que se agrega después envuelve al anterior: sin_cache_en_la_api, por fuera, le pone no-store también al 403
+    # de la guarda.
+    app.middleware("http")(solo_mismo_origen)
     app.middleware("http")(sin_cache_en_la_api)
     app.include_router(health.router)
     app.include_router(login.router)

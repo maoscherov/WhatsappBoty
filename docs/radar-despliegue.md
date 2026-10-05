@@ -254,6 +254,22 @@ alembic -c alembic_fuente.ini -x url=postgresql://... upgrade head
   falta apagar el access log; el `CMD` del Dockerfile y el `Procfile` quedan
   como están.
 
+## Pedidos desde otra página (CSRF)
+
+Todo `POST`, `PUT`, `PATCH` o `DELETE` bajo `/radar/` pasa por una guarda de origen (`solo_mismo_origen`,
+`app/radar/app.py`) antes de llegar a la ruta. Si el navegador mandó `Sec-Fetch-Site`, solo pasan `same-origin` y
+`none`; si no lo mandó pero mandó `Origin` (un navegador viejo), su host y puerto tienen que ser el `Host` del pedido
+(sin mirar el esquema: el proxy de Railway termina el TLS; `Origin: null` no pasa). Sin ninguna de las dos cabeceras
+pasa: así llaman `curl`, los scripts y los tests. El rechazo es un `403` con `{"detail": {"error":
+"origen_no_permitido"}}`, sin tocar nada, y deja en el log `pedido de otro origen rechazado: <método> '<ruta>'`. Las
+lecturas (`GET`, `HEAD`, `OPTIONS`) y `/webhook/waha` (fuera de `/radar/`, firmado con HMAC) no pasan por ahí.
+
+Por qué existe: la cookie de sesión es `SameSite=Lax`, así que viaja en todo pedido *same-site*, el que puede mandar
+una página de cualquier subdominio de `keepitsimple.com.ar`; y la versión de FastAPI que fija `requirements.txt`
+(0.115) lee como JSON un cuerpo sin `Content-Type`, así que esa página ni necesita preflight (un `fetch` `no-cors` con
+un `Blob`, o `navigator.sendBeacon`). Sin la guarda, por ejemplo, podría registrar un servidor WAHA propio con la
+sesión de un admin, y Radar le mandaría vínculos nuevos y la clave HMAC del webhook.
+
 ## Consentimiento y arrastre entre líneas
 
 Cuando el dueño afloja un parámetro de **tenant** con líneas vivas, cada línea
