@@ -21,6 +21,7 @@ from app.radar.contexto import contexto
 from app.radar.fuente import ALMACENES_DISPONIBLES
 from app.radar.lineas import AlmacenNoDisponible, crear_linea, resolver_valores_linea
 from app.radar.links import EmailInvalido, enviar_link_seguro, normalizar_email
+from app.radar.mailer import NombreDeUnRenglon
 from app.radar.parametros import ValorInvalido, perfil_por_rubro, propuesta_para_perfil
 from app.radar.parametros_service import (CambioRechazado, a_json, cambiar_parametros_linea, cambiar_parametros_tenant,
                                           proponer_parametros_linea, proponer_parametros_tenant)
@@ -43,18 +44,19 @@ class ParametrosLineaIn(BaseModel):
     tope_ia_mensual_usd: Optional[Decimal] = None
 
 
+# Los nombres van en un renglón (NombreDeUnRenglon): el del cliente va en el asunto de todos sus mails.
 class LineaIn(BaseModel):
-    nombre: str = Field(min_length=1, max_length=80)
+    nombre: NombreDeUnRenglon = Field(min_length=1, max_length=80)
     parametros: ParametrosLineaIn = ParametrosLineaIn()
 
 
 class DuenoIn(BaseModel):
     email: str = Field(max_length=254)
-    nombre: str = Field(default="", max_length=120)
+    nombre: NombreDeUnRenglon = Field(default="", max_length=120)
 
 
 class TenantIn(BaseModel):
-    nombre: str = Field(min_length=1, max_length=120)
+    nombre: NombreDeUnRenglon = Field(min_length=1, max_length=120)
     rubro: str = Field(pattern=_RUBRO)
     perfil_de_datos: Optional[str] = None
     parametros: ParametrosTenantIn = ParametrosTenantIn()

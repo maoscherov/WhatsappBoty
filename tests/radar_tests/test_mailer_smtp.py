@@ -242,14 +242,38 @@ async def test_el_envio_corre_en_otro_hilo(smtp):
     assert smtp.hilos and threading.get_ident() not in smtp.hilos
 
 
-@pytest.mark.parametrize("campo, valor", [
-    ("asunto", "Tu acceso\r\nBcc: espia@otro.com"),
-    ("para", "dueno@cliente.com\r\nBcc: espia@otro.com"),
-])
-async def test_un_salto_de_linea_en_un_encabezado_no_inyecta_encabezados(smtp, campo, valor):
+async def test_un_salto_de_linea_en_el_destinatario_no_inyecta_encabezados(smtp):
     with pytest.raises(ValueError):
-        await _mailer().enviar(_mail(**{campo: valor}))
+        await _mailer().enviar(_mail(para="dueno@cliente.com\r\nBcc: espia@otro.com"))
     assert smtp.llamadas == []                  # el mensaje se arma antes de conectar
+
+
+# Los cortes de str.splitlines() (con cualquiera, EmailMessage rechaza el encabezado) y otros controles.
+FUERA_DE_UN_RENGLON = ["\r\n", "\n", "\r", "\x0b", "\x0c", "\x1c", "\x85", " ", " ", "\t", "\x00", "\x7f"]
+
+
+@pytest.mark.parametrize("corte", FUERA_DE_UN_RENGLON, ids=ascii)
+async def test_el_asunto_sale_en_un_renglon_y_no_inyecta_encabezados(smtp, corte):
+    """El asunto lleva el nombre del cliente. La API ya no deja guardar uno con un corte de línea, pero uno que ya esté
+    guardado no puede frenar todos los mails de ese cliente: cada carácter que no va en un renglón sale como un
+    espacio, en lugar de que EmailMessage lance."""
+    asunto = f"Tu acceso a Radar de Farmacia{corte}Bcc: espia@otro.com"
+    await _mailer().enviar(_mail(asunto=asunto))
+    esperado = "Tu acceso a Radar de Farmacia" + " " * len(corte) + "Bcc: espia@otro.com"
+    m = smtp.mensajes[0]
+    assert str(m["Subject"]) == esperado and m["Bcc"] is None
+    recibido = email.message_from_bytes(m.as_bytes(), policy=email.policy.default)
+    assert str(recibido["Subject"]) == esperado and recibido["Bcc"] is None
+    assert recibido.get_content() == TEXTO                                  # el cuerpo no se toca
+
+
+async def test_un_cliente_guardado_con_un_corte_de_linea_igual_recibe_su_link(radar_ctx, smtp):
+    radar_ctx.mailer = _mailer()
+    t = await crear_tenant_directo(radar_ctx.db, "Farmacia Norte")
+    u = await crear_usuario(radar_ctx.db, t, DESTINO, "dueno")
+    assert await enviar_link_seguro(radar_ctx, tenant_id=t, user_id=u, email=DESTINO, proposito="login",
+                                    ip=None) is True
+    assert str(smtp.mensajes[0]["Subject"]) == "Tu acceso a Radar de Farmacia Norte"
 
 
 # ── fallas y logs ──────────────────────────────────────────────────────────────

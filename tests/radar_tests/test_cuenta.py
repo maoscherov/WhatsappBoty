@@ -6,6 +6,8 @@ consulta.
 import re
 import uuid
 
+import pytest
+
 from .helpers import DOMINIO_COOKIE, crear_linea_directa, crear_tenant_directo, crear_usuario, entrar
 
 LINK = re.compile(r"/radar/login/canjear\?t=([0-9a-f-]+)#k=([A-Za-z0-9_-]+)")
@@ -108,6 +110,19 @@ async def test_solo_el_dueno_administra_usuarios(cliente, radar_ctx):
         assert (await cliente.get("/radar/api/usuarios")).status_code == 403
         assert (await cliente.post("/radar/api/usuarios", json={"email": "x@cliente.com", "rol": "lector"})).status_code == 403
         assert (await cliente.put(f"/radar/api/usuarios/{d}/rol", json={"rol": "lector"})).status_code == 403
+
+
+@pytest.mark.parametrize("caracter", ["\n", "\r", "\x0b", "\x85", " ", " ", "\t", "\x00"], ids=ascii)
+async def test_el_nombre_de_un_invitado_no_admite_saltos_de_linea_ni_controles(cliente, radar_ctx, caracter):
+    """Como el del dueño en el alta (test_admin.py): un nombre de persona va en un renglón."""
+    a, d, _, _ = await _tenant_con_dueno(radar_ctx)
+    await entrar(cliente, radar_ctx, a, d, "dueno")
+    r = await cliente.post("/radar/api/usuarios", json={"email": "gestor@cliente.com", "nombre": f"Gus{caracter}Bo",
+                                                        "rol": "gestor"})
+    assert r.status_code == 422
+    async with radar_ctx.db.tenant_tx(a) as con:
+        assert await con.fetchval("SELECT count(*) FROM users") == 1          # solo el dueño
+    assert radar_ctx.mailer.enviados == []
 
 
 async def test_invitacion_con_mailer_que_falla(cliente, radar_ctx, monkeypatch):

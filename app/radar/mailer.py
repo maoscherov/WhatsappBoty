@@ -16,18 +16,44 @@ import hashlib
 import logging
 import smtplib
 import ssl
+import unicodedata
 from dataclasses import dataclass
 from email.message import EmailMessage
 from email.utils import formatdate, make_msgid, parseaddr
-from typing import Protocol
+from typing import Annotated, Protocol
 
-from pydantic import SecretStr
+from pydantic import AfterValidator, SecretStr
 
 from app.radar.settings import RadarSettings
 
 logger = logging.getLogger("app.radar.mailer")
 
 SEGURIDADES_SMTP = ("starttls", "ssl", "ninguna")
+
+# Lo que no va en un renglón: los caracteres de control (Cc: \t, \n, \r, \x0b, \x0c, \x1c, \x7f, \x85...) y los
+# separadores de línea y de párrafo (Zl: U+2028; Zp: U+2029). Incluye todos los cortes de str.splitlines(): con uno
+# en un encabezado, EmailMessage lanza ValueError y ese mail no sale.
+_FUERA_DE_UN_RENGLON = frozenset({"Cc", "Zl", "Zp"})
+
+
+def entra_en_un_renglon(texto: str) -> bool:
+    return not any(unicodedata.category(c) in _FUERA_DE_UN_RENGLON for c in texto)
+
+
+def en_un_renglon(texto: str) -> str:
+    """Cada carácter que no va en un renglón pasa a ser un espacio."""
+    return "".join(" " if unicodedata.category(c) in _FUERA_DE_UN_RENGLON else c for c in texto)
+
+
+def _exigir_un_renglon(texto: str) -> str:
+    if not entra_en_un_renglon(texto):
+        raise ValueError("sin saltos de línea ni caracteres de control")
+    return texto
+
+
+# Para los nombres que llegan por la API (cliente, línea, personas): el del cliente va en el asunto de todos sus
+# mails (links.TEXTOS), y uno con un corte de línea los frenaría a todos. Mejor un 422 al cargarlo.
+NombreDeUnRenglon = Annotated[str, AfterValidator(_exigir_un_renglon)]
 
 
 @dataclass(frozen=True)
@@ -87,11 +113,13 @@ class SmtpMailer:
 
     def _armar(self, mail: Email) -> EmailMessage:
         # Con la política por defecto, un salto de línea en un valor de encabezado lanza
-        # ValueError: ni el asunto (nombre del cliente) ni el destinatario pueden inyectar encabezados.
+        # ValueError: el destinatario no puede inyectar encabezados. El asunto lleva el nombre
+        # del cliente: sale en un renglón, así uno ya guardado con un corte de línea (la API
+        # ya no los deja entrar) no frena todos sus mails ni inyecta nada.
         mensaje = EmailMessage()
         mensaje["From"] = self._remitente
         mensaje["To"] = mail.para
-        mensaje["Subject"] = mail.asunto
+        mensaje["Subject"] = en_un_renglon(mail.asunto)
         mensaje["Date"] = formatdate(usegmt=True)
         # RADAR_REMITENTE puede ser "Nombre <dir@dominio>": el dominio sale de la dirección sola.
         mensaje["Message-ID"] = make_msgid(domain=parseaddr(self._remitente)[1].rpartition("@")[2] or None)

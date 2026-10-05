@@ -12,6 +12,7 @@ from app.radar.auth import Sesion, ip_de, requiere_rol, revocar_sesiones_de, ses
 from app.radar.contexto import contexto
 from app.radar.lineas import linea_json, listar_lineas
 from app.radar.links import EmailInvalido, enviar_link_seguro, normalizar_email
+from app.radar.mailer import NombreDeUnRenglon
 
 router = APIRouter(prefix="/radar/api", tags=["radar-cuenta"])
 
@@ -36,7 +37,7 @@ def _usuario_json(fila) -> dict:
 
 class InvitacionUsuarioIn(BaseModel):
     email: str = Field(max_length=254)
-    nombre: str = Field(default="", max_length=120)
+    nombre: NombreDeUnRenglon = Field(default="", max_length=120)      # en un renglón, como el del dueño en el alta
     rol: Literal["gestor", "lector"]
     lineas_permitidas: Optional[list[uuid.UUID]] = None
 

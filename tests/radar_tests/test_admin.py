@@ -135,6 +135,41 @@ async def test_alta_invalida(cliente, radar_ctx, malo):
     assert (await cliente.post("/radar/admin/tenants", json=malo)).status_code == 422
 
 
+# Lo que no entra en un renglón: los cortes de str.splitlines() (\n, \r, \x0b, \x0c, \x1c, \x85, U+2028, U+2029) y el
+# resto de los caracteres de control. El nombre del cliente va en el asunto de todos sus mails, y con un corte ahí
+# EmailMessage lanza: no saldría ningún link, ninguna invitación ni ningún aviso de ese cliente.
+FUERA_DE_UN_RENGLON = ["\n", "\r", "\r\n", "\x0b", "\x0c", "\x1c", "\x85", " ", " ", "\t", "\x00", "\x7f"]
+
+
+@pytest.mark.parametrize("caracter", FUERA_DE_UN_RENGLON, ids=ascii)
+async def test_un_nombre_que_no_entra_en_un_renglon_es_422_y_no_crea_nada(cliente, radar_ctx, caracter):
+    """El del cliente, el de su primera línea, el del dueño y el de una línea nueva."""
+    await _admin(cliente, radar_ctx)
+    nombre = f"Farmacia{caracter}Bcc: espia@otro.com"
+    for alta in (dict(ALTA, nombre=nombre), dict(ALTA, linea={"nombre": nombre}),
+                 dict(ALTA, dueno={"email": "dueno@farmacia.com", "nombre": nombre})):
+        r = await cliente.post("/radar/admin/tenants", json=alta)
+        assert r.status_code == 422, (alta, r.status_code)
+    a = await crear_tenant_directo(radar_ctx.db, "A")
+    assert (await cliente.post(f"/radar/admin/tenants/{a}/lineas", json={"nombre": nombre})).status_code == 422
+    async with radar_ctx.db.sin_tenant() as con:
+        assert [f["nombre"] for f in await con.fetch("SELECT * FROM radar_admin_listar_tenants()")] == ["A"]
+    async with radar_ctx.db.tenant_tx(a) as con:
+        assert await con.fetchval("SELECT count(*) FROM lines") == 0
+    assert radar_ctx.mailer.enviados == []
+    assert list(Path(radar_ctx.settings.secrets_dir).glob("*")) == []       # ni una k_tenant colgada
+
+
+async def test_un_nombre_con_tildes_espacios_y_simbolos_sigue_valiendo(cliente, radar_ctx):
+    await _admin(cliente, radar_ctx)
+    nombre = "Farmacia Ñandú — Sucursal «Centro» 🐾"            # con un espacio duro: es un espacio, no un corte
+    r = await cliente.post("/radar/admin/tenants", json=dict(
+        ALTA, nombre=nombre, dueno={"email": "dueno@farmacia.com", "nombre": "José Pérez"},
+        linea={"nombre": "Línea 1 — Mostrador"}))
+    assert r.status_code == 201, r.text
+    assert radar_ctx.mailer.enviados[-1].asunto == f"Invitación a Radar de {nombre}"
+
+
 async def test_alta_requiere_rol_admin(cliente, radar_ctx):
     assert (await cliente.post("/radar/admin/tenants", json=ALTA)).status_code == 401
     a = await crear_tenant_directo(radar_ctx.db, "A")
