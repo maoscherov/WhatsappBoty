@@ -6,7 +6,7 @@ import logging
 
 import pytest
 
-from app.radar.waha.cliente import (RutaNoPermitida, SesionProhibida, WahaCliente, WahaHttpError,
+from app.radar.waha.cliente import (RutaNoPermitida, SesionProhibida, WahaCliente, WahaError, WahaHttpError,
                                     verificar_nombre_sesion, verificar_ruta)
 
 from .waha_falso import PNG, WahaFalso
@@ -157,3 +157,18 @@ async def test_salto_de_linea_final_no_pasa_la_lista_blanca():
     with pytest.raises(SesionProhibida):
         verificar_nombre_sesion(verificar_ruta("GET", f"/api/sessions/{S}" + nl))
     assert waha.llamadas == []
+
+
+async def test_version_del_servidor_devuelve_version_motor_y_tier():
+    async with _cli(WahaFalso()) as cli:
+        assert await cli.version_servidor() == {"version": "2026.8.2", "engine": "NOWEB", "tier": "CORE"}
+
+
+@pytest.mark.parametrize("cuerpo", [b"<html>esto no es WAHA</html>", b'["NOWEB"]', b'"NOWEB"', b"5", b"null"])
+async def test_version_con_una_respuesta_que_no_es_un_objeto_json_es_un_waha_error(cuerpo):
+    """Un 200 que no es JSON (o no es un objeto) no es de WAHA: WahaError, nunca un ValueError ni un AttributeError."""
+    waha = WahaFalso()
+    waha.version_crudo = cuerpo
+    async with _cli(waha) as cli:
+        with pytest.raises(WahaError):
+            await cli.version_servidor()

@@ -28,6 +28,12 @@ class WahaFalso:
         self.falla_crear = False
         self.falla_leer = False
         self.falla_borrar_sesion = False            # DELETE /api/sessions/{s} -> error de conexion
+        # GET /api/server/version (la verificacion de la clave admin al registrar un worker)
+        self.version_status = 200                   # 401 = clave rechazada; otro != 200 = error del servidor
+        self.version_engine = "NOWEB"
+        self.version_sin_red = False                # error de conexion (httpx.ConnectError)
+        self.version_crudo = None                   # bytes: se contesta tal cual con 200 (no JSON, o no un objeto)
+        self.pedidos_version: list[tuple[str, str]] = []   # (URL completa, valor de X-Api-Key) de cada pedido
         self.me_id = "5493411234567@c.us"
         self._n = 0
 
@@ -39,7 +45,14 @@ class WahaFalso:
         self.llamadas.append(f"{m} {p}")
         partes = p.split("/")
         if m == "GET" and p == "/api/server/version":
-            return httpx.Response(200, json={"version": "2026.8.2", "engine": "NOWEB", "tier": "CORE"})
+            self.pedidos_version.append((str(req.url), req.headers.get("x-api-key", "")))
+            if self.version_sin_red:
+                raise httpx.ConnectError("caida simulada de /api/server/version", request=req)
+            if self.version_status != 200:
+                return httpx.Response(self.version_status, json={"message": "Unauthorized"})
+            if self.version_crudo is not None:
+                return httpx.Response(200, content=self.version_crudo)
+            return httpx.Response(200, json={"version": "2026.8.2", "engine": self.version_engine, "tier": "CORE"})
         if m == "POST" and p == "/api/sessions":
             if self.falla_crear:
                 return httpx.Response(500, json={})

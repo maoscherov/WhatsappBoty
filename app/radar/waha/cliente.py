@@ -119,7 +119,13 @@ class WahaCliente:
 
     # --- servidor ---------------------------------------------------------------
     async def version_servidor(self) -> dict[str, Any]:
-        d = (await self._request("GET", "/api/server/version")).json() or {}
+        resp = await self._request("GET", "/api/server/version")
+        try:
+            d = resp.json()
+        except ValueError:
+            raise WahaError("GET: la respuesta de versión no es JSON") from None
+        if not isinstance(d, dict):                # un 200 que no es de WAHA (HTML de un proxy, un número, null)
+            raise WahaError("GET: la respuesta de versión no es un objeto")
         return {k: d.get(k) for k in ("version", "engine", "tier")}
 
     # --- sesiones ---------------------------------------------------------------

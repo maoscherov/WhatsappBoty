@@ -28,6 +28,8 @@ ACCIONES = frozenset({
     "qr_reiniciado", "codigo_solicitado", "desconexion_pedida", "borrado_pedido",
     "restriccion_marcada", "restriccion_levantada", "vinculo_cerrado", "consola_abierta",
     "worker_registrado",
+    # staging: servidores WAHA desde la Consola
+    "worker_clave_reemplazada", "worker_disco_actualizado",
 })
 TIPOS_OBJETO = frozenset({
     "tenant", "line", "user", "membership", "consent", "session", "support_grant", "login_token",

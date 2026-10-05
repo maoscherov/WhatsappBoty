@@ -36,6 +36,13 @@
     error_422: "Revisá los datos: algún campo está vacío o no tiene el formato pedido.",
     "tenant inexistente": "El cliente no existe.",
     "usuario inexistente en este tenant": "Ese email no corresponde a ningún usuario de este cliente.",
+    // Servidores WAHA: la clave se prueba contra el propio WAHA antes de guardarla.
+    clave_incorrecta: "WAHA rechazó la clave.",
+    waha_no_responde: "No se pudo conectar con ese servidor WAHA.",
+    motor_distinto: "El servidor WAHA usa otro motor.",
+    worker_duplicado: "Ya hay un servidor con ese nombre.",
+    worker_inexistente: "El servidor no existe.",
+    disco_invalido: "Escribí los GB usados como un número, por ejemplo 3,5.",
   };
   const TEXTOS_ESTADO = {
     sin_vinculo: "Sin conexión.",
@@ -291,10 +298,12 @@
 
   // Al abrir la pantalla, con «Refrescar» y tras un alta. Primero los clientes: si el del filtro ya no existe, el
   // filtro vuelve a «Todos» antes de pedir las líneas. El refresco automático de la tabla no pasa por acá porque
-  // cada GET /tenants deja una fila en el log de auditoría.
+  // cada GET /tenants deja una fila en el log de auditoría. Los servidores van al final: si esa lista falla, lo
+  // demás ya cargó.
   async function refrescar() {
     await cargarClientes();
     await cargarLineas();
+    await cargarWorkers();
   }
 
   function abrirPanel(f) {
@@ -378,6 +387,98 @@
     if (r.enviada) $("inv-email").value = "";            // si no salió, el email queda para reintentar
   }
 
+  // ---- Servidores WAHA (solo Consola): registrar uno, reemplazar su clave y cargar el disco usado
+  // La clave admin se escribe en un campo de contraseña, viaja una sola vez y el campo se vacía al terminar, salga como
+  // salga. Ninguna pantalla la muestra: el servidor solo dice si está cargada.
+  function llenarWorkers(workers) {
+    const sel = $("worker-reemplazo");
+    const elegido = sel.value;
+    const opciones = workers.map((w) => {
+      const op = document.createElement("option");
+      op.value = w.id;
+      op.textContent = w.nombre;
+      return op;
+    });
+    sel.replaceChildren(sel.options[0], ...opciones);
+    sel.value = workers.some((w) => w.id === elegido) ? elegido : "";
+  }
+
+  function pintarWorkers(workers) {
+    const cuerpo = $("workers");
+    cuerpo.replaceChildren();
+    for (const w of workers) {
+      const tr = document.createElement("tr");
+      const valores = [w.nombre, w.engine, w.base_url, w.sesiones + "/" + w.max_sesiones,
+                       w.disco_usado_gb + "/" + w.disco_max_gb + " GB", w.activo ? "sí" : "no",
+                       w.clave_cargada ? "sí" : "no"];
+      for (const v of valores) tr.appendChild(celda(v));
+      const td = document.createElement("td");
+      const boton = document.createElement("button");
+      boton.type = "button";
+      boton.textContent = "Disco";
+      boton.addEventListener("click", () => accion(() => actualizarDisco(w)));
+      td.appendChild(boton);
+      tr.appendChild(td);
+      cuerpo.appendChild(tr);
+    }
+    llenarWorkers(workers);
+  }
+
+  async function cargarWorkers() {
+    pintarWorkers(await pedir("GET", "/radar/admin/workers"));
+  }
+
+  async function registrarWorker() {
+    $("worker-aviso").textContent = "";
+    const nombre = $("worker-nombre").value.trim();
+    let r;
+    try {
+      r = await pedir("POST", "/radar/admin/workers", {
+        nombre: nombre,
+        base_url: $("worker-url").value.trim(),
+        engine: $("worker-motor").value,
+        max_sesiones: Number($("worker-max").value),
+        disco_max_gb: Number($("worker-disco").value),
+        admin_key: $("worker-clave").value.trim(),
+      });
+    } finally {
+      $("worker-clave").value = "";                      // ni siquiera si WAHA la rechazó queda en la página
+    }
+    // Ya está registrado: el formulario se limpia antes de refrescar, así un refresco que falle no deja el
+    // formulario lleno para registrar el mismo nombre otra vez (daría el 409).
+    $("form-worker").reset();
+    $("worker-aviso").textContent = "Servidor " + nombre + " registrado: WAHA " + (r.version || "sin versión") +
+      ", motor " + r.engine + ".";
+    await cargarWorkers();
+  }
+
+  async function reemplazarClave() {
+    $("worker-aviso").textContent = "";
+    const sel = $("worker-reemplazo");
+    const nombre = sel.selectedOptions[0].textContent;
+    let r;
+    try {
+      r = await pedir("PUT", "/radar/admin/workers/" + encodeURIComponent(sel.value) + "/clave",
+                      { admin_key: $("worker-clave-nueva").value.trim() });
+    } finally {
+      $("worker-clave-nueva").value = "";
+    }
+    $("worker-aviso").textContent = "Clave de " + nombre + " reemplazada: WAHA " + (r.version || "sin versión") +
+      ", motor " + r.engine + ".";
+    await cargarWorkers();
+  }
+
+  async function actualizarDisco(w) {
+    const dato = window.prompt("GB usados en el disco de " + w.nombre + " (el total es de " + w.disco_max_gb + " GB):",
+                               String(w.disco_usado_gb));
+    if (dato === null) return;                           // canceló
+    const usado = Number(dato.trim().replace(",", "."));   // «3,5» y «3.5»
+    if (dato.trim() === "" || !Number.isFinite(usado) || usado < 0) throw new Error("disco_invalido");
+    await pedir("PUT", "/radar/admin/workers/" + encodeURIComponent(w.id) + "/disco", { usado_gb: usado });
+    $("worker-aviso").textContent = "Disco de " + w.nombre + " actualizado: " + usado + " GB usados.";
+    await cargarWorkers();
+  }
+
   // El envío nativo de un formulario lo bloquea la CSP (form-action 'none'), así que lo manda este JS, como en el
   // login. Un doble clic duplicaría un cliente que no se puede borrar: el botón queda inactivo mientras viaja el pedido.
   function alEnviar(form, boton, fn) {
@@ -405,6 +506,8 @@
     alEnviar($("form-alta"), $("btn-alta"), crearCliente);
     alEnviar($("form-linea"), $("btn-agregar-linea"), agregarLinea);
     alEnviar($("form-invitacion"), $("btn-invitar"), reenviarInvitacion);
+    alEnviar($("form-worker"), $("btn-worker"), registrarWorker);
+    alEnviar($("form-worker-clave"), $("btn-worker-clave"), reemplazarClave);
     $("alta-rubro").addEventListener("change", () => accion(mostrarPropuesta));
     $("filtro-estado").addEventListener("change", () => accion(cargarLineas));
     $("filtro-cliente").addEventListener("change", () => accion(cargarLineas));

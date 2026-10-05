@@ -10,7 +10,7 @@
 <body data-modo="consola">
 <header>
   <h1>Consola KIS</h1>
-  <p class="nota">Solo admins de Keep IT Simple. Cada acción queda auditada. Nunca se muestran conversaciones.</p>
+  <p class="nota">Solo admins de Keep IT Simple. Cada acción queda auditada. Nunca se muestran conversaciones ni claves de WAHA.</p>
   <button type="button" id="btn-salir">Salir</button>
 </header>
 <p id="error" class="error" role="alert"></p>
@@ -78,7 +78,7 @@
       <tbody id="lineas"></tbody>
     </table>
   </div>
-  <p class="nota">"—" = dato que llega con la ingesta (tramo 3) o con la IA (tramo 5).</p>
+  <p class="nota">"—" = dato que llega con la ingesta (tramo 3) o con la IA (tramo 5). De cada worker solo se ve el nombre y la ocupación: la Consola nunca muestra la clave de WAHA.</p>
 </section>
 
 <section id="panel" hidden>
@@ -135,6 +135,48 @@
       <button type="button" id="btn-levantar">Levantar restricción</button>
     </div>
   </div>
+</section>
+
+<section id="servidores">
+  <h2>Servidores WAHA</h2>
+  <p class="nota">Cada servidor tiene su motor y su clave de administrador. La clave viaja una sola vez a Radar, se prueba contra el propio servidor y se guarda fuera de la base. La Consola nunca muestra la clave.</p>
+  <p id="worker-aviso" role="status"></p>
+  <div class="tabla">
+    <table>
+      <thead>
+        <tr><th>Nombre</th><th>Motor</th><th>URL</th><th>Sesiones</th><th>Disco usado/total</th><th>Activo</th><th>Clave cargada</th><th></th></tr>
+      </thead>
+      <tbody id="workers"></tbody>
+    </table>
+  </div>
+  <p class="nota">«Clave cargada» dice si Radar tiene guardada la clave de ese servidor; la Consola nunca muestra la clave, solo permite reemplazarla. «Disco» carga los GB que usa el servidor.</p>
+
+  <form id="form-worker">
+    <h3>Registrar un servidor</h3>
+    <label>Nombre <input type="text" id="worker-nombre" maxlength="40" pattern="[a-z0-9_\-]{1,40}" title="minúsculas, números, guion y guion bajo, ej.: waha-1" required autocomplete="off"></label>
+    <label>URL <input type="url" id="worker-url" maxlength="200" required autocomplete="off"></label>
+    <span class="nota">La que alcanza Radar, sin usuario ni contraseña. En Railway: http://&lt;servicio&gt;.railway.internal:3000</span>
+    <label>Motor
+      <select id="worker-motor" required>
+        <option value="">Elegí el motor</option>
+        <option value="GOWS">GOWS</option>
+        <option value="NOWEB">NOWEB</option>
+      </select>
+    </label>
+    <label>Máximo de sesiones <input type="number" id="worker-max" min="1" max="500" step="1" value="50" required></label>
+    <label>Disco total (GB) <input type="number" id="worker-disco" min="0.01" max="100000" step="any" required></label>
+    <label>Clave de administrador de WAHA <input type="password" id="worker-clave" minlength="16" maxlength="256" required autocomplete="off"></label>
+    <button type="submit" id="btn-worker">Probar la clave y registrar</button>
+  </form>
+
+  <form id="form-worker-clave">
+    <h3>Reemplazar clave</h3>
+    <label>Servidor
+      <select id="worker-reemplazo" required><option value="">Elegí un servidor</option></select>
+    </label>
+    <label>Clave nueva <input type="password" id="worker-clave-nueva" minlength="16" maxlength="256" required autocomplete="off"></label>
+    <button type="submit" id="btn-worker-clave">Probar la clave y reemplazar</button>
+  </form>
 </section>
 </body>
 </html>

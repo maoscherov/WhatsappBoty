@@ -8,9 +8,12 @@ Workers de WAHA y admisión por capacidad (§6.2).
   ninguno se lanza SinCapacidad y NO se crea sesión ni se muestra QR.
 - ÚNICO módulo que lee la clave admin de un worker, desde el SecretStore
   (waha_admin:<worker_id>). Nunca va a la base, a un log ni al navegador.
+- También es el que la prueba contra el propio WAHA antes de guardarla
+  (verificar_clave_worker): una clave que WAHA no acepta no se guarda.
 """
 
 import logging
+import re
 import uuid
 from dataclasses import dataclass
 from decimal import Decimal
@@ -19,13 +22,16 @@ from typing import Optional
 from app.radar import auditoria
 from app.radar.constantes import TENANT_KIS
 from app.radar.contexto import RadarContexto
-from app.radar.waha.cliente import WahaCliente
+from app.radar.waha.cliente import WahaCliente, WahaError, WahaHttpError
 
 logger = logging.getLogger("app.radar.workers")
 
 UMBRAL_SESIONES = 0.8
 UMBRAL_DISCO = 0.7
 MOTORES = ("NOWEB", "GOWS")
+# Lo que cabe en la cabecera HTTP que lleva la clave: ASCII visible, sin espacios ni saltos de línea. Otra cosa no
+# puede ser la clave de un WAHA, y httpx fallaría con un error cuyo mensaje trae un carácter de la clave.
+_CLAVE_ADMIN = re.compile(r"[\x21-\x7e]+")
 
 
 class SinCapacidad(RuntimeError):
@@ -34,6 +40,27 @@ class SinCapacidad(RuntimeError):
 
 class ClaveAdminAusente(RuntimeError):
     pass
+
+
+class VerificacionFallida(RuntimeError):
+    """WAHA no aceptó la clave: no se guarda nada. `codigo` es lo que ve el navegador. El mensaje es solo el código:
+    nunca la clave ni la URL, porque log_errores loguea el de toda excepción que escapa de una ruta."""
+    codigo = "waha_no_responde"
+
+    def __init__(self) -> None:
+        super().__init__(self.codigo)
+
+
+class ClaveIncorrecta(VerificacionFallida):
+    codigo = "clave_incorrecta"
+
+
+class WahaNoResponde(VerificacionFallida):
+    codigo = "waha_no_responde"
+
+
+class MotorDistinto(VerificacionFallida):
+    codigo = "motor_distinto"
 
 
 @dataclass(frozen=True)
@@ -121,10 +148,52 @@ async def registrar_worker(ctx: RadarContexto, *, nombre: str, base_url: str, en
     return wid
 
 
-async def actualizar_disco(ctx: RadarContexto, worker_id: uuid.UUID, usado_gb: float) -> None:
+async def verificar_clave_worker(ctx: RadarContexto, *, base_url: str, engine: str, admin_key: str) -> dict:
+    """Prueba la clave contra el propio WAHA antes de guardarla: GET /api/server/version tiene que contestar con esa
+    clave y con el motor del worker. Devuelve {version, engine, tier}. Solo lanza VerificacionFallida."""
+    if not _CLAVE_ADMIN.fullmatch(admin_key):
+        raise ClaveIncorrecta()
+    async with WahaCliente(base_url, admin_key, transport=ctx.waha_transport,
+                           timeout=ctx.settings.waha_timeout_s) as cli:
+        try:
+            info = await cli.version_servidor()
+        except WahaHttpError as e:
+            raise (ClaveIncorrecta() if e.status in (401, 403) else WahaNoResponde()) from None
+        except WahaError:
+            raise WahaNoResponde() from None
+    if info["engine"] != engine:
+        raise MotorDistinto()
+    return info
+
+
+async def reemplazar_clave(ctx: RadarContexto, worker_id: uuid.UUID, admin_key: str, actor_user_id: uuid.UUID) -> dict:
+    """Cambia la clave admin de un worker que ya existe (la rotó el dueño de WAHA, o nunca se cargó). Se prueba contra
+    el base_url y el motor del propio worker; con una clave que WAHA no acepta no cambia nada. Devuelve lo mismo que
+    verificar_clave_worker; LookupError si el worker no existe."""
+    w = await leer_worker(ctx, worker_id)
+    info = await verificar_clave_worker(ctx, base_url=w.base_url, engine=w.engine, admin_key=admin_key)
+    async with ctx.db.tenant_tx(TENANT_KIS) as con:
+        await auditoria.registrar(con, tenant_id=TENANT_KIS, actor_user_id=actor_user_id, actor_rol="admin",
+                                  accion="worker_clave_reemplazada", tipo_objeto="waha_worker", objeto_id=worker_id)
+        # Dentro de la transacción: si el volumen no deja escribir, el rollback no deja una auditoría de un cambio
+        # que no ocurrió.
+        ctx.secretos.set(nombre_clave_admin(worker_id), admin_key.encode())
+    return info
+
+
+def clave_cargada(ctx: RadarContexto, worker_id: uuid.UUID) -> bool:
+    """Si el worker tiene clave, nunca cuál: la Consola muestra solo "clave cargada: sí/no"."""
+    return ctx.secretos.get(nombre_clave_admin(worker_id)) is not None
+
+
+async def actualizar_disco(ctx: RadarContexto, worker_id: uuid.UUID, usado_gb: float,
+                           actor_user_id: Optional[uuid.UUID] = None) -> None:
     async with ctx.db.tenant_tx(TENANT_KIS) as con:
         estado = await con.execute(
             "UPDATE waha_workers SET disco_usado_gb = $2, updated_at = now() WHERE id = $1",
             worker_id, Decimal(str(usado_gb)))
-    if estado == "UPDATE 0":
-        raise LookupError("worker inexistente")
+        if estado == "UPDATE 0":
+            raise LookupError("worker inexistente")
+        await auditoria.registrar(con, tenant_id=TENANT_KIS, actor_user_id=actor_user_id,
+                                  actor_rol="admin" if actor_user_id else "sistema",
+                                  accion="worker_disco_actualizado", tipo_objeto="waha_worker", objeto_id=worker_id)
