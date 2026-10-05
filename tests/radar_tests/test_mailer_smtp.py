@@ -66,7 +66,7 @@ class EstadoSmtp:
 
     @property
     def mensajes(self) -> list:
-        """Los EmailMessage que llegaron a send_message (también los que después falló)."""
+        """Los EmailMessage que llegaron a send_message, aunque la llamada haya fallado."""
         return [ll[1] for ll in self.llamadas if ll[0] == "send_message"]
 
 
@@ -111,6 +111,15 @@ class _SmtpSslFalso(_ConexionFalsa):
     def __init__(self, host="", port=0, local_hostname=None, *, timeout=_SIN_TIMEOUT, source_address=None,
                  context=None):
         self._abrir("SMTP_SSL", host, port, timeout, context)
+
+
+@pytest.fixture(autouse=True)
+def _entorno_sin_variables_de_mail(monkeypatch):
+    """RadarSettings lee el entorno: lo que el desarrollador tenga exportado (RADAR_SMTP_*, RADAR_MAILER...)
+    no puede cambiar los defaults que estos tests comprueban."""
+    for nombre in ("MAILER", "REMITENTE", "SMTP_HOST", "SMTP_PORT", "SMTP_USUARIO", "SMTP_PASSWORD",
+                   "SMTP_SEGURIDAD", "SMTP_TIMEOUT_S"):
+        monkeypatch.delenv(f"RADAR_{nombre}", raising=False)
 
 
 @pytest.fixture
@@ -301,9 +310,7 @@ def _validar(**cambios) -> None:
     validar_settings(RadarSettings(**{**base, **cambios}))
 
 
-def test_los_settings_de_smtp_y_sus_defaults(monkeypatch):
-    for nombre in ("HOST", "PORT", "USUARIO", "PASSWORD", "SEGURIDAD", "TIMEOUT_S"):
-        monkeypatch.delenv(f"RADAR_SMTP_{nombre}", raising=False)
+def test_los_settings_de_smtp_y_sus_defaults():
     rs = RadarSettings(_env_file=None)
     assert (rs.smtp_host, rs.smtp_port, rs.smtp_usuario, rs.smtp_seguridad, rs.smtp_timeout_s) == \
            ("", 587, "", "starttls", 20.0)
