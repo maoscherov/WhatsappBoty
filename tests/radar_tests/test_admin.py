@@ -138,7 +138,7 @@ async def test_alta_invalida(cliente, radar_ctx, malo):
 # Lo que no entra en un renglón: los cortes de str.splitlines() (\n, \r, \x0b, \x0c, \x1c, \x85, U+2028, U+2029) y el
 # resto de los caracteres de control. El nombre del cliente va en el asunto de todos sus mails, y con un corte ahí
 # EmailMessage lanza: no saldría ningún link, ninguna invitación ni ningún aviso de ese cliente.
-FUERA_DE_UN_RENGLON = ["\n", "\r", "\r\n", "\x0b", "\x0c", "\x1c", "\x85", " ", " ", "\t", "\x00", "\x7f"]
+FUERA_DE_UN_RENGLON = ["\n", "\r", "\r\n", "\x0b", "\x0c", "\x1c", "\x85", "\u2028", "\u2029", "\t", "\x00", "\x7f"]
 
 
 @pytest.mark.parametrize("caracter", FUERA_DE_UN_RENGLON, ids=ascii)
@@ -162,7 +162,7 @@ async def test_un_nombre_que_no_entra_en_un_renglon_es_422_y_no_crea_nada(client
 
 async def test_un_nombre_con_tildes_espacios_y_simbolos_sigue_valiendo(cliente, radar_ctx):
     await _admin(cliente, radar_ctx)
-    nombre = "Farmacia Ñandú — Sucursal «Centro» 🐾"            # con un espacio duro: es un espacio, no un corte
+    nombre = "Farmacia Ñandú\u00a0— Sucursal «Centro» 🐾"            # con un espacio duro: es un espacio, no un corte
     r = await cliente.post("/radar/admin/tenants", json=dict(
         ALTA, nombre=nombre, dueno={"email": "dueno@farmacia.com", "nombre": "José Pérez"},
         linea={"nombre": "Línea 1 — Mostrador"}))

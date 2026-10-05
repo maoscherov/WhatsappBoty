@@ -157,7 +157,8 @@ async def solo_mismo_origen(request, call_next):
     (GET, HEAD, OPTIONS) ni /webhook/waha (fuera de /radar/ y firmado con HMAC, sin cookie)."""
     if (request.method in METODOS_QUE_CAMBIAN and request.url.path.startswith("/radar/")
             and not origen_permitido(request)):
-        # %r: la ruta llega decodificada y un %0A no puede partir la línea del log.
+        # %r: la ruta llega decodificada, y un separador de línea codificado en ella (%0B, %E2%80%A8) no puede partir
+        # el renglón del log.
         logger.warning("pedido de otro origen rechazado: %s %r", request.method, request.url.path)
         return JSONResponse({"detail": {"error": "origen_no_permitido"}}, status_code=403)
     return await call_next(request)

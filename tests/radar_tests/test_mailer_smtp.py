@@ -249,7 +249,7 @@ async def test_un_salto_de_linea_en_el_destinatario_no_inyecta_encabezados(smtp)
 
 
 # Los cortes de str.splitlines() (con cualquiera, EmailMessage rechaza el encabezado) y otros controles.
-FUERA_DE_UN_RENGLON = ["\r\n", "\n", "\r", "\x0b", "\x0c", "\x1c", "\x85", " ", " ", "\t", "\x00", "\x7f"]
+FUERA_DE_UN_RENGLON = ["\r\n", "\n", "\r", "\x0b", "\x0c", "\x1c", "\x85", "\u2028", "\u2029", "\t", "\x00", "\x7f"]
 
 
 @pytest.mark.parametrize("corte", FUERA_DE_UN_RENGLON, ids=ascii)
@@ -269,7 +269,7 @@ async def test_el_asunto_sale_en_un_renglon_y_no_inyecta_encabezados(smtp, corte
 
 async def test_un_cliente_guardado_con_un_corte_de_linea_igual_recibe_su_link(radar_ctx, smtp):
     radar_ctx.mailer = _mailer()
-    t = await crear_tenant_directo(radar_ctx.db, "Farmacia Norte")
+    t = await crear_tenant_directo(radar_ctx.db, "Farmacia\u2028Norte")
     u = await crear_usuario(radar_ctx.db, t, DESTINO, "dueno")
     assert await enviar_link_seguro(radar_ctx, tenant_id=t, user_id=u, email=DESTINO, proposito="login",
                                     ip=None) is True

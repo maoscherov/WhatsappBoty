@@ -112,6 +112,8 @@ async def test_el_rechazo_queda_en_el_log_en_un_solo_renglon(cliente, caplog):
     ("radar.keepitsimple.com.ar", "https://radar.keepitsimple.com.ar:8443", False),
     ("radar.keepitsimple.com.ar", "https://otro.keepitsimple.com.ar", False),
     ("radar.keepitsimple.com.ar", "radar.keepitsimple.com.ar", False),             # sin esquema no es un Origin
+    ("radar.keepitsimple.com.ar", "https://[radar.keepitsimple.com.ar", False),    # urlsplit no lo puede leer
+    ("[::1]:8000", "http://[::1]:8000", True),
 ])
 async def test_sin_sec_fetch_site_el_origin_tiene_que_ser_el_host_del_pedido(cliente, host, origen, permitido):
     """Sin mirar el esquema: detrás del proxy de Railway el pedido llega por http y el Origin dice https."""

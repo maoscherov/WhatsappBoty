@@ -112,7 +112,7 @@ async def test_solo_el_dueno_administra_usuarios(cliente, radar_ctx):
         assert (await cliente.put(f"/radar/api/usuarios/{d}/rol", json={"rol": "lector"})).status_code == 403
 
 
-@pytest.mark.parametrize("caracter", ["\n", "\r", "\x0b", "\x85", " ", " ", "\t", "\x00"], ids=ascii)
+@pytest.mark.parametrize("caracter", ["\n", "\r", "\x0b", "\x85", "\u2028", "\u2029", "\t", "\x00"], ids=ascii)
 async def test_el_nombre_de_un_invitado_no_admite_saltos_de_linea_ni_controles(cliente, radar_ctx, caracter):
     """Como el del dueño en el alta (test_admin.py): un nombre de persona va en un renglón."""
     a, d, _, _ = await _tenant_con_dueno(radar_ctx)
