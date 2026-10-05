@@ -1611,6 +1611,7 @@ async def bo_dashboard(_=Depends(_auth), days: int = Query(7, ge=1, le=90)):
 async def bo_conversaciones(_=Depends(_auth), days: int = Query(30, ge=1, le=365),
                             q: str = Query(""), limit: int = Query(50, le=200),
                             con_marcas: bool = Query(False),
+                            con_problemas: bool = Query(False),
                             desde: str | None = Query(None), hasta: str | None = Query(None)):
     """
     Conversaciones históricas (Postgres): una fila por teléfono con actividad
@@ -1660,10 +1661,22 @@ async def bo_conversaciones(_=Depends(_auth), days: int = Query(30, ge=1, le=365
             desde=f_desde, hasta=f_hasta)
     except Exception:
         conteo = {}
+    try:
+        problemas = await marcas_service.problemas_por_phones(
+            get_db(settings.database_url), [c["phone"] for c in convs],
+            desde=f_desde, hasta=f_hasta)
+    except Exception:
+        problemas = {}
     for c in convs:
         c["marcas"] = conteo.get(c["phone"], 0)
+        # Además de las marcas: no entendió, error del bot, cliente sin
+        # respuesta, respuesta bloqueada (5/10, filtro "con problemas").
+        c["problemas"] = problemas.get(c["phone"], {})
+        c["con_problemas"] = c["marcas"] > 0 or bool(c["problemas"])
     if con_marcas:
         convs = [c for c in convs if c["marcas"] > 0]
+    if con_problemas:
+        convs = [c for c in convs if c["con_problemas"]]
     return {"available": get_db(settings.database_url).available(), "conversaciones": convs}
 
 
@@ -1925,7 +1938,8 @@ async def bo_marcas_export(_=Depends(_auth), desde: str | None = Query(None),
     writer = csv.writer(buf)
     writer.writerow(["fecha_mensaje", "fecha_marca", "cliente", "telefono", "tipo_cliente",
                      "categoria", "observacion", "marcado_por", "mensaje_cliente",
-                     "mensaje_marcado", "quien_escribio", "motivo_derivacion", "message_id"])
+                     "mensaje_marcado", "quien_escribio", "motivo_derivacion", "message_id",
+                     "marca", "conversacion"])
     for m in marcas:
         cli = _datos_cliente(m["phone"])
         writer.writerow([m["mensaje_at"] or m["ts"], m["ts"], cli["nombre"] or "", m["phone"],
@@ -1933,7 +1947,8 @@ async def bo_marcas_export(_=Depends(_auth), desde: str | None = Query(None),
                          m["mensaje_cliente"], m["mensaje"],
                          {"assistant": "bot", "operator": "operador", "user": "cliente"}.get(
                              m["mensaje_rol"] or "", "" if not m["message_id"] else m["mensaje_rol"]),
-                         m["derivacion"] or "", m["message_id"] or ""])
+                         m["derivacion"] or "", m["message_id"] or "",
+                         m["codigo"], m.get("conversacion") or ""])
     contenido = "﻿" + buf.getvalue()
     return StreamingResponse(
         iter([contenido]), media_type="text/csv",
@@ -2041,3 +2056,31 @@ async def bo_send_message(phone: str, body: OperatorMessage, _=Depends(_auth)):
     _autor = body.agente or (await session_svc.get(phone)).get("agente")
     await guardar_historico(phone, "operator", body.text.strip(), autor=_autor)
     return {"status": "ok", "sent": True}
+
+
+
+@router.get("/conversacion/{codigo}")
+async def bo_conversacion(codigo: str, _=Depends(_auth)):
+    """
+    Una conversación puntual por su código ("C-4066" o "4066"): sus mensajes,
+    sus marcas y el cliente. Es lo que se pasa para revisar un caso (5/10).
+    """
+    import re as _re2
+    m = _re2.fullmatch(r"[Cc]?-?(\d+)", (codigo or "").strip())
+    if not m:
+        raise HTTPException(status_code=422, detail="Código de conversación inválido (ej.: C-4066)")
+    cid = int(m.group(1))
+    db = get_db(get_settings().database_url)
+    if not db.available():
+        raise HTTPException(status_code=503, detail="Base de datos no disponible")
+    from app.services.message_store import mensaje_a_dict
+    filas = await db.fetch("SELECT * FROM messages WHERE conversacion_id = $1 ORDER BY id", cid)
+    if not filas:
+        raise HTTPException(status_code=404, detail="No existe esa conversación")
+    phone = filas[0]["phone"]
+    from app.services import marcas_service
+    marcas = [k for k in await marcas_service.marcas_de_phone(db, phone)
+              if k.get("conversacion_id") == cid]
+    return {"conversacion": f"C-{cid}", "phone": phone, **_datos_cliente(phone),
+            "desde": filas[0]["created_at"].isoformat(), "hasta": filas[-1]["created_at"].isoformat(),
+            "mensajes": [mensaje_a_dict(f) for f in filas], "marcas": marcas}

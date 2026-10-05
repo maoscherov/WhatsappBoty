@@ -826,3 +826,35 @@ async def test_cuenta_corriente_no_habilitada_deriva(entorno, monkeypatch):
     s = await deps["session"].get(PHONE)
     assert s["estado"] == "operador" and s["derivada_motivo"] == "cuenta_corriente_no_habilitada"
     assert not any("Lo que tengo disponible" in t for t in deps["wa"].enviados)
+
+
+# ── 5/10: "bueno dale, y el talco quiero el grande el de 200g" ──────────────────
+def _catalogo_belen():
+    base = {"hash": "a" * 64, "barcodes": [], "troquel": None, "brand": "", "drug": None,
+            "form": None, "category": "Perfumeria", "rubro": "", "subrubro": "",
+            "therapeutic_actions": [], "stock": 5, "visible": True, "active": True,
+            "requiere_receta": "no", "source": "t"}
+    return SKUService.from_rows([
+        {**base, "external_id": "83744", "name": "SIEMPRE L ADAPT P NOCHE DIA TOA HIG TOA x 32", "price": 17183.43},
+        {**base, "external_id": "85746", "name": "REXONA EFFIC.TAL.ORIG TAL x 100", "price": 4284.49},
+        {**base, "external_id": "86260", "name": "REXONA EFFICIENT ORIGINAL 200GR POL TAL x 200", "price": 6605.68},
+    ])
+
+
+async def test_confirma_y_pide_otro_producto_lo_busca_y_lo_suma(entorno):
+    txt = "Bueno dale, y el talco quiero el grande el de 200g"
+    guion = {txt: {"intencion": "social", "confirmacion": True, "entidad_producto": None,
+                   "entidades_adicionales": ["talco rexona 200g"],
+                   "respuesta": "Perfecto. Sobre el talco de 200g no me figura disponible."}}
+    deps = entorno(guion)
+    deps["sku"] = _catalogo_belen()
+    await deps["session"].set_pending(PHONE, sku_id="83744",
+                                      sku_nombre="SIEMPRE L ADAPT P NOCHE DIA TOA HIG TOA x 32",
+                                      precio=17183.43, cantidad=1, opciones=[])
+    await wh.procesar_mensajes([_msg(txt)])
+    enviado = deps["wa"].enviados[-1]
+    assert "no me figura" not in enviado
+    assert "200GR" in enviado and "Tu pedido queda así" in enviado
+    s = await deps["session"].get(PHONE)
+    assert [i["sku_id"] for i in s["pending_items"]] == ["83744", "86260"]
+    assert s["estado"] == "esperando_entrega"          # confirmó: pasa a retiro/envío

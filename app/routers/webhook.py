@@ -518,6 +518,37 @@ async def _sin_precios_inventados(deps, phone: str, session: dict, respuesta: st
             "¿Querés que lo consulte con el equipo?")
 
 
+async def _sumar_productos_nuevos(deps, phone: str, nombres: list[str], texto: str,
+                                  cfg: dict) -> tuple[list[dict], list[str], "str | None"]:
+    """
+    Con un pedido abierto, el cliente nombra OTROS productos ("bueno dale, y
+    el talco quiero el grande el de 200g"): se buscan de verdad y se suman al
+    carrito. Antes el modelo solo veía las opciones ya mostradas y respondía
+    "no me figura" con el producto en stock (5/10, talco Rexona 200 g).
+    Devuelve (sumados, no_encontrados, sku_con_receta).
+    """
+    from app.services.sku_service import (nombre_coincide, alguna_palabra_coincide,
+                                          restaurar_palabras_cliente, completar_numeros)
+    modo = cfg.get("receta_mode", "conservador")
+    sumados, faltan, receta = [], [], None
+    for nombre in nombres[:3]:
+        q = restaurar_palabras_cliente(completar_numeros(nombre, texto), texto)
+        res = deps["sku"].buscar(q)
+        res, _ = aplicar_descuento_socio(res, phone, cfg)
+        res = marcar_precio_dudoso(res, cfg)
+        top = next((r for r in res if r.get("vendible") and nombre_coincide(q, r["nombre"])
+                    and alguna_palabra_coincide(q, r["nombre"])), None)
+        if not top:
+            faltan.append(nombre)
+            continue
+        if necesita_receta(deps["sku"], top["sku_id"], modo):
+            receta = receta or top["sku_id"]
+            continue
+        await deps["session"].agregar_item(phone, top["sku_id"], top["nombre"], top["precio"], 1)
+        sumados.append(top)
+    return sumados, faltan, receta
+
+
 async def _responder_consulta_en_flujo(deps, phone: str, session: dict, texto: str,
                                        ctx_socio, situacion: str, fallback: str) -> str:
     """
@@ -1795,6 +1826,49 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                             _intencion = "derivado_receta"
                             confirmacion = None       # saltar confirmación/cambio
                             _entidad_nueva = None
+
+                    # ── Paso 1c: además de responder sobre el pedido, nombra
+                    #    OTROS productos (adicionales, o "agregame X"): se buscan
+                    #    y se suman al carrito en vez de que el modelo improvise.
+                    _nuevos = [e for e in (intent_result.get("entidades_adicionales") or [])
+                               if isinstance(e, str) and e.strip()]
+                    if _entidad_nueva and intent_result.get("agregar_al_pedido") \
+                            and entidad_contradice_pendiente(_entidad_nueva,
+                                                             session.get("pending_sku_nombre")):
+                        _nuevos.insert(0, _entidad_nueva)
+                    if _nuevos and _intencion != "derivado_receta" and confirmacion is not False:
+                        _cfg_add = await deps["config"].get_all()
+                        _sum, _faltan, _rec = await _sumar_productos_nuevos(
+                            deps, phone, _nuevos, texto, _cfg_add)
+                        _afirma = confirmacion is True or _match_si(texto_lower)
+                        if _rec:
+                            _deriv = await derivar_si_receta(
+                                deps["sku"], deps["session"], _cfg_add, phone, _rec,
+                                nombre=_nombre_socio)
+                            respuesta = _deriv or respuesta
+                            _intencion = "derivado_receta"
+                        else:
+                            _s_add = await deps["session"].get(phone)
+                            _items = _s_add.get("pending_items") or []
+                            _lineas = "\n".join(
+                                f"• {i['nombre']} — ${i['precio'] * i.get('cantidad', 1):,.2f}"
+                                for i in _items)
+                            _total = sum(i["precio"] * i.get("cantidad", 1) for i in _items)
+                            _nota = ("\n\nNo encontré: " + ", ".join(_faltan) +
+                                     ". ¿Querés que lo consulte con el equipo?") if _faltan else ""
+                            if _afirma and not _faltan:
+                                respuesta, _intencion = await confirmar_pedido(
+                                    deps["sku"], deps["payment"], deps["session"], deps["socios"],
+                                    _cfg_add, phone, _s_add, nombre=_nombre_socio)
+                                respuesta = (f"¡Listo! Tu pedido queda así:\n{_lineas}\n"
+                                             f"Total: *${_total:,.2f}*\n\n{respuesta}")
+                            else:
+                                respuesta = (f"¡Listo! Tu pedido queda así:\n{_lineas}\n"
+                                             f"Total: *${_total:,.2f}*{_nota}\n\n¿Lo confirmamos?")
+                                _intencion = "item_agregado"
+                        confirmacion = None
+                        _entidad_nueva = None
+                        sku_index = None
 
                     # ── Paso 2: _es_cambio solo aplica cuando NO hay selección de opción existente
                     #    y el usuario menciona un producto genuinamente diferente.
