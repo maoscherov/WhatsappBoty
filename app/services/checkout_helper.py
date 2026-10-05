@@ -234,7 +234,10 @@ def pide_pago_manual(t: str) -> bool:
 _CUENTA_CORRIENTE = [
     r"\bcuenta\s+corriente\b",
     r"\bcta\.?\s*(cte\.?|corriente)\b",
-    r"\b(carg[aá]\w*|anot[aá]\w*|sum[aá]\w*)\b.{0,30}\b(mi\s+)?cuenta\b",
+    # Cualquier persona del verbo: "anotalo", "lo anoto", "lo cargo", "lo
+    # pongo en la cuenta" (5/10: "lo anoto en la cuenta" no matcheaba y caía
+    # al modelo). "anotado"/"cargado" no son pedidos.
+    r"\b(carg(?!ad)\w*|anot(?!ad)\w*|sum[aáo]\w*|pon[eéégo]\w*|pong\w*)\b.{0,30}\b(mi\s+|la\s+)?cuenta\b",
     r"\ba\s+la\s+cuenta\b",
 ]
 
@@ -291,7 +294,8 @@ def consulta_saldo(t: str, hay_pedido: bool = False) -> bool:
     return not hay_pedido and any(re.search(p, s) for p in _SALDO_DEBIL)
 
 
-_ANOTAR = r"\b(anot[ae](?!d)\w*|apunt[ae](?!d)\w*)\b"   # "anotado" no es un pedido
+# "anotalo", "anotame", "lo anoto" (5/10); "anotado" no es un pedido.
+_ANOTAR = r"\b(anot(?!ad)\w*|apunt(?!ad)\w*)\b"
 _ANOTAR_OTRA_COSA = r"\b(direccion|domicilio|telefono|numero|nombre|receta|mail|correo)\b"
 
 
@@ -321,10 +325,14 @@ def entrega_ya_elegida(session: dict) -> Optional[tuple[str, Optional[str]]]:
 
 async def habilitado_cc(phone: str, cfg: dict, socio_svc, monto: float = 0.0) -> Optional[dict]:
     """
-    El socio del padrón si puede pagar con cuenta corriente, o None.
-    None si: la función está apagada (cc_enabled), el teléfono no es socio,
-    figura en la lista de excepciones de la farmacia, o supera el tope
-    (cc_tope_monto, 0 = sin tope).
+    El socio del padrón (o el empleado) si puede pagar con cuenta corriente,
+    o None. None si: la función está apagada (cc_enabled), el teléfono no es
+    socio ni empleado, figura en la lista de excepciones de la farmacia, o
+    supera el tope (cc_tope_monto, 0 = sin tope).
+
+    Empleados (5/10): tienen cuenta corriente como los socios, con el mismo
+    tope y excepciones. Antes solo valía el padrón de socios y una empleada
+    que no era socia no podía anotar ("lo anoto en la cuenta" se perdía).
     """
     if str(cfg.get("cc_enabled", "true")).lower() != "true":
         return None
@@ -332,6 +340,14 @@ async def habilitado_cc(phone: str, cfg: dict, socio_svc, monto: float = 0.0) ->
         socio = socio_svc.find_by_phone(phone) if socio_svc else None
     except Exception:
         socio = None
+    if not socio:
+        try:
+            from app.services.empleado_service import get_empleado_service
+            emp = get_empleado_service().find_by_phone(phone)
+        except Exception:
+            emp = None
+        if emp:
+            socio = {**emp, "empleado": True}
     if not socio:
         return None
     try:

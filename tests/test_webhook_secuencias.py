@@ -782,3 +782,47 @@ async def test_encargalo_deriva_y_no_cobra_el_sustituto(entorno):
     assert not s.get("pending_sku_id")
     assert "encargarlo" in deps["wa"].enviados[-1]
     assert not any("retiro" in t.lower() for t in deps["wa"].enviados)
+
+
+# ── 5/10: "lo anoto en la cuenta" con el link ya enviado ────────────────────────
+async def _link_enviado(ss):
+    await _pendiente_colpuril(ss)
+    await ss.set_entrega(PHONE, "retiro", None)
+    await ss.set_estado(PHONE, "esperando_pago")
+
+
+class _Empleados:
+    def find_by_phone(self, phone):
+        return {"nombre": "María", "apellido": "Belén", "activo": True} if phone == PHONE else None
+
+
+async def test_empleada_anota_en_la_cuenta_con_link_enviado(entorno, monkeypatch):
+    from app.services import empleado_service as es
+    from app.services import checkout_helper as chh
+    monkeypatch.setattr(es, "get_empleado_service", lambda *a, **k: _Empleados())
+
+    async def _sin_freno(*a, **k):
+        return None, None
+    monkeypatch.setattr(chh, "_chequear_stock_vivo", _sin_freno)
+    deps = entorno()
+    await _link_enviado(deps["session"])
+    await wh.procesar_mensajes([_msg("lo anoto en la cuenta")])
+    assert "cuenta corriente" in deps["wa"].enviados[-1].lower()
+    s = await deps["session"].get(PHONE)
+    assert s["estado"] == "pedido_confirmado"
+
+
+async def test_cuenta_corriente_no_habilitada_deriva(entorno, monkeypatch):
+    from app.services import empleado_service as es
+
+    class _Nadie:
+        def find_by_phone(self, phone):
+            return None
+    monkeypatch.setattr(es, "get_empleado_service", lambda *a, **k: _Nadie())
+    deps = entorno()
+    await _link_enviado(deps["session"])
+    await wh.procesar_mensajes([_msg("lo anoto en la cuenta")])
+    assert "cargarlo a tu cuenta" in deps["wa"].enviados[-1]
+    s = await deps["session"].get(PHONE)
+    assert s["estado"] == "operador" and s["derivada_motivo"] == "cuenta_corriente_no_habilitada"
+    assert not any("Lo que tengo disponible" in t for t in deps["wa"].enviados)

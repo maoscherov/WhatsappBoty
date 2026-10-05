@@ -1290,6 +1290,22 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     await deps["session"].add_message(phone, "user", texto)
                     await deps["session"].add_message(phone, "assistant", respuesta)
                     continue
+                # Pidió cuenta corriente y no le corresponde (no es socio ni
+                # empleado, excepción o tope): lo carga una persona. Antes
+                # "lo anoto en la cuenta" caía al modelo, que prometía
+                # "voy a coordinar con el equipo" sin derivar (5/10).
+                _intencion = "cuenta_corriente_derivada"
+                await deps["session"].set_estado(phone, "operador",
+                                                 motivo="cuenta_corriente_no_habilitada")
+                respuesta = _cfg_pm.get("cc_no_habilitada_message") or (
+                    "Te paso con alguien del equipo para cargarlo a tu cuenta 🙌 "
+                    "En un momento te contactamos.")
+                _ts = _time.perf_counter()
+                await deps["wa"].send_text(phone, respuesta)
+                _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
+                await deps["session"].add_message(phone, "user", texto)
+                await deps["session"].add_message(phone, "assistant", respuesta)
+                continue
 
             if pide_pago_manual(texto) and _pm_mode == "solo_tarjeta":
                 _intencion = "pago_solo_tarjeta"
@@ -2086,7 +2102,10 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     # pueden vender (caso 19/9, "actron 500" → nombró el Actron
                     # 600 sin precio): los lista el sistema con el precio real
                     # y quedan como opciones, en vez de caer a "no me figura".
+                    # Con el link ya enviado no: re-listaba los productos y
+                    # pisaba el pedido en curso (5/10, "lo anoto en la cuenta").
                     if not _matches and not producto_elegido \
+                            and session.get("estado") != "esperando_pago" \
                             and intencion in ("pedido", "consulta_precio", "consulta_stock"):
                         _alts = alternativas_con_precio(resultados_sku)
                         if _alts:
