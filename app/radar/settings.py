@@ -55,6 +55,10 @@ class RadarSettings(BaseSettings):
     smtp_seguridad: str = "starttls"  # starttls | ssl | ninguna
     smtp_timeout_s: float = 20.0
 
+    # Admins de KIS que crea el arranque si faltan (app/radar/bootstrap.py), emails separados por coma. No les
+    # manda nada: cada uno entra después por /radar/login, que necesita mailer=smtp. Vacío: no crea ninguno.
+    admins_iniciales: str = ""
+
     # WAHA (tramo 2). La clave admin de cada worker NO va acá: vive en el
     # SecretStore (ver app.radar.workers.nombre_clave_admin) y la registra
     # scripts/radar_workers.py.

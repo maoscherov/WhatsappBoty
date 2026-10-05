@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.middleware import log_errores
-from app.radar.bootstrap import asegurar_roles
+from app.radar.bootstrap import asegurar_admins_iniciales, asegurar_roles, parsear_admins_iniciales
 from app.radar.contexto import RadarContexto
 from app.radar.db import RadarDB
 from app.radar.fuente import FuenteStore
@@ -42,6 +42,8 @@ def validar_settings(rs: RadarSettings) -> None:
         raise RuntimeError(f"RADAR_WAHA_WEBHOOK_HMAC_KEY: mínimo {MIN_WEBHOOK_HMAC} caracteres aleatorios")
     if rs.mailer == "smtp":
         _validar_smtp(rs)
+    # Un email mal escrito frena el arranque antes de migrar. El mensaje dice la posición, nunca el email.
+    parsear_admins_iniciales(rs.admins_iniciales)
 
 
 def _validar_smtp(rs: RadarSettings) -> None:
@@ -86,6 +88,8 @@ async def _lifespan_radar(app: FastAPI):
         await asyncio.wait_for(asyncio.to_thread(migrar_resultados, rs.migrator_database_url), timeout=60)
         await asyncio.wait_for(asyncio.to_thread(migrar_fuente, rs.fuente_database_url), timeout=60)
         app.state.radar = await construir_contexto(rs)
+        # Sin mandar nada (Decisión 8): cada admin entra después por /radar/login.
+        await asegurar_admins_iniciales(app.state.radar, rs.admins_iniciales)
     logger.info("Radar arrancó: almacén de fuente %s", app.state.radar.fuente.almacen)
     parar = asyncio.Event()
     tarea = None

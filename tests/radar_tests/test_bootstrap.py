@@ -1,5 +1,6 @@
 """
-Roles de Postgres al arrancar (Decisión 7, RADAR_BOOTSTRAP_ROLES=true).
+Arranque de Radar sin shell en el servidor: los roles de Postgres (Decisión 7, RADAR_BOOTSTRAP_ROLES=true) y los
+admins iniciales de KIS (Decisión 8, RADAR_ADMINS_INICIALES).
 
 Los roles son de todo el cluster y conftest.py ya los crea en el pgserver de la sesión: estos tests levantan su
 propio pgserver (fixture de módulo) y cada uno parte sin radar_app ni radar_admin (`cluster_vacio`). En ese
@@ -10,10 +11,15 @@ El rol de migración es el superusuario del cluster, como `postgres` en Railway,
 
 La contraseña de radar_app es un secreto: ni en un log, ni en un mensaje de error, ni en un repr, ni en una
 sentencia que llegue al servidor (va solo su verificador).
+
+Los admins iniciales no necesitan ese cluster: usan la base de la sesión (`radar_ctx`, con los roles de conftest.py).
+Sus emails son dato de personas: ni un log ni un error los repiten.
 """
 import asyncio
+import json
 import logging
 import pathlib
+import re
 import time
 import traceback
 from dataclasses import dataclass
@@ -25,12 +31,17 @@ import pytest
 from starlette.testclient import TestClient
 
 import app.radar.app as app_radar
-from app.radar import bootstrap
-from app.radar.app import crear_app_radar
-from app.radar.bootstrap import asegurar_roles
+import app.radar.worker as worker_radar
+from app.radar import auditoria, bootstrap
+from app.radar.admin_kis import crear_admin_kis
+from app.radar.app import crear_app_radar, validar_settings
+from app.radar.bootstrap import asegurar_admins_iniciales, asegurar_roles, parsear_admins_iniciales
+from app.radar.constantes import TENANT_KIS
 from app.radar.contexto import RadarContexto
 from app.radar.migrate import migrar_resultados
 from app.radar.settings import RadarSettings
+
+from .helpers import crear_tenant_directo, crear_usuario
 
 RAIZ = pathlib.Path(__file__).resolve().parents[2]
 
@@ -424,3 +435,307 @@ def test_la_tabla_de_despliegue_documenta_radar_bootstrap_roles():
     assert "| `RADAR_BOOTSTRAP_ROLES` |" in doc
     assert "postgresql://radar_app:<contraseña>@${{Postgres.PGHOST}}:${{Postgres.PGPORT}}/${{Postgres.PGDATABASE}}" \
         in doc
+
+
+# ── admins iniciales (Decisión 8) ──────────────────────────────────────────────
+
+LINK = re.compile(r"/radar/login/canjear\?t=([0-9a-f-]+)#k=([A-Za-z0-9_-]+)")
+
+# Con un fragmento reconocible ("zorro", "plateado") se prueba que ni el email ni un pedazo salen en un error.
+ENTRADAS_INVALIDAS = [
+    pytest.param("zorro-plateado", id="sin-arroba"),
+    pytest.param("zorro-plateado@sinpunto", id="dominio-sin-punto"),
+    pytest.param("zorro plateado@kis.com", id="con-espacio"),
+    pytest.param("zorro@@plateado.com", id="dos-arrobas"),
+    pytest.param("zorro-" + "p" * 250 + "@kis.com", id="mas-de-254-caracteres"),
+]
+
+
+def _settings(**campos) -> RadarSettings:
+    """Settings que pasan validar_settings (las URLs no se conectan nunca)."""
+    return RadarSettings(_env_file=None, database_url=APP_FALSA, migrator_database_url=MIGRADOR_FALSO,
+                         fuente_database_url=FUENTE_FALSA, cookie_secret="secreto-de-test-de-32-caracteres!",
+                         mailer="memoria", **campos)
+
+
+async def _usuarios_de_kis(ctx) -> dict:
+    """{email: (rol, nombre)} del tenant KIS; rol None si el usuario no tiene membresía."""
+    async with ctx.db.tenant_tx(TENANT_KIS) as con:
+        filas = await con.fetch("SELECT u.email, u.nombre, m.rol FROM users u "
+                                "LEFT JOIN memberships m ON m.user_id = u.id")
+    return {f["email"]: (f["rol"], f["nombre"]) for f in filas}
+
+
+async def _ids_de_kis(ctx) -> dict:
+    async with ctx.db.tenant_tx(TENANT_KIS) as con:
+        return {f["email"]: f["id"] for f in await con.fetch("SELECT id, email FROM users")}
+
+
+async def _auditoria_de_kis(ctx) -> list:
+    async with ctx.db.tenant_tx(TENANT_KIS) as con:
+        filas = await con.fetch("SELECT accion, actor_user_id, actor_rol, tipo_objeto, objeto_id, detalle "
+                                "FROM access_audit_log ORDER BY id")
+    return [(f["accion"], f["actor_user_id"], f["actor_rol"], f["tipo_objeto"], f["objeto_id"],
+             json.loads(f["detalle"])) for f in filas]
+
+
+async def _foto_de_kis(ctx) -> tuple:
+    """Todo lo que el arranque puede tocar en el tenant KIS, con sus ids: dos fotos iguales, nada cambió."""
+    consultas = ("SELECT id, email, nombre FROM users ORDER BY email",
+                 "SELECT id, user_id, rol, lineas_permitidas FROM memberships ORDER BY user_id",
+                 "SELECT id, accion, actor_user_id, actor_rol, tipo_objeto, objeto_id, detalle "
+                 "FROM access_audit_log ORDER BY id",
+                 "SELECT id FROM login_tokens ORDER BY id")
+    foto = []
+    async with ctx.db.tenant_tx(TENANT_KIS) as con:
+        for consulta in consultas:
+            foto.append([tuple(f) for f in await con.fetch(consulta)])
+    return tuple(foto)
+
+
+async def _hasta(parar: asyncio.Event) -> None:
+    await parar.wait()
+
+
+async def test_crea_los_admins_de_kis_con_el_email_normalizado_sin_mandar_nada(radar_ctx):
+    await asegurar_admins_iniciales(radar_ctx, "a@kis.com, B@KIS.com")
+    assert await _usuarios_de_kis(radar_ctx) == {"a@kis.com": ("admin", ""), "b@kis.com": ("admin", "")}
+    assert radar_ctx.mailer.enviados == []
+    async with radar_ctx.db.tenant_tx(TENANT_KIS) as con:
+        assert await con.fetchval("SELECT count(*) FROM login_tokens") == 0      # ni un link: entran por /radar/login
+    ids = await _ids_de_kis(radar_ctx)
+    assert await _auditoria_de_kis(radar_ctx) == [
+        ("admin_inicial_creado", None, "sistema", "user", ids["a@kis.com"], {}),
+        ("admin_inicial_creado", None, "sistema", "user", ids["b@kis.com"], {})]
+
+
+async def test_el_admin_creado_entra_por_login_como_admin_de_kis(cliente, radar_ctx):
+    """Para eso se crea: nadie le manda nada, él pide su link y entra a Radar con rol admin en el tenant KIS."""
+    await asegurar_admins_iniciales(radar_ctx, "Mariano@KIS.com.ar")
+    assert radar_ctx.mailer.enviados == []
+    r = await cliente.post("/radar/login", json={"email": "mariano@kis.com.ar"})
+    assert r.status_code == 202
+    assert [m.para for m in radar_ctx.mailer.enviados] == ["mariano@kis.com.ar"]
+    t, k = LINK.search(radar_ctx.mailer.enviados[0].texto).groups()
+    r = await cliente.post("/radar/login/canjear", data={"t": t, "k": k})
+    assert r.status_code == 303 and r.headers["location"] == "/radar/inicio"
+    r = await cliente.get("/radar/api/yo")
+    assert r.status_code == 200
+    assert (r.json()["rol"], r.json()["es_kis"], r.json()["tenant_id"], r.json()["email"]) == \
+           ("admin", True, str(TENANT_KIS), "mariano@kis.com.ar")
+
+
+async def test_sin_smtp_crear_admin_le_da_su_link_a_un_admin_que_creo_el_arranque(radar_ctx):
+    """El camino sin SMTP de la documentación: el mismo usuario, no uno nuevo, y el link sale del script."""
+    await asegurar_admins_iniciales(radar_ctx, "a@kis.com")
+    ids = await _ids_de_kis(radar_ctx)
+    assert await crear_admin_kis(radar_ctx, email="A@kis.com", nombre="Ana") == ids["a@kis.com"]
+    assert await _ids_de_kis(radar_ctx) == ids
+    assert [m.para for m in radar_ctx.mailer.enviados] == ["a@kis.com"]
+
+
+async def test_la_segunda_corrida_no_crea_ni_audita_ni_cambia_el_nombre(radar_ctx):
+    await asegurar_admins_iniciales(radar_ctx, "a@kis.com, b@kis.com")
+    async with radar_ctx.db.tenant_tx(TENANT_KIS) as con:
+        await con.execute("UPDATE users SET nombre = 'Mariano' WHERE email = 'a@kis.com'")
+    antes = await _foto_de_kis(radar_ctx)
+    await asegurar_admins_iniciales(radar_ctx, "A@kis.com,b@kis.com, ")       # el mismo conjunto, escrito distinto
+    assert await _foto_de_kis(radar_ctx) == antes
+    assert (await _usuarios_de_kis(radar_ctx))["a@kis.com"] == ("admin", "Mariano")
+    assert radar_ctx.mailer.enviados == []
+
+
+@pytest.mark.parametrize("rol", ["dueno", "gestor", "lector"])
+async def test_un_usuario_de_kis_con_otro_rol_queda_admin_y_se_audita_el_cambio(radar_ctx, rol):
+    """Subir un rol es un cambio de privilegios: deja su fila (rol_cambiado, como PUT /radar/api/usuarios/.../rol).
+    Es la misma persona, con su nombre."""
+    uid = await crear_usuario(radar_ctx.db, TENANT_KIS, "otro@kis.com", rol)
+    await asegurar_admins_iniciales(radar_ctx, "otro@kis.com")
+    assert await _usuarios_de_kis(radar_ctx) == {"otro@kis.com": ("admin", "otro")}
+    assert await _ids_de_kis(radar_ctx) == {"otro@kis.com": uid}
+    assert await _auditoria_de_kis(radar_ctx) == [
+        ("rol_cambiado", None, "sistema", "membership", uid, {"rol_anterior": rol, "rol_nuevo": "admin"})]
+    assert radar_ctx.mailer.enviados == []
+
+
+async def test_un_usuario_de_kis_sin_membresia_queda_admin_sin_duplicarse(radar_ctx):
+    async with radar_ctx.db.tenant_tx(TENANT_KIS) as con:
+        uid = await con.fetchval(
+            "INSERT INTO users (email, nombre) VALUES ('sin-membresia@kis.com', 'Ana') RETURNING id")
+    await asegurar_admins_iniciales(radar_ctx, "sin-membresia@kis.com")
+    assert await _usuarios_de_kis(radar_ctx) == {"sin-membresia@kis.com": ("admin", "Ana")}
+    assert await _auditoria_de_kis(radar_ctx) == [("admin_inicial_creado", None, "sistema", "user", uid, {})]
+
+
+async def test_el_mismo_email_en_una_cuenta_de_cliente_no_se_toca(radar_ctx):
+    """Los usuarios son por tenant: el admin de KIS es otro usuario que el dueño de la farmacia con ese email."""
+    farmacia = await crear_tenant_directo(radar_ctx.db, "Farmacia A")
+    dueno = await crear_usuario(radar_ctx.db, farmacia, "mariano@kis.com", "dueno")
+    await asegurar_admins_iniciales(radar_ctx, "mariano@kis.com")
+    assert await _usuarios_de_kis(radar_ctx) == {"mariano@kis.com": ("admin", "")}
+    assert await _ids_de_kis(radar_ctx) != {"mariano@kis.com": dueno}
+    async with radar_ctx.db.tenant_tx(farmacia) as con:
+        filas = await con.fetch("SELECT u.id, m.rol FROM users u JOIN memberships m ON m.user_id = u.id")
+        assert [(f["id"], f["rol"]) for f in filas] == [(dueno, "dueno")]
+        assert await con.fetchval("SELECT count(*) FROM access_audit_log") == 0
+
+
+async def test_dos_arranques_a_la_vez_no_se_pisan(radar_ctx):
+    """Dos instancias que arrancan juntas (un redeploy que se solapa): ninguna falla (una clave duplicada de Postgres
+    trae el email en su DETAIL) y no se duplica ni se audita dos veces."""
+    async with radar_ctx.db.pool.acquire(), radar_ctx.db.pool.acquire():
+        pass                                        # el pool ya tiene sus dos conexiones: las transacciones se cruzan
+    lista = "a@kis.com, b@kis.com"
+    await asyncio.gather(asegurar_admins_iniciales(radar_ctx, lista), asegurar_admins_iniciales(radar_ctx, lista))
+    assert await _usuarios_de_kis(radar_ctx) == {"a@kis.com": ("admin", ""), "b@kis.com": ("admin", "")}
+    assert [f[0] for f in await _auditoria_de_kis(radar_ctx)] == ["admin_inicial_creado"] * 2
+
+
+@pytest.mark.parametrize("valor", ["", "   ", ",", " , ,"])
+async def test_con_la_variable_vacia_no_hace_nada(radar_ctx, caplog, valor):
+    caplog.set_level(logging.DEBUG)
+    await asegurar_admins_iniciales(radar_ctx, valor)
+    assert await _foto_de_kis(radar_ctx) == ([], [], [], [])
+    assert [r for r in caplog.records if r.name == "app.radar.bootstrap"] == []
+    assert radar_ctx.mailer.enviados == []
+
+
+def test_la_lista_se_normaliza_sin_entradas_vacias_ni_repetidas():
+    assert parsear_admins_iniciales(" A@kis.com ,, b@KIS.com,a@kis.com, ") == ["a@kis.com", "b@kis.com"]
+    assert parsear_admins_iniciales("") == []
+
+
+def test_una_lista_valida_pasa_validar_settings():
+    validar_settings(_settings(admins_iniciales="a@kis.com, B@kis.com,"))
+
+
+@pytest.mark.parametrize("entrada", ENTRADAS_INVALIDAS)
+def test_un_email_invalido_frena_el_arranque_con_su_posicion_y_sin_repetirlo(entrada):
+    with pytest.raises(RuntimeError, match=r"RADAR_ADMINS_INICIALES.*posición 2\b") as exc:
+        validar_settings(_settings(admins_iniciales=f"a@kis.com, {entrada}"))
+    _sin_secretos(exc.value, "zorro", "plateado")           # un email no es un secreto, pero tampoco va a un log
+
+
+@pytest.mark.parametrize("valor, posicion", [
+    ("zorro-plateado", 1),
+    ("a@kis.com,b@kis.com,c@kis.com,zorro-plateado", 4),
+    # La posición es la de la entrada tal como se escribió: las vacías también ocupan un lugar.
+    ("a@kis.com,, zorro-plateado , b@kis.com", 3),
+])
+def test_la_posicion_es_la_de_la_entrada_dentro_de_la_lista_escrita(valor, posicion):
+    with pytest.raises(RuntimeError, match=rf"RADAR_ADMINS_INICIALES.*posición {posicion}\b") as exc:
+        parsear_admins_iniciales(valor)
+    _sin_secretos(exc.value, "zorro", "plateado")
+
+
+async def test_con_un_email_invalido_no_crea_ninguno_y_no_lo_repite(radar_ctx):
+    """La lista entera se valida antes de tocar la base: no queda la mitad hecha."""
+    lista = "valido@kis.com, zorro-plateado"      # en una variable: el traceback cita la línea de la llamada
+    with pytest.raises(RuntimeError, match=r"RADAR_ADMINS_INICIALES.*posición 2\b") as exc:
+        await asegurar_admins_iniciales(radar_ctx, lista)
+    _sin_secretos(exc.value, "zorro", "plateado", "valido@kis.com")
+    assert await _foto_de_kis(radar_ctx) == ([], [], [], [])
+
+
+async def test_el_log_dice_cuantos_se_crearon_y_cuantos_ya_existian_sin_emails(radar_ctx, caplog):
+    caplog.set_level(logging.DEBUG)
+    await crear_usuario(radar_ctx.db, TENANT_KIS, "tero@kis.com", "admin")
+    await crear_usuario(radar_ctx.db, TENANT_KIS, "puma@kis.com", "lector")
+    lista = "tero@kis.com, puma@kis.com, zorro@kis.com"
+    await asegurar_admins_iniciales(radar_ctx, lista)
+    await asegurar_admins_iniciales(radar_ctx, lista)
+    mensajes = [r.getMessage() for r in caplog.records if r.name == "app.radar.bootstrap"]
+    assert mensajes == ["RADAR_ADMINS_INICIALES: creados: 1, promovidos: 1, ya existían: 1",
+                        "RADAR_ADMINS_INICIALES: creados: 0, promovidos: 0, ya existían: 3"]
+    for fragmento in ("tero", "puma", "zorro", "kis.com", "@"):
+        assert fragmento not in caplog.text
+
+
+async def test_si_algo_falla_a_mitad_no_queda_ningun_admin_a_medias(radar_ctx, monkeypatch):
+    """Todo en una transacción del tenant KIS: el segundo falla y el primero tampoco queda."""
+    original = auditoria.registrar
+    llamadas = []
+
+    async def falla_la_segunda(con, **campos):
+        llamadas.append(campos["accion"])
+        if len(llamadas) == 2:
+            raise RuntimeError("falla simulada")
+        return await original(con, **campos)
+
+    monkeypatch.setattr(auditoria, "registrar", falla_la_segunda)
+    with pytest.raises(RuntimeError, match="falla simulada"):
+        await asegurar_admins_iniciales(radar_ctx, "a@kis.com, b@kis.com")
+    assert llamadas == ["admin_inicial_creado", "admin_inicial_creado"]
+    assert await _foto_de_kis(radar_ctx) == ([], [], [], [])
+
+
+# ── lifespan, settings y docs ──────────────────────────────────────────────────
+
+async def test_el_arranque_crea_los_admins_antes_de_levantar_el_worker(radar_ctx, monkeypatch):
+    """Con el contexto que arma el propio lifespan y el valor de la variable tal cual."""
+    eventos = []
+
+    async def asegurar_falso(ctx, valor):
+        eventos.append(("admins", ctx, valor))
+
+    def bucle_falso(ctx, *, parar):
+        eventos.append(("worker", ctx))
+        return _hasta(parar)
+
+    monkeypatch.setattr(app_radar, "asegurar_admins_iniciales", asegurar_falso)
+    monkeypatch.setattr(worker_radar, "bucle", bucle_falso)
+    rs = radar_ctx.settings.model_copy(update={"admins_iniciales": "a@kis.com,B@kis.com", "worker_embebido": True})
+    app = crear_app_radar(rs)
+    async with app.router.lifespan_context(app):
+        pass
+    assert [e[0] for e in eventos] == ["admins", "worker"]
+    _, ctx, valor = eventos[0]
+    assert ctx is not radar_ctx and valor == "a@kis.com,B@kis.com"
+    assert eventos[1][1] is ctx
+
+
+async def test_con_un_email_invalido_el_arranque_falla_antes_de_migrar(monkeypatch):
+    """Un deploy con la variable mal escrita falla enseguida y dice cuál es la entrada, sin tocar ninguna base."""
+    migraciones = []
+    monkeypatch.setattr(app_radar, "migrar_resultados", lambda url: migraciones.append(url))
+    app = crear_app_radar(_settings(admins_iniciales="a@kis.com, zorro-plateado"))
+    with pytest.raises(RuntimeError, match=r"RADAR_ADMINS_INICIALES.*posición 2\b"):
+        async with app.router.lifespan_context(app):
+            pass
+    assert migraciones == []
+
+
+async def test_con_un_contexto_inyectado_el_arranque_no_crea_admins(radar_ctx, monkeypatch):
+    llamadas = []
+
+    async def espia(*args):
+        llamadas.append(args)
+
+    monkeypatch.setattr(app_radar, "asegurar_admins_iniciales", espia)
+    rs = radar_ctx.settings.model_copy(update={"admins_iniciales": "a@kis.com", "worker_embebido": False})
+    app = crear_app_radar(rs, contexto=radar_ctx)
+    async with app.router.lifespan_context(app):
+        pass
+    assert llamadas == []
+
+
+async def test_el_arranque_crea_los_admins_de_la_variable(radar_ctx):
+    """Por el lifespan de verdad, sin espías: migra, arma su contexto y crea los admins sin mandar nada."""
+    rs = radar_ctx.settings.model_copy(update={"admins_iniciales": "Mariano@KIS.com.ar", "worker_embebido": False})
+    app = crear_app_radar(rs)
+    async with app.router.lifespan_context(app):
+        assert app.state.radar is not radar_ctx
+        assert app.state.radar.mailer.enviados == []
+    assert await _usuarios_de_kis(radar_ctx) == {"mariano@kis.com.ar": ("admin", "")}
+
+
+def test_admins_iniciales_viene_vacio_y_lo_llena_la_variable(monkeypatch):
+    monkeypatch.delenv("RADAR_ADMINS_INICIALES", raising=False)
+    assert RadarSettings(_env_file=None).admins_iniciales == ""
+    monkeypatch.setenv("RADAR_ADMINS_INICIALES", "a@kis.com,b@kis.com")
+    assert RadarSettings(_env_file=None).admins_iniciales == "a@kis.com,b@kis.com"
+
+
+def test_la_tabla_de_despliegue_documenta_radar_admins_iniciales():
+    doc = (RAIZ / "docs" / "radar-despliegue.md").read_text(encoding="utf-8")
+    assert "| `RADAR_ADMINS_INICIALES` |" in doc

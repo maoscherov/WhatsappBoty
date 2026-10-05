@@ -10,6 +10,11 @@ La contraseña de radar_app es un secreto: no va a ningún log, a ningún mensaj
 ALTER ROLE lleva solo su verificador, calculado en el cliente, y esa sentencia la arma el servidor (format ...
 %L), nunca Python. Los nombres de rol son constantes; el del rol de migración lo dice el servidor
 (CURRENT_USER), no la URL.
+
+asegurar_admins_iniciales (RADAR_ADMINS_INICIALES, Decisión 8): crea los admins de KIS que faltan. Corre en el
+lifespan, después de armar el contexto. No manda nada (ni un mail ni un link): cada admin entra después por
+/radar/login. Los emails son dato de personas: ni el log ni un error los repiten, solo cuántos se crearon y la
+posición, en la lista, del que no es válido.
 """
 
 import logging
@@ -19,7 +24,11 @@ import psycopg2
 from psycopg2.errors import InsufficientPrivilege
 from psycopg2.extensions import encrypt_password
 
+from app.radar import auditoria
+from app.radar.constantes import TENANT_KIS
+from app.radar.contexto import RadarContexto
 from app.radar.db import _normalizar_dsn
+from app.radar.links import EmailInvalido, normalizar_email
 
 logger = logging.getLogger("app.radar.bootstrap")
 
@@ -122,3 +131,61 @@ def asegurar_roles(migrator_url: str, app_url: str) -> None:
         con.close()
     logger.info("RADAR_BOOTSTRAP_ROLES: roles creados: %s; contraseña de radar_app: %s",
                 ", ".join(creados) or "ninguno", contrasena)
+
+
+def parsear_admins_iniciales(valor: str) -> list[str]:
+    """Los emails de RADAR_ADMINS_INICIALES: separados por coma, normalizados y sin repetidos, en el orden en que
+    vienen. Una entrada vacía (una coma de más) se ignora. Lo usan validar_settings y asegurar_admins_iniciales.
+
+    Una entrada inválida sale como RuntimeError que dice su posición en la lista como se escribió (la 1 es la
+    primera; las vacías también cuentan) y nunca el email, ni un pedazo."""
+    emails: list[str] = []
+    for posicion, entrada in enumerate(valor.split(","), start=1):
+        if not entrada.strip():
+            continue
+        try:
+            email = normalizar_email(entrada)
+        except EmailInvalido:
+            raise RuntimeError(f"RADAR_ADMINS_INICIALES: el email en la posición {posicion} de la lista no es "
+                               "válido") from None
+        if email not in emails:
+            emails.append(email)
+    return emails
+
+
+async def asegurar_admins_iniciales(ctx: RadarContexto, valor: str) -> None:
+    """Idempotente. Deja como admin del tenant KIS a cada email de `valor`, sin mandar nada: ni un mail ni un
+    login_token. Todo va en una transacción, y la lista entera se valida antes de abrirla: no queda ninguno a medias.
+
+    Un usuario de KIS que ya existe no se duplica ni pierde su nombre. Si no tenía membresía, queda admin
+    (admin_inicial_creado, como uno nuevo); si tenía otro rol, también, y como es un cambio de privilegios queda
+    su rastro (rol_cambiado). Uno que ya es admin no cambia ni deja fila. Quitar un email de la variable no
+    borra al admin ni le baja el rol."""
+    emails = parsear_admins_iniciales(valor)
+    if not emails:
+        return
+    comun = dict(tenant_id=TENANT_KIS, actor_user_id=None, actor_rol="sistema")
+    creados = promovidos = existentes = 0
+    async with ctx.db.tenant_tx(TENANT_KIS) as con:
+        for email in emails:
+            # ON CONFLICT: si dos instancias arrancan a la vez, la segunda espera a la primera y ve lo que creó
+            # (un error de clave duplicada de Postgres trae el email en su DETAIL).
+            uid = await con.fetchval(
+                "INSERT INTO users (email) VALUES ($1) ON CONFLICT (tenant_id, email) DO NOTHING RETURNING id", email)
+            if uid is None:
+                uid = await con.fetchval("SELECT id FROM users WHERE email = $1", email)
+            rol = await con.fetchval("SELECT rol FROM memberships WHERE user_id = $1", uid)
+            if rol == "admin":
+                existentes += 1
+            elif rol is None:
+                await con.execute("INSERT INTO memberships (user_id, rol) VALUES ($1, 'admin')", uid)
+                await auditoria.registrar(con, accion="admin_inicial_creado", tipo_objeto="user", objeto_id=uid,
+                                          **comun)
+                creados += 1
+            else:
+                await con.execute("UPDATE memberships SET rol = 'admin' WHERE user_id = $1", uid)
+                await auditoria.registrar(con, accion="rol_cambiado", tipo_objeto="membership", objeto_id=uid,
+                                          detalle={"rol_anterior": rol, "rol_nuevo": "admin"}, **comun)
+                promovidos += 1
+    logger.info("RADAR_ADMINS_INICIALES: creados: %d, promovidos: %d, ya existían: %d",
+                creados, promovidos, existentes)

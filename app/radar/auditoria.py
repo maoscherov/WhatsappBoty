@@ -30,6 +30,8 @@ ACCIONES = frozenset({
     "worker_registrado",
     # staging: servidores WAHA desde la Consola
     "worker_clave_reemplazada", "worker_disco_actualizado",
+    # staging: admins de KIS que crea el arranque (RADAR_ADMINS_INICIALES)
+    "admin_inicial_creado",
 })
 TIPOS_OBJETO = frozenset({
     "tenant", "line", "user", "membership", "consent", "session", "support_grant", "login_token",

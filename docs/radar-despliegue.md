@@ -25,6 +25,7 @@ cliente de Remedia (spec §6.2, S7). En este tramo, Redis no se usa todavía.
 | `RADAR_SMTP_PASSWORD` | Contraseña de ese usuario (de aplicación o clave SMTP del proveedor). Obligatoria si hay usuario; solo ASCII. Nunca va a un log, a la base, a una respuesta HTTP ni a un mensaje de error, y no sale en el `repr` de los settings. |
 | `RADAR_SMTP_SEGURIDAD` | `starttls` (default: conecta y sube a TLS antes de autenticar), `ssl` (TLS desde el primer byte) o `ninguna` (sin cifrar: solo para un relay sin autenticar dentro de una red privada; junto con `RADAR_SMTP_USUARIO` la app no arranca). Con TLS se verifica el certificado y el nombre del servidor. Otro valor: la app no arranca. |
 | `RADAR_SMTP_TIMEOUT_S` | Timeout de cada operación del socket (conectar y cada comando). Default `20.0`. |
+| `RADAR_ADMINS_INICIALES` | Emails de los admins de KIS, separados por coma (`mariano@keepitsimple.com.ar,otro@keepitsimple.com.ar`). El arranque crea los que faltan, sin mandar nada: cada uno entra después por `/radar/login` (necesita `RADAR_MAILER=smtp`; ver "Admins iniciales"). Default vacío: no crea ninguno. Un email mal escrito frena el arranque: el error dice la posición en la lista, nunca el email. |
 
 Todas estas variables las lee `RadarSettings` (`app/radar/settings.py`, prefijo
 `RADAR_`); `RADAR_MIGRATOR_DATABASE_URL` la lee `app.radar.migrate` a través del
@@ -115,6 +116,31 @@ guarde las sentencias (`log_statement`, `log_min_duration_statement`, `pg_stat_s
 sentencia fallida, ahí queda el verificador, nunca la contraseña. Sin la variable nada cambia: los roles se
 crean a mano como en "Primera vez".
 
+## Admins iniciales
+
+Con `RADAR_ADMINS_INICIALES=email1,email2`, el arranque (`asegurar_admins_iniciales`, `app/radar/bootstrap.py`)
+crea esos admins en el tenant de Keep IT Simple, después de las migraciones y antes de aceptar tráfico, y no manda
+nada: ni un mail ni un link. Así el primer admin no necesita shell en el servicio:
+
+1. Poné tu email en `RADAR_ADMINS_INICIALES` y configurá el correo saliente (`RADAR_MAILER=smtp`, ver "Email por
+   SMTP"): sin él, ningún link sale del servidor.
+2. Desplegá.
+3. Entrá por `https://<radar>/radar/login`: pedís el link, te llega por mail y lo abrís (vence en 15 minutos y
+   sirve una sola vez). Quedás en la Consola.
+
+Sin SMTP, el primer admin se crea desde la shell del servicio con `scripts/radar_admin.py crear-admin`, que imprime
+el link en la terminal en lugar de mandarlo (ver "Primera vez"). Con el mismo email también le da su link a uno que
+ya creó el arranque.
+
+- Los emails se normalizan (minúsculas, sin espacios) y se admiten repetidos y comas de más. Uno que no es un email
+  frena el arranque antes de migrar (`validar_settings`): el error dice la posición en la lista, nunca el email.
+- Es idempotente: en cada arranque crea solo los que faltan. Quien ya es admin no cambia (tampoco su nombre) ni deja
+  fila de auditoría. Un usuario de KIS que ya existía con otro rol (`dueno`, `gestor` o `lector`) pasa a `admin`, y
+  como es un cambio de privilegios queda auditado como `rol_cambiado`; uno sin membresía queda admin como uno nuevo.
+- Solo agrega: sacar un email de la variable no borra al admin ni le baja el rol.
+- Auditoría: cada admin creado deja una fila `admin_inicial_creado` en `access_audit_log`, con actor `sistema`.
+- El log dice cuántos hubo (`RADAR_ADMINS_INICIALES: creados: 1, promovidos: 0, ya existían: 0`), nunca los emails.
+
 ## Primera vez
 
 1. Crear los roles en el Postgres de resultados (con `RADAR_BOOTSTRAP_ROLES=true` lo hace el arranque: ver
@@ -129,7 +155,8 @@ crean a mano como en "Primera vez".
    `alembic upgrade head` sobre `migrations_radar/` (tabla `alembic_version_radar`)
    y `migrations_fuente/` (`alembic_version_fuente`) antes de aceptar tráfico. Si
    una migración falla, el servicio no arranca.
-3. Crear el primer admin de KIS desde la shell del servicio:
+3. Crear el primer admin de KIS. Con `RADAR_ADMINS_INICIALES` lo crea el arranque y después entra por
+   `/radar/login` (ver "Admins iniciales"). Sin SMTP, desde la shell del servicio:
    `python scripts/radar_admin.py crear-admin --email mariano@keepitsimple.com.ar --nombre "Mariano"`
    Imprime una sola vez el link de invitación (7 días, un solo uso); es
    idempotente (repetirlo actualiza el nombre y reenvía la invitación, hasta 3
