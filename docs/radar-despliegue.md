@@ -9,6 +9,7 @@ cliente de Remedia (spec §6.2, S7). En este tramo, Redis no se usa todavía.
 | Variable | Qué es |
 |---|---|
 | `APP_MODE=radar` | Monta los routers de Radar y ninguno del bot. Por defecto `bot` (`app/config.py`). |
+| `UVICORN_HOST` | Dirección en la que escucha uvicorn. Opcional: la lee el `CMD` del `Dockerfile` (`--host ${UVICORN_HOST:-0.0.0.0}`), que comparten el bot y Radar, así que vale para el servicio donde la pongas. Default `0.0.0.0` (IPv4), como siempre. `::` para escuchar en IPv6, si la red privada de Railway lo pide (por ejemplo, para que el WAHA llegue al webhook por `<servicio-radar>.railway.internal`); con `::` uvicorn abre un socket solo IPv6 y deja de aceptar IPv4. El `Procfile` no la lee: Railway construye con el `Dockerfile` (`railway.json`). |
 | `RADAR_MIGRATOR_DATABASE_URL` | Rol dueño de las tablas (en Railway, el usuario por defecto). Solo lo usa Alembic en el arranque. |
 | `RADAR_DATABASE_URL` | Rol `radar_app`: `NOSUPERUSER`, `NOBYPASSRLS`, no dueño. La app aborta si conecta con un superusuario o con `BYPASSRLS`. |
 | `RADAR_BOOTSTRAP_ROLES` | `true`: el arranque crea `radar_admin` y `radar_app` si faltan y le pone a `radar_app` la contraseña de `RADAR_DATABASE_URL`, sin `psql` (ver "Roles al arrancar"). Con ella, `RADAR_DATABASE_URL` tiene que ser del usuario `radar_app`, con una contraseña de 16+ caracteres, y puede escribirse con las referencias de Railway: `postgresql://radar_app:<contraseña>@${{Postgres.PGHOST}}:${{Postgres.PGPORT}}/${{Postgres.PGDATABASE}}`. Default `false`: los roles se crean a mano con `scripts/radar_bootstrap_roles.sql`, como antes (ver "Primera vez"). |
@@ -27,9 +28,10 @@ cliente de Remedia (spec §6.2, S7). En este tramo, Redis no se usa todavía.
 | `RADAR_SMTP_TIMEOUT_S` | Timeout de cada operación del socket (conectar y cada comando). Default `20.0`. |
 | `RADAR_ADMINS_INICIALES` | Emails de los admins de KIS, separados por coma (`mariano@keepitsimple.com.ar,otro@keepitsimple.com.ar`). El arranque crea los que faltan, sin mandar nada: cada uno entra después por `/radar/login` (necesita `RADAR_MAILER=smtp`; ver "Admins iniciales"). Default vacío: no crea ninguno. Un email mal escrito frena el arranque: el error dice la posición en la lista, nunca el email. |
 
-Todas estas variables las lee `RadarSettings` (`app/radar/settings.py`, prefijo
+Las `RADAR_*` las lee `RadarSettings` (`app/radar/settings.py`, prefijo
 `RADAR_`); `RADAR_MIGRATOR_DATABASE_URL` la lee `app.radar.migrate` a través del
-mismo objeto. `validar_settings()` exige `database_url`, `migrator_database_url`,
+mismo objeto. `APP_MODE` la lee `app/config.py` y `UVICORN_HOST`, el `CMD` del
+`Dockerfile`. `validar_settings()` exige `database_url`, `migrator_database_url`,
 `fuente_database_url` y un `cookie_secret` de 32+ caracteres antes de arrancar el
 lifespan.
 

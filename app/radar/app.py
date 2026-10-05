@@ -108,12 +108,27 @@ async def _lifespan_radar(app: FastAPI):
         await app.state.radar.cerrar()
 
 
+# La API devuelve datos de clientes (el estado del vínculo, el número de la línea, las listas): que ninguna caché,
+# la del navegador o la de un intermediario, los guarde. Prefijos enteros, con la barra: /radar/administrador no entra.
+PREFIJOS_SIN_CACHE = ("/radar/api/", "/radar/admin/")
+
+
+async def sin_cache_en_la_api(request, call_next):
+    """Cache-Control: no-store en toda respuesta de la API, también en sus errores (401, 403, 404, 409, 422), salvo
+    que ya traiga el suyo: el QR y el código del vínculo se lo ponen ellos."""
+    response = await call_next(request)
+    if request.url.path.startswith(PREFIJOS_SIN_CACHE):
+        response.headers.setdefault("Cache-Control", "no-store")
+    return response
+
+
 def crear_app_radar(rs: RadarSettings | None = None, contexto: RadarContexto | None = None) -> FastAPI:
     rs = rs or get_radar_settings()
     app = FastAPI(title="Radar", version="0.1.0", lifespan=_lifespan_radar)
     app.state.radar_settings = rs
     app.state.radar = contexto
     app.middleware("http")(log_errores)
+    app.middleware("http")(sin_cache_en_la_api)
     app.include_router(health.router)
     app.include_router(login.router)
     app.include_router(cuenta.router)
