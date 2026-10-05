@@ -811,6 +811,54 @@
     ]
    ],
    "origen": "auditoria"
+  },
+  {
+   "q": "famotidina",
+   "debe": [
+    [
+     "famotid"
+    ],
+    [
+     "lazartidina"
+    ]
+   ],
+   "origen": "auditoria",
+   "_nota": "5/10 Claudia: G-famotidina con stock y el bot dijo sin resultado"
+  },
+  {
+   "q": "1 tira de famotidina",
+   "debe": [
+    [
+     "famotid"
+    ],
+    [
+     "lazartidina"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "una tira de ibuprofeno 400",
+   "debe": [
+    [
+     "ibu",
+     "400"
+    ],
+    [
+     "actron",
+     "400"
+    ]
+   ],
+   "origen": "control"
+  },
+  {
+   "q": "tiras reactivas",
+   "debe": [
+    [
+     "tira"
+    ]
+   ],
+   "origen": "control"
   }
  ]
 }

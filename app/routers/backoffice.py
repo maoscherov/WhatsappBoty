@@ -1086,6 +1086,139 @@ class PaylinkIn(BaseModel):
     # conversación al bot; False la deja en modo operador con el pedido listo.
     modo: str | None = None
     delegar: bool = True
+    # Varios productos (5/10): si viene `items`, se ignoran sku_id/detalle/
+    # monto/cantidad de arriba. Cada ítem puede traer su propio % de obra
+    # social; si no, vale `pct_os` general.
+    items: list["PaylinkItem"] | None = None
+    agente: str | None = None
+
+
+class PaylinkItem(BaseModel):
+    sku_id: str | None = None
+    detalle: str | None = None      # ítem libre (sin sku_id): requiere monto
+    monto: float | None = None      # pisa el precio del catálogo
+    cantidad: int = 1
+    pct_os: float | None = None
+
+
+PaylinkIn.model_rebuild()
+
+
+def _descuento_cliente(phone: str, cfg: dict) -> dict:
+    """Descuento que corresponde (mismo criterio que el bot) + tipo de cliente."""
+    from app.services.checkout_helper import descuento_para
+    pct, tipo = descuento_para(phone, cfg, get_socio_service(get_settings().socios_path))
+    return {"descuento": {"pct": pct, "tipo": tipo or None},
+            "tipo_cliente": _datos_cliente(phone).get("tipo_cliente")}
+
+
+async def _paylink_items(body: "PaylinkIn") -> dict:
+    """
+    Cotización / link con VARIOS productos (5/10): antes la pantalla de receta
+    admitía uno solo. Cada ítem se cotiza como siempre (precio − % obra social
+    − % socio/empleado) y el pedido queda armado con todos.
+    """
+    from app.services.receta_ocr import cotizar_receta
+    settings = get_settings()
+    cfg = await get_config_service(settings.redis_url).get_all()
+    cli = _descuento_cliente(body.phone, cfg)
+    pct_desc, tipo_desc = cli["descuento"]["pct"], cli["descuento"]["tipo"]
+    es_cotizacion = (body.plantilla == "receta" or body.pct_os is not None
+                     or any(i.pct_os is not None for i in body.items or []))
+    sku_svc = get_sku_service(settings.sku_csv_path)
+
+    lineas: list[dict] = []
+    for n, it in enumerate(body.items or [], start=1):
+        cant = max(1, int(it.cantidad or 1))
+        if it.sku_id:
+            sku = sku_svc.get_by_id(it.sku_id)
+            if not sku:
+                raise HTTPException(status_code=404, detail=f"SKU {it.sku_id} no encontrado")
+            nombre, sku_id = sku.sku_nombre_original or sku.sku_nombre, sku.sku_id
+            base = float(it.monto) if it.monto else float(sku.precio_venta or 0)
+        else:
+            if not (it.detalle or "").strip() or not it.monto:
+                raise HTTPException(status_code=422, detail="Un ítem libre necesita detalle y monto")
+            nombre, sku_id, base = it.detalle.strip(), f"LIBRE{n}", float(it.monto)
+        if base <= 0:
+            raise HTTPException(status_code=422, detail=f"{nombre}: el precio debe ser mayor a 0")
+        cot = None
+        unit = base
+        if es_cotizacion:
+            pct_os = it.pct_os if it.pct_os is not None else (body.pct_os or 0)
+            cot = cotizar_receta(base, pct_os=pct_os, es_socio=pct_desc > 0, pct_socio=pct_desc,
+                                 etiqueta=tipo_desc or "socio")
+            unit = cot["precio_final"]
+        lineas.append({"sku_id": sku_id, "nombre": nombre, "cantidad": cant,
+                       "precio_lista": round(base, 2), "precio_final": round(unit, 2),
+                       "subtotal": round(unit * cant, 2), "cotizacion": cot})
+    if not lineas:
+        raise HTTPException(status_code=422, detail="Agregá al menos un producto")
+    total = round(sum(l["subtotal"] for l in lineas), 2)
+    total_lista = round(sum(l["precio_lista"] * l["cantidad"] for l in lineas), 2)
+
+    def _renglon(l: dict) -> str:
+        cant = f" x{l['cantidad']}" if l["cantidad"] > 1 else ""
+        if l["cotizacion"]:
+            txt = f"• {l['nombre']}{cant}: {l['cotizacion']['desglose']}"
+        else:
+            txt = f"• {l['nombre']}{cant}: ${l['precio_final']:,.2f}"
+        if l["cantidad"] > 1:
+            txt += f" (subtotal ${l['subtotal']:,.2f})"
+        return txt
+
+    detalle = "\n".join(_renglon(l) for l in lineas)
+    resumen = f"{len(lineas)} productos" if len(lineas) > 1 else lineas[0]["nombre"]
+    session_svc = get_session_service(settings.redis_url)
+    wa = get_whatsapp_service(settings.whatsapp_token, settings.whatsapp_phone_number_id)
+    base_resp = {"ok": True, "detalle": resumen, "total": total, "total_lista": total_lista,
+                 "items": lineas, **cli}
+
+    if body.modo == "cotizar":
+        if body.mensaje and "{link}" in body.mensaje:
+            raise HTTPException(status_code=400, detail="En modo cotización el mensaje no lleva "
+                                                        "link: el bot lo manda cuando el cliente confirma.")
+        cierre = (cfg.get("receta_cotizacion_cierre") or
+                  "¿Querés que avancemos? Decime *sí* y te mando el link de pago 🙂")
+        mensaje = body.mensaje or (f"¡Buenas noticias! Tenemos stock de:\n{detalle}\n\n"
+                                   f"Total: *${total:,.2f}*\n\n{cierre}")
+        enviado = False
+        if body.enviar:
+            await session_svc.armar_cotizacion(
+                body.phone, sku_id=lineas[0]["sku_id"], sku_nombre=lineas[0]["nombre"],
+                precio=lineas[0]["precio_final"], delegar=body.delegar,
+                items=[{"sku_id": l["sku_id"], "nombre": l["nombre"], "precio": l["precio_final"],
+                        "cantidad": l["cantidad"]} for l in lineas])
+            enviado = await wa.send_text(body.phone, mensaje)
+            if enviado:
+                await session_svc.add_message(body.phone, "assistant", mensaje)
+                from app.services.message_store import guardar_historico
+                await guardar_historico(body.phone, "operator", mensaje,
+                                        autor=body.agente or (await session_svc.get(body.phone)).get("agente"))
+        return {**base_resp, "link": None, "enviado": enviado, "mensaje": mensaje,
+                "modo": "cotizar", "delegado": body.delegar}
+
+    from app.routers.webhook import payment_svc_para
+    payment_svc = payment_svc_para(cfg, settings)
+    link, err = await payment_svc.crear_link(
+        sku_id="MULTI" if len(lineas) > 1 else lineas[0]["sku_id"],
+        nombre=resumen, precio=total, phone=body.phone, cantidad=1)
+    if not link:
+        return {"ok": False, "error": err or "no se pudo generar el link"}
+    mensaje = body.mensaje or (f"¡Buenas noticias! Tenemos stock de:\n{detalle}\n\n"
+                               f"Total: *${total:,.2f}*\n\nTe paso el link de pago:\n{link}\n\n"
+                               "El link tiene vigencia de 24hs. ¡Cualquier cosa me avisás!")
+    if "{link}" in mensaje:
+        mensaje = mensaje.replace("{link}", link)
+    enviado = False
+    if body.enviar:
+        enviado = await wa.send_text(body.phone, mensaje)
+        if enviado:
+            await session_svc.add_message(body.phone, "assistant", mensaje)
+            from app.services.message_store import guardar_historico
+            await guardar_historico(body.phone, "operator", mensaje,
+                                    autor=body.agente or (await session_svc.get(body.phone)).get("agente"))
+    return {**base_resp, "link": link, "enviado": enviado, "mensaje": mensaje}
 
 
 @router.post("/paylink")
@@ -1095,7 +1228,10 @@ async def bo_paylink(body: PaylinkIn, _=Depends(_auth)):
     o por detalle+monto libres. Devuelve el link (para copiar) y opcionalmente
     lo envía por WhatsApp al cliente. Usa el proveedor de pago activo
     (PAYMENT_PROVIDER). Sin control de receta: el operador ya validó el caso.
+    Con `items`, varios productos en una sola cotización / link (5/10).
     """
+    if body.items:
+        return await _paylink_items(body)
     settings = get_settings()
 
     # Resolver nombre y precio unitario
@@ -1174,7 +1310,8 @@ async def bo_paylink(body: PaylinkIn, _=Depends(_auth)):
                                         autor=getattr(body, "agente", None) or (await get_session_service(settings.redis_url).get(body.phone)).get("agente"))
         return {"ok": True, "link": None, "detalle": nombre, "total": total,
                 "enviado": enviado, "mensaje": mensaje, "cotizacion": cotizacion,
-                "modo": "cotizar", "delegado": body.delegar}
+                "modo": "cotizar", "delegado": body.delegar,
+                **_descuento_cliente(body.phone, _cfg)}
 
     # Generar el link con el proveedor activo (el mismo que usa el bot)
     from app.routers.webhook import payment_svc_para
@@ -1217,7 +1354,8 @@ async def bo_paylink(body: PaylinkIn, _=Depends(_auth)):
                                     autor=getattr(body, "agente", None) or (await get_session_service(settings.redis_url).get(body.phone)).get("agente"))
 
     return {"ok": True, "link": link, "detalle": nombre_cant, "total": total,
-            "enviado": enviado, "mensaje": mensaje, "cotizacion": cotizacion}
+            "enviado": enviado, "mensaje": mensaje, "cotizacion": cotizacion,
+            **_descuento_cliente(body.phone, _cfg)}
 
 
 @router.post("/session/{phone}/take")

@@ -153,7 +153,8 @@ class SessionService:
         return items
 
     async def armar_cotizacion(self, phone: str, sku_id: str, sku_nombre: str,
-                               precio: float, delegar: bool = True):
+                               precio: float, delegar: bool = True,
+                               items: list[dict] | None = None):
         """
         Deja armado el pedido que el OPERADOR cotizó (receta ya vista por él):
         el cliente recibe la oferta sin link, y su "sí" sigue el flujo normal
@@ -168,14 +169,16 @@ class SessionService:
         """
         session = await self.get(phone)
         session["pending_at"] = time.time()
+        # Varios productos (5/10): el carrito entero, el primero como principal.
+        items = items or [{"sku_id": sku_id, "nombre": sku_nombre,
+                           "precio": precio, "cantidad": 1}]
         session.update({
-            "pending_sku_id": sku_id,
-            "pending_sku_nombre": sku_nombre,
-            "pending_precio": precio,
-            "pending_cantidad": 1,
+            "pending_sku_id": items[0]["sku_id"],
+            "pending_sku_nombre": items[0]["nombre"],
+            "pending_precio": items[0]["precio"],
+            "pending_cantidad": max(1, int(items[0].get("cantidad", 1))),
             "pending_opciones": [],
-            "pending_items": [{"sku_id": sku_id, "nombre": sku_nombre,
-                               "precio": precio, "cantidad": 1}],
+            "pending_items": items,
             "receta_validada": True,
         })
         session.pop("_espera_eleccion", None)

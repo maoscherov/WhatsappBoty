@@ -119,6 +119,22 @@ def normalizar_numeros(texto: str) -> str:
     return t
 
 
+_UNIDAD_DE_RE = _re_mod.compile(
+    r"\b(?:\d+|una?|dos|tres)?\s*(?:tiras?|bl[ií]sters?|cajas?|cajitas?|envases?)\s+de\b",
+    _re_mod.IGNORECASE)
+_GUION_RE = _re_mod.compile(r"(?<=[^\W\d_])-(?=[^\W_])")
+
+
+def separar_guiones(texto: str) -> str:
+    """
+    "G-famotidina" → "G famotidina": la línea de genéricos pega la G a la
+    droga con un guion y "famotidina" no matcheaba la palabra (5/10: el bot
+    ofreció Lazartidina con receta habiendo G-famotidina de venta libre).
+    Vale igual para "P-AD", "C-VAP", "S-PERF". No toca rangos numéricos.
+    """
+    return _GUION_RE.sub(" ", texto or "")
+
+
 def numeros_de(texto: str) -> list[str]:
     """Números discriminantes de un texto ('600', '65', '4%'). 1 dígito solo cuenta con %."""
     return _NUMERO_RE.findall(normalizar_numeros(texto or ""))
@@ -272,7 +288,7 @@ class SKUService:
         # JAB→jabón) + marca + laboratorio. Sin la expansión, "talco rexona"
         # no encontraba el talco y el bot ofrecía un desodorante en su lugar.
         search_text = " ".join(filter(None, [
-            normalizar_numeros(expandir_abreviaturas(sku.sku_nombre)).lower(),
+            normalizar_numeros(expandir_abreviaturas(separar_guiones(sku.sku_nombre))).lower(),
             sku.marca.lower(),
             sku.laboratorio.lower(),
             texto_extra.lower(),
@@ -472,7 +488,10 @@ class SKUService:
             r'en|de|para|un|una|unos|unas|el|la|los|las|me|mand[aá]s|env[ií]as|'
             r'env)\b'
         )
-        clean_query = normalizar_numeros(quitar_cantidades(query.lower()))
+        # "una tira de famotidina" / "1 blíster de" / "una caja de": es la
+        # unidad de venta, no el producto ("tira" traía las tiras reactivas, 5/10).
+        clean_query = _UNIDAD_DE_RE.sub(" ", separar_guiones(query.lower()))
+        clean_query = normalizar_numeros(quitar_cantidades(clean_query))
         clean_query = _re.sub(_STOP, '', clean_query)
         clean_query = _re.sub(r'\s+', ' ', clean_query).strip()
         if not clean_query:
