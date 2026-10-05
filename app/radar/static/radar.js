@@ -1,8 +1,8 @@
 "use strict";
-// Radar: Consola KIS (C1, C2, C4) y P2/P3 del dueño. Sin dependencias.
+// Radar: login, Consola KIS (C1, C2, C4) y P2/P3 del dueño. Sin dependencias.
 // Todo dato del servidor se escribe con textContent o setAttribute; nunca se arma HTML.
 (function () {
-  const modo = document.body.dataset.modo;            // "consola" | "cliente"
+  const modo = document.body.dataset.modo;            // "login" | "consola" | "cliente"
   const $ = (id) => document.getElementById(id);
   const REFRESCO_ESTADO_MS = 3000;
   const REFRESCO_LINEAS_MS = 15000;
@@ -30,6 +30,7 @@
     confirmacion_incorrecta: "El nombre no coincide con el de la línea.",
     sin_dueno: "La cuenta no tiene un dueño cargado.",
     linea_invalida: "El link no indica una línea válida.",
+    pedido_no_enviado: "No pudimos enviar el pedido. Revisá tu conexión y probá de nuevo.",
   };
   const TEXTOS_ESTADO = {
     sin_vinculo: "Sin conexión.",
@@ -76,6 +77,33 @@
   function enlazar(id, fn) {
     const el = $(id);
     if (el) el.addEventListener("click", () => accion(fn));
+  }
+
+  // ---- Sesión: pedir el link (login) y salir (consola y pantalla del dueño)
+  async function pedirLink() {
+    $("aviso").textContent = "";
+    $("btn-entrar").disabled = true;                  // un doble clic gastaría dos de los 3 pedidos por ventana
+    try {
+      await pedir("POST", "/radar/login", { email: $("email").value });
+      // El mismo aviso exista o no el email: el servidor tampoco lo revela (siempre 202).
+      $("aviso").textContent = "Si el email está registrado, te mandamos un link para entrar. Revisá tu correo.";
+    } catch (e) {
+      throw new Error("pedido_no_enviado");
+    } finally {
+      $("btn-entrar").disabled = false;
+    }
+  }
+
+  async function salir() {
+    try { await pedir("POST", "/radar/logout"); } catch (e) { /* sesión ya vencida o red caída: se sale igual */ }
+    window.location.assign("/radar/login");
+  }
+
+  if (modo === "login") {
+    // Pantalla aparte: no usa nada de lo que sigue. El envío nativo lo bloquea la CSP
+    // (form-action 'none'), así que el formulario lo manda este JS.
+    $("form-login").addEventListener("submit", (ev) => { ev.preventDefault(); accion(pedirLink); });
+    return;
   }
 
   // ---- P2: consentimiento (asistido en la Consola, propio en la pantalla del dueño)
@@ -278,6 +306,7 @@
   }
 
   // ---- arranque
+  enlazar("btn-salir", salir);
   enlazar("btn-consentir", consentir);
   enlazar("btn-generar", generar);
   enlazar("btn-reiniciar", reiniciar);

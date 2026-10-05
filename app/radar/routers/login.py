@@ -3,7 +3,9 @@ POST /radar/login          pide un link mágico (202 siempre: no revela si el em
 GET  /radar/login/canjear  página mínima: formulario POST + script que copia #k al campo, SIN auto-envío
                            (un escáner de links, ejecute JS o no, no consume el token), con CSP
 POST /radar/login/canjear  canjea el token (UPDATE ... WHERE used_at IS NULL: un solo uso), emite la sesión
+                           y redirige a /radar/inicio
 POST /radar/logout         revoca la sesión
+(La pantalla de login, GET /radar/login, y el aterrizaje, GET /radar/inicio, están en paginas.py.)
 """
 
 import base64
@@ -110,7 +112,7 @@ async def canjear(request: Request, t: uuid.UUID = Form(...), k: str = Form(...)
                                   accion="login_canjeado", tipo_objeto="login_token", objeto_id=fila["id"],
                                   ip=ip, detalle={"proposito": fila["proposito"]})
         await eventos_producto.registrar_evento(con, tenant_id=t, evento="login_canjeado", user_id=fila["user_id"])
-    resp = RedirectResponse("/radar/api/yo", status_code=303)
+    resp = RedirectResponse("/radar/inicio", status_code=303)       # el aterrizaje por rol decide a qué pantalla
     set_cookie_sesion(resp, ctx, t, token)
     return resp
 

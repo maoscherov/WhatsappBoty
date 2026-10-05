@@ -41,7 +41,7 @@ async def test_flujo_completo_de_login(cliente, radar_ctx):
     assert r.headers["content-security-policy"].startswith("default-src 'none'; script-src 'sha256-")
 
     r = await cliente.post("/radar/login/canjear", data={"t": t, "k": k})
-    assert r.status_code == 303 and r.headers["location"] == "/radar/api/yo"
+    assert r.status_code == 303 and r.headers["location"] == "/radar/inicio"
     set_cookie = r.headers["set-cookie"].lower()
     assert "httponly" in set_cookie and "samesite=lax" in set_cookie and "path=/radar" in set_cookie
     assert COOKIE in set_cookie
@@ -59,6 +59,18 @@ async def test_flujo_completo_de_login(cliente, radar_ctx):
     # un solo uso
     r = await cliente.post("/radar/login/canjear", data={"t": t, "k": k})
     assert r.status_code == 400
+
+
+async def test_canje_redirige_a_inicio(cliente, radar_ctx):
+    """El canje no termina en un JSON: lleva al aterrizaje por rol, que ya encuentra la sesión."""
+    a = await crear_tenant_directo(radar_ctx.db, "Farmacia A")
+    await crear_usuario(radar_ctx.db, a, "dueno@cliente.com", "dueno")
+    await cliente.post("/radar/login", json={"email": "dueno@cliente.com"})
+    t, k = _link(radar_ctx.mailer.enviados[0])
+    r = await cliente.post("/radar/login/canjear", data={"t": t, "k": k})
+    assert r.status_code == 303 and r.headers["location"] == "/radar/inicio"
+    r = await cliente.get(r.headers["location"])         # dueño sin líneas: a conectar, sin línea
+    assert r.status_code == 303 and r.headers["location"] == "/radar/conectar"
 
 
 async def test_email_desconocido_o_invalido_responde_igual(cliente, radar_ctx):
