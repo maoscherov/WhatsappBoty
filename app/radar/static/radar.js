@@ -10,6 +10,7 @@
   let actual = null;                                  // {tenant_id, line_id, nombre}
   let sondeo = null;
   let qrDesde = 0;
+  let alLogin = false;                                // un 401: la sesión se cerró y el navegador ya va al login
 
   const MENSAJES = {
     // Sin promesa de aviso: en este tramo nada avisa cuando se libera lugar.
@@ -31,6 +32,7 @@
     sin_dueno: "La cuenta no tiene un dueño cargado.",
     linea_invalida: "El link no indica una línea válida.",
     pedido_no_enviado: "No pudimos enviar el pedido. Revisá tu conexión y probá de nuevo.",
+    sesion_cerrada: "Tu sesión se cerró. Te llevamos a la pantalla para entrar de nuevo…",
     // /radar/admin: el 422 propio de FastAPI llega sin texto (error_422) y los 404 traen un texto suelto. Los 422 que
     // sí traen texto (email inválido, valor fuera de rango…) se muestran tal cual.
     error_422: "Revisá los datos: algún campo está vacío o no tiene el formato pedido.",
@@ -69,13 +71,22 @@
     return "/radar/api/lineas/" + encodeURIComponent(actual.line_id);
   }
 
+  // Sesión vencida o cerrada (por ejemplo, con «Salir» en otra pestaña): el primer 401 lleva al login y desde ahí la
+  // página no pide nada más. Lo que estaba en curso termina con un aviso (y sus finally corren: la clave de WAHA se
+  // vacía igual), y el sondeo de 3 s y el refresco de 15 s ya no repiten «Error: sesión inválida o vencida».
   async function pedir(metodo, url, cuerpo) {
+    if (alLogin) throw new Error("sesion_cerrada");
     const opciones = { method: metodo, credentials: "same-origin", headers: {} };
     if (cuerpo !== undefined) {
       opciones.headers["Content-Type"] = "application/json";
       opciones.body = JSON.stringify(cuerpo);
     }
     const r = await fetch(url, opciones);
+    if (r.status === 401) {
+      alLogin = true;
+      window.location.assign("/radar/login");
+      throw new Error("sesion_cerrada");
+    }
     let datos = null;
     try { datos = await r.json(); } catch (e) { datos = null; }
     if (!r.ok) {
@@ -338,17 +349,25 @@
   }
 
   // ---- Alta (solo Consola): cliente nuevo con su primera línea, línea nueva y reenvío de invitación
-  // Perfil de datos y parámetros que el servidor propone para el rubro. Solo informa: el alta manda el rubro y es el
-  // servidor quien arma el perfil y los parámetros.
+  // Perfil de datos y parámetros que el servidor propone para el rubro. Solo informa: el alta manda el rubro y el
+  // servidor arma el perfil y los parámetros del cliente. La parte de línea de la propuesta (retencion_fuente_dias: 7
+  // en un rubro sensible) todavía NO se aplica: necesita el almacén purgable (tramo 6) y la línea se crea sin plazo
+  // (admin_kis.resolver_valores_tenant). Por eso va aparte y dicha así, no como un parámetro propuesto más.
   async function mostrarPropuesta() {
     const rubro = $("alta-rubro").value.trim();
     $("alta-propuesta").textContent = "";
     if (!/^[a-z_]{1,40}$/.test(rubro)) return;          // el servidor exige este formato: otro sería un 422
     const p = await pedir("GET", "/radar/admin/propuesta?rubro=" + encodeURIComponent(rubro));
     if ($("alta-rubro").value.trim() !== rubro) return;  // el rubro cambió mientras tanto: esta respuesta ya no vale
-    const parametros = Object.entries({ ...p.parametros_tenant, ...p.parametros_linea }).map(([k, v]) => k + " = " + v);
-    $("alta-propuesta").textContent = "Perfil de datos: " + p.perfil_de_datos + " · Parámetros propuestos: " +
+    const parametros = Object.entries(p.parametros_tenant).map(([k, v]) => k + " = " + v);
+    let texto = "Perfil de datos: " + p.perfil_de_datos + " · Parámetros propuestos: " +
       (parametros.length ? parametros.join(", ") : "ninguno");
+    const dias = p.parametros_linea.retencion_fuente_dias;
+    if (dias !== undefined) {
+      texto += ". Retención de la fuente propuesta: " + dias +
+        " días — todavía no se aplica (llega con el almacén purgable): la línea se crea sin plazo.";
+    }
+    $("alta-propuesta").textContent = texto;
   }
 
   async function crearCliente() {

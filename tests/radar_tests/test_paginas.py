@@ -4,6 +4,7 @@ JS que escribe solo con textContent, y CSP estricta (§7: escapar todo y CSP).
 """
 import pathlib
 import re
+import uuid
 
 from app.radar.auth import COOKIE
 from app.radar.constantes import TENANT_KIS
@@ -268,6 +269,49 @@ def test_el_js_del_alta_usa_los_endpoints_que_ya_existen():
     assert '"/radar/admin/propuesta?rubro="' in js                          # perfil y parámetros del rubro
     assert re.search(r'"/radar/admin/tenants/"\s*\+[^;]*\+\s*"/lineas"', js)
     assert re.search(r'"/radar/admin/tenants/"\s*\+[^;]*\+\s*"/invitaciones"', js)
+
+
+def test_la_propuesta_del_alta_no_presenta_la_retencion_de_la_fuente_como_aplicada():
+    """Un rubro sensible propone retencion_fuente_dias = 7, pero el alta crea la línea sin plazo (0) hasta que llegue
+    el almacén purgable (tramo 6). Es la pantalla con la que se da de alta la primera farmacia: ese 7 no puede salir
+    como un parámetro propuesto más (test_la_linea_del_alta_de_un_rubro_sensible_se_crea_sin_plazo)."""
+    js = (ESTATICOS / "radar.js").read_text(encoding="utf-8")
+    propuesta = js[js.index("async function mostrarPropuesta("):js.index("async function crearCliente(")]
+    # "Parámetros propuestos" son los del cliente; la parte de línea ya no entra en esa lista
+    assert "Object.entries(p.parametros_tenant)" in propuesta and "p.parametros_linea }" not in propuesta
+    assert '"Perfil de datos: "' in propuesta and '" · Parámetros propuestos: "' in propuesta
+    # va aparte, dicha como lo que es
+    assert "p.parametros_linea.retencion_fuente_dias" in propuesta
+    assert 'Retención de la fuente propuesta: "' in propuesta
+    assert '" días — todavía no se aplica (llega con el almacén purgable): la línea se crea sin plazo."' in propuesta
+    assert "textContent" in propuesta and "innerHTML" not in propuesta
+
+
+async def test_la_linea_del_alta_de_un_rubro_sensible_se_crea_sin_plazo(cliente, radar_ctx):
+    """Lo que dice la pantalla del alta, del lado del servidor: propone 7 días y la línea queda en 0 (sin plazo)."""
+    await _admin(cliente, radar_ctx)
+    r = await cliente.get("/radar/admin/propuesta", params={"rubro": "farmacia"})
+    assert r.json()["parametros_linea"] == {"retencion_fuente_dias": 7}
+    r = await cliente.post("/radar/admin/tenants", json={       # el cuerpo que manda la Consola: sin parámetros
+        "nombre": "Farmacia del Centro", "rubro": "farmacia",
+        "dueno": {"email": "dueno@farmacia.com", "nombre": "Ana"}, "linea": {"nombre": "Local centro"}})
+    assert r.status_code == 201, r.text
+    async with radar_ctx.db.tenant_tx(uuid.UUID(r.json()["tenant_id"])) as con:
+        dias = await con.fetchval("SELECT retencion_fuente_dias FROM lines WHERE id = $1", uuid.UUID(r.json()["line_id"]))
+    assert dias == 0
+
+
+def test_una_sesion_cerrada_lleva_al_login_y_no_repite_el_error():
+    """Con «Salir» en otra pestaña, o con la sesión vencida, el refresco de 15 s repetía para siempre el error del 401
+    («Error: sesión inválida o vencida»). Un 401 lleva al login, una sola vez, y desde ahí la página no pide nada más."""
+    js = (ESTATICOS / "radar.js").read_text(encoding="utf-8")
+    pedir = js[js.index("async function pedir("):js.index("async function accion(")]
+    assert re.search(r'if \(r\.status === 401\) \{\s*alLogin = true;\s*window\.location\.assign\("/radar/login"\);'
+                     r'\s*throw new Error\("sesion_cerrada"\);', pedir)
+    # antes del fetch: con la sesión ya cerrada, ni el sondeo de 3 s ni el refresco de 15 s salen a la red
+    assert pedir.index('if (alLogin) throw new Error("sesion_cerrada");') < pedir.index("await fetch(")
+    # un aviso que se lee, no «Error: sesion_cerrada»
+    assert re.search(r'\bsesion_cerrada: "[^"]+",', js)
 
 
 def test_el_refresco_automatico_no_vuelve_a_pedir_los_clientes():
