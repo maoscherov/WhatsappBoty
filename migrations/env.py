@@ -25,12 +25,11 @@ def _database_url() -> str:
             url = ""
     if not url:
         raise RuntimeError("DATABASE_URL no configurada — no se puede migrar")
-    # Alembic/SQLAlchemy usan psycopg2, y la URL lo nombra: SQLAlchemy 2.1 cambió
-    # el driver por defecto de postgresql:// a psycopg (v3), que no está instalado.
-    for esquema in ("postgres://", "postgresql://", "postgresql+asyncpg://", "postgresql+psycopg://"):
-        if url.startswith(esquema):
-            url = "postgresql+psycopg2://" + url[len(esquema):]
-            break
+    # Alembic/SQLAlchemy usan psycopg2; normalizar el esquema de la URL.
+    if url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql://", 1)
+    if url.startswith("postgresql+asyncpg://"):
+        url = url.replace("postgresql+asyncpg://", "postgresql://", 1)
     return url
 
 
