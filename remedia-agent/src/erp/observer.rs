@@ -68,6 +68,69 @@ impl ObserverAdapter {
     }
 }
 
+/// Tope de ids a recorrer por hueco y de 404 seguidos para cortar cuando el
+/// lote fallido fue el último (no hay lote siguiente que marque dónde termina).
+pub const RECUPERO_MAX_HUECO: i64 = 20_000;
+pub const RECUPERO_COLA: i64 = 5_000;
+pub const RECUPERO_404_SEGUIDOS: u32 = 300;
+
+fn rango_ids(p: &[ProductoDTO]) -> Option<(i64, i64)> {
+    let min = p.iter().map(|x| x.id_producto).min()?;
+    let max = p.iter().map(|x| x.id_producto).max()?;
+    Some((min, max))
+}
+
+impl ObserverAdapter {
+    /// Lee de a uno los ids `lo..=hi` (`hi = None`: no hay lote siguiente, se
+    /// recorren hasta 5.000 y se corta tras 300 404 seguidos). Agrega lo
+    /// encontrado a `out` y devuelve `(recuperados, ids_rotos)`. Los productos
+    /// vienen de la consulta individual, o sea con precio y stock reales.
+    async fn recuperar_hueco(
+        &self,
+        lo: i64,
+        hi: Option<i64>,
+        lotes: &[u32],
+        out: &mut Vec<ProductoDTO>,
+    ) -> Result<(usize, Vec<i64>), ErpError> {
+        let (hi, es_cola) = match hi {
+            Some(h) => (h, false),
+            None => (lo + RECUPERO_COLA, true),
+        };
+        let mut hi = hi;
+        if hi - lo + 1 > RECUPERO_MAX_HUECO {
+            warn!(?lotes, lo, hi, "hueco demasiado grande, se recorren solo {RECUPERO_MAX_HUECO} ids");
+            hi = lo + RECUPERO_MAX_HUECO - 1;
+        }
+        let mut recuperados = 0usize;
+        let mut rotos = Vec::new();
+        let mut seguidos_404 = 0u32;
+        let mut id = lo;
+        while id <= hi {
+            match self.lookup_by_id(id).await {
+                Ok(Some(p)) => {
+                    out.push(p);
+                    recuperados += 1;
+                    seguidos_404 = 0;
+                }
+                Ok(None) => {
+                    seguidos_404 += 1;
+                    if es_cola && seguidos_404 >= RECUPERO_404_SEGUIDOS {
+                        break;
+                    }
+                }
+                Err(e @ (ErpError::Unreachable(_) | ErpError::NotAuthorized)) => return Err(e),
+                Err(_) => {
+                    rotos.push(id);
+                    seguidos_404 = 0;
+                }
+            }
+            id += 1;
+        }
+        warn!(?lotes, rango = %format!("{lo}..={hi}"), recuperados, rotos = ?rotos, "lote recuperado por id");
+        Ok((recuperados, rotos))
+    }
+}
+
 fn truncate(s: &str) -> String {
     s.chars().take(200).collect()
 }
@@ -122,25 +185,69 @@ fn dump_body(body: &str, what: &str) -> Option<std::path::PathBuf> {
 impl ErpAdapter for ObserverAdapter {
     /// Itera `1..=cantidadLotes`. El total lo fija el lote 1 de este ciclo;
     /// un 400 antes de llegar corta el barrido.
+    ///
+    /// Un lote que da 500 o viene ilegible NO aborta el ciclo (0.3.5, incidente
+    /// 28/9: 4 productos rotos hacían fallar el lote 11 entero y nada se
+    /// actualizaba por horas): se anota y, al final, sus productos se recuperan
+    /// de a uno por id dentro del hueco que dejan los lotes vecinos (los lotes
+    /// van ordenados por idProducto). Los ids que también fallan solos quedan en
+    /// `ids_rotos`. Sin lote 1 no se conoce el total, ahí sí se propaga el error.
     async fn fetch_all(&self) -> Result<FetchResult, ErpError> {
         let Some(first) = self.fetch_lote(1).await? else {
             return Ok(FetchResult::default());
         };
         let total = first.cantidad_lotes.max(1);
         debug!(total_lotes = total, productos = first.productos.len(), "lote 1");
+        // (n, rango de idProducto) de cada lote leído bien; None si vino vacío.
+        let mut leidos: Vec<(u32, Option<(i64, i64)>)> = vec![(1, rango_ids(&first.productos))];
         let mut out = first.productos;
         let mut lotes = 1;
+        let mut lotes_fallidos: Vec<u32> = Vec::new();
         for n in 2..=total {
-            match self.fetch_lote(n).await? {
-                Some(lote) => {
+            match self.fetch_lote(n).await {
+                Ok(Some(lote)) => {
                     debug!(lote = n, productos = lote.productos.len(), "lote leído");
+                    leidos.push((n, rango_ids(&lote.productos)));
                     out.extend(lote.productos);
                     lotes += 1;
                 }
-                None => break,
+                Ok(None) => break,
+                Err(e @ (ErpError::Unreachable(_) | ErpError::NotAuthorized)) => return Err(e),
+                Err(e @ (ErpError::Decode(_) | ErpError::Http(500..=599, _) | ErpError::Http(0, _))) => {
+                    warn!(lote = n, error = %e, "el ERP no pudo servir el lote, se recupera producto por producto");
+                    lotes_fallidos.push(n);
+                }
+                Err(e) => return Err(e),
             }
         }
-        Ok(FetchResult { productos: out, lotes })
+
+        let mut ids_rotos: Vec<i64> = Vec::new();
+        if !lotes_fallidos.is_empty() {
+            // Lotes fallidos contiguos comparten el mismo hueco: se recorre una vez.
+            let mut huecos: Vec<((i64, Option<i64>), Vec<u32>)> = Vec::new();
+            for &n in &lotes_fallidos {
+                let lo = leidos.iter().rev()
+                    .filter(|(m, _)| *m < n)
+                    .find_map(|(_, r)| r.map(|(_, max)| max + 1))
+                    .unwrap_or(1);
+                let hi = leidos.iter()
+                    .filter(|(m, _)| *m > n)
+                    .find_map(|(_, r)| r.map(|(min, _)| min - 1));
+                match huecos.iter_mut().find(|(k, _)| *k == (lo, hi)) {
+                    Some((_, ns)) => ns.push(n),
+                    None => huecos.push(((lo, hi), vec![n])),
+                }
+            }
+            let mut recuperados_total = 0usize;
+            for ((lo, hi), ns) in huecos {
+                let (recuperados, rotos) = self.recuperar_hueco(lo, hi, &ns, &mut out).await?;
+                recuperados_total += recuperados;
+                ids_rotos.extend(rotos);
+            }
+            warn!(lotes = ?lotes_fallidos, recuperados = recuperados_total, rotos = ids_rotos.len(),
+                  "lotes con error recuperados por id");
+        }
+        Ok(FetchResult { productos: out, lotes, lotes_fallidos, ids_rotos })
     }
 
     /// "Probar conexión": lee el lote 1 y, si falla con error HTTP, prueba la

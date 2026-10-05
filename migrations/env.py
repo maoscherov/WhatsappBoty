@@ -12,7 +12,10 @@ from sqlalchemy import engine_from_config, pool
 config = context.config
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # Sin disable_existing_loggers=False, correr las migraciones al arrancar
+    # apagaba todos los logs de la app (28/9: en Railway no se veía nada
+    # después de "Redis conectado").
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 
 def _database_url() -> str:
@@ -55,7 +58,16 @@ def run_migrations_offline() -> None:
 def run_migrations_online() -> None:
     section = config.get_section(config.config_ini_section) or {}
     section["sqlalchemy.url"] = _database_url()
-    connectable = engine_from_config(section, prefix="sqlalchemy.", poolclass=pool.NullPool)
+    # lock_timeout: un ALTER sobre una tabla en uso (la versión anterior sigue
+    # atendiendo durante el deploy) falla rápido en vez de colgarse; el
+    # arranque lo reintenta en segundo plano (28/9: 0010 y 0011 no se aplicaron).
+    connectable = engine_from_config(section, prefix="sqlalchemy.", poolclass=pool.NullPool,
+                                     # connect_timeout: al arrancar el contenedor la
+                                     # red privada de Railway tarda unos segundos;
+                                     # sin límite la conexión quedaba colgada y los
+                                     # reintentos también (mismo módulo tomado).
+                                     connect_args={"options": "-c lock_timeout=5000",
+                                                   "connect_timeout": 10})
     with connectable.connect() as connection:
         context.configure(connection=connection, target_metadata=target_metadata)
         with context.begin_transaction():

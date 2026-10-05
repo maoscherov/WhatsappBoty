@@ -11,7 +11,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
 from app.middleware import log_errores
 from app.routers import (webhook, simulate, backoffice, mp_webhook, orders_api,
-                         media, payway, sync_api, agent_ws, backoffice_branches)
+                         media, payway, sync_api, agent_ws, backoffice_branches,
+                         backoffice_receta, backoffice_pedidos, backoffice_diccionario)
 from app.services.sku_service import get_sku_service
 from app.services.session_service import get_session_service
 from app.services.blob_store import get_blob_store
@@ -64,18 +65,16 @@ async def lifespan(app: FastAPI):
 
     # PostgreSQL (opcional): historial permanente + RAG con pgvector
     if settings.database_url:
-        # Migraciones Alembic — aplican el esquema al arrancar
+        # Migraciones Alembic — aplican el esquema al arrancar. Si fallan (p.ej.
+        # la tabla está bloqueada por la versión anterior durante el deploy),
+        # se reintentan en segundo plano: antes quedaba solo un aviso en el log
+        # y el código nuevo corría sobre el esquema viejo (28/9).
         try:
-            from alembic.config import Config
-            from alembic import command
-            root = Path(__file__).resolve().parent.parent
-            cfg = Config(str(root / "alembic.ini"))
-            cfg.set_main_option("script_location", str(root / "migrations"))
-            # Timeout: nunca colgar el arranque por una DB lenta/inaccesible.
-            await asyncio.wait_for(asyncio.to_thread(command.upgrade, cfg, "head"), timeout=20.0)
+            await asyncio.wait_for(asyncio.to_thread(_migrar), timeout=20.0)
             logger.info("Migraciones Alembic aplicadas (head)")
         except Exception as e:
-            logger.warning(f"No se pudieron aplicar migraciones Alembic: {e}")
+            logger.error(f"No se pudieron aplicar migraciones Alembic: {e} — se reintenta")
+            asyncio.create_task(_reintentar_migraciones())
         try:
             db = get_db(settings.database_url)
             await asyncio.wait_for(db.connect(), timeout=10.0)
@@ -95,6 +94,59 @@ async def lifespan(app: FastAPI):
                         f"descuento socio: {cfg_actual.get('socio_discount_pct')}%)")
         except Exception as e:
             logger.warning(f"No se pudo hidratar la config: {e}")
+
+        # Padrón de socios y empleados (24/9): Postgres pasa a ser la fuente de
+        # verdad. Si la tabla socios tiene filas, el singleton se carga desde
+        # ahí (pisa lo leído del archivo arriba); si está vacía y el archivo
+        # cargó socios, se siembra la tabla desde el archivo. Best-effort: un
+        # padrón mal cargado en Postgres nunca debe tumbar el arranque.
+        try:
+            from app.services.socio_service import (get_socio_service, guardar_en_db,
+                                                     cargar_desde_db as cargar_socios_db)
+            _db_socios = get_db(settings.database_url)
+            if _db_socios.available():
+                _socio_svc = get_socio_service(settings.socios_path)
+                _n_db = await cargar_socios_db(_db_socios, _socio_svc)
+                if _n_db:
+                    logger.info(f"Padrón de socios cargado desde Postgres: {_n_db} socios")
+                elif _socio_svc.total:
+                    await guardar_en_db(_db_socios, _socio_svc)
+                    logger.info(f"Padrón de socios sembrado en Postgres desde el archivo: "
+                                f"{_socio_svc.total} socios")
+        except Exception as e:
+            logger.warning(f"No se pudo hidratar/sembrar el padrón de socios en Postgres: {e}")
+
+        try:
+            from app.services.empleado_service import get_empleado_service, cargar_desde_db as cargar_empleados_db
+            _db_emp = get_db(settings.database_url)
+            if _db_emp.available():
+                _n_emp = await cargar_empleados_db(_db_emp, get_empleado_service())
+                logger.info(f"Listado de empleados cargado desde Postgres: {_n_emp} empleados")
+        except Exception as e:
+            logger.warning(f"No se pudo cargar el listado de empleados desde Postgres: {e}")
+
+        # Receta por código de barras (24/9): Postgres es la ÚNICA fuente de
+        # verdad de la referencia (28/9: sembrarla desde un archivo al
+        # arrancar leyó 0 filas en prod porque el catálogo restaurado desde
+        # Redis pisó el CSV con otro formato de columnas antes de leerlo —
+        # ver receta_referencia.py). Solo carga y recalcula el flag de todo
+        # el catálogo ERP ANTES de cargarlo en el bot.
+        try:
+            from app.services.receta_referencia import inicializar as _init_receta
+            _r = await asyncio.wait_for(_init_receta(get_db(settings.database_url)), timeout=60.0)
+            logger.info(f"Referencia de receta: {_r}")
+        except Exception as e:
+            logger.error(f"No se pudo inicializar la referencia de receta: {e}")
+
+        # Diccionario del catálogo (2/10): abreviaturas y sinónimos desde
+        # Postgres ANTES de armar el índice de búsqueda del catálogo ERP.
+        try:
+            from app.services.diccionario_service import cargar as _cargar_dic
+            _d = await asyncio.wait_for(_cargar_dic(get_db(settings.database_url)), timeout=30.0)
+            logger.info(f"Diccionario del catálogo: {_d}")
+        except Exception as e:
+            logger.warning(f"No se pudo cargar el diccionario del catálogo: {e} — "
+                           "se usa la lista base")
 
         # Catálogo ERP: si hay una sucursal sincronizada por el agente (o la
         # que fija DEFAULT_BRANCH_ID), gana Postgres sobre el CSV, que ya
@@ -132,8 +184,13 @@ async def lifespan(app: FastAPI):
         logger.info(f"Sync de Mercurio activo cada {settings.mercurio_sync_interval_secs}s "
                     f"(sucursal {settings.mercurio_branch_id})")
 
+    # Adjuntos de las conversaciones: se borran los de más de 6 meses (al
+    # arrancar y una vez por día).
+    media_task = asyncio.create_task(_limpiar_adjuntos_periodico())
+
     yield
 
+    media_task.cancel()
     if cierre_task:
         cierre_task.cancel()
     if mercurio_task:
@@ -142,6 +199,42 @@ async def lifespan(app: FastAPI):
         await get_db(settings.database_url).close()
     except Exception:
         pass
+
+
+def _migrar():
+    from alembic import command
+    from alembic.config import Config
+    root = Path(__file__).resolve().parent.parent
+    cfg = Config(str(root / "alembic.ini"))
+    cfg.set_main_option("script_location", str(root / "migrations"))
+    command.upgrade(cfg, "head")
+
+
+async def _reintentar_migraciones(intentos: int = 30, espera: int = 60):
+    log = logging.getLogger("app.migraciones")
+    for n in range(1, intentos + 1):
+        await asyncio.sleep(espera)
+        try:
+            await asyncio.wait_for(asyncio.to_thread(_migrar), timeout=60.0)
+            log.info(f"Migraciones Alembic aplicadas en el reintento {n}")
+            return
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            log.error(f"Reintento {n}/{intentos} de migraciones falló: {e}")
+    log.error("Migraciones Alembic SIN aplicar tras todos los reintentos")
+
+
+async def _limpiar_adjuntos_periodico():
+    from app.services import chat_media
+    while True:
+        try:
+            await asyncio.to_thread(chat_media.limpiar_viejos)
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            logging.getLogger("app.media").warning(f"Limpieza de adjuntos falló: {e}")
+        await asyncio.sleep(24 * 3600)
 
 
 async def _sync_mercurio_periodico():
@@ -198,6 +291,22 @@ async def _cerrar_sesiones_inactivas():
             for phone, session in await session_svc.inactivas(minutos * 60, minutos_pago * 60):
                 con_link = session.get("estado") == "esperando_pago"
                 texto_cierre = mensaje_pago if con_link else mensaje
+                # Quién habló último decide (auditoría 2/10): "como no tuvimos
+                # respuesta" salía cuando el que esperaba era el CLIENTE, o
+                # después de que se despidió o lo atendió el operador.
+                from app.services.checkout_helper import cierre_por_inactividad
+                accion = cierre_por_inactividad(session.get("history") or [])
+                if accion == "derivar" and _bot_on:
+                    await session_svc.set_estado(phone, "operador",
+                                                 motivo="cliente_sin_respuesta")
+                    # Sin "mucha demanda" después (puede ser de noche): ya
+                    # esperó lo suyo, que lo vea alguien en la cola.
+                    await session_svc.marcar_handoff_avisado(phone)
+                    logger.warning(f"Inactiva con el cliente esperando respuesta: {phone} "
+                                   "→ derivada en vez de cerrada")
+                    continue
+                if accion != "avisar":
+                    texto_cierre = ""
                 if texto_cierre and session.get("history"):
                     # Una sola vez por cliente: si la sesión reaparece, no se
                     # le repite el mismo aviso de cierre.
@@ -273,7 +382,8 @@ def crear_app(settings=None) -> FastAPI:
     app.middleware("http")(log_errores)
 
     for modulo in (webhook, simulate, backoffice, mp_webhook, orders_api, media,
-                   payway, sync_api, agent_ws, backoffice_branches):
+                   payway, sync_api, agent_ws, backoffice_branches,
+                   backoffice_receta, backoffice_pedidos, backoffice_diccionario):
         app.include_router(modulo.router)
 
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -308,9 +418,23 @@ def crear_app(settings=None) -> FastAPI:
             # Railway inyecta el SHA del commit deployado — permite verificar qué
             # versión está corriendo sin mirar los logs.
             "commit": (os.getenv("RAILWAY_GIT_COMMIT_SHA") or "")[:9] or None,
+            # Versión del esquema de la base: si no coincide con la última
+            # migración del código, algo no se aplicó.
+            "db": await _version_db(),
         }
 
     return app
+
+
+async def _version_db():
+    try:
+        db = get_db(get_settings().database_url)
+        if not db.available():
+            return None
+        filas = await db.fetch("SELECT version_num FROM alembic_version")
+        return filas[0]["version_num"] if filas else None
+    except Exception:
+        return None
 
 
 app = crear_app()

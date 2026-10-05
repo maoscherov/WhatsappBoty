@@ -34,6 +34,10 @@ class Settings(BaseSettings):
     app_mode: str = "bot"
     sku_csv_path: str = "data/catalogo_base.csv"
     socios_path: str = "data/socios.csv"      # padrón de socios (CSV o XLSX)
+    socios_area_default: str = "341"
+    # Orden del nombre cuando el padrón NO tiene columna apellido y la columna
+    # nombre trae varias palabras: "apellido_nombre" (PEREZ JUAN) o "nombre_apellido".
+    socios_orden_nombre: str = "apellido_nombre"          # código de área para celulares locales sin área (Rosario)
     log_level: str = "INFO"
     bo_key: str = ""
     pickup_minutes: int = 30
@@ -61,6 +65,16 @@ class Settings(BaseSettings):
     images_dir: str = "/data/images"          # volume mount en Railway
     image_server_api_key: str = ""            # clave para subir imágenes
     images_base_url: str = ""                 # ej: https://tuapp.railway.app/media
+    # Adjuntos de las conversaciones (cliente y operador): volumen de Railway.
+    chat_media_dir: str = "/data/chat"
+    chat_media_retencion_dias: int = 180
+    # Bucket S3 (Railway Buckets): si están cargados, los adjuntos van ahí en
+    # vez del disco. En Railway: S3_BUCKET=${{Bucket.BUCKET}}, etc.
+    s3_endpoint: str = ""
+    s3_bucket: str = ""
+    s3_access_key_id: str = ""
+    s3_secret_access_key: str = ""
+    s3_region: str = "auto"
 
     # Sync de catálogo desde el ERP de la sucursal (remedia-agent)
     default_branch_id: str = ""      # override: sucursal ERP del bot (vacío = la única activa con catálogo)

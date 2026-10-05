@@ -15,6 +15,7 @@ Flujo por mensaje:
   8. Guardar historial en Redis
 """
 
+from app.services.socio_service import nombre_de_pila
 import logging
 import time as _time
 from datetime import datetime, timezone as _tz
@@ -40,14 +41,18 @@ from app.services.estilo_humano import humanizar
 from app.services.rag_service import get_rag_service
 from app.services.session_service import contexto_vencido
 from app.services.message_store import get_message_store
+from app.services import chat_media
 from app.services.metrics_store import get_metrics_store
 from app.services.checkout_helper import (
     confirmar_pedido, resolver_entrega, capturar_direccion,
     match_retiro, match_envio, pide_humano, derivar_si_receta, afirma_envio,
     pide_anotar, entrega_ya_elegida, crear_link_y_responder,
-    pide_efectivo, habilitado_efectivo, bot_encendido,
+    pide_efectivo, habilitado_efectivo, bot_encendido, descuento_para,
+    presentacion_distinta, aviso_presentacion,
+    referencia_ambigua_bloquea, cumplir_derivacion_prometida,
     quitar_cierres_vagos, ya_dice_no_disponible, solo_la_pregunta,
-    alternativas_con_precio, texto_alternativas,
+    alternativas_con_precio, texto_alternativas, precios_inventados, referencias_de_precio,
+    quitar_receta_inventada, quitar_saludo_repetido, pide_encargo, marcar_precio_dudoso,
     pide_cancelar_pedido, pregunta_obra_social, responder_obra_social, parsear_lista,
     pregunta_bono, responder_bono, agregar_oferta_farmaceutico, acepta_farmaceutico,
     entidad_contradice_pendiente, debe_derivar_desconocido,
@@ -56,7 +61,8 @@ from app.services.checkout_helper import (
     pregunta_descuento, aplicar_descuento_socio, pide_todos, texto_deictico,
     quitar_confirmaciones_fantasma, pregunta_entrega, costo_envio_de,
     producto_respaldado, productos_con_precio, parece_direccion,
-    personalizar_nombre, pide_cuenta_corriente, habilitado_cc,
+    personalizar_nombre, pide_cuenta_corriente, habilitado_cc, consulta_saldo,
+    aviso_fuera_horario, dice_ser_socio, pregunta_horario, responder_horario,
 )
 
 logger = logging.getLogger(__name__)
@@ -90,6 +96,64 @@ async def _recibir_con_bot_apagado(deps: dict, phone: str, contenido: str) -> No
     logger.info(f"Bot apagado: mensaje de {phone} guardado sin responder")
 
 
+class _WaFueraHorario:
+    """
+    WhatsApp de un mensaje procesado con la farmacia cerrada (27/9). El bot
+    atiende igual; si en ESTE mensaje la charla se deriva a una persona
+    (receta, "pasame con alguien", algo que no entiende), el texto de la
+    derivación se cambia: sin "en un momento te contactamos" y con cuándo
+    abrimos. Hay ~25 puntos que derivan: se resuelve acá una sola vez.
+    """
+
+    def __init__(self, wa, session_svc, phone: str, cuando: str, ya_derivada: bool):
+        self._wa = wa
+        self._session = session_svc
+        self._phone = phone
+        self._cuando = cuando
+        self._avisado = ya_derivada      # ya estaba con un operador: no se toca
+        self.cambio: tuple[str, str] | None = None   # (original, lo que se mandó)
+
+    def enviado(self, texto: str) -> str:
+        """Lo que de verdad le llegó al cliente (para sesión e historial)."""
+        return self.cambio[1] if self.cambio and texto == self.cambio[0] else texto
+
+    async def send_text(self, to: str, text: str, **k) -> bool:
+        if not self._avisado and to == self._phone:
+            s = await self._session.get(self._phone)
+            if s.get("estado") == "operador":
+                original = text
+                text = aviso_fuera_horario(text, self._cuando)
+                self.cambio = (original, text)
+                self._avisado = True
+                s["_derivada_fuera_horario"] = True
+                await self._session.save(self._phone, s)
+        return await self._wa.send_text(to, text, **k)
+
+    def __getattr__(self, nombre):
+        return getattr(self._wa, nombre)
+
+
+class _SesionFueraHorario:
+    """La sesión guarda el texto que se mandó de verdad, no el original."""
+
+    def __init__(self, session_svc, wa: _WaFueraHorario):
+        self._s = session_svc
+        self._wa = wa
+
+    async def add_message(self, phone: str, role: str, content: str):
+        if role == "assistant":
+            content = self._wa.enviado(content)
+        return await self._s.add_message(phone, role, content)
+
+    def __getattr__(self, nombre):
+        return getattr(self._s, nombre)
+
+
+# Tipos de mensaje que, si no se pudieron leer, se derivan en vez de ignorarse.
+# Stickers y reacciones no: no piden nada.
+_ADJUNTOS_A_DERIVAR = {"document", "video", "location", "contacts", "image"}
+
+
 INTENCIONES_CON_SKU = {"consulta_precio", "consulta_stock", "pedido", "consulta_abierta"}
 import re as _re
 
@@ -110,7 +174,10 @@ def _empieza_con_no(t: str) -> bool:
     """
     return bool(_re.match(r"^\s*no\b", t or "", _re.IGNORECASE))
 _NO_FRASE  = [r"\bno quiero\b", r"\bno gracias\b", r"\bmejor no\b",
-              r"\bcancela(r|me)?\b", r"\bnope\b"]
+              r"\bcancela(r|me)?\b", r"\bnope\b",
+              # Caso real 1/10: "desestimalo" / "no continúo" seguían en el
+              # flujo de entrega y el bot pidió la dirección 4 veces más.
+              r"\bdesestim\w*", r"\bno\s+contin[uú]\w*"]
 
 def _match_si(t: str) -> bool:
     return any(_re.search(p, t, _re.IGNORECASE) for p in _PALABRAS_SI)
@@ -133,6 +200,31 @@ def _es_afirmacion_pura(t: str) -> bool:
     resto = _re.sub(_AFIRMACION, " ", t.lower())
     resto = _re.sub(r"[^\wáéíóúñ]+", " ", resto)
     return len(resto.replace(" ", "")) <= 3
+
+
+_PIDE_CONSULTA = _re.compile(
+    r"confirm|consult|avis|presupuest|preci|encarg|cu[aá]nto|consegu|cu[aá]les|averigu|sale\b",
+    _re.IGNORECASE)
+_QUIERE_SABER = _re.compile(
+    r"\b(me gustar[ií]a|quiero|quisiera|necesito)\b.*\b(saber|preci|presupuest|encarg|consegu)",
+    _re.IGNORECASE)
+
+
+def acepta_consulta_ofrecida(t: str) -> bool:
+    """
+    Respuesta a "¿querés que lo consulte con el equipo o te lo encargo?". Además
+    del sí a secas, vale un sí que pide justamente eso ("Si. Confirmame cuales
+    tenés", "si, necesito un presupuesto si lo consiguen") o "me gustaría saber
+    el precio". Casos reales 1/10: esas respuestas no derivaban y la charla se
+    cerraba a los 15 min como "sin respuesta" del cliente.
+    """
+    if _es_afirmacion_pura(t):
+        return True
+    if _match_no(t):
+        return False
+    if _match_si(t) and _PIDE_CONSULTA.search(t or ""):
+        return True
+    return bool(_QUIERE_SABER.search(t or ""))
 
 
 def _match_no(t: str) -> bool:
@@ -391,6 +483,41 @@ async def _flujo_mutual(deps, phone: str, session: dict, texto: str,
     return respuesta, intencion
 
 
+async def _sin_precios_inventados(deps, phone: str, session: dict, respuesta: str,
+                                  resultados, cfg: dict, entidad: "str | None" = None) -> str:
+    """
+    Verifica que todo precio de la respuesta del modelo salga de un dato real
+    (catálogo, pedido en curso, envío, lo ya dicho). Si inventó alguno
+    ("Chanel N°5 $7.200", "Venotonic $3.200" — auditoría 2/10), la respuesta
+    NO se envía: va la lista real de lo que hay, o el ofrecimiento de
+    consultarlo con el equipo (y el "sí" siguiente deriva).
+    """
+    try:
+        unit, totales = referencias_de_precio(resultados, session, cfg, respuesta)
+        malos = precios_inventados(respuesta, unit, totales)
+    except Exception as e:
+        logger.warning(f"Control de precios falló para {phone}: {e}")
+        return respuesta
+    if not malos:
+        return respuesta
+    logger.warning(f"Respuesta con precios inventados bloqueada ({phone}): {malos[:5]} "
+                   f"— {respuesta[:160]!r}")
+    try:
+        await deps["metrics"].evento(
+            "respuesta_bloqueada", phone=phone,
+            dato=f"{', '.join(f'${p:,.2f}' for p in malos[:3])} | {respuesta[:150]}")
+    except Exception:
+        pass
+    alts = alternativas_con_precio(resultados or [])
+    if alts:
+        return texto_alternativas(alts)
+    _ses = await deps["session"].get(phone)
+    _ses["derivacion_ofrecida"] = (entidad or "consulta")[:60]
+    await deps["session"].save(phone, _ses)
+    return ("No lo encuentro en nuestro catálogo 😕 "
+            "¿Querés que lo consulte con el equipo?")
+
+
 async def _responder_consulta_en_flujo(deps, phone: str, session: dict, texto: str,
                                        ctx_socio, situacion: str, fallback: str) -> str:
     """
@@ -468,13 +595,21 @@ def _kapso_a_mensajes(evento: dict) -> list[dict]:
         "from": str(telefono).lstrip("+"),
         "id": msg.get("id") or "",
         "type": tipo,
-        "text": (msg.get("text") or {}).get("body", "") or (msg.get("image") or {}).get("caption", ""),
+        # El texto que acompaña a una imagen o a un documento viene como
+        # caption; el del documento se perdía (caso real 23/9, receta en PDF).
+        "text": ((msg.get("text") or {}).get("body", "")
+                 or (msg.get("image") or {}).get("caption", "")
+                 or (msg.get("document") or {}).get("caption", "")),
         "audio_id": None,
         "image_id": None,
-        "image_mime_type": (kapso.get("media_data") or {}).get("content_type", "image/jpeg"),
+        "image_mime_type": ((kapso.get("media_data") or {}).get("content_type")
+                            or (msg.get("document") or {}).get("mime_type")
+                            or (msg.get("image") or {}).get("mime_type") or "image/jpeg"),
         "phone_number_id": evento.get("phone_number_id"),
         # Propios de Kapso
         "media_url": media_url,
+        "filename": ((msg.get("document") or {}).get("filename")
+                     or (kapso.get("media_data") or {}).get("filename") or ""),
         "texto_transcripto": transcripcion,
     }]
 
@@ -573,13 +708,15 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
     """
     _s = get_settings()
     deps = _deps(_s)
+    _wa_base = deps["wa"]
+    _session_base = deps["session"]
 
     # Foto + texto que solo señala ("Necesito esos productos") en el mismo
     # lote: el texto se descarta — la imagen ES el pedido. Procesarlos por
     # separado hacía que el texto (que suele llegar primero) recibiera un
     # "¿podrías especificar?" un segundo antes de que la imagen respondiera
     # todo (caso real 31/8).
-    _phones_con_imagen = {m["from"] for m in messages if m.get("type") == "image"}
+    _phones_con_imagen = {m["from"] for m in messages if m.get("type") in ("image", "document")}
     if _phones_con_imagen:
         _descartados = [m for m in messages
                         if m.get("type") == "text" and m["from"] in _phones_con_imagen
@@ -601,6 +738,10 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
         _skip_record = False  # True para mensajes descartados antes de procesar
         _audio_prov_used: str | None = None   # "groq" | "openai" si se transcribió
         texto = ""            # texto del usuario (para historial en finally)
+        _origen = "texto"     # texto | audio | imagen | documento (historial)
+        _media_ref = None     # archivo guardado para el operador (/media/chat/…)
+        _media_nombre = None  # nombre original del archivo (documentos)
+        _bot_off = False      # se lee de la config más abajo; la red de seguridad lo usa
         respuesta = None      # respuesta del bot (para historial en finally)
 
         # Serializar por teléfono: los mensajes del mismo usuario se procesan
@@ -622,22 +763,56 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
             # Interruptor global (19/9): con el bot apagado no sale NINGÚN
             # mensaje automático — ni del modelo, ni textos fijos, ni "fuera de
             # horario". El mensaje se guarda y entra a la cola de derivadas.
-            _bot_off = not bot_encendido(await deps["config"].get_all())
+            _cfg_msg = await deps["config"].get_all()
+            _bot_off = not bot_encendido(_cfg_msg)
 
-            # Audio con transcripción de Kapso: ya viene resuelto, no hace falta
-            # descargar ni pasar por Whisper.
-            if msg_type == "audio" and msg.get("texto_transcripto"):
-                texto = msg["texto_transcripto"]
-                _audio_prov_used = "kapso"
+            # Fuera de horario (27/9): el bot vende igual lo que no lleva
+            # receta. Lo que necesita una persona se deriva avisando cuándo
+            # abrimos (ver _WaFueraHorario). "vender_fuera_horario"=false
+            # vuelve al mensaje de cerrado de siempre.
+            _hours_msg = await deps["config"].get_hours()
+            _cerrado = not deps["config"].is_open_now(_hours_msg)
+            _vende_cerrado = str(_cfg_msg.get("vender_fuera_horario", "true")).lower() == "true"
+            deps["wa"], deps["session"] = _wa_base, _session_base
+            if _cerrado and _vende_cerrado and not _bot_off:
+                _estado_ini = (await _session_base.get(phone)).get("estado")
+                deps["wa"] = _WaFueraHorario(
+                    _wa_base, _session_base, phone,
+                    deps["config"].proxima_apertura(_hours_msg),
+                    ya_derivada=_estado_ini == "operador")
+                deps["session"] = _SesionFueraHorario(_session_base, deps["wa"])
 
-            # Audio → transcripción
-            elif msg_type == "audio" and msg["audio_id"]:
+            # Audio → transcripción propia CON vocabulario de marcas (23/9: la
+            # de Kapso escribió "Topics" por "Atopix"). La de Kapso queda de
+            # respaldo. El original se guarda 7 días para que el operador lo
+            # escuche y verifique la transcripción.
+            if msg_type == "audio" and (msg.get("media_url") or msg.get("audio_id")
+                                        or msg.get("texto_transcripto")):
+                _origen = "audio"
                 _ta = _time.perf_counter()
-                audio_bytes = await deps["wa"].download_audio(msg["audio_id"])
+                if msg.get("media_url"):
+                    audio_bytes = await _descargar_url(msg["media_url"])
+                elif msg.get("audio_id"):
+                    audio_bytes = await deps["wa"].download_audio(msg["audio_id"])
+                else:
+                    audio_bytes = None
+                texto = ""
                 if audio_bytes:
-                    texto = await deps["audio"].transcribir(audio_bytes) or ""
-                    _steps["transcripcion_ms"] = int((_time.perf_counter() - _ta) * 1000)
-                    _audio_prov_used = _s.audio_provider or "groq"
+                    _aid = "aud" + (_re.sub(r"[^\w]", "", msg_id)[-29:] or msg_id[-29:])
+                    _media_ref = await chat_media.guardar(_aid, audio_bytes, ".ogg")
+                    try:
+                        from app.services.sku_service import vocabulario_audio
+                        _vocab = vocabulario_audio(deps["sku"])
+                    except Exception:
+                        _vocab = None
+                    texto = await deps["audio"].transcribir(audio_bytes, prompt=_vocab) or ""
+                    if texto:
+                        _audio_prov_used = _s.audio_provider or "groq"
+                if not texto and msg.get("texto_transcripto"):
+                    texto = msg["texto_transcripto"]
+                    _audio_prov_used = "kapso"
+                _steps["transcripcion_ms"] = int((_time.perf_counter() - _ta) * 1000)
+                if audio_bytes or texto:
                     if not texto:
                         if _bot_off:
                             texto = "[audio que no se pudo transcribir]"
@@ -652,7 +827,14 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                         continue
 
             # Imagen → clasificar (receta/credencial derivan; producto sigue el flujo)
-            if msg_type == "image" and (msg.get("image_id") or msg.get("media_url")):
+            # Documentos (PDF o imagen mandada como archivo) van por el mismo
+            # camino que las fotos: el clasificador reconoce recetas, bonos,
+            # credenciales y comprobantes. Antes llegaban sin texto y se
+            # descartaban EN SILENCIO (caso real 23/9: receta de Praxys en PDF).
+            _es_doc_legible = (msg_type == "document" and msg.get("media_url") and (
+                "pdf" in (msg.get("image_mime_type") or "").lower()
+                or (msg.get("image_mime_type") or "").lower().startswith("image/")))
+            if (msg_type == "image" or _es_doc_legible) and (msg.get("image_id") or msg.get("media_url")):
                 _ti = _time.perf_counter()
                 if msg.get("media_url"):
                     image_bytes = await _descargar_url(msg["media_url"])   # Kapso: URL directa
@@ -667,26 +849,29 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     continue
                 mime = msg.get("image_mime_type", "image/jpeg")
 
-                # Guardar la imagen en Redis (7 días) para que el operador la vea
-                # en el backoffice. La referencia va al historial como /media/chat/{id}.
+                # Guardar el archivo (volumen, 6 meses) para que el operador lo
+                # vea en el backoffice. La referencia va al historial como
+                # /media/chat/{id}{ext}.
                 _img_id = _re.sub(r"[^\w]", "", msg_id)[-32:] or msg_id[-32:]
                 _img_ref = None
-                try:
-                    _ext = ".png" if "png" in mime else ".webp" if "webp" in mime else ".jpg"
-                    from app.services.blob_store import get_blob_store as _gbs
-                    ok = await _gbs(_s.redis_url).save(f"chat:{_img_id}", image_bytes, _ext, ttl=7 * 24 * 3600)
-                    if ok:
-                        _img_ref = f"📷 /media/chat/{_img_id}"
-                except Exception:
-                    pass
-                if _img_ref:
+                _nombre_arch = msg.get("filename") or ""
+                _ref = await chat_media.guardar(
+                    _img_id, image_bytes, chat_media.ext_para(mime, _nombre_arch), _nombre_arch)
+                if _ref:
+                    _img_ref = f"📷 {_ref}"
                     await deps["session"].add_message(phone, "user", _img_ref)
-                    # También al historial permanente (la foto vence a los 7
-                    # días, pero queda constancia de que el cliente la mandó).
+                    # También al historial permanente, con el archivo aparte.
                     try:
-                        await deps["msgs"].save(phone, "user", _img_ref)
+                        await deps["msgs"].save(phone, "user", _img_ref,
+                                                origen="documento" if msg_type == "document" else "imagen",
+                                                media=_ref, media_nombre=_nombre_arch or None)
                     except Exception:
                         pass
+                _origen = "documento" if msg_type == "document" else "imagen"
+
+                _s_adj = await deps["session"].get(phone)
+                _s_adj["_adjunto_at"] = _time.time()
+                await deps["session"].save(phone, _s_adj)
 
                 if _bot_off:
                     # La foto ya quedó guardada para el operador: no se
@@ -706,7 +891,7 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     _intencion = "imagen_bono"
                     await deps["session"].set_estado(phone, "operador", motivo="bono_foto")
                     _socio_bn = deps["socios"].find_by_phone(phone)
-                    _nombre_bn = (_socio_bn.get("nombre", "").split() or [""])[0] if _socio_bn else ""
+                    _nombre_bn = nombre_de_pila(_socio_bn)
                     _cfg_bn = await deps["config"].get_all()
                     respuesta, _trab = responder_bono(img.get("items", ""), _cfg_bn,
                                                       nombre=_nombre_bn, por_foto=True)
@@ -751,7 +936,7 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     # del flujo normal nunca corre: se resuelve acá con el
                     # placeholder {nombre} (padrón de socios, caso real 4/9).
                     _socio_rc = deps["socios"].find_by_phone(phone)
-                    _nombre_rc = (_socio_rc.get("nombre", "").split() or [""])[0] if _socio_rc else ""
+                    _nombre_rc = nombre_de_pila(_socio_rc)
                     if img["tipo"] == "receta":
                         # Configurable (receta_recibida_message): promete la
                         # validación en ~10 min, en línea con el SLA de 15.
@@ -793,7 +978,7 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     await deps["session"].set_estado(phone, "operador",
                                                      motivo="imagen_no_reconocida")
                     _socio_inr = deps["socios"].find_by_phone(phone)
-                    _nombre_inr = (_socio_inr.get("nombre", "").split() or [""])[0] if _socio_inr else ""
+                    _nombre_inr = nombre_de_pila(_socio_inr)
                     _cfg_inr = await deps["config"].get_all()
                     respuesta = personalizar_nombre(
                         _cfg_inr.get("imagen_no_reconocida_message") or (
@@ -806,7 +991,45 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     await deps["session"].add_message(phone, "assistant", respuesta)
                     continue
 
-            if not texto.strip():
+            # Un documento que no es PDF ni imagen (Word, Excel) no se lee aunque
+            # traiga texto: lo mira una persona.
+            _doc_ilegible = msg_type == "document" and not _es_doc_legible
+            if not texto.strip() or _doc_ilegible:
+                # Un adjunto que el bot no sabe leer (Word, video, ubicación,
+                # contacto) NO se descarta en silencio: lo mira una persona.
+                if msg_type in _ADJUNTOS_A_DERIVAR:
+                    _intencion = "adjunto_no_reconocido"
+                    # Word, Excel, video: el bot no los lee, pero se guardan
+                    # para que el operador los abra desde el backoffice.
+                    if msg.get("media_url") or msg.get("image_id"):
+                        _datos_adj = (await _descargar_url(msg["media_url"]) if msg.get("media_url")
+                                      else await deps["wa"].download_image(msg["image_id"]))
+                        if _datos_adj:
+                            _media_nombre = msg.get("filename") or None
+                            _media_ref = await chat_media.guardar(
+                                _re.sub(r"[^\w]", "", msg_id)[-32:] or msg_id[-32:], _datos_adj,
+                                chat_media.ext_para(msg.get("image_mime_type") or "",
+                                                    _media_nombre or ""),
+                                _media_nombre or "")
+                            _origen = "video" if msg_type == "video" else "documento"
+                    _ref_adj = f"[{msg_type} recibido]" + (f" {texto.strip()}" if texto.strip() else "")
+                    texto = _ref_adj
+                    if _bot_off:
+                        await _recibir_con_bot_apagado(deps, phone, _ref_adj)
+                        continue
+                    await deps["session"].add_message(phone, "user", _ref_adj)
+                    await deps["session"].set_estado(phone, "operador", motivo="adjunto_no_reconocido")
+                    _cfg_adj = await deps["config"].get_all()
+                    _soc_adj = deps["socios"].find_by_phone(phone)
+                    respuesta = personalizar_nombre(
+                        _cfg_adj.get("imagen_no_reconocida_message") or (
+                            "¡Hola {nombre}! Recibí tu archivo 🙌 Te paso con alguien del "
+                            "equipo que lo mira y te ayuda."),
+                        nombre_de_pila(_soc_adj))
+                    respuesta = respuesta.replace("tu imagen", "tu archivo")
+                    await deps["wa"].send_text(phone, respuesta)
+                    await deps["session"].add_message(phone, "assistant", respuesta)
+                    continue
                 _skip_record = True
                 continue
 
@@ -831,33 +1054,45 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
             # Claude recibe nombre y N° de socio para saludar por nombre.
             _ctx_socio = deps["socios"].contexto_para_prompt(phone)
             _socio_data = deps["socios"].find_by_phone(phone)
-            _nombre_socio = (_socio_data.get("nombre", "").split() or [""])[0] if _socio_data else ""
+            _nombre_socio = nombre_de_pila(_socio_data)
             # Si el socio tiene descuento activo, los precios del catálogo YA
             # vienen bonificados: el modelo tiene que saberlo para aclararlo al
             # darlos, y para no volver a descontar por su cuenta.
-            if _ctx_socio:
-                _cfg_socio = await deps["config"].get_all()
-                _pct_cfg = float(_cfg_socio.get("socio_discount_pct") or 0)
-                _en_catalogo = str(
-                    _cfg_socio.get("socio_discount_en_catalogo", "true")).lower() == "true"
-                if _pct_cfg > 0 and _en_catalogo:
-                    _ctx_socio += (
-                        f" | IMPORTANTE: los precios que ves YA tienen aplicado el "
-                        f"{_pct_cfg:g}% de descuento de socio. Cuando digas un precio, "
-                        f"aclaralo en la misma frase (ej: \"sale $8.500, ya con tu "
-                        f"{_pct_cfg:g}% de socio\"). No vuelvas a descontar nada vos, "
-                        f"ni menciones el precio de lista."
-                    )
+            _cfg_socio = await deps["config"].get_all()
+            _pct_cfg, _tipo_desc = descuento_para(phone, _cfg_socio, deps["socios"])
+            if _tipo_desc == "empleado":
+                # Empleado (20%, no acumulable): puede no estar en el padrón.
+                try:
+                    from app.services.empleado_service import get_empleado_service
+                    _emp = get_empleado_service().find_by_phone(phone) or {}
+                except Exception:
+                    _emp = {}
+                if not _nombre_socio:
+                    _nombre_socio = _emp.get("nombre_pila") or ""
+                if not _ctx_socio:
+                    _ctx_socio = f"Nombre de pila (para saludar): {_nombre_socio}".strip()
+                _ctx_socio += " | Es EMPLEADO de la mutual"
+            _en_catalogo = str(
+                _cfg_socio.get("socio_discount_en_catalogo", "true")).lower() == "true"
+            if _ctx_socio and _pct_cfg > 0 and _en_catalogo:
+                _ctx_socio += (
+                    f" | IMPORTANTE: los precios que ves YA tienen aplicado el "
+                    f"{_pct_cfg:g}% de descuento de {_tipo_desc}. Cuando digas un precio, "
+                    f"aclaralo en la misma frase (ej: \"sale $8.500, ya con tu "
+                    f"{_pct_cfg:g}% de {_tipo_desc}\"). No vuelvas a descontar nada vos, "
+                    f"ni menciones el precio de lista."
+                )
 
             # ── Control de horario de atención ──────────────────────────────
-            hours = await deps["config"].get_hours()
-            if not deps["config"].is_open_now(hours):
+            hours = _hours_msg
+            if _cerrado:
                 # Tablero: conversaciones fuera de horario, con día y hora para
                 # clasificar el tipo de cierre (mediodía/nocturno/finde).
                 _ahora_lt = datetime.now(_TZ_LOCAL)
                 await deps["metrics"].evento(
                     "fuera_horario", phone=phone,
                     dato=f"{_ahora_lt.weekday()}:{_ahora_lt.hour}")
+            if _cerrado and not _vende_cerrado:
                 # Solo avisar una vez cada 10 mins para no spamear
                 last_closed = session.get("_last_closed_msg", "")
                 now_str = _time.strftime("%Y-%m-%dT%H:%M", _time.gmtime())[:15]  # cada 15min
@@ -908,11 +1143,11 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
             _ofrecida = session.get("derivacion_ofrecida")
             if _ofrecida and not session.get("pending_sku_id"):
                 _cfg_ss = await deps["config"].get_all()
-                if _es_afirmacion_pura(texto):
+                if acepta_consulta_ofrecida(texto):
                     _intencion = "sin_stock_derivado"
-                    _s = await deps["session"].get(phone)
-                    _s.pop("derivacion_ofrecida", None)
-                    await deps["session"].save(phone, _s)
+                    _ses = await deps["session"].get(phone)
+                    _ses.pop("derivacion_ofrecida", None)
+                    await deps["session"].save(phone, _ses)
                     await deps["session"].set_estado(phone, "operador", motivo="sin_stock")
                     respuesta = _cfg_ss.get("sin_stock_derivar_message") or (
                         "Te paso con alguien del equipo para ver si podemos conseguirlo 🙌"
@@ -924,9 +1159,47 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     await deps["session"].add_message(phone, "assistant", respuesta)
                     continue
                 # No aceptó: la oferta vale sólo para el turno siguiente.
-                _s = await deps["session"].get(phone)
-                _s.pop("derivacion_ofrecida", None)
-                await deps["session"].save(phone, _s)
+                _ses = await deps["session"].get(phone)
+                _ses.pop("derivacion_ofrecida", None)
+                await deps["session"].save(phone, _ses)
+
+            # ── Consulta de saldo / deuda de cuenta corriente → persona ──────
+            # Antes que el flujo de cuenta corriente: "saldo de mi cuenta
+            # corriente" matcheaba pide_cuenta_corriente y el bot contestaba
+            # "cuando armemos tu pedido lo cargamos a tu cuenta".
+            if consulta_saldo(texto, hay_pedido=bool(
+                    session.get("pending_sku_id") or session.get("pending_items"))):
+                _intencion = "consulta_cuenta_corriente"
+                await deps["session"].set_estado(phone, "operador",
+                                                 motivo="consulta_cuenta_corriente")
+                _cfg_sal = await deps["config"].get_all()
+                respuesta = _cfg_sal.get("consulta_saldo_message") or (
+                    "Te paso con alguien del equipo para revisar tu cuenta 🙌 "
+                    "En un momento te contactamos.")
+                _ts = _time.perf_counter()
+                await deps["wa"].send_text(phone, respuesta)
+                _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
+                await deps["session"].add_message(phone, "user", texto)
+                await deps["session"].add_message(phone, "assistant", respuesta)
+                continue
+
+            # ── "Encargalo" tras un "no lo tengo" → encargo con una persona ──
+            # Antes confirmaba el sustituto que el bot había nombrado con
+            # precio y pasaba a cobrarlo (auditoría 2/10).
+            if pide_encargo(texto, session.get("history") or []):
+                _intencion = "encargo"
+                await deps["session"].clear_pending(phone)
+                await deps["session"].set_estado(phone, "operador", motivo="encargo")
+                _cfg_enc = await deps["config"].get_all()
+                respuesta = _cfg_enc.get("encargo_message") or (
+                    "¡Dale! Te paso con alguien del equipo para encargarlo 🙌 "
+                    "En un momento te contactamos.")
+                _ts = _time.perf_counter()
+                await deps["wa"].send_text(phone, respuesta)
+                _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
+                await deps["session"].add_message(phone, "user", texto)
+                await deps["session"].add_message(phone, "assistant", respuesta)
+                continue
 
             # ── Pide transferencia/efectivo → según config del backoffice ────
             #   "derivar" (default) → atención humana.
@@ -967,7 +1240,8 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     elif session.get("pending_sku_id") or _items_ef:
                         await deps["session"].set_estado(phone, "esperando_entrega")
                         respuesta = ("¡Dale! Lo pagás en efectivo 💵 " +
-                                     pregunta_entrega(_cfg_pm, saludo=False))
+                                     pregunta_entrega(_cfg_pm, saludo=False, phone=phone,
+                                                      socio_svc=deps["socios"]))
                     else:
                         respuesta = ("¡Dale! Cuando armemos tu pedido lo dejamos para pagar "
                                      "en efectivo 💵 Contame qué necesitás.")
@@ -1005,7 +1279,8 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     elif session.get("pending_sku_id") or _items_cc:
                         await deps["session"].set_estado(phone, "esperando_entrega")
                         respuesta = ("¡Dale! Te lo cargamos a tu cuenta corriente 🙌 " +
-                                     pregunta_entrega(_cfg_pm, saludo=False))
+                                     pregunta_entrega(_cfg_pm, saludo=False, phone=phone,
+                                                      socio_svc=deps["socios"]))
                     else:
                         respuesta = ("¡Dale! Cuando armemos tu pedido lo cargamos a tu "
                                      "cuenta corriente 🙌 Contame qué necesitás.")
@@ -1076,14 +1351,49 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 await deps["session"].add_message(phone, "assistant", respuesta)
                 continue
 
+            # ── "¿Qué horario tienen?" → horario del backoffice (29/9) ────────
+            if pregunta_horario(texto):
+                _resp_h = responder_horario(deps["config"], _hours_msg)
+                if _resp_h:
+                    _intencion = "consulta_horario"
+                    respuesta = _resp_h
+                    _ts = _time.perf_counter()
+                    await deps["wa"].send_text(phone, respuesta)
+                    _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
+                    await deps["session"].add_message(phone, "user", texto)
+                    await deps["session"].add_message(phone, "assistant", respuesta)
+                    continue
+
+            # ── "Soy socio" y no está en el padrón → validar con una persona ──
+            # Plan a producción (24/9): al no socio el bot le vende sin el 15%;
+            # solo deriva si dice ser socio, para validar el DNI y dar de alta
+            # la línea. Mientras tanto no se le aplica ningún descuento.
+            if (dice_ser_socio(texto) and not deps["socios"].find_by_phone(phone)
+                    and descuento_para(phone, _cfg_pm, deps["socios"])[1] != "empleado"):
+                _intencion = "socio_no_reconocido"
+                await deps["session"].set_estado(phone, "operador", motivo="socio_no_reconocido")
+                respuesta = ("¡Gracias! No encuentro este número en el padrón de socios. "
+                             "Te paso con alguien del equipo que te pide el DNI y lo registra, "
+                             "así se te aplica el descuento 🙌")
+                _ts = _time.perf_counter()
+                await deps["wa"].send_text(phone, respuesta)
+                _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
+                await deps["session"].add_message(phone, "user", texto)
+                await deps["session"].add_message(phone, "assistant", respuesta)
+                continue
+
             # ── Pregunta por descuentos → texto fijo, NUNCA redacta el modelo ─
             # El modelo inventó "como socia tenés un descuento" con un precio
             # inexistente (caso 29). La respuesta sale de la config; el
             # descuento real —si está activo— se aplica solo al armar el link.
             if pregunta_descuento(texto):
                 _intencion = "consulta_descuento"
+                _pct_emp, _tipo_emp = descuento_para(phone, _cfg_pm, deps["socios"])
                 _pct_desc = float(_cfg_pm.get("socio_discount_pct") or 0)
-                if _pct_desc > 0:
+                if _tipo_emp == "empleado":
+                    respuesta = (f"¡Sí! Como empleado tenés {_pct_emp:g}% de descuento en "
+                                 "productos sin receta, y ya te lo muestro aplicado en los precios 🙂")
+                elif _pct_desc > 0:
                     respuesta = (_cfg_pm.get("socio_discount_info_message") or
                                  "¡Sí! Los socios de la Mutual tienen {pct}% de descuento en "
                                  "productos sin receta — se aplica solo en el link de pago 🙂"
@@ -1161,7 +1471,7 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 else:
                     _intencion = "consulta_bono"
                     _socio_ob = deps["socios"].find_by_phone(phone)
-                    _nombre_ob = (_socio_ob.get("nombre", "").split() or [""])[0] if _socio_ob else ""
+                    _nombre_ob = nombre_de_pila(_socio_ob)
                     respuesta, _trab = responder_bono(_bono_preg, _cfg_os, nombre=_nombre_ob)
                     _ofrece = False
                     if not _trab:
@@ -1210,7 +1520,8 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                             + (f" (el envío cuesta ${_costo_e:,.0f} y se suma al total)"
                                if _costo_e else "") +
                             ". No generes links de pago ni cambies el producto.",
-                            pregunta_entrega(_cfg_ent, saludo=False),
+                            pregunta_entrega(_cfg_ent, saludo=False, phone=phone,
+                                             socio_svc=deps["socios"]),
                         )
                     else:
                         respuesta, _intencion = await resolver_entrega(
@@ -1279,6 +1590,26 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
             # ── Caso especial: hay producto pendiente de confirmar ───────────
             if session.get("estado") == "esperando_confirmacion" and session.get("pending_sku_id"):
                 texto_lower = texto.lower().strip()
+                # "Necesito eso" NO confirma un pedido pendiente si el cliente
+                # mandó un adjunto después (se refiere al adjunto), ni si el
+                # producto lleva receta (caso real 23/9: receta en PDF +
+                # "necesito eso" → confirmó el Colpuril que había quedado de antes).
+                _cfg_dx = await deps["config"].get_all()
+                if referencia_ambigua_bloquea(
+                        texto, session,
+                        necesita_receta(deps["sku"], session["pending_sku_id"],
+                                        _cfg_dx.get("receta_mode", "conservador"))):
+                    _intencion = "referencia_ambigua"
+                    _prod_dx = session.get("pending_sku_nombre") or "el producto"
+                    await deps["session"].clear_pending(phone)
+                    respuesta = (f"Para no equivocarme: ¿me decís el nombre del producto que "
+                                 f"necesitás? Antes habíamos hablado de {_prod_dx}.")
+                    _ts = _time.perf_counter()
+                    await deps["wa"].send_text(phone, respuesta)
+                    _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
+                    await deps["session"].add_message(phone, "user", texto)
+                    await deps["session"].add_message(phone, "assistant", respuesta)
+                    continue
                 if _match_no(texto_lower):
                     _intencion = "pedido_cancelado"
                     await deps["session"].clear_pending(phone)
@@ -1517,6 +1848,8 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                         else:
                             respuesta = "Dale, sin problema. ¿En qué más te puedo ayudar?"
 
+                    if await cumplir_derivacion_prometida(deps["session"], phone, respuesta):
+                        _intencion = "derivacion_prometida"
                     _ts = _time.perf_counter()
                     await deps["wa"].send_text(phone, respuesta)
                     _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
@@ -1527,6 +1860,8 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
             # ── Flujo normal ─────────────────────────────────────────────────
             resultados_sku = None
             _sku_pendiente_nuevo = None   # sku elegido este turno (para chequeo de receta)
+            _sku_receta_agregado = None   # "agregame X" con receta: deriva con el carrito
+            _extras_guardar = []          # adicionales de venta libre de este mensaje
 
             # Claude 1 — Haiku (rápido): clasifica intención + extrae entidad.
             # Para intenciones simples (saludo, social, agradecimiento) su
@@ -1603,8 +1938,8 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 _tsku = _time.perf_counter()
                 # El modelo suele tirar el número ("aveno infantil por 65" →
                 # "aveno infantil"): se le devuelven los de la frase original.
-                from app.services.sku_service import completar_numeros
-                _entidad_busq = completar_numeros(entidad, texto)
+                from app.services.sku_service import completar_numeros, restaurar_palabras_cliente
+                _entidad_busq = restaurar_palabras_cliente(completar_numeros(entidad, texto), texto)
                 if _entidad_busq != entidad:
                     logger.info(f"Entidad completada con números: {entidad!r} → {_entidad_busq!r}")
                 resultados_sku = deps["sku"].buscar(_entidad_busq)
@@ -1645,6 +1980,7 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 _cfg_desc = await deps["config"].get_all()
                 resultados_sku, _pct_socio = aplicar_descuento_socio(
                     resultados_sku, phone, _cfg_desc)
+                resultados_sku = marcar_precio_dudoso(resultados_sku, _cfg_desc)
                 _steps["sku_ms"] = int((_time.perf_counter() - _tsku) * 1000)
                 if not resultados_sku:
                     # Nos pidieron algo que no tenemos (ni por texto ni por
@@ -1670,6 +2006,10 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 cantidad = max(1, int(intent_result.get("cantidad") or 1))
                 respuesta = quitar_confirmaciones_fantasma(
                 quitar_frases_de_espera(intent_result.get("respuesta", "")))
+                # Antes de decidir qué producto se ofreció: un precio inventado
+                # no llega al cliente (auditoría 2/10).
+                respuesta = await _sin_precios_inventados(
+                    deps, phone, session, respuesta, resultados_sku, _cfg_desc, entidad)
 
                 # El modelo detectó que pide una foto (frases que el matcher no
                 # cubre): misma regla, lo atiende una persona.
@@ -1774,9 +2114,10 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                         _cfg_rec = await deps["config"].get_all()
                         if necesita_receta(deps["sku"], producto_elegido["sku_id"],
                                            _cfg_rec.get("receta_mode", "conservador")):
-                            respuesta = (f"{producto_elegido['nombre']} requiere receta 🩺, así que "
-                                         "ese no lo puedo sumar al pedido. El resto sigue como está "
-                                         "— ¿lo confirmamos?")
+                            # Decisión 3/10: con un producto con receta pasa todo
+                            # al operador, con lo de venta libre ya elegido (se
+                            # deriva abajo, junto con los adicionales).
+                            _sku_receta_agregado = producto_elegido["sku_id"]
                         else:
                             items = await deps["session"].agregar_item(
                                 phone, producto_elegido["sku_id"], producto_elegido["nombre"],
@@ -1800,6 +2141,10 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                             opciones=resultados_sku,
                         )
                         _sku_pendiente_nuevo = producto_elegido["sku_id"]
+                        # Pidió otra presentación ("x50") y se ofrece otra ("x30"):
+                        # se dice explícitamente (caso 24/9, Atenolol).
+                        if presentacion_distinta(_entidad_busq, producto_elegido["nombre"]):
+                            respuesta = aviso_presentacion(_entidad_busq, respuesta)
                         await deps["metrics"].evento(
                             "producto_ofrecido", phone=phone,
                             dato=producto_elegido["nombre"][:120],
@@ -1829,23 +2174,46 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     from app.services.sku_service import nombre_coincide
                     _lineas_extra = []
                     _extras_guardar = []   # los que existen de verdad: sumables
+                    from app.services.sku_service import (restaurar_palabras_cliente as _rpc,
+                                                          alguna_palabra_coincide)
                     for _ent2 in _extras:
+                        _ent2 = _rpc(_ent2, texto)
                         _r2 = deps["sku"].buscar(_ent2)
                         # Mismo descuento que en la búsqueda principal: estos
                         # precios también los ve el cliente en el mensaje.
                         _r2, _ = aplicar_descuento_socio(_r2, phone, _cfg_desc)
+                        _r2 = marcar_precio_dudoso(_r2, _cfg_desc)
                         _top2 = next((r for r in _r2 if r.get("vendible")
                                       and r.get("requiere_receta") not in ("si", "ambiguo")), None)
-                        if _top2 and nombre_coincide(_ent2, _top2["nombre"]):
+                        _top_rec = next((r for r in _r2 if r.get("vendible")
+                                         and r.get("requiere_receta") in ("si", "ambiguo")), None)
+                        # El tipo solo ("crema") no alcanza para darlo por lo pedido:
+                        # "crema Topics" matcheaba con cualquier crema (23/9).
+                        _coincide = (_top2 and nombre_coincide(_ent2, _top2["nombre"])
+                                     and alguna_palabra_coincide(_ent2, _top2["nombre"]))
+                        if not _coincide and _top_rec and nombre_coincide(_ent2, _top_rec["nombre"]) \
+                                and alguna_palabra_coincide(_ent2, _top_rec["nombre"]):
+                            # Lo pedido lleva receta: todo el pedido pasa al
+                            # operador (decisión 3/10). Antes salía "no lo
+                            # encontré en el catálogo".
+                            from app.services.receta_marcas import recordar_producto_por_receta
+                            await recordar_producto_por_receta(
+                                deps["session"], deps["sku"], phone, _top_rec["sku_id"])
+                            if not _sku_receta_agregado:
+                                _sku_receta_agregado = _top_rec["sku_id"]
+                            continue
+                        if _coincide:
                             _lineas_extra.append(
                                 f"• {_ent2}: {_top2['nombre']} — ${_top2['precio']:,.2f}")
                             _extras_guardar.append({
                                 "sku_id": _top2["sku_id"], "nombre": _top2["nombre"],
                                 "precio": _top2["precio"], "cantidad": 1,
                             })
-                        elif _top2:
+                        elif _top2 and alguna_palabra_coincide(_ent2, _top2["nombre"]):
                             # Hay algo parecido pero de OTRA marca/producto: se
                             # ofrece como similar, nunca como si fuera lo pedido.
+                            # Sin ninguna palabra en común no se ofrece nada
+                            # ("crema Topics" → Dermaglos glicólico, 23/9).
                             _lineas_extra.append(
                                 f"• {_ent2}: no lo encontré tal cual; lo más parecido "
                                 f"que tengo es {_top2['nombre']} — ${_top2['precio']:,.2f}")
@@ -1855,7 +2223,8 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                             _lineas_extra.append(f"• {_ent2}: no lo encontré en el catálogo")
                             await deps["metrics"].evento("busqueda_sin_resultado", phone=phone,
                                                          dato=" ".join(_ent2.lower().split())[:80])
-                    respuesta = quitar_frases_de_espera(respuesta)
+                    # Una sola pregunta al final: la del bloque de adicionales.
+                    respuesta = quitar_cierres_vagos(quitar_frases_de_espera(respuesta))
                     # Se guardan para que el cliente pueda sumarlos después:
                     # antes eran sólo texto y un "mandame todos" cobraba uno solo.
                     if _extras_guardar:
@@ -1871,7 +2240,7 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 # catálogo o está sin stock): según config, ofrecer consultarlo
                 # con el equipo o derivar directo. Antes la consulta moría acá.
                 if not _sku_pendiente_nuevo and _intencion != "item_agregado" \
-                        and not _opciones_ofrecidas \
+                        and not _opciones_ofrecidas and not _extras \
                         and intencion in ("pedido", "consulta_precio", "consulta_stock"):
                     _cfg_ss = await deps["config"].get_all()
                     _modo_ss = (_cfg_ss.get("sin_stock_mode") or "preguntar").lower()
@@ -1892,9 +2261,9 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                             _agregar = solo_la_pregunta(_oferta) if ya_dice_no_disponible(respuesta) \
                                 else _oferta
                             respuesta = f"{respuesta}\n\n{_agregar}".strip()
-                        _s = await deps["session"].get(phone)
-                        _s["derivacion_ofrecida"] = entidad or texto[:60]
-                        await deps["session"].save(phone, _s)
+                        _ses = await deps["session"].get(phone)
+                        _ses["derivacion_ofrecida"] = entidad or texto[:60]
+                        await deps["session"].save(phone, _ses)
 
             elif ya_tiene_pending:
                 pending_opciones = session.get("pending_opciones", [])
@@ -1912,6 +2281,9 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 cantidad_nueva = intent_result.get("cantidad")
                 respuesta = quitar_confirmaciones_fantasma(
                 quitar_frases_de_espera(intent_result.get("respuesta", "")))
+                respuesta = await _sin_precios_inventados(
+                    deps, phone, session, respuesta, pending_opciones,
+                    await deps["config"].get_all(), intent_result.get("entidad_producto"))
 
                 if sku_index is not None and pending_opciones:
                     try:
@@ -1941,15 +2313,44 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
 
             # Si el producto recién elegido requiere receta, derivar ahora
             # (no ofrecer link). Reemplaza el mensaje de confirmación de Claude.
-            if _sku_pendiente_nuevo:
+            if _sku_pendiente_nuevo or _sku_receta_agregado:
                 cfg_all = await deps["config"].get_all()
                 _deriv = await derivar_si_receta(
-                    deps["sku"], deps["session"], cfg_all, phone, _sku_pendiente_nuevo,
-                    nombre=_nombre_socio,
+                    deps["sku"], deps["session"], cfg_all, phone,
+                    _sku_receta_agregado or _sku_pendiente_nuevo,
+                    nombre=_nombre_socio, extras=_extras_guardar,
                 )
                 if _deriv:
                     respuesta = _deriv
                     _intencion = "derivado_receta"
+
+            # Charla en curso: sin "¡Hola X! Qué bueno verte de nuevo" en cada
+            # turno (auditoría 2/10).
+            respuesta = quitar_saludo_repetido(respuesta, session.get("history") or [])
+
+            # "Requiere receta" dicho por el modelo de productos que el catálogo
+            # vende libre: manda el catálogo (auditoría 2/10).
+            if resultados_sku and _intencion != "derivado_receta":
+                _ofrecidos = productos_con_precio(respuesta, resultados_sku)
+                _modo_rec = (await deps["config"].get_all()).get("receta_mode", "conservador")
+                if _ofrecidos and not any(necesita_receta(deps["sku"], o["sku_id"], _modo_rec)
+                                          for o in _ofrecidos):
+                    respuesta = quitar_receta_inventada(respuesta)
+
+            # Respuesta directa del modelo sin búsqueda (saludo, consulta
+            # general): tampoco puede traer precios que no salen de ningún dato.
+            if resultados_sku is None and _intencion in (
+                    "saludo", "social", "agradecimiento", "desconocido", "consulta_abierta"):
+                respuesta = await _sin_precios_inventados(
+                    deps, phone, session, respuesta, None,
+                    await deps["config"].get_all(), entidad)
+
+            # El modelo dijo "te paso con alguien del equipo": se cumple. Antes
+            # quedaba solo en el texto, nadie lo veía y el producto seguía
+            # pendiente; el "Bueno" siguiente preguntaba retiro/envío (23/9).
+            if await cumplir_derivacion_prometida(deps["session"], phone, respuesta):
+                if _intencion != "derivado_receta":
+                    _intencion = "derivacion_prometida"
 
             _ts = _time.perf_counter()
             await deps["wa"].send_text(phone, respuesta)
@@ -1957,6 +2358,25 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
 
             await deps["session"].add_message(phone, "user", texto)
             await deps["session"].add_message(phone, "assistant", respuesta)
+
+        except Exception as e:
+            # Red de seguridad (1/10): un error en un mensaje lo dejaba sin
+            # respuesta, cortaba el resto del lote y a los 15 min la charla se
+            # cerraba "por falta de respuesta" del cliente. Ahora queda
+            # derivada (no se cierra sola) y el cliente sabe que sigue alguien.
+            logger.exception(f"Error procesando mensaje de {phone}: {e}")
+            _intencion = "error_bot"
+            try:
+                if session_actual := await deps["session"].get(phone):
+                    if session_actual.get("estado") != "operador":
+                        await deps["session"].set_estado(phone, "operador", motivo="error_bot")
+                        if not _bot_off:
+                            respuesta = ("Disculpá, tuve un problema para responderte 🙏 "
+                                         "Te paso con alguien del equipo que sigue con vos.")
+                            await deps["wa"].send_text(phone, respuesta)
+                            await deps["session"].add_message(phone, "assistant", respuesta)
+            except Exception as e2:
+                logger.error(f"Tampoco se pudo derivar a {phone} tras el error: {e2}")
 
         finally:
             _lock.release()
@@ -1990,8 +2410,11 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 # Historial permanente en Postgres (best-effort, no-op sin DB)
                 try:
                     if texto:
-                        await deps["msgs"].save(phone, "user", texto)
+                        await deps["msgs"].save(phone, "user", texto, origen=_origen,
+                                                media=_media_ref, media_nombre=_media_nombre)
                     if respuesta:
+                        if isinstance(deps["wa"], _WaFueraHorario):
+                            respuesta = deps["wa"].enviado(respuesta)
                         await deps["msgs"].save(phone, "assistant", respuesta)
                 except Exception:
                     pass

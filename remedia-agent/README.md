@@ -264,3 +264,42 @@ botón **Pausar** del tray recién aplicaba al ciclo siguiente.
 - El servicio reporta `StopPending` con tiempo estimado al SCM.
 - `install`: si el servicio anterior no para en 15 s, cierra su proceso por PID
   y continúa (necesario para actualizar desde <= 0.3.3 con un ciclo en curso).
+
+## 0.3.5 — lotes con error y sondeo por código de barras (28/9)
+
+Dos problemas del incidente del 28/9, ambos por cómo Observer lista el catálogo.
+
+**Lotes con error.** `GET /api/productos/lote/{n}` devolvía 500 para un lote
+entero porque 4 productos adentro estaban rotos, y el ciclo completo abortaba:
+horas sin actualizar stock ni precios de todo el catálogo. Ahora:
+
+- Un lote que da 500 (o viene ilegible) se anota y el barrido sigue con el
+  siguiente. Sin el lote 1 sí se aborta (no se conoce el total). ERP caído o 401:
+  también aborta, como antes.
+- Al final se recuperan los productos del lote fallido de a uno por
+  `GET /api/productos/{id}`, dentro del hueco de ids que dejan los lotes vecinos
+  (van ordenados por idProducto). Si el lote fallido fue el último, se recorren
+  hasta 5.000 ids y se corta tras 300 404 seguidos; un hueco nunca pasa de 20.000 ids.
+- Los ids que fallan también solos (500) quedan como "rotos": no se envían, pero
+  el full-manifest los incluye con su hash anterior para que el servidor no los
+  desactive. Lo recuperado sigue el camino normal (pase de verdad, delta, envío).
+- El heartbeat informa `erp_lotes_fallidos` y `erp_productos_rotos` de la última
+  lectura (listas vacías si no hubo fallas).
+
+**Sondeo por código de barras.** El listado por lotes omite productos que existen
+y tienen stock (SESAREN XR, ids 12521-12523) aunque `POST /api/productos/codigosBarras`
+los encuentra. Una vez por día (a `live_full_hour`, o tras 48 h sin correr aunque
+no sea esa hora) el agente pide a Remedia `GET /v1/sync/codigos-faltantes` (los
+códigos que el servidor conoce y no están en el catálogo; un 404 = servidor viejo,
+sin sondeo), los busca en el ERP de a 20 con una pausa de `live_pause_ms`, y guarda
+los productos hallados (`extras_cb` en `state.sqlite`). En cada ciclo esos productos
+se releen por código de barras y se suman al lote; los que el ERP deja de devolver
+se olvidan. El full-manifest también los incluye. El heartbeat informa `sondeo`
+(`at`, `consultados`, `encontrados`, `activos`).
+
+Claves nuevas en `[erp]` de `agent.toml`:
+
+| Clave | Default | Qué hace |
+|---|---|---|
+| `sondeo_cb` | `true` | Activa el sondeo diario por código de barras |
+| `sondeo_max` | `10000` | Tope de códigos que se sondean por corrida |

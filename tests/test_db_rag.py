@@ -297,7 +297,7 @@ async def test_history_operador_con_autor_y_foto(db):
     await store.save("549444", "assistant", "respuesta del bot")
 
     h = await store.history("549444")
-    assert h[0]["media"] == "/media/chat/abc123" and h[0]["role"] == "user"
+    assert h[0]["media"].startswith("/media/chat/abc123?exp=") and h[0]["role"] == "user"
     assert h[1]["role"] == "operator" and h[1]["autor"] == "Claudia" and h[1]["media"] is None
     assert h[2]["autor"] is None
 
@@ -340,3 +340,20 @@ def test_socio_buscar_por_nombre(tmp_path):
     assert [s["celular"] for s in svc.buscar_por_nombre("perez jose")] == ["3415550002"]
     assert svc.buscar_por_nombre("aveno") == []
     assert svc.buscar_por_nombre("3415") == []      # solo números: no es un nombre
+
+
+async def test_history_origen_y_media(db):
+    """23/9: el audio se veía como texto escrito; ahora queda su origen y el
+    archivo para escucharlo."""
+    store = MessageStore(db)
+    await store.save("549555", "user", "tenés jabón aveno?", origen="audio", media="/media/chat/aud1")
+    await store.save("549555", "user", "📷 /media/chat/img1", origen="imagen")
+    await store.save("549555", "user", "hola")                       # fila sin origen
+    await store.save("549555", "assistant", "¡Hola!")
+    h = await store.history("549555")
+    assert h[0]["origen"] == "audio" and h[0]["media"].startswith("/media/chat/aud1?exp=")
+    assert h[0]["media_tipo"] == "audio"
+    assert h[1]["origen"] == "imagen" and h[1]["media"].startswith("/media/chat/img1?exp=")
+    assert h[1]["media_tipo"] == "imagen"
+    assert h[2]["origen"] == "texto" and h[2]["media"] is None
+    assert h[3]["origen"] is None

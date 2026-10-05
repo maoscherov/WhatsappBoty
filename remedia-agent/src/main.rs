@@ -177,6 +177,8 @@ fn install(data_dir: &std::path::Path, token: String, erp: String, branch: Strin
             live_selective: erp_prev.as_ref().map(|e| e.live_selective).unwrap_or(true),
             live_full_hour: erp_prev.as_ref().map(|e| e.live_full_hour).unwrap_or(3),
             live_pause_ms: erp_prev.as_ref().map(|e| e.live_pause_ms).unwrap_or(remedia_agent::config::DEFAULT_LIVE_PAUSE_MS),
+            sondeo_cb: erp_prev.as_ref().map(|e| e.sondeo_cb).unwrap_or(true),
+            sondeo_max: erp_prev.as_ref().map(|e| e.sondeo_max).unwrap_or(10_000),
         },
         log: LogConfig { dir: data_dir.join("logs") },
     };

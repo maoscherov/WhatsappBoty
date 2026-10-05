@@ -55,7 +55,8 @@ WHERE catalog_items.hash IS DISTINCT FROM EXCLUDED.hash
 
 
 def _fila(branch_id: str, item: CatalogItemIn, source: str) -> tuple:
-    requiere = derivar_requiere_receta(item.category, item.rubro, item.subrubro, item.name)
+    requiere = derivar_requiere_receta(item.category, item.rubro, item.subrubro, item.name,
+                                       item.barcodes)
     return (
         branch_id, item.external_id, item.hash, item.barcodes, item.troquel,
         item.name, item.brand, item.drug, item.form, item.category, item.rubro,
@@ -115,6 +116,21 @@ class CatalogStore:
                 branch_id)
         return resend, deactivated
 
+    async def codigos_faltantes(self, branch_id: str, limit: int = 10_000) -> list[str]:
+        """Códigos de la referencia de recetas que ningún producto de la
+        sucursal tiene (normalizados: solo dígitos, sin ceros adelante)."""
+        async with self._db.transaction() as con:
+            filas = await con.fetch(
+                "SELECT barcodes FROM catalog_items WHERE branch_id = $1", branch_id)
+            ref = await con.fetch("SELECT barcode FROM receta_referencia ORDER BY barcode")
+        presentes = set()
+        for f in filas:
+            for b in f["barcodes"] or []:
+                d = "".join(ch for ch in str(b) if ch.isdigit()).lstrip("0")
+                if d:
+                    presentes.add(d)
+        return [r["barcode"] for r in ref if r["barcode"] not in presentes][:limit]
+
     # ── Lectura para el bot (best-effort: usa fetch, que traga errores) ──────
 
     async def load_rows(self, branch_id: str) -> tuple[list[dict], dict[str, dict]]:
@@ -128,6 +144,12 @@ class CatalogStore:
         extras_rows = await self._db.fetch(
             "SELECT * FROM catalog_extras WHERE branch_id = $1", branch_id)
         extras = {r["external_id"]: dict(r) for r in extras_rows}
+        # Alias de búsqueda (nombre legible + términos de cliente, 3/10). Sin
+        # la tabla (migración pendiente) fetch devuelve [] y no pasa nada.
+        for a in await self._db.fetch(
+                "SELECT external_id, nombre_base, nombre_legible, tipo, terminos, seguro "
+                "FROM sku_alias WHERE branch_id = $1", branch_id) or []:
+            extras.setdefault(a["external_id"], {})["_alias"] = dict(a)
         return [dict(r) for r in rows], extras
 
     async def count_items(self, branch_id: str) -> int:

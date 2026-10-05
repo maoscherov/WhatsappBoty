@@ -66,6 +66,7 @@ class OrderService:
         tipo_entrega: str = "retiro",
         direccion_envio: Optional[str] = None,
         pago: str = "online",
+        extra: Optional[dict] = None,
     ) -> dict:
         order_id = self._gen_order_id()
         now = datetime.now(timezone.utc).isoformat()
@@ -95,6 +96,11 @@ class OrderService:
             "retirado_por":   None,
             "retirado_at":    None,
         }
+        # Pedido armado por un operador (1/10): origen, quién lo armó, quién
+        # cobra el efectivo (mostrador | repartidor) y el nombre del repartidor
+        # para conciliar la caja.
+        if extra:
+            order.update({k: v for k, v in extra.items() if k not in order})
         ts = datetime.now(timezone.utc).timestamp()
         try:
             await self._redis.setex(self._key(order_id), ORDER_TTL, json.dumps(order))

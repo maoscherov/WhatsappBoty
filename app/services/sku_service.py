@@ -38,7 +38,14 @@ TOP_N_DEFAULT = 3
 # escribir el cliente; los valores son términos adicionales a buscar (marcas
 # equivalentes presentes en el catálogo). Si algún valor no existe, la búsqueda
 # extra simplemente no devuelve nada (inofensivo). Ampliable a medida que surjan.
+# Marca con pocos productos (Unesia: 5): si no tiene la presentación pedida,
+# se ofrece la que tenga. Ver SKUService.buscar.
+MARCA_CHICA = 30
+
 SINONIMOS: dict[str, list[str]] = {
+    # Los protectores solares se llaman por la línea: Eximia "SOLAIRE",
+    # "... FPS 50" (caso real 1/10: "protector facial eximia" daba Lucy Anderson).
+    "protector":    ["solaire", "solar", "fps"],
     "ibuprofeno":   ["ibupirac", "actron"],
     "omeprazol":    ["aziatop"],
     "escopolamina": ["buscapina", "sertal"],
@@ -200,14 +207,22 @@ def nombre_coincide(query: str, nombre: str) -> bool:
     return False
 
 
+# Categorías del ERP que no dicen qué es el producto: Observer manda "General"
+# para 38.000 productos, antibióticos incluidos (caso real 28/9: G-Amoxicilina,
+# G-Cefalexina, G-Losartán en "General / Medicamentos Varios" quedaban como
+# venta libre). Con estas no se afirma nada: decide el rubro / la referencia.
+_CATEGORIAS_SIN_INFO = {"general", "productos medicos", "productos médicos", "varios", "otros"}
+
+
 def _categoria_sin_receta(categoria: str) -> bool:
     """
     True si la categoría del catálogo indica un producto NO medicinal
     (perfumería, accesorios, etc.) — esos nunca requieren receta, aunque el
-    flag venga mal cargado. Sólo se afirma con categoría explícita.
+    flag venga mal cargado. Sólo se afirma con categoría explícita e
+    informativa ("General" no lo es).
     """
     c = (categoria or "").strip().lower()
-    return bool(c) and "medicamento" not in c
+    return bool(c) and "medicamento" not in c and c not in _CATEGORIAS_SIN_INFO
 
 
 def requiere_derivacion(requiere_receta: str, modo: str = "conservador") -> bool:
@@ -346,9 +361,13 @@ class SKUService:
                 tipo_producto=ex.get("tipo_producto") or "regular",
             )
             # rubro/subrubro/droga entran al índice de búsqueda, no al modelo.
+            # Alias (3/10): "Hisopos Estrella pote x 125", "cotonetes" — solo
+            # si el nombre del ERP sigue siendo el que se tradujo.
+            from app.services.alias_service import texto_indice
             texto_extra = " ".join(filter(None, [
                 row.get("drug") or "", row.get("rubro") or "",
                 row.get("subrubro") or "",
+                normalizar_numeros(texto_indice(ex.get("_alias"), row.get("name") or "")),
             ]))
             svc._indexar(sku, texto_extra=texto_extra, barcodes=barcodes)
         svc._build_df()
@@ -462,9 +481,11 @@ class SKUService:
         # Expandir con sinónimos: si el cliente escribió un genérico cuyo nombre
         # no está en el catálogo (ej. "ibuprofeno"), agregamos las marcas equivalentes.
         variantes = [clean_query]
+        _de_sinonimo: set[str] = set()     # palabras que tradujo un sinónimo
         for generico, marcas in SINONIMOS.items():
             if generico in clean_query:
                 variantes.extend(marcas)
+                _de_sinonimo.update(_tokens(generico))
 
         # Se guarda el mejor score de CADA scorer por separado (entre todas las
         # variantes). Importa mantenerlos separados: con nombres largos del
@@ -522,8 +543,60 @@ class SKUService:
         # Guarda determinista: lo que no comparte ningún término con lo pedido
         # (ni con sus sinónimos) no se ofrece, por más que el fuzzy lo puntúe.
         candidatos = [c for c in candidatos if resultado_coincide(variantes, self._search_index[c[0]])]
+
+        # Marca pedida (1/10): un término poco común del pedido que existe en
+        # el catálogo es una marca o línea ("unesia", "eximia", "lefmar"). Se
+        # busca directo entre sus productos —el fuzzy los perdía detrás de
+        # otros que comparten "crema" o "protector facial"— y no se ofrecen
+        # otras marcas. Si la marca no tiene la presentación pedida con stock
+        # y es una marca CHICA, se ofrece en otra presentación ("unesia crema"
+        # → UNESIA UNG). Las marcas grandes respetan el tipo: "talco rexona"
+        # no es un desodorante Rexona (caso 21/8).
+        umbral_marca = max(30, total_docs // 100)
+        # Una palabra que el diccionario tradujo no es una marca: "suero" es
+        # poco común en el catálogo y filtraba todo a "suero de leche" en vez
+        # de buscar "solución fisiológica" (medición 2/10).
+        marcas = [t for t in q_tokens
+                  if 0 < self._token_df.get(t, 0) <= umbral_marca and not tipos_mencionados(t)
+                  and t not in _de_sinonimo]
+        if marcas:
+            # Una sola marca manda: la que ENCABEZA el nombre de sus productos
+            # ("EXIMIA …", "UNESIA …") y, a igualdad, la más rara. En
+            # "protector solar eximia", "solar" también es poco común pero
+            # va en el medio del nombre ("BAGOVIT SOLAR").
+            # Una sola pasada por el catálogo para todos los candidatos.
+            idx_por_marca: dict[str, list[int]] = {t: [] for t in marcas}
+            for i, txt in enumerate(self._search_index):
+                for t in marcas:
+                    if t in txt:
+                        idx_por_marca[t].append(i)
+
+            def _encabeza(t: str) -> float:
+                idxs = idx_por_marca[t]
+                lideran = sum(self._skus[i].sku_nombre.lower().startswith(t) for i in idxs)
+                return lideran / max(len(idxs), 1)
+            marcas = [max(marcas, key=lambda t: (_encabeza(t), -self._token_df.get(t, 0)))]
+            pool = [(i, self._skus[i], _relevancia(i)) for i in idx_por_marca[marcas[0]]
+                    if not self._skus[i].pausado]
+            con_tipo = [c for c in pool if resultado_coincide(variantes, self._search_index[c[0]])]
+            if any(c[1].vendible for c in con_tipo):
+                elegidos = con_tipo
+            elif all(self._token_df.get(m, 0) <= MARCA_CHICA for m in marcas):
+                elegidos = pool
+            else:
+                elegidos = con_tipo
+            if elegidos:
+                candidatos = elegidos
         # Relevancia primero; disponibilidad y ventas sólo desempatan matches parejos.
         candidatos.sort(key=lambda x: (-x[2], 0 if x[1].disponible else 1, -(x[1].ventas_mes or 0)))
+        # El más parecido queda primero aunque no tenga stock (el bot dice "ese
+        # no lo tengo"), pero los que SÍ se pueden vender no quedan afuera del
+        # corte detrás de otros sin stock (caso real 1/10: "óleo calcáreo"
+        # traía tres sin stock y el bot decía que no había).
+        if candidatos:
+            ventana = candidatos[1:]          # ya filtrados: todos son del pedido
+            candidatos = ([candidatos[0]] + [c for c in ventana if c[1].vendible]
+                          + [c for c in ventana if not c[1].vendible])
 
         return [self._to_response(s) for _i, s, _sc in candidatos[:top_n]]
 
@@ -595,3 +668,100 @@ def set_sku_service(svc: SKUService) -> SKUService:
     global _instance
     _instance = svc
     return _instance
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Caso real 23/9 (María, audio): "jabón aveno y la crema Atopix". La
+# transcripción escribió "Topics" y el modelo cambió "aveno" por "avena".
+# ══════════════════════════════════════════════════════════════════════════════
+# Marcas que más se piden por audio; se suman a las más frecuentes del catálogo.
+MARCAS_AUDIO_BASE = [
+    "Aveno", "Atopix", "Actron", "Ibupirac", "Ibuevanol", "Tafirol", "Bayaspirina", "Buscapina",
+    "Sertal", "Dermaglos", "Isdin", "La Roche-Posay", "Eucerin", "Cetaphil", "Hyalu C",
+    "Bagovit", "Lanzopral", "Omeprazol", "Holomagnesio", "Curflex", "Dioxaflex", "Novalgina",
+    "Refrianex", "Mejoral", "Geniol", "Aspirina", "Uvasal", "Sal de frutas Eno", "Loratadina",
+    "Allegra", "Cepage", "Cassará", "Bagó", "Roemmers", "Elea", "Vichy", "Avene", "Bioderma",
+]
+
+
+def marcas_frecuentes(sku_svc, n: int = 60) -> list[str]:
+    """Las `n` marcas con más productos en el catálogo (cacheado por instancia)."""
+    cache = getattr(sku_svc, "_marcas_frecuentes", None)
+    if cache is not None:
+        return cache[:n]
+    from collections import Counter
+    c = Counter()
+    for s in sku_svc.todos():
+        m = (getattr(s, "marca", "") or "").strip()
+        if 2 < len(m) <= 30 and not m.isdigit():
+            c[m.title()] += 1
+    cache = [m for m, _ in c.most_common(200)]
+    try:
+        sku_svc._marcas_frecuentes = cache
+    except Exception:
+        pass
+    return cache[:n]
+
+
+def vocabulario_audio(sku_svc, max_chars: int = 650) -> str:
+    """Texto de guía para la transcripción: marcas que tiene que escribir bien."""
+    vistas, nombres = set(), []
+    for m in MARCAS_AUDIO_BASE + marcas_frecuentes(sku_svc):
+        k = m.lower()
+        if k not in vistas:
+            vistas.add(k)
+            nombres.append(m)
+    out = "Consulta a una farmacia. Productos y marcas: "
+    for m in nombres:
+        if len(out) + len(m) + 2 > max_chars:
+            break
+        out += m + ", "
+    return out.rstrip(", ") + "."
+
+
+def _plano(s: str) -> str:
+    import unicodedata
+    return "".join(ch for ch in unicodedata.normalize("NFD", (s or "").lower())
+                   if unicodedata.category(ch) != "Mn")
+
+
+def restaurar_palabras_cliente(entidad: Optional[str], texto: str) -> Optional[str]:
+    """
+    El buscador recibe el producto que extrae el modelo, y el modelo a veces
+    "corrige" una palabra que el cliente dijo bien ("aveno" → "avena"). Si una
+    palabra de la entidad no está en el mensaje pero hay una casi igual, se usa
+    la del cliente. Mismo criterio que completar_numeros.
+    """
+    if not entidad or not texto:
+        return entidad
+    tokens_texto = [t for t in _re_mod.findall(r"[a-záéíóúüñ]+", _plano(texto)) if len(t) >= 4]
+    if not tokens_texto:
+        return entidad
+    presentes = set(tokens_texto)
+    partes = []
+    cambio = False
+    for tok in _re_mod.split(r"(\s+)", entidad):
+        base = _plano(tok).strip(".,;:!?¿¡")
+        if len(base) >= 4 and base.isalpha() and base not in presentes:
+            mejor = max(tokens_texto, key=lambda t: fuzz.ratio(base, t))
+            if fuzz.ratio(base, mejor) >= 75 and mejor[:2] == base[:2]:
+                partes.append(mejor)
+                cambio = True
+                continue
+        partes.append(tok)
+    return "".join(partes) if cambio else entidad
+
+
+def alguna_palabra_coincide(query: str, nombre: str) -> bool:
+    """Alguna palabra distintiva (4+ letras, no un tipo como "crema") de la
+    consulta aparece en el nombre, por sus primeras 4 letras. Sin eso, lo
+    encontrado no tiene nada que ver con lo pedido ("crema Topics" →
+    Dermaglos glicólico, 23/9). Si la consulta es solo un tipo, no objeta."""
+    nombre_exp = _plano(expandir_abreviaturas(nombre or ""))
+    genericas = {"crema", "jabon", "shampoo", "gotas", "jarabe", "comprimidos", "capsulas",
+                 "protector", "solar", "gel", "locion", "polvo", "spray", "para", "algo"}
+    distintivas = [t for t in _re_mod.findall(r"[a-záéíóúüñ]+", _plano(query))
+                   if len(t) >= 4 and t not in genericas]
+    if not distintivas:
+        return True     # "una crema": no hay marca que contradiga; decide el tipo
+    return any(t[:4] in nombre_exp for t in distintivas)

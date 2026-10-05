@@ -1,6 +1,6 @@
 [package]
 name = "remedia-agent"
-version = "0.3.4"
+version = "0.3.5"
 edition = "2021"
 description = "Conector de catálogo ObServer Gestión → Remedia (servicio de Windows)"
 

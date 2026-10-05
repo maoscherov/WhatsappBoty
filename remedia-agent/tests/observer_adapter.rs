@@ -131,6 +131,8 @@ async fn build_adapter_rejects_unknown_kind() {
         live_selective: true,
         live_full_hour: 3,
         live_pause_ms: 50,
+        sondeo_cb: true,
+        sondeo_max: 10_000,
     };
     assert!(remedia_agent::erp::build_adapter(&cfg, Duration::from_secs(1)).is_err());
 }

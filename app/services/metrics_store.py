@@ -600,7 +600,8 @@ class MetricsStore:
                 "propuestos": ["nps_csat", "emocionalidad"]}
 
     async def conversaciones(self, days: int = 30, q: str = "", limit: int = 50,
-                             sufijos_tel: Optional[list[str]] = None) -> list[dict]:
+                             sufijos_tel: Optional[list[str]] = None,
+                             desde=None, hasta=None) -> list[dict]:
         """
         Conversaciones históricas desde Postgres (tabla messages): una fila por
         teléfono con actividad en el rango, con conteo y último mensaje.
@@ -612,12 +613,23 @@ class MetricsStore:
         if not self._db.available():
             return []
         try:
-            args: list = [days]
+            # Rango: días puntuales (desde/hasta, fecha de Argentina) o los
+            # últimos `days` días (1/10: filtro por día en el historial).
+            if desde or hasta:
+                import datetime as _d
+                args: list = [desde or _d.date(2000, 1, 1), hasta or _d.date(2100, 1, 1)]
+                filtro_fecha = ("(created_at AT TIME ZONE INTERVAL '-03:00')::date "
+                                "BETWEEN $1 AND $2")
+            else:
+                args = [days]
+                filtro_fecha = "created_at >= now() - make_interval(days => $1)"
+            base = len(args)
             filtro_q = ""
             sel_match = "NULL::text AS coincidencia"
             if q:
                 args.append(f"%{q}%")
-                conds = ["phone LIKE $2", "content ILIKE $2"]
+                pq = f"${base + 1}"
+                conds = [f"phone LIKE {pq}", f"content ILIKE {pq}"]
                 if sufijos_tel:
                     args.append([f"%{s}" for s in sufijos_tel])
                     conds.append(f"phone LIKE ANY(${len(args)})")
@@ -625,7 +637,7 @@ class MetricsStore:
                 # matchea, pero los conteos siguen siendo de toda la charla.
                 filtro_q = "HAVING " + " OR ".join(f"BOOL_OR({c})" for c in conds)
                 sel_match = ("(ARRAY_AGG(content ORDER BY created_at DESC) "
-                             "FILTER (WHERE content ILIKE $2))[1] AS coincidencia")
+                             f"FILTER (WHERE content ILIKE {pq}))[1] AS coincidencia")
             args.append(limit)
             rows = await self._db.fetch(f"""
                 SELECT phone,
@@ -636,7 +648,7 @@ class MetricsStore:
                        (ARRAY_AGG(content ORDER BY created_at DESC))[1]  AS ultimo_mensaje,
                        {sel_match}
                 FROM messages
-                WHERE created_at >= now() - make_interval(days => $1)
+                WHERE {filtro_fecha}
                 GROUP BY phone
                 {filtro_q}
                 ORDER BY MAX(created_at) DESC

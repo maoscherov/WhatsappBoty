@@ -61,3 +61,9 @@ class HeartbeatIn(BaseModel):
     last_sync_ok_at: Optional[str] = None
     catalog_count: Optional[int] = None
     pending_batches: Optional[int] = None
+    # 0.3.5 (28/9): lo que el ERP no pudo servir en la última lectura y el
+    # resumen del sondeo por código de barras. None = el agente no lo informa
+    # (versiones viejas): se conserva lo que había.
+    erp_productos_rotos: Optional[list[int]] = None
+    erp_lotes_fallidos: Optional[list[int]] = None
+    sondeo: Optional[dict] = None

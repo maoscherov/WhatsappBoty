@@ -7,10 +7,13 @@ Carga un padrón (CSV o XLSX importado por backoffice) con columnas:
 Permite identificar al cliente por su número de WhatsApp para que el bot
 lo salude por nombre y lo trate como socio reconocido.
 
-Matching de teléfono: los números de WA llegan como 549341XXXXXXX y el padrón
-tiene el formato local (341XXXXXXX). Se comparan los últimos 10 dígitos
-(área + número), con fallback a 8 dígitos por si el padrón viene sin código
-de área.
+Matching de teléfono: los números de WA llegan como 549341XXXXXXX. El celular
+del padrón (con el formato que sea: con/sin 0, con/sin 9, con/sin +54, con/sin
+"15", con/sin código de área) se normaliza a 10 dígitos (área + número) con
+`normalizar_celular`, usando `socios_area_default` como área para los
+celulares locales cargados sin área. El entrante se normaliza igual y se
+busca por esos 10 dígitos, con fallback al matching por sufijo de 10 y de 8
+dígitos (compatibilidad con padrones ya cargados).
 
 PRIVACIDAD: al contexto de Claude solo se pasa nombre y N° de socio.
 DNI y domicilio se cargan pero NUNCA entran al prompt.
@@ -32,12 +35,160 @@ _COLUMN_ALIASES = {
     "dni":       {"dni", "documento"},
     "socio":     {"socio", "nro socio", "nro_socio", "numero socio", "n socio"},
     "celular":   {"celular", "telefono", "tel", "movil", "whatsapp"},
-    "domicilio": {"domicilio", "direccion"},
+    "domicilio": {"domicilio", "direccion", "calle", "domicilio particular", "direccion particular",
+                  "domicilio real", "domic", "calle y numero", "calle y nro", "dir"},
 }
+
+
+def _clave_columna(col) -> str:
+    """Encabezado normalizado: minúsculas, sin tildes, sin °/./_ extra.
+    Antes "DIRECCIÓN" (con tilde) no se reconocía y la columna se ignoraba
+    sin avisar (caso 24/9: a una socia se le pidió el domicilio)."""
+    import unicodedata
+    s = unicodedata.normalize("NFD", str(col).strip().lower())
+    s = "".join(ch for ch in s if unicodedata.category(ch) != "Mn")
+    s = s.replace("°", "").replace("º", "").replace(".", "").replace("_", " ")
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _celda(row, col) -> str:
+    """Valor de una celda como texto; las vacías de Excel/CSV llegan como NaN
+    y str(NaN) daba "nan" (un domicilio "Nan")."""
+    if col is None:
+        return ""
+    v = row.get(col)
+    if v is None:
+        return ""
+    try:
+        import math
+        if isinstance(v, float) and math.isnan(v):
+            return ""
+    except Exception:
+        pass
+    s = str(v).strip()
+    return "" if s.lower() in ("nan", "none", "null") else s
+
+
+def nombre_de_pila(socio: Optional[dict], orden: str = "") -> str:
+    """
+    Nombre para saludar. Muchos padrones traen en la columna nombre el nombre
+    completo con el apellido adelante ("Muff Claudia Beatriz"): tomar la
+    primera palabra saludaba por el apellido (caso real 24/9).
+      - "Apellido, Nombre" → lo que va después de la coma.
+      - Con columna apellido → se sacan sus palabras y queda la primera.
+      - Sin apellido y varias palabras → según `orden` (socios_orden_nombre):
+        "apellido_nombre" (default) toma la segunda, "nombre_apellido" la primera.
+    """
+    if not socio:
+        return ""
+    nombre = (socio.get("nombre") or "").strip()
+    apellido = (socio.get("apellido") or "").strip()
+    if not nombre:
+        return ""
+    if "," in nombre:
+        despues = nombre.split(",", 1)[1].strip()
+        if despues:
+            return despues.split()[0].title()
+    toks = nombre.split()
+    ap = {t.lower() for t in apellido.replace(",", " ").split()}
+    if ap:
+        resto = [t for t in toks if t.lower() not in ap]
+        return (resto[0] if resto else toks[0]).title()
+    if len(toks) >= 2:
+        if not orden:
+            try:
+                from app.config import get_settings
+                orden = get_settings().socios_orden_nombre
+            except Exception:
+                orden = "apellido_nombre"
+        if orden != "nombre_apellido":
+            return toks[1].title()
+    return toks[0].title()
 
 
 def _solo_digitos(valor) -> str:
     return re.sub(r"\D", "", str(valor or ""))
+
+
+def analizar_celular(valor: str, area_default: str = "") -> dict:
+    """
+    Interpreta un celular argentino escrito de cualquier forma habitual
+    (con/sin 0, con/sin 9, con/sin +54, con/sin "15", con/sin código de área)
+    y lo reduce a 10 dígitos (área + número).
+
+    Devuelve {"normalizado": str|None, "original": str, "regla": ...} —
+    "regla" documenta qué transformación se aplicó, para el reporte de carga:
+      - "directo":       ya eran 10 dígitos (a lo sumo se sacó 54/9).
+      - "sin_0":         se sacó un 0 inicial y quedó en 10 dígitos.
+      - "sin_15":        eran 12 dígitos, se identificó el "15" tras el área
+                         (código de área único, sin ambigüedad).
+      - "ambiguo":       12 dígitos con más de un largo de área posible; se
+                         eligió el de 3 dígitos (el más común, Rosario 341).
+      - "area_default":  número local (6 a 9 dígitos) al que se le antepuso
+                         el área por defecto.
+      - "invalido":      no se pudo interpretar.
+    """
+    original = str(valor or "").strip()
+    digitos = _solo_digitos(valor)
+    area_default = _solo_digitos(area_default)
+
+    sin_0 = False
+
+    # 1) Prefijo "54" (código de país) y, si tras sacarlo quedan 11 dígitos
+    #    que empiezan con "9" (celular), sacar también el "9".
+    if digitos.startswith("54"):
+        digitos = digitos[2:]
+    if len(digitos) == 11 and digitos.startswith("9"):
+        digitos = digitos[1:]
+
+    # 2) Un solo "0" inicial (característica interurbana).
+    if digitos.startswith("0"):
+        digitos = digitos[1:]
+        sin_0 = True
+
+    def _resultado(normalizado, regla):
+        return {"normalizado": normalizado, "original": original, "regla": regla}
+
+    if len(digitos) == 12:
+        # El "15" quedó pegado después del código de área. Los códigos de
+        # área argentinos tienen 2, 3 o 4 dígitos y área+número siempre
+        # suman 10 — probar los tres largos y ver cuál tiene "15" justo
+        # después del área.
+        candidatos = {}
+        for area_len in (2, 3, 4):
+            area = digitos[:area_len]
+            resto = digitos[area_len:]
+            if resto[:2] == "15":
+                candidatos[area_len] = area + resto[2:]
+        if not candidatos:
+            return _resultado(None, "invalido")
+        if len(candidatos) == 1:
+            return _resultado(next(iter(candidatos.values())), "sin_15")
+        # Ambiguo: preferir el área de 3 dígitos (la más común).
+        elegido = candidatos.get(3) or next(iter(candidatos.values()))
+        return _resultado(elegido, "ambiguo")
+
+    if len(digitos) == 10:
+        return _resultado(digitos, "sin_0" if sin_0 else "directo")
+
+    if len(digitos) in (8, 9) and area_default:
+        target = 10 - len(area_default)
+        if len(digitos) == target:
+            return _resultado(area_default + digitos, "area_default")
+        if digitos.startswith("15") and len(digitos) - 2 == target:
+            return _resultado(area_default + digitos[2:], "area_default")
+        return _resultado(None, "invalido")
+
+    if len(digitos) in (6, 7) and area_default:
+        if len(area_default) + len(digitos) == 10:
+            return _resultado(area_default + digitos, "area_default")
+        return _resultado(None, "invalido")
+
+    return _resultado(None, "invalido")
+
+
+def normalizar_celular(valor: str, area_default: str = "") -> Optional[str]:
+    return analizar_celular(valor, area_default)["normalizado"]
 
 
 class SocioService:
@@ -48,11 +199,41 @@ class SocioService:
         self._por_tel_10: dict[str, dict] = {}
         self._por_tel_8: dict[str, dict] = {}
         self._por_dni: dict[str, dict] = {}
+        self.reporte_carga: dict = {
+            "total_filas": 0, "cargados": 0, "normalizados": 0,
+            "sin_celular_valido": [], "ambiguos": [], "duplicados": [],
+            "columnas_reconocidas": {}, "columnas_ignoradas": [], "con_domicilio": 0,
+            "nombre_con_apellido": 0, "nombre_con_apellido_ejemplos": [],
+        }
         self._load()
 
     @property
     def total(self) -> int:
         return len(self._socios)
+
+    def cargar_desde_lista(self, socios: list[dict]):
+        """
+        Construye los índices en memoria (por teléfono a 10 y 8 dígitos, y por
+        DNI) a partir de una lista de dicts ya normalizados — mismos campos
+        que carga `_load` desde el archivo (nombre, apellido, nombre_pila,
+        nro_socio, dni, domicilio, celular, celular_original). Se usa para
+        poblar el servicio desde Postgres (`cargar_desde_db`).
+        """
+        self._socios = []
+        self._por_tel_10.clear()
+        self._por_tel_8.clear()
+        self._por_dni.clear()
+        for socio in socios:
+            socio = dict(socio)
+            if not socio.get("celular"):
+                continue
+            if not socio.get("nombre_pila"):
+                socio["nombre_pila"] = nombre_de_pila(socio)
+            self._socios.append(socio)
+            self._por_tel_10[socio["celular"]] = socio
+            self._por_tel_8[socio["celular"][-8:]] = socio
+            if socio.get("dni"):
+                self._por_dni[socio["dni"]] = socio
 
     def _load(self):
         p = Path(self._path)
@@ -75,11 +256,12 @@ class SocioService:
         # Normalizar nombres de columna y mapear por alias
         colmap = {}
         for col in df.columns:
-            key = str(col).strip().lower().replace("°", "").replace(".", "")
+            key = _clave_columna(col)
             for campo, aliases in _COLUMN_ALIASES.items():
-                if key in aliases:
+                if key in aliases and campo not in colmap:
                     colmap[campo] = col
                     break
+        columnas_ignoradas = [str(c) for c in df.columns if c not in colmap.values()]
 
         faltantes = {"nombre", "celular"} - set(colmap)
         if faltantes:
@@ -91,26 +273,87 @@ class SocioService:
         self._por_tel_8.clear()
         self._por_dni.clear()
 
+        from app.config import get_settings
+        try:
+            area_default = get_settings().socios_area_default or "341"
+        except Exception:
+            area_default = "341"
+
+        sin_celular_valido: list[dict] = []
+        ambiguos: list[dict] = []
+        normalizados = 0
+        contador_tel: dict[str, int] = {}
+        con_domicilio = 0
+        nombre_con_apellido: list[dict] = []
+        nombre_con_apellido_total = 0
+
         for _, row in df.iterrows():
-            celular = _solo_digitos(row.get(colmap["celular"]))
-            if len(celular) < 8:
+            raw_cel = row.get(colmap["celular"])
+            nombre = _celda(row, colmap["nombre"]).title()
+            apellido = _celda(row, colmap.get("apellido")).title()
+            analisis = analizar_celular(raw_cel, area_default)
+            celular = analisis["normalizado"]
+
+            if not celular:
+                if len(sin_celular_valido) < 20:
+                    sin_celular_valido.append({
+                        "apellido": apellido, "nombre": nombre,
+                        "celular": analisis["original"],
+                    })
                 continue
+
+            if analisis["regla"] == "ambiguo" and len(ambiguos) < 20:
+                ambiguos.append({
+                    "apellido": apellido, "nombre": nombre,
+                    "celular": analisis["original"],
+                })
+            if _solo_digitos(raw_cel) != celular:
+                normalizados += 1
+
             socio = {
-                "nombre": str(row.get(colmap["nombre"]) or "").strip().title(),
-                "apellido": str(row.get(colmap.get("apellido"), "") or "").strip().title(),
-                "nro_socio": str(row.get(colmap.get("socio"), "") or "").strip(),
+                "nombre": nombre,
+                "apellido": apellido,
+                "nro_socio": _celda(row, colmap.get("socio")),
                 # DNI y domicilio se guardan para el backoffice, NO para el prompt
-                "dni": _solo_digitos(row.get(colmap.get("dni"), "")),
-                "domicilio": str(row.get(colmap.get("domicilio"), "") or "").strip(),
+                "dni": _solo_digitos(_celda(row, colmap.get("dni"))),
+                "domicilio": _celda(row, colmap.get("domicilio")),
                 "celular": celular,
+                "celular_original": analisis["original"],
             }
+            socio["nombre_pila"] = nombre_de_pila(socio)
+            if socio["domicilio"]:
+                con_domicilio += 1
+            if socio["apellido"] and nombre and nombre.split() and \
+                    nombre.split()[0].lower() in {t.lower() for t in socio["apellido"].split()}:
+                if len(nombre_con_apellido) < 20:
+                    nombre_con_apellido.append({"nombre": nombre, "apellido": socio["apellido"],
+                                                "saluda_como": socio["nombre_pila"]})
+                nombre_con_apellido_total += 1
             self._socios.append(socio)
-            self._por_tel_10[celular[-10:]] = socio
+            self._por_tel_10[celular] = socio
             self._por_tel_8[celular[-8:]] = socio
             if socio["dni"]:
                 self._por_dni[socio["dni"]] = socio
+            contador_tel[celular] = contador_tel.get(celular, 0) + 1
 
-        logger.info(f"Padrón de socios cargado: {self.total} socios desde {p}")
+        self.reporte_carga = {
+            "total_filas": len(df),
+            "cargados": len(self._socios),
+            "normalizados": normalizados,
+            "sin_celular_valido": sin_celular_valido,
+            "ambiguos": ambiguos,
+            "duplicados": [t for t, c in contador_tel.items() if c > 1][:20],
+            # Calidad de columnas (24/9): domicilio ignorado y nombre con apellido
+            "columnas_reconocidas": {k: str(v) for k, v in colmap.items()},
+            "columnas_ignoradas": columnas_ignoradas,
+            "con_domicilio": con_domicilio,
+            "nombre_con_apellido": nombre_con_apellido_total,
+            "nombre_con_apellido_ejemplos": nombre_con_apellido,
+        }
+
+        logger.info(f"Padrón de socios cargado: {self.total} socios desde {p} "
+                    f"({normalizados} normalizados, "
+                    f"{len(self.reporte_carga['sin_celular_valido'])} sin celular válido)")
 
     def buscar_por_nombre(self, q: str, limit: int = 50) -> list[dict]:
         """Socios cuyo nombre/apellido contiene todas las palabras de `q`
@@ -134,7 +377,12 @@ class SocioService:
         return out
 
     def find_by_phone(self, phone: str) -> Optional[dict]:
-        """Busca un socio por número de WhatsApp (matching por sufijo)."""
+        """Busca un socio por número de WhatsApp: primero normalizando el
+        entrante a 10 dígitos (área + número), con fallback al matching por
+        sufijo de 10 y de 8 dígitos (padrón cargado sin código de área)."""
+        normalizado = normalizar_celular(phone)
+        if normalizado and normalizado in self._por_tel_10:
+            return self._por_tel_10[normalizado]
         digitos = _solo_digitos(phone)
         if len(digitos) >= 10 and digitos[-10:] in self._por_tel_10:
             return self._por_tel_10[digitos[-10:]]
@@ -160,10 +408,84 @@ class SocioService:
         socio = self.find_by_phone(phone)
         if not socio:
             return None
-        partes = [f"Nombre: {socio['nombre']} {socio['apellido']}".strip()]
+        # El nombre de pila va aparte: con "Nombre: Muff Claudia Beatriz Muff"
+        # el modelo saludaba por el apellido (24/9).
+        partes = [f"Nombre de pila (para saludar): {socio.get('nombre_pila') or nombre_de_pila(socio)}"]
+        if socio.get("apellido"):
+            partes.append(f"Apellido: {socio['apellido']}")
         if socio["nro_socio"]:
             partes.append(f"N° de socio: {socio['nro_socio']}")
         return " | ".join(partes)
+
+
+async def guardar_en_db(db, svc: "SocioService") -> int:
+    """Reemplaza la tabla `socios` completa (transacción) con los socios
+    cargados en memoria en `svc`. Postgres pasa a ser la fuente de verdad."""
+    filas = [
+        (s.get("celular", ""), s.get("celular_original", ""), s.get("nombre", ""),
+         s.get("apellido", ""), s.get("nombre_pila", ""), s.get("nro_socio", ""),
+         s.get("dni", ""), s.get("domicilio", ""))
+        for s in svc._socios
+    ]
+    async with db.transaction() as con:
+        await con.execute("DELETE FROM socios")
+        if filas:
+            await con.executemany(
+                "INSERT INTO socios (celular, celular_original, nombre, apellido, "
+                "nombre_pila, nro_socio, dni, domicilio) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+                filas)
+    return len(filas)
+
+
+class SocioYaExiste(Exception):
+    """El teléfono ya está en el padrón."""
+
+
+async def agregar_socio(db, svc: "SocioService", phone: str, nombre: str, apellido: str = "",
+                        dni: str = "", domicilio: str = "", nro_socio: str = "") -> dict:
+    """
+    Alta de UN socio desde el backoffice (1/10): alguien que es socio pero no
+    está en el padrón (línea nueva, padrón desactualizado). Se guarda en
+    Postgres y entra a memoria en el acto, así el bot ya lo reconoce (nombre,
+    descuento, domicilio). La subida completa del padrón lo reemplaza igual.
+    """
+    celular = normalizar_celular(phone)
+    if not celular:
+        raise ValueError("El teléfono no es un celular válido")
+    if svc.find_by_phone(phone):
+        raise SocioYaExiste(f"El {celular} ya está en el padrón")
+    if not (nombre or "").strip():
+        raise ValueError("Falta el nombre")
+    socio = {"celular": celular, "celular_original": phone, "nombre": nombre.strip(),
+             "apellido": (apellido or "").strip(), "nro_socio": (nro_socio or "").strip(),
+             "dni": _solo_digitos(dni), "domicilio": (domicilio or "").strip()}
+    socio["nombre_pila"] = nombre_de_pila(socio)
+    async with db.transaction() as con:
+        await con.execute(
+            "INSERT INTO socios (celular, celular_original, nombre, apellido, nombre_pila, "
+            "nro_socio, dni, domicilio) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+            socio["celular"], socio["celular_original"], socio["nombre"], socio["apellido"],
+            socio["nombre_pila"], socio["nro_socio"], socio["dni"], socio["domicilio"])
+    svc.cargar_desde_lista(svc._socios + [socio])
+    return socio
+
+
+async def cargar_desde_db(db, svc: "SocioService") -> int:
+    """Llena `svc` desde la tabla `socios`. Devuelve cuántos se cargaron
+    (0 si la tabla está vacía o Postgres no está disponible)."""
+    rows = await db.fetch(
+        "SELECT celular, celular_original, nombre, apellido, nombre_pila, "
+        "nro_socio, dni, domicilio FROM socios")
+    if not rows:
+        return 0
+    socios = [{
+        "celular": r["celular"], "celular_original": r["celular_original"],
+        "nombre": r["nombre"], "apellido": r["apellido"], "nombre_pila": r["nombre_pila"],
+        "nro_socio": r["nro_socio"], "dni": r["dni"], "domicilio": r["domicilio"],
+    } for r in rows]
+    svc.cargar_desde_lista(socios)
+    return svc.total
 
 
 _instance: Optional[SocioService] = None

@@ -18,3 +18,4 @@ SQLAlchemy==2.0.37
 psycopg2-binary==2.9.10
 # zeep==4.2.1  # descomentar al activar integración Mercurio ERP (SOAP)
 pdfplumber==0.11.4
+boto3==1.36.5

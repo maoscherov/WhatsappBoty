@@ -116,6 +116,8 @@ class SessionService:
         if sku_id != session.get("pending_sku_id"):
             session.pop("receta_validada", None)
 
+        if sku_id != session.get("pending_sku_id") or not session.get("pending_at"):
+            session["pending_at"] = time.time()
         session.update({
             "pending_sku_id": sku_id,
             "pending_sku_nombre": sku_nombre,
@@ -165,6 +167,7 @@ class SessionService:
         derivadas); delegar=False la deja en modo operador con el pedido listo.
         """
         session = await self.get(phone)
+        session["pending_at"] = time.time()
         session.update({
             "pending_sku_id": sku_id,
             "pending_sku_nombre": sku_nombre,
@@ -231,6 +234,7 @@ class SessionService:
             "pending_cantidad": 1,
             "pending_opciones": [],
             "pending_items": [],
+            "pending_at": None,
             "extras_ofrecidos": [],
             "estado": "idle",
             "tipo_entrega": None,
@@ -255,6 +259,7 @@ class SessionService:
             session["derivada_at"] = time.time()
             session["derivada_motivo"] = motivo
             session.pop("_handoff_avisado", None)
+            session.pop("_derivada_fuera_horario", None)
             # Evento para el tablero (derivaciones por motivo). Best-effort:
             # centralizado acá porque hay ~10 puntos que derivan y el motivo
             # solo vivía en la sesión, que muere a las 24hs.
@@ -267,6 +272,25 @@ class SessionService:
             except Exception as e:
                 logger.debug(f"evento derivacion: {e}")
         session["estado"] = estado
+        await self.save(phone, session)
+
+    async def operador_escribio(self, phone: str, agente: str | None = None):
+        """
+        El operador le escribió al cliente desde el backoffice: atiende una
+        persona y el bot se calla hasta que la devuelvan (como "Tomar").
+        Antes el bot seguía contestando encima ("¡Hola Florencia! Qué bueno
+        verte de nuevo") y mandaba "mucha demanda" con el operador ya
+        hablando (auditoría 2/10). `_operador_at` es la última vez que habló.
+        """
+        session = await self.get(phone)
+        if session.get("estado") != "operador":
+            await self.set_estado(phone, "operador", motivo="operador_escribio")
+            session = await self.get(phone)
+        ahora = time.time()
+        session["_operador_at"] = ahora
+        session.setdefault("atendida_at", ahora)
+        if agente and not session.get("agente"):
+            session["agente"] = agente
         await self.save(phone, session)
 
     async def delete(self, phone: str):
@@ -386,7 +410,15 @@ class SessionService:
         for phone, session in await self.list_all():
             if session.get("estado") != "operador" or session.get("_handoff_avisado"):
                 continue
+            # Derivada fuera de horario: al cliente ya se le dijo cuándo
+            # abrimos; un "ya te atienden" a la noche sería falso.
+            if session.get("_derivada_fuera_horario"):
+                continue
             derivada = session.get("derivada_at")
+            # El operador ya le escribió desde el backoffice: está atendida
+            # ("mucha demanda" sería falso — auditoría 2/10).
+            if derivada and float(session.get("_operador_at") or 0) >= float(derivada):
+                continue
             if derivada and now - float(derivada) >= threshold_secs:
                 out.append(phone)
         return out
@@ -456,7 +488,15 @@ class SessionService:
             # por inactividad, la libera una persona (19/9).
             if session.get("derivada_motivo") == "bot_apagado":
                 continue
+            # Derivada fuera de horario (receta, pedido de una persona): la
+            # atiende alguien al abrir; devolverla al bot la dejaría sin resolver.
+            if session.get("_derivada_fuera_horario"):
+                continue
             derivada = session.get("derivada_at")
+            # El operador ya le escribió desde el backoffice: está atendida
+            # ("mucha demanda" sería falso — auditoría 2/10).
+            if derivada and float(session.get("_operador_at") or 0) >= float(derivada):
+                continue
             if derivada and now - float(derivada) >= threshold_secs:
                 out.append(phone)
         return out
@@ -472,6 +512,7 @@ class SessionService:
         session = await self.get(phone)
         session["estado"] = "idle"
         for k in ("derivada_at", "derivada_motivo", "_handoff_avisado", "agente",
+                  "_derivada_fuera_horario",
                   "_conv_inicio", "_negativos", "derivacion_ofrecida",
                   "extras_ofrecidos", "receta_info", "atendida_at", "pago_metodo"):
             session.pop(k, None)

@@ -7,8 +7,9 @@ GET /bo/session/{phone} → detalle completo de una sesión
 """
 
 import logging
+import re
 import statistics
-from fastapi import APIRouter, HTTPException, Query, Depends, UploadFile, File, Header
+from fastapi import APIRouter, HTTPException, Query, Depends, UploadFile, File, Form, Header
 from pathlib import Path
 from pydantic import BaseModel
 
@@ -120,6 +121,25 @@ def _nombre_socio(phone: str) -> str | None:
         return None
 
 
+def _datos_cliente(phone: str) -> dict:
+    """
+    {"nombre", "tipo_cliente"} con el mismo criterio que el descuento del bot:
+    empleado primero (su descuento reemplaza al de socio), después socio.
+    Antes solo se miraba el padrón de socios: un empleado que el bot atendía
+    con su 20% aparecía en el backoffice sin nombre y como "No socio" (29/9).
+    """
+    try:
+        from app.services.empleado_service import get_empleado_service
+        emp = get_empleado_service().find_by_phone(phone)
+    except Exception:
+        emp = None
+    if emp:
+        nombre = f"{emp.get('apellido') or ''} {emp.get('nombre') or ''}".strip()
+        return {"nombre": nombre or emp.get("nombre_pila") or None, "tipo_cliente": "empleado"}
+    nombre = _nombre_socio(phone)
+    return {"nombre": nombre, "tipo_cliente": "socio" if nombre else "no_socio"}
+
+
 @router.get("/sessions")
 async def bo_sessions(_=Depends(_auth)):
     settings = get_settings()
@@ -138,7 +158,7 @@ async def bo_sessions(_=Depends(_auth)):
         )
         result.append({
             "phone": phone,
-            "nombre": _nombre_socio(phone),
+            **_datos_cliente(phone),
             "estado": s.get("estado", "idle"),
             "pending_sku_nombre": s.get("pending_sku_nombre"),
             "pending_precio": s.get("pending_precio"),
@@ -175,7 +195,7 @@ async def bo_derivadas(_=Depends(_auth)):
         ultimo = next((m["content"] for m in reversed(history) if m["role"] == "user"), None)
         derivadas.append({
             "phone": phone,
-            "nombre": _nombre_socio(phone),
+            **_datos_cliente(phone),
             "derivada_at": s.get("derivada_at"),
             "derivada_motivo": s.get("derivada_motivo"),
             "agente": s.get("agente"),
@@ -194,7 +214,23 @@ async def bo_session_detail(phone: str, _=Depends(_auth)):
     settings = get_settings()
     session_svc = get_session_service(settings.redis_url)
     session = await session_svc.get(phone)
-    return {"phone": phone, "nombre": _nombre_socio(phone), **session}
+    # Los adjuntos van FIRMADOS: /media/chat no abre sin clave o firma.
+    session["history"] = [_mensaje_en_vivo(m) for m in session.get("history", [])]
+    return {"phone": phone, **_datos_cliente(phone), **session}
+
+
+def _mensaje_en_vivo(m: dict) -> dict:
+    """Mensaje de la sesión en vivo con el adjunto firmado y, si tiene uno,
+    `media` / `media_tipo` como en el historial."""
+    from app.services import chat_media
+    m = dict(m)
+    contenido = m.get("content") or ""
+    ref = re.search(r"/media/chat/[\w.\-]+", contenido)
+    if ref:
+        m["media"] = chat_media.firmar(ref.group(0))
+        m["media_tipo"] = chat_media.tipo_de(ref.group(0))
+        m["content"] = chat_media.firmar_en_texto(contenido)
+    return m
 
 
 @router.get("/perf")
@@ -575,9 +611,116 @@ async def bo_socios_info(_=Depends(_auth)):
     settings = get_settings()
     try:
         svc = get_socio_service(settings.socios_path)
-        return {"total": svc.total, "path": settings.socios_path}
+        return {"total": svc.total, "path": settings.socios_path,
+                "reporte_carga": svc.reporte_carga}
     except Exception as e:
         return {"total": 0, "error": str(e)}
+
+
+@router.get("/socios")
+async def bo_socios_list(_=Depends(_auth), q: str = Query(""), page: int = Query(1, ge=1),
+                         page_size: int = Query(50, ge=1, le=200),
+                         incluir_sensibles: bool = Query(False)):
+    """
+    Listado paginado del padrón para el buscador del backoffice. `q` busca en
+    nombre, apellido, N° de socio y celular. Por privacidad, DNI y domicilio
+    solo viajan con `?incluir_sensibles=true`.
+    """
+    from app.services.cc_service import get_cc_service
+    settings = get_settings()
+    svc = get_socio_service(settings.socios_path)
+    cc = get_cc_service(settings.redis_url)
+
+    q = q.strip()
+    if q:
+        import unicodedata as _ud
+
+        def _plano(s: str) -> str:
+            return "".join(c for c in _ud.normalize("NFD", (s or "").lower())
+                           if _ud.category(c) != "Mn")
+
+        q_digitos = re.sub(r"\D", "", q)
+        candidatos = svc.buscar_por_nombre(q)
+        if not candidatos:
+            # buscar_por_nombre descarta términos numéricos: cubrir búsqueda
+            # por N° de socio y celular (original o normalizado) acá.
+            q_plano = _plano(q)
+            for s in svc._socios:
+                if (q_plano and q_plano in _plano(s.get("nro_socio", ""))) or \
+                   (q_digitos and (q_digitos in (s.get("celular") or "") or
+                                   q_digitos in re.sub(r"\D", "", s.get("celular_original") or ""))):
+                    candidatos.append(s)
+    else:
+        candidatos = list(svc._socios)
+
+    total = len(candidatos)
+    inicio = (page - 1) * page_size
+    pagina = candidatos[inicio:inicio + page_size]
+
+    out = []
+    for s in pagina:
+        item = {
+            "nombre": s.get("nombre"),
+            "apellido": s.get("apellido"),
+            "nro_socio": s.get("nro_socio"),
+            "celular": s.get("celular"),
+            "celular_original": s.get("celular_original"),
+            "cc_excepcion": await cc.es_excepcion(s),
+        }
+        if incluir_sensibles:
+            item["dni"] = s.get("dni")
+            item["domicilio"] = s.get("domicilio")
+        out.append(item)
+
+    return {"total": total, "page": page, "page_size": page_size, "socios": out}
+
+
+@router.get("/socios/export.csv")
+async def bo_socios_export(_=Depends(_auth), q: str = Query("")):
+    """CSV completo (sin paginar) del padrón filtrado por `q`, sin datos
+    sensibles (DNI, domicilio)."""
+    import csv
+    import io
+    from fastapi.responses import StreamingResponse
+    from app.services.cc_service import get_cc_service
+
+    settings = get_settings()
+    svc = get_socio_service(settings.socios_path)
+    cc = get_cc_service(settings.redis_url)
+
+    q = q.strip()
+    if q:
+        import unicodedata as _ud
+
+        def _plano(s: str) -> str:
+            return "".join(c for c in _ud.normalize("NFD", (s or "").lower())
+                           if _ud.category(c) != "Mn")
+
+        q_digitos = re.sub(r"\D", "", q)
+        candidatos = svc.buscar_por_nombre(q)
+        if not candidatos:
+            q_plano = _plano(q)
+            for s in svc._socios:
+                if (q_plano and q_plano in _plano(s.get("nro_socio", ""))) or \
+                   (q_digitos and (q_digitos in (s.get("celular") or "") or
+                                   q_digitos in re.sub(r"\D", "", s.get("celular_original") or ""))):
+                    candidatos.append(s)
+    else:
+        candidatos = list(svc._socios)
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["nombre", "apellido", "nro_socio", "celular", "celular_original", "cc_excepcion"])
+    for s in candidatos:
+        writer.writerow([
+            s.get("nombre"), s.get("apellido"), s.get("nro_socio"),
+            s.get("celular"), s.get("celular_original"),
+            "si" if await cc.es_excepcion(s) else "no",
+        ])
+    buf.seek(0)
+    return StreamingResponse(
+        iter([buf.getvalue()]), media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=socios.csv"})
 
 
 @router.get("/socios/check/{phone}")
@@ -637,11 +780,93 @@ async def bo_socios_import(file: UploadFile = File(...), _=Depends(_auth)):
         settings.socios_path = str(dest)
         # Copia en Redis para sobrevivir deploys (fs efímero de Railway)
         await get_blob_store(settings.redis_url).save("socios", content, suffix)
-        return {"status": "ok", "total": svc.total, "path": str(dest)}
+        # Persistencia en Postgres (best-effort: si falla, el padrón sigue
+        # funcionando en memoria desde el archivo hasta el próximo import).
+        persistido = False
+        try:
+            db = get_db(settings.database_url)
+            if db.available():
+                from app.services.socio_service import guardar_en_db
+                await guardar_en_db(db, svc)
+                persistido = True
+        except Exception as e:
+            logger.warning(f"No se pudo persistir el padrón de socios en Postgres: {e}")
+        return {"status": "ok", "total": svc.total, "path": str(dest),
+                "reporte_carga": svc.reporte_carga, "persistido": persistido}
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=422, detail=f"Error procesando padrón: {e}")
+
+
+# ── Empleados (20% de descuento, no acumulable con el de socio) ───────────────
+
+@router.post("/empleados/import")
+async def bo_empleados_import(file: UploadFile = File(...), grupo: str | None = Query(None),
+                              _=Depends(_auth)):
+    """
+    Carga la planilla de empleados y REEMPLAZA la lista completa. `?grupo=`
+    es opcional (compatibilidad): si viene, reemplaza solo ese grupo.
+    Persiste en Postgres y recarga el singleton en memoria.
+    """
+    from app.services.empleado_service import (get_empleado_service, parsear_planilla)
+    from app.services.empleado_service import guardar_en_db as guardar_empleados_db
+    from app.services.empleado_service import cargar_desde_db as cargar_empleados_db
+
+    settings = get_settings()
+    grupo = (grupo or "").strip() or None
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Archivo vacío")
+
+    try:
+        empleados, reporte = parsear_planilla(data, file.filename or "", grupo or "general")
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Error procesando planilla: {e}")
+    if not empleados:
+        raise HTTPException(
+            status_code=422,
+            detail="No se reconoció ningún empleado (¿falta el encabezado con "
+                   "celular/teléfono y nombre?)")
+
+    db = get_db(settings.database_url)
+    if not db.available():
+        raise HTTPException(status_code=503, detail="Postgres no disponible — no se pudo persistir")
+    await guardar_empleados_db(db, empleados, grupo)
+
+    svc = get_empleado_service()
+    total = await cargar_empleados_db(db, svc)
+    svc.reporte_carga = reporte
+
+    total_grupo = sum(1 for e in svc._empleados if e.get("grupo") == (grupo or "general"))
+    return {"grupo": grupo or "general", "total_grupo": total_grupo, "total": total,
+            "reporte_carga": reporte}
+
+
+@router.get("/empleados/info")
+async def bo_empleados_info(_=Depends(_auth)):
+    from app.services.empleado_service import get_empleado_service
+    svc = get_empleado_service()
+    por_grupo: dict[str, int] = {}
+    for e in svc._empleados:
+        g = e.get("grupo") or "general"
+        por_grupo[g] = por_grupo.get(g, 0) + 1
+    return {"total": svc.total, "por_grupo": por_grupo, "reporte_carga": svc.reporte_carga}
+
+
+@router.get("/empleados")
+async def bo_empleados_list(_=Depends(_auth), q: str = Query(""), page: int = Query(1, ge=1),
+                            page_size: int = Query(50, ge=1, le=200)):
+    from app.services.empleado_service import get_empleado_service
+    svc = get_empleado_service()
+    pagina, total = svc.listar(q, page, page_size)
+    empleados = [{
+        "nombre": e.get("nombre"), "apellido": e.get("apellido"),
+        "nombre_pila": e.get("nombre_pila"), "grupo": e.get("grupo"),
+        "celular": e.get("celular"), "celular_original": e.get("celular_original"),
+        "activo": e.get("activo", True),
+    } for e in pagina]
+    return {"total": total, "page": page, "page_size": page_size, "empleados": empleados}
 
 
 # ── Horarios de atención ───────────────────────────────────────────────────────
@@ -685,6 +910,7 @@ class ConfigUpdate(BaseModel):
     cc_tope_monto: str | None = None             # tope por pedido, "0" = sin tope
     efectivo_enabled: str | None = None          # "true"/"false" — pago en efectivo
     efectivo_solo_socios: str | None = None      # "true" = solo socios del padrón
+    vender_fuera_horario: str | None = None      # "true" = el bot vende lo sin receta fuera de horario
     efectivo_con_envio: str | None = None        # "true" = también con envío a domicilio
     efectivo_tope_monto: str | None = None       # tope por pedido, "0" = sin tope
     efectivo_horas_reserva: str | None = None    # plazo informado para retirar ("0" = no se informa)
@@ -715,6 +941,7 @@ class ConfigUpdate(BaseModel):
     imagen_no_reconocida_message: str | None = None   # imagen que el bot no reconoce → deriva
     obras_sociales: str | None = None            # lista (coma/renglón) de obras sociales con convenio
     obras_sociales_si_message: str | None = None       # {obra_social}
+    precio_minimo_venta: str | None = None             # debajo, el precio lo confirma el equipo
     obras_sociales_no_message: str | None = None       # {obra_social}
     obras_sociales_lista_message: str | None = None    # {lista}
     obras_sociales_sin_lista_message: str | None = None
@@ -735,6 +962,8 @@ class ConfigUpdate(BaseModel):
     socio_discount_info_message: str | None = None   # respuesta fija con descuento activo ({pct})
     socio_discount_off_message: str | None = None    # respuesta fija con descuento apagado
     derivadas_poll_seconds: str | None = None    # intervalo de polleo de /bo/derivadas
+    empleado_discount_pct: str | None = None     # descuento de empleado, no acumulable con el de socio
+    empleado_discount_message: str | None = None
 
 
 class BotSwitch(BaseModel):
@@ -816,11 +1045,25 @@ async def bo_takeover(phone: str, _=Depends(_auth)):
 
 
 @router.post("/session/{phone}/release")
-async def bo_release(phone: str, _=Depends(_auth)):
-    """Devuelve la conversación al bot."""
+async def bo_release(phone: str, _=Depends(_auth), agente: str | None = Query(None)):
+    """
+    Devuelve la conversación al bot. Usa `liberar()`, igual que la devolución
+    automática: antes solo pasaba el estado a idle y quedaban el operador
+    asignado y el motivo de la derivación (caso 1/10: Idle con "Atiende: Lore"
+    y "No entendido", y el bot respondiendo igual). `agente` = quién la
+    devolvió, para la línea de tiempo.
+    """
     settings = get_settings()
     session_svc = get_session_service(settings.redis_url)
-    await session_svc.set_estado(phone, "idle")
+    previo = dict(await session_svc.get(phone))      # copia: liberar() la limpia
+    await session_svc.liberar(phone)
+    try:
+        await get_metrics_store(get_db(settings.database_url)).evento(
+            "conversacion_devuelta", phone=phone,
+            dato=(previo.get("derivada_motivo") or "")[:80] or None,
+            ref=(agente or previo.get("agente") or "")[:40] or None)
+    except Exception as e:
+        logger.debug(f"evento conversacion_devuelta: {e}")
     return {"status": "ok", "estado": "idle", "phone": phone}
 
 
@@ -879,14 +1122,14 @@ async def bo_paylink(body: PaylinkIn, _=Depends(_auth)):
     # El desglose redactado viaja en la respuesta y en el mensaje al cliente.
     cotizacion = None
     if body.pct_os is not None or body.plantilla == "receta":
-        _es_socio = bool(get_socio_service(settings.socios_path).find_by_phone(body.phone))
-        try:
-            _pct_socio = float(_cfg.get("socio_discount_pct") or 0)
-        except (TypeError, ValueError):
-            _pct_socio = 0.0
+        # Mismo descuento que en el chat: empleado (no acumulable) o socio.
+        from app.services.checkout_helper import descuento_para
+        _pct_socio, _tipo_desc = descuento_para(
+            body.phone, _cfg, get_socio_service(settings.socios_path))
         from app.services.receta_ocr import cotizar_receta
         cotizacion = cotizar_receta(precio, pct_os=body.pct_os or 0,
-                                    es_socio=_es_socio, pct_socio=_pct_socio)
+                                    es_socio=_pct_socio > 0, pct_socio=_pct_socio,
+                                    etiqueta=_tipo_desc or "socio")
         precio = cotizacion["precio_final"]
 
     total = round(precio * cantidad, 2)
@@ -987,10 +1230,21 @@ async def bo_take(phone: str, agente: str = Query(...), _=Depends(_auth)):
     settings = get_settings()
     session_svc = get_session_service(settings.redis_url)
     session = await session_svc.get(phone)
+    # Tomar = atiende una persona y el bot deja de hablar hasta que se la
+    # devuelva (28/9). Antes solo asignaba: la charla seguía en "idle" y el
+    # bot contestaba encima del operador.
+    ya_derivada = session.get("estado") == "operador"
+    if not ya_derivada:
+        await session_svc.set_estado(phone, "operador", motivo="tomada_por_operador")
+        session = await session_svc.get(phone)
     session["agente"] = agente.strip()
     # SLA de atención: cuánto tardó una persona en tomar la derivación (el
-    # tablero mide "derivaciones dentro del SLA de 15 min").
-    _derivada = session.get("derivada_at")
+    # tablero mide "derivaciones dentro del SLA de 15 min"). Tomar una charla
+    # que no estaba derivada no cuenta para el SLA.
+    _derivada = session.get("derivada_at") if ya_derivada else None
+    if not ya_derivada:
+        import time as _t
+        session["atendida_at"] = _t.time()
     if _derivada and not session.get("atendida_at"):
         import time as _t
         session["atendida_at"] = _t.time()
@@ -1004,7 +1258,15 @@ async def bo_take(phone: str, agente: str = Query(...), _=Depends(_auth)):
         except Exception as e:
             logger.debug(f"evento derivacion_atendida: {e}")
     await session_svc.save(phone, session)
-    return {"status": "ok", "phone": phone, "agente": agente.strip()}
+    # Línea de tiempo: quién la tomó, también si no estaba derivada (1/10).
+    try:
+        await get_metrics_store(get_db(settings.database_url)).evento(
+            "conversacion_tomada", phone=phone,
+            dato=(session.get("derivada_motivo") or "")[:80] or None,
+            ref=agente.strip()[:40])
+    except Exception as e:
+        logger.debug(f"evento conversacion_tomada: {e}")
+    return {"status": "ok", "phone": phone, "agente": agente.strip(), "estado": "operador"}
 
 
 @router.post("/session/{phone}/close")
@@ -1209,10 +1471,13 @@ async def bo_dashboard(_=Depends(_auth), days: int = Query(7, ge=1, le=90)):
 
 @router.get("/conversaciones")
 async def bo_conversaciones(_=Depends(_auth), days: int = Query(30, ge=1, le=365),
-                            q: str = Query(""), limit: int = Query(50, le=200)):
+                            q: str = Query(""), limit: int = Query(50, le=200),
+                            con_marcas: bool = Query(False),
+                            desde: str | None = Query(None), hasta: str | None = Query(None)):
     """
     Conversaciones históricas (Postgres): una fila por teléfono con actividad
     en el rango, ordenadas por última actividad. `q` filtra por teléfono.
+    `con_marcas=true` deja solo las que tienen alguna marca de error cargada.
     El detalle de cada una se abre con GET /bo/history/{phone}.
     """
     from app.services.metrics_store import get_metrics_store
@@ -1227,10 +1492,40 @@ async def bo_conversaciones(_=Depends(_auth), days: int = Query(30, ge=1, le=365
             sufijos = [s["celular"][-10:] for s in socios if s.get("celular")]
         except Exception:
             sufijos = []
+        try:
+            from app.services.empleado_service import get_empleado_service
+            empleados, _ = get_empleado_service().listar(q, page=1, page_size=500)
+            sufijos += [e["celular"][-10:] for e in empleados if e.get("celular")]
+        except Exception:
+            pass
+    # Rango: desde/hasta (YYYY-MM-DD, día de Argentina) o los últimos `days`.
+    # Las marcas se cuentan en el MISMO rango (antes eran todas las históricas).
+    f_desde, f_hasta = _fecha_query(desde, "desde"), _fecha_query(hasta, "hasta")
+    if not (f_desde or f_hasta):
+        from datetime import datetime as _dt, timedelta as _td
+        from app.services.config_service import TZ_ARG
+        f_hasta = _dt.now(TZ_ARG).date()
+        f_desde = f_hasta - _td(days=days - 1)
+        rango_explicito = False
+    else:
+        rango_explicito = True
     convs = await get_metrics_store(get_db(settings.database_url)).conversaciones(
-        days, q, limit, sufijos_tel=sufijos)
+        days, q, limit, sufijos_tel=sufijos,
+        desde=f_desde if rango_explicito else None, hasta=f_hasta if rango_explicito else None)
     for c in convs:
-        c["nombre"] = _nombre_socio(c["phone"])
+        c.update(_datos_cliente(c["phone"]))
+    # Marcas de error por teléfono: best-effort, no debe romper la lista.
+    try:
+        from app.services import marcas_service
+        conteo = await marcas_service.contar_por_phones(
+            get_db(settings.database_url), [c["phone"] for c in convs],
+            desde=f_desde, hasta=f_hasta)
+    except Exception:
+        conteo = {}
+    for c in convs:
+        c["marcas"] = conteo.get(c["phone"], 0)
+    if con_marcas:
+        convs = [c for c in convs if c["marcas"] > 0]
     return {"available": get_db(settings.database_url).available(), "conversaciones": convs}
 
 
@@ -1252,8 +1547,52 @@ async def bo_history(phone: str, _=Depends(_auth), limit: int = Query(200, ge=1,
     total = await store.contar(phone)
     hay_anteriores = len(mensajes) == limit and (
         await store.history(phone, 1, before_id=mensajes[0]["id"]) != [])
-    return {"available": True, "phone": phone, "nombre": _nombre_socio(phone),
-            "total": total, "hay_anteriores": hay_anteriores, "messages": mensajes}
+    # Marcas de error de la conversación: una sola query, best-effort (no debe
+    # romper el historial si falla).
+    marcas_conversacion: list = []
+    try:
+        from app.services import marcas_service
+        todas = await marcas_service.marcas_de_phone(db, phone)
+        por_mensaje: dict[int, list] = {}
+        for m in todas:
+            if m["message_id"] is None:
+                marcas_conversacion.append(m)
+            else:
+                por_mensaje.setdefault(m["message_id"], []).append(m)
+        for msg in mensajes:
+            msg["marcas"] = por_mensaje.get(msg["id"], [])
+    except Exception:
+        for msg in mensajes:
+            msg.setdefault("marcas", [])
+        marcas_conversacion = []
+    return {"available": True, "phone": phone, **_datos_cliente(phone),
+            "total": total, "hay_anteriores": hay_anteriores, "messages": mensajes,
+            "marcas_conversacion": marcas_conversacion,
+            "linea_de_tiempo": await _linea_de_tiempo(db, phone)}
+
+
+_EVENTOS_ATENCION = {
+    "derivacion": "Derivada a una persona",
+    "derivacion_atendida": "Derivación atendida",
+    "conversacion_tomada": "Tomada por un operador",
+    "conversacion_devuelta": "Devuelta al bot",
+}
+
+
+async def _linea_de_tiempo(db, phone: str) -> list[dict]:
+    """Derivaciones, quién tomó la conversación y quién la devolvió al bot
+    (eventos en Postgres: la sesión de Redis se pierde al cerrarse)."""
+    try:
+        filas = await db.fetch(
+            "SELECT tipo, dato, ref, created_at FROM eventos WHERE phone = $1 "
+            "AND tipo = ANY($2::text[]) AND created_at > now() - interval '90 days' "
+            "ORDER BY created_at", phone, list(_EVENTOS_ATENCION))
+    except Exception:
+        return []
+    return [{"tipo": f["tipo"], "etiqueta": _EVENTOS_ATENCION[f["tipo"]],
+             "motivo": f["dato"] if f["tipo"] != "derivacion_atendida" else None,
+             "agente": f["ref"] if f["tipo"] != "derivacion" else None,
+             "ts": f["created_at"].isoformat()} for f in filas]
 
 
 # ── RAG: indexación y estado ────────────────────────────────────────────────────
@@ -1356,6 +1695,194 @@ async def bo_kb_delete(doc_id: int, _=Depends(_auth)):
     return {"status": "ok"}
 
 
+# ── Marcas de error (operadores señalan equivocaciones del bot) ────────────────
+
+class MarcaIn(BaseModel):
+    phone: str
+    message_id: int | None = None
+    categoria: str
+    observacion: str
+    autor: str | None = None
+
+
+def _fecha_query(valor: str | None, nombre: str):
+    if not valor:
+        return None
+    from datetime import date as _date
+    try:
+        return _date.fromisoformat(valor)
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"{nombre} inválida (usar YYYY-MM-DD)")
+
+
+@router.get("/marcas/categorias")
+async def bo_marcas_categorias(_=Depends(_auth)):
+    from app.services import marcas_service
+    return marcas_service.categorias_lista()
+
+
+@router.post("/marcas")
+async def bo_marcas_crear(body: MarcaIn, _=Depends(_auth)):
+    from app.services import marcas_service
+    settings = get_settings()
+    db = get_db(settings.database_url)
+    if not db.available():
+        raise HTTPException(status_code=503, detail="Postgres no disponible")
+    try:
+        return await marcas_service.crear(
+            db, body.phone, body.categoria, body.observacion,
+            message_id=body.message_id, autor=body.autor)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=f"{e}. Reintentá en unos minutos.")
+
+
+@router.get("/marcas")
+async def bo_marcas_listar(_=Depends(_auth), phone: str | None = Query(None),
+                           desde: str | None = Query(None), hasta: str | None = Query(None),
+                           categoria: str | None = Query(None)):
+    from app.services import marcas_service
+    settings = get_settings()
+    db = get_db(settings.database_url)
+    if not db.available():
+        raise HTTPException(status_code=503, detail="Postgres no disponible")
+    marcas = await marcas_service.listar(
+        db, phone=phone, desde=_fecha_query(desde, "desde"),
+        hasta=_fecha_query(hasta, "hasta"), categoria=categoria)
+    return {"marcas": marcas}
+
+
+@router.delete("/marcas/{marca_id}")
+async def bo_marcas_eliminar(marca_id: int, _=Depends(_auth)):
+    from app.services import marcas_service
+    settings = get_settings()
+    db = get_db(settings.database_url)
+    if not db.available():
+        raise HTTPException(status_code=503, detail="Postgres no disponible")
+    ok = await marcas_service.eliminar(db, marca_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Marca no encontrada")
+    return {"status": "ok"}
+
+
+@router.get("/marcas/export.csv")
+async def bo_marcas_export(_=Depends(_auth), desde: str | None = Query(None),
+                           hasta: str | None = Query(None), categoria: str | None = Query(None),
+                           autor: str | None = Query(None)):
+    import csv
+    import io
+    from fastapi.responses import StreamingResponse
+    from app.services import marcas_service
+
+    settings = get_settings()
+    db = get_db(settings.database_url)
+    if not db.available():
+        raise HTTPException(status_code=503, detail="Postgres no disponible")
+    marcas = await marcas_service.para_export(
+        db, desde=_fecha_query(desde, "desde"), hasta=_fecha_query(hasta, "hasta"),
+        categoria=categoria or None, autor=autor or None)
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["fecha_mensaje", "fecha_marca", "cliente", "telefono", "tipo_cliente",
+                     "categoria", "observacion", "marcado_por", "mensaje_cliente",
+                     "mensaje_marcado", "quien_escribio", "motivo_derivacion", "message_id"])
+    for m in marcas:
+        cli = _datos_cliente(m["phone"])
+        writer.writerow([m["mensaje_at"] or m["ts"], m["ts"], cli["nombre"] or "", m["phone"],
+                         cli["tipo_cliente"], m["etiqueta"], m["observacion"], m["autor"] or "",
+                         m["mensaje_cliente"], m["mensaje"],
+                         {"assistant": "bot", "operator": "operador", "user": "cliente"}.get(
+                             m["mensaje_rol"] or "", "" if not m["message_id"] else m["mensaje_rol"]),
+                         m["derivacion"] or "", m["message_id"] or ""])
+    contenido = "﻿" + buf.getvalue()
+    return StreamingResponse(
+        iter([contenido]), media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=marcas.csv"})
+
+
+@router.get("/marcas/resumen")
+async def bo_marcas_resumen(_=Depends(_auth), desde: str | None = Query(None),
+                            hasta: str | None = Query(None)):
+    """Errores por categoría y por quién los marcó en el período."""
+    from app.services import marcas_service
+    db = get_db(get_settings().database_url)
+    if not db.available():
+        raise HTTPException(status_code=503, detail="Postgres no disponible")
+    return await marcas_service.resumen_categorias(
+        db, desde=_fecha_query(desde, "desde"), hasta=_fecha_query(hasta, "hasta"))
+
+
+@router.get("/marcas/indicadores")
+async def bo_marcas_indicadores(_=Depends(_auth), desde: str | None = Query(None),
+                                hasta: str | None = Query(None)):
+    from app.services import marcas_service
+    settings = get_settings()
+    db = get_db(settings.database_url)
+    if not db.available():
+        raise HTTPException(status_code=503, detail="Postgres no disponible")
+    return await marcas_service.indicadores(
+        db, desde=_fecha_query(desde, "desde"), hasta=_fecha_query(hasta, "hasta"))
+
+
+@router.post("/session/{phone}/attachment")
+async def bo_send_attachment(phone: str, file: UploadFile = File(...), caption: str = Form(""),
+                             agente: str | None = Form(None), _=Depends(_auth)):
+    """
+    Operador adjunta un archivo (foto, PDF, Word, Excel…) y se lo manda al
+    cliente por WhatsApp. Queda guardado 6 meses y en el historial.
+    """
+    import uuid
+    from app.services import chat_media
+    from app.services.message_store import guardar_historico
+
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Archivo vacío")
+    if len(data) > chat_media.MAX_BYTES:
+        raise HTTPException(status_code=413, detail="El archivo supera los 15 MB")
+    nombre = Path(file.filename or "").name or "archivo"
+    ext = chat_media.ext_para(file.content_type or "", nombre)
+    if ext not in chat_media.EXT_ADJUNTABLES:
+        raise HTTPException(
+            status_code=415,
+            detail="Tipo de archivo no permitido. Se aceptan fotos (JPG, PNG), PDF, Word, "
+                   "Excel, PowerPoint, TXT y CSV.")
+
+    settings = get_settings()
+    base = (settings.public_base_url or "").rstrip("/")
+    if not base:
+        raise HTTPException(status_code=500, detail="Falta PUBLIC_BASE_URL para enviar archivos")
+    ref = await chat_media.guardar("op" + uuid.uuid4().hex, data, ext, nombre)
+    if not ref:
+        raise HTTPException(status_code=507, detail="No se pudo guardar el archivo")
+
+    # WhatsApp lo descarga de nuestra URL: firmada por 3 días.
+    url = base + chat_media.firmar(ref, horas=72)
+    tipo = chat_media.tipo_de(ext)
+    wa = get_whatsapp_service(settings.whatsapp_token, settings.whatsapp_phone_number_id)
+    caption = (caption or "").strip()
+    if tipo == "imagen" and ext in (".jpg", ".png"):
+        sent = await wa.send_image(phone, url, caption)
+    else:
+        sent = await wa.send_document(phone, url, nombre, caption)
+    if not sent:
+        raise HTTPException(status_code=502, detail="Error enviando el archivo por WhatsApp")
+
+    session_svc = get_session_service(settings.redis_url)
+    texto = (f"📷 {ref}" if tipo == "imagen" else f"📎 {nombre} {ref}") + (
+        f"\n{caption}" if caption else "")
+    await session_svc.add_message(phone, "operator", texto)
+    await session_svc.operador_escribio(phone, agente)
+    _autor = agente or (await session_svc.get(phone)).get("agente")
+    await guardar_historico(phone, "operator", caption or f"📎 {nombre}", autor=_autor,
+                            origen="imagen" if tipo == "imagen" else "documento",
+                            media=ref, media_nombre=nombre)
+    return {"status": "ok", "sent": True, "media": chat_media.firmar(ref),
+            "media_tipo": tipo, "media_nombre": nombre}
+
+
 @router.post("/session/{phone}/message")
 async def bo_send_message(phone: str, body: OperatorMessage, _=Depends(_auth)):
     """Operador envía un mensaje al cliente por WhatsApp."""
@@ -1368,6 +1895,7 @@ async def bo_send_message(phone: str, body: OperatorMessage, _=Depends(_auth)):
     if not sent:
         raise HTTPException(status_code=502, detail="Error enviando mensaje por WhatsApp")
     await session_svc.add_message(phone, "operator", body.text.strip())
+    await session_svc.operador_escribio(phone, body.agente)
     # Historial permanente: sin esto, tras una derivación el histórico mostraba
     # al cliente hablando solo (los mensajes del operador vivían solo en Redis).
     from app.services.message_store import guardar_historico

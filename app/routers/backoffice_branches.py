@@ -86,8 +86,35 @@ async def bo_branch_list(_=Depends(_auth)):
             "pending_batches": row.get("pending_batches"),
             "last_catalog_push_at": row.get("last_catalog_push_at"),
             "last_manifest_at": row.get("last_manifest_at"),
+            # 0.3.5: productos que el ERP no puede servir (hay que corregirlos
+            # en ObServer), lotes que fallaron y el último sondeo por CB.
+            "erp_productos_rotos": await _productos_rotos(db, row),
+            "erp_lotes_fallidos": _json(row.get("erp_lotes_fallidos")) or [],
+            "sondeo": _json(row.get("sondeo")),
         })
     return out
+
+
+def _json(v):
+    import json
+    if isinstance(v, str):
+        try:
+            return json.loads(v)
+        except ValueError:
+            return None
+    return v
+
+
+async def _productos_rotos(db, row) -> list[dict]:
+    """ids que el ERP devuelve con error, con el nombre si alguna vez llegó."""
+    ids = [str(i) for i in (_json(row.get("erp_productos_rotos")) or [])]
+    if not ids:
+        return []
+    filas = await db.fetch(
+        "SELECT external_id, name FROM catalog_items WHERE branch_id = $1 "
+        "AND external_id = ANY($2::text[])", row["branch_id"], ids)
+    nombres = {f["external_id"]: f["name"] for f in filas}
+    return [{"id_producto": int(i), "nombre": nombres.get(i)} for i in ids]
 
 
 @router.post("/branches/{branch_id}/rotate-token")
@@ -199,3 +226,135 @@ async def bo_catalog_extras(external_id: str, body: ExtrasIn, _=Depends(_auth)):
         branch, external_id, **campos)
     get_catalog_refresher().schedule(branch, {external_id})
     return {"ok": True}
+
+
+# ── "¿Qué ve el bot?" — vista previa de stock (22/9) ─────────────────────────
+
+@router.get("/sku/stock")
+async def bo_sku_stock(_=Depends(_auth), q: str = Query(..., min_length=2),
+                       vivo: bool = Query(False), phone: str = Query("")):
+    """
+    Corre la misma cadena que el bot antes de ofrecer (buscar → verificar en
+    vivo lo dudoso → filtrar por stock → descuento de socio) y devuelve, por
+    producto, el dato del cache, el del ERP si se consultó, y si lo ofrecería.
+    `vivo=true` fuerza la consulta al ERP de todos los resultados: pega al
+    ERP, usarlo a demanda (botón), no en cada tecla. `phone` aplica el
+    descuento que vería ese socio.
+    """
+    from app.services.config_service import get_config_service
+    from app.services.sku_service import get_sku_service
+    from app.services.socio_service import get_socio_service
+    from app.services.stock_preview import vista_previa_stock
+
+    settings = get_settings()
+    cfg = await get_config_service(settings.redis_url).get_all()
+    socios = None
+    if phone:
+        try:
+            socios = get_socio_service(settings.socios_path)
+        except Exception:
+            socios = None
+    return await vista_previa_stock(
+        q, get_sku_service(settings.sku_csv_path), cfg, phone=phone, vivo=vivo,
+        socio_svc=socios, timeout=settings.live_lookup_timeout_s,
+    )
+
+
+# ── Receta por código de barras (24/9) ──────────────────────────────────────
+
+from fastapi import File, UploadFile  # noqa: E402
+
+
+@router.get("/receta/estado")
+async def bo_receta_estado(_=Depends(_auth)):
+    """
+    Cómo quedó la condición de venta: tamaño de la referencia (sí/no), cuántos
+    productos del catálogo ERP quedaron con receta, venta libre o "a validar"
+    (medicamentos sin referencia: el bot los deriva), y ejemplos de estos.
+    """
+    from app.services.receta_referencia import estado
+    db = get_db(get_settings().database_url)
+    if not db.available():
+        raise HTTPException(status_code=503, detail="Base de datos no disponible")
+    return await estado(db)
+
+
+@router.post("/receta/sincronizar")
+async def bo_receta_sincronizar(file: UploadFile = File(...), modo: str = Query("actualizar"),
+                                autor: str = Query(""), _=Depends(_auth)):
+    """
+    Sube un archivo (CSV o Excel, catálogo base/bot o una planilla ad-hoc) con
+    la condición de venta y arma una VISTA PREVIA: nada se aplica todavía.
+    `modo=actualizar` agrega/pisa por código de barras sin borrar nada;
+    `modo=reemplazar` deja la referencia exactamente como el archivo. Para
+    aplicarla: POST /receta/sincronizar/{id}/confirmar.
+    """
+    from app.services.receta_referencia import preparar_sincronizacion
+    db = get_db(get_settings().database_url)
+    if not db.available():
+        raise HTTPException(status_code=503, detail="Base de datos no disponible")
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Archivo vacío")
+    try:
+        return await preparar_sincronizacion(db, data, file.filename or "archivo", modo,
+                                             autor=autor or None)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@router.post("/receta/sincronizar/{id}/confirmar")
+async def bo_receta_sincronizar_confirmar(id: int, _=Depends(_auth)):
+    """Aplica la vista previa: upsert o reemplazo de la referencia, recalcula
+    el catálogo ERP y recarga el bot."""
+    from app.services.receta_referencia import SincronizacionConflicto, confirmar_sincronizacion
+    db = get_db(get_settings().database_url)
+    if not db.available():
+        raise HTTPException(status_code=503, detail="Base de datos no disponible")
+    try:
+        res = await confirmar_sincronizacion(db, id)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Sincronización no encontrada")
+    except SincronizacionConflicto as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    try:
+        await get_catalog_refresher().recargar()
+    except Exception as e:
+        logger.warning(f"receta/sincronizar confirmar: no se pudo recargar el catálogo: {e}")
+    return res
+
+
+@router.post("/receta/sincronizar/{id}/descartar")
+async def bo_receta_sincronizar_descartar(id: int, _=Depends(_auth)):
+    from app.services.receta_referencia import SincronizacionConflicto, descartar_sincronizacion
+    db = get_db(get_settings().database_url)
+    if not db.available():
+        raise HTTPException(status_code=503, detail="Base de datos no disponible")
+    try:
+        return await descartar_sincronizacion(db, id)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Sincronización no encontrada")
+    except SincronizacionConflicto as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+@router.get("/receta/sincronizaciones")
+async def bo_receta_sincronizaciones(_=Depends(_auth), limit: int = Query(20, ge=1, le=200)):
+    """Historial de sincronizaciones (más nuevas primero), sin el detalle de filas."""
+    from app.services.receta_referencia import listar_sincronizaciones
+    db = get_db(get_settings().database_url)
+    if not db.available():
+        raise HTTPException(status_code=503, detail="Base de datos no disponible")
+    return {"sincronizaciones": await listar_sincronizaciones(db, limit=limit)}
+
+
+@router.get("/receta/sincronizaciones/{id}")
+async def bo_receta_sincronizacion_uno(id: int, _=Depends(_auth)):
+    from app.services.receta_referencia import obtener_sincronizacion
+    db = get_db(get_settings().database_url)
+    if not db.available():
+        raise HTTPException(status_code=503, detail="Base de datos no disponible")
+    res = await obtener_sincronizacion(db, id)
+    if res is None:
+        raise HTTPException(status_code=404, detail="Sincronización no encontrada")
+    return res

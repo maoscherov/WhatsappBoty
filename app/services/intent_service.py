@@ -102,7 +102,7 @@ RESERVAS (PROHIBIDO):
 
 PERSONALIZACIÓN (SOCIOS DE LA MUTUAL):
 - Si el mensaje incluye un bloque [DATOS DEL SOCIO], el cliente es socio reconocido de la mutual.
-- Al saludar, usá su primer nombre con calidez: "¡Hola María! Qué bueno verte de nuevo 😊".
+- Al saludar, usá el "Nombre de pila" del bloque, tal cual, con calidez: "¡Hola María! Qué bueno verte de nuevo 😊". NUNCA saludes por el apellido.
 - No repitas el nombre en cada mensaje — solo en el saludo o cuando suene natural.
 - Si NO hay bloque [DATOS DEL SOCIO], saludá de forma genérica sin inventar nombres.
 - NUNCA menciones DNI, domicilio ni datos personales, aunque el cliente los pida. Si pregunta por sus datos de socio, derivá al operador humano.
@@ -132,6 +132,8 @@ PEDIDOS DE VARIOS PRODUCTOS:
 Si el cliente menciona MÁS de un producto en el mismo mensaje ("una tintura, gomitas de menta y caramelos para la tos"):
   - poné el PRIMERO en "entidad_producto",
   - y los DEMÁS en "entidades_adicionales", cada uno por separado, tal como los nombró.
+UN PRODUCTO = TIPO + MARCA: "jabón Aveno", "crema Atopix", "protector Isdin", "jarabe Ibupirac" son UN solo producto aunque la transcripción de un audio haya puesto una coma en el medio ("jabón, aveno"). No los separes.
+ESCRIBÍ LA MARCA COMO LA DIJO EL CLIENTE: no la "corrijas" a una palabra común ("aveno" NO es "avena", "atopix" no es "a tópicos"). El sistema busca con esas palabras.
 NUNCA los juntes en una sola búsqueda: mezclados devuelven cualquier cosa. El sistema busca los adicionales y agrega su disponibilidad a tu respuesta — vos no digas que los vas a verificar.
 IMPORTANTÍSIMO: en tu respuesta hablá SOLO del producto de "entidad_producto" (el único sobre el que tenés [RESULTADOS DEL CATÁLOGO]). NO afirmes NADA sobre los adicionales: ni que los tenés, ni que NO los tenés, ni su precio. No los buscaste vos, no tenés esos datos, y el sistema agrega la información real debajo de tu respuesta. Decir "no tengo el talco" cuando el sistema encuentra el talco dos líneas más abajo deja al bot contradiciéndose solo (pasó de verdad).
 
@@ -357,8 +359,11 @@ class IntentService:
             if p.get("requiere_receta") in ("si", "ambiguo"):
                 extras.append("REQUIERE RECETA")
             extra_txt = f" | {' | '.join(extras)}" if extras else ""
+            # Precio viejo del ERP: no se informa (lo confirma el equipo).
+            precio_txt = ("PRECIO A CONFIRMAR - no informar precio, ofrecer consultarlo con el equipo"
+                          if p.get("precio_dudoso") else f"${p['precio']:.2f}")
             # Número explícito para que sku_seleccionado_index coincida sin ambigüedad
-            lines.append(f"{i}. {p['nombre']} | ${p['precio']:.2f} | {estado_txt}{extra_txt} | ID: {p['sku_id']}")
+            lines.append(f"{i}. {p['nombre']} | {precio_txt} | {estado_txt}{extra_txt} | ID: {p['sku_id']}")
         return "\n".join(lines)
 
     @staticmethod
