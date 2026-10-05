@@ -118,7 +118,7 @@ async def leer_worker(ctx: RadarContexto, worker_id: uuid.UUID) -> Worker:
 async def elegir_worker(ctx: RadarContexto) -> Worker:
     elegido = elegir(await listar_workers(ctx))
     if elegido is None:
-        logger.warning("ALERTA admisión: ningún worker de WAHA con capacidad (80 %% sesiones / 70 %% disco)")
+        logger.warning("ALERTA admisión: ningún worker de WAHA con capacidad (80 % sesiones / 70 % disco)")
         raise SinCapacidad("sin worker con capacidad")
     return elegido
 

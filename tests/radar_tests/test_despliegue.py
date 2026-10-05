@@ -138,3 +138,11 @@ async def test_fuera_de_la_api_las_respuestas_quedan_como_estaban(cliente):
     for ruta in ("/radar/administrador", "/radar/apiary"):
         r = await cliente.get(ruta)
         assert r.status_code == 404 and "cache-control" not in r.headers, ruta
+
+
+# ── Documentación automática de FastAPI ─────────────────────────────────────────────────────────────────────
+
+async def test_radar_no_publica_la_documentacion_de_la_api(cliente):
+    """Radar tiene dominio público: /docs, /redoc y /openapi.json describirían cada ruta de admin a cualquiera."""
+    for ruta in ("/docs", "/redoc", "/openapi.json"):
+        assert (await cliente.get(ruta)).status_code == 404, ruta

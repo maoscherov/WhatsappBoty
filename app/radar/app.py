@@ -166,7 +166,9 @@ async def solo_mismo_origen(request, call_next):
 
 def crear_app_radar(rs: RadarSettings | None = None, contexto: RadarContexto | None = None) -> FastAPI:
     rs = rs or get_radar_settings()
-    app = FastAPI(title="Radar", version="0.1.0", lifespan=_lifespan_radar)
+    # Sin /docs, /redoc ni /openapi.json: Radar tiene dominio público y describirían cada ruta de admin.
+    app = FastAPI(title="Radar", version="0.1.0", lifespan=_lifespan_radar,
+                  docs_url=None, redoc_url=None, openapi_url=None)
     app.state.radar_settings = rs
     app.state.radar = contexto
     app.middleware("http")(log_errores)
