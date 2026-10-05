@@ -4,10 +4,12 @@ Roles de Postgres al arrancar (Decisión 7, RADAR_BOOTSTRAP_ROLES=true).
 Los roles son de todo el cluster y conftest.py ya los crea en el pgserver de la sesión: estos tests levantan su
 propio pgserver (fixture de módulo) y cada uno parte sin radar_app ni radar_admin (`cluster_vacio`). En ese
 cluster radar_app entra solo con contraseña (scram-sha-256 en pg_hba.conf; pgserver deja todo en trust): así
-"radar_app entra con RADAR_DATABASE_URL" se prueba de verdad, con asyncpg como la app. El rol de migración es
-el superusuario del cluster, como `postgres` en Railway, salvo donde el test dice otra cosa.
+"radar_app entra con RADAR_DATABASE_URL" se prueba de verdad, con asyncpg como la app. Y el servidor escribe en
+su log toda sentencia que recibe (log_statement = 'all'): así se prueba que la contraseña no llega al servidor.
+El rol de migración es el superusuario del cluster, como `postgres` en Railway, salvo donde el test dice otra cosa.
 
-La contraseña de radar_app es un secreto: ni en un log, ni en un mensaje de error, ni en un repr.
+La contraseña de radar_app es un secreto: ni en un log, ni en un mensaje de error, ni en un repr, ni en una
+sentencia que llegue al servidor (va solo su verificador).
 """
 import asyncio
 import logging
@@ -80,18 +82,27 @@ class Cluster:
         finally:
             con.close()
 
+    def fin_del_log(self) -> int:
+        return len(self.log.read_bytes())
 
-def _exigir_contrasena_a_radar_app(cluster: Cluster, pgdata: pathlib.Path) -> None:
+    def log_desde(self, inicio: int) -> str:
+        """Lo que escribió el servidor desde `inicio` (con log_statement = 'all', toda sentencia recibida)."""
+        return self.log.read_bytes()[inicio:].decode("utf-8", errors="replace")
+
+
+def _configurar(cluster: Cluster, pgdata: pathlib.Path) -> None:
     hba = pgdata / "pg_hba.conf"
     hba.write_text(HBA_RADAR_APP + hba.read_text())
+    cluster.sql("ALTER SYSTEM SET log_statement = 'all'")
     antes = cluster.sql("SELECT pg_conf_load_time()")[0][0]
     cluster.sql("SELECT pg_reload_conf()")
     # La recarga es asíncrona: una sesión nueva ve la hora de carga del postmaster.
     for _ in range(100):
         if cluster.sql("SELECT pg_conf_load_time()")[0][0] > antes:
+            assert cluster.sql("SHOW log_statement") == [("all",)]
             return
         time.sleep(0.05)
-    raise RuntimeError("el cluster de test no recargó pg_hba.conf")
+    raise RuntimeError("el cluster de test no recargó su configuración")
 
 
 @pytest.fixture(scope="module")
@@ -104,7 +115,7 @@ def cluster(tmp_path_factory):
     srv = pgserver.get_server(pgdata)
     try:
         c = Cluster(info=srv.get_postmaster_info(), log=srv.log)
-        _exigir_contrasena_a_radar_app(c, pgdata)
+        _configurar(c, pgdata)
         c.sql(f"CREATE ROLE {MIGRADOR_CREATEROLE} LOGIN NOSUPERUSER CREATEROLE;"
               f"CREATE ROLE {MIGRADOR_SIN_PERMISOS} LOGIN NOSUPERUSER NOCREATEROLE;")
         yield c
@@ -308,21 +319,37 @@ def test_un_rol_de_migracion_con_createrole_queda_con_una_membresia_que_sirve_pa
     assert _entra_con(cluster_vacio.url_app(base="radar_createrole"))
 
 
-def test_con_createrole_sin_admin_sobre_radar_app_no_intenta_cambiar_la_contrasena(cluster_vacio):
+def test_con_createrole_sin_admin_sobre_radar_app_no_arranca_con_un_error_que_lo_dice(cluster_vacio):
     """Postgres 16+: con CREATEROLE solo se cambia la contraseña de un rol sobre el que se tiene ADMIN. Si
-    radar_app lo creó otro y no entra con la URL, no se intenta el ALTER ROLE: fallido, Postgres lo escribiría
-    en su log con la contraseña (log_min_error_statement)."""
+    radar_app lo creó otro y no entra con la URL, el ALTER ROLE falla: el error nombra el problema sin secretos, y
+    la sentencia fallida que Postgres guarda en su log lleva el verificador, no la contraseña."""
     cluster_vacio.sql("CREATE ROLE radar_app LOGIN NOSUPERUSER NOBYPASSRLS NOINHERIT")
     _fijar_contrasena(cluster_vacio, OTRA_CLAVE)
     antes = _roles(cluster_vacio)["radar_app"]
-    with pytest.raises(RuntimeError, match="ADMIN") as exc:
+    inicio = cluster_vacio.fin_del_log()
+    with pytest.raises(RuntimeError, match="no tiene permiso.*ADMIN") as exc:
         asegurar_roles(cluster_vacio.url(MIGRADOR_CREATEROLE), cluster_vacio.url_app())
-    _sin_secretos(exc.value, CLAVE, CLAVE_EN_URL, cluster_vacio.url_app())
+    _sin_secretos(exc.value, CLAVE, CLAVE_EN_URL, cluster_vacio.url_app(), "SCRAM-SHA-256$")
     assert _roles(cluster_vacio)["radar_app"] == antes
-    assert CLAVE not in cluster_vacio.log.read_text(encoding="utf-8", errors="replace")
+    log = cluster_vacio.log_desde(inicio)
+    assert "ALTER ROLE radar_app PASSWORD 'SCRAM-SHA-256$" in log and CLAVE not in log
 
 
 # ── secretos ───────────────────────────────────────────────────────────────────
+
+def test_al_servidor_llega_el_verificador_nunca_la_contrasena(cluster_vacio):
+    """Al crear radar_app y al rotar su contraseña, la sentencia que recibe el servidor lleva el verificador SCRAM
+    calculado en el cliente: ni log_statement, ni pg_stat_statements, ni pgaudit pueden guardar la contraseña. Que
+    después entre con la URL prueba que el verificador es el de esa contraseña."""
+    inicio = cluster_vacio.fin_del_log()
+    asegurar_roles(cluster_vacio.url(), cluster_vacio.url_app())               # crea radar_app y fija
+    _fijar_contrasena(cluster_vacio, OTRA_CLAVE)                               # a mano, en claro: deja de entrar
+    asegurar_roles(cluster_vacio.url(), cluster_vacio.url_app())               # no entra: la rota
+    log = cluster_vacio.log_desde(inicio)
+    assert log.count("ALTER ROLE radar_app PASSWORD 'SCRAM-SHA-256$") == 2
+    assert CLAVE not in log and CLAVE_EN_URL not in log
+    assert _entra_con(cluster_vacio.url_app())
+
 
 def test_ni_la_contrasena_ni_las_urls_van_al_log(cluster_vacio, caplog):
     caplog.set_level(logging.DEBUG)

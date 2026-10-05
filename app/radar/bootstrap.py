@@ -6,15 +6,18 @@ atributos de scripts/radar_bootstrap_roles.sql, le cede radar_admin al rol de mi
 la contraseña de RADAR_DATABASE_URL, solo si hace falta. Corre en el lifespan antes de las migraciones (r0001
 aborta sin los dos roles). Usa psycopg2 como Alembic: es bloqueante y el lifespan la corre en un hilo.
 
-La contraseña de radar_app es un secreto: no va a ningún log ni a ningún mensaje de error, y la sentencia que
-la lleva la arma el servidor (format ... %L), nunca Python. Los nombres de rol son constantes; el del rol de
-migración lo dice el servidor (CURRENT_USER), no la URL.
+La contraseña de radar_app es un secreto: no va a ningún log, a ningún mensaje de error ni al servidor. El
+ALTER ROLE lleva solo su verificador, calculado en el cliente, y esa sentencia la arma el servidor (format ...
+%L), nunca Python. Los nombres de rol son constantes; el del rol de migración lo dice el servidor
+(CURRENT_USER), no la URL.
 """
 
 import logging
 from urllib.parse import unquote, urlsplit
 
 import psycopg2
+from psycopg2.errors import InsufficientPrivilege
+from psycopg2.extensions import encrypt_password
 
 from app.radar.db import _normalizar_dsn
 
@@ -67,23 +70,19 @@ def puede_entrar(app_url: str) -> bool:
     return True
 
 
-def _exigir_admin_de_radar_app(cur) -> None:
-    # Desde Postgres 16, CREATEROLE solo cambia la contraseña de un rol sobre el que tiene ADMIN (quien lo creó
-    # lo tiene; el superusuario, siempre). Se pregunta antes: un ALTER ROLE fallido queda en el log del servidor
-    # con la contraseña (log_min_error_statement).
-    cur.execute("SELECT pg_has_role(current_user, 'radar_app', 'MEMBER WITH ADMIN OPTION')")
-    if not cur.fetchone()[0]:
-        raise RuntimeError("RADAR_DATABASE_URL: radar_app no entra con esa contraseña y el rol de "
-                           "RADAR_MIGRATOR_DATABASE_URL no puede cambiarla (hace falta superusuario o ADMIN sobre "
-                           "radar_app): fijarla a mano con ALTER ROLE radar_app PASSWORD")
-
-
 def _fijar_password(cur, password: str) -> None:
-    # El servidor arma la sentencia (%L cita el literal) y se ejecuta lo que devuelve. Si falla, el texto del
-    # error no sale: podría citar la sentencia.
+    # Al servidor va solo el verificador: encrypt_password lo calcula en el cliente (libpq), con el
+    # password_encryption del servidor y una sal al azar, como \password de psql. Así ni log_statement, ni
+    # pg_stat_statements, ni pgaudit, ni el log de una sentencia fallida pueden guardar la contraseña. El
+    # servidor arma el ALTER ROLE (%L cita el literal) y se ejecuta lo que devuelve. Los errores no citan nada.
     try:
-        cur.execute("SELECT format('ALTER ROLE radar_app PASSWORD %%L', %s)", (password,))
+        verificador = encrypt_password(password, "radar_app", cur)
+        cur.execute("SELECT format('ALTER ROLE radar_app PASSWORD %%L', %s)", (verificador,))
         cur.execute(cur.fetchone()[0])
+    except InsufficientPrivilege:
+        raise RuntimeError("RADAR_BOOTSTRAP_ROLES: el rol de RADAR_MIGRATOR_DATABASE_URL no tiene permiso para "
+                           "cambiar la contraseña de radar_app (desde Postgres 16, CREATEROLE necesita ADMIN sobre "
+                           "radar_app): fijarla a mano con ALTER ROLE radar_app PASSWORD") from None
     except psycopg2.Error as e:
         raise RuntimeError("RADAR_BOOTSTRAP_ROLES: no se pudo fijar la contraseña de radar_app "
                            f"({type(e).__name__})") from None
@@ -117,7 +116,6 @@ def asegurar_roles(migrator_url: str, app_url: str) -> None:
             elif puede_entrar(app_url):
                 contrasena = "sin cambios (ya entra con RADAR_DATABASE_URL)"
             else:
-                _exigir_admin_de_radar_app(cur)
                 _fijar_password(cur, password)
                 contrasena = "fijada (no entraba con RADAR_DATABASE_URL)"
     finally:

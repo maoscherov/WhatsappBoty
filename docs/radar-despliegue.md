@@ -92,7 +92,8 @@ Con `RADAR_BOOTSTRAP_ROLES=true`, el arranque (`asegurar_roles`, `app/radar/boot
 Necesita que el rol de migración pueda crear roles: superusuario (en Railway, `postgres`) o `CREATEROLE`. Si
 no puede, deja un aviso en el log y no crea nada (las migraciones fallan después con "falta el rol
 radar_app"). Con `CREATEROLE` sin superusuario, desde Postgres 16 solo puede cambiar la contraseña de un
-`radar_app` que creó él o sobre el que tiene `ADMIN`; si no, la app no arranca y la contraseña se fija a mano.
+`radar_app` que creó él o sobre el que tiene `ADMIN` (hasta Postgres 15, `CREATEROLE` alcanza): si no puede, el
+`ALTER ROLE` falla y la app no arranca, con un error que lo dice; la contraseña se fija a mano.
 
 En Railway:
 
@@ -107,10 +108,12 @@ contraseña decodificada, la que mandan asyncpg y libpq al conectar. Con otro us
 migraciones le otorgan los permisos por nombre) o con una contraseña más corta, la app no arranca.
 
 El log dice qué hizo (`RADAR_BOOTSTRAP_ROLES: roles creados: ...; contraseña de radar_app: ...`), nunca la
-contraseña ni las URLs; los errores nombran la variable, nunca el valor. La contraseña viaja al servidor
-dentro del `ALTER ROLE`, como con `psql`: un Postgres que escriba las sentencias en su log (`log_statement`
-en `ddl` o `all`, o `log_min_duration_statement`) la dejaría ahí; con los defaults, no. Sin la variable nada
-cambia: los roles se crean a mano como en "Primera vez".
+contraseña ni las URLs; los errores nombran la variable, nunca el valor. La contraseña tampoco llega al
+servidor: el arranque calcula su verificador (con el `password_encryption` del servidor, por defecto
+SCRAM-SHA-256, y una sal al azar, como `\password` de psql) y el `ALTER ROLE` lleva solo eso. Aunque el servidor
+guarde las sentencias (`log_statement`, `log_min_duration_statement`, `pg_stat_statements`, pgaudit) o una
+sentencia fallida, ahí queda el verificador, nunca la contraseña. Sin la variable nada cambia: los roles se
+crean a mano como en "Primera vez".
 
 ## Primera vez
 
