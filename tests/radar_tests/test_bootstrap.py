@@ -583,6 +583,7 @@ async def test_el_mismo_email_en_una_cuenta_de_cliente_no_se_toca(radar_ctx):
 async def test_dos_arranques_a_la_vez_no_se_pisan(radar_ctx):
     """Dos instancias que arrancan juntas (un redeploy que se solapa): ninguna falla (una clave duplicada de Postgres
     trae el email en su DETAIL) y no se duplica ni se audita dos veces."""
+    assert radar_ctx.db.pool.get_max_size() >= 2    # conftest lo arma con 2; con 1 la espera de abajo no terminaría
     async with radar_ctx.db.pool.acquire(), radar_ctx.db.pool.acquire():
         pass                                        # el pool ya tiene sus dos conexiones: las transacciones se cruzan
     lista = "a@kis.com, b@kis.com"
