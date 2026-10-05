@@ -1894,10 +1894,20 @@ async def nota_envio_fuera_horario(respuesta: str, tipo_entrega: str) -> str:
 
 
 # ── "¿Qué horario tienen?" (29/9) ───────────────────────────────────────────────
+# 5/10: "¿A qué hora ABRE la farmacia?" (singular) no matcheaba y caía a
+# "no te entendí"; tampoco "hasta q hora", "¿están atendiendo?", "¿abre el
+# sábado?". "No me abre el link" NO es una pregunta de horario.
+_VERBO_HORARIO = r"(abr(?:e|en|[ií]s)|cierr(?:a|an)|cerr[aá]s|atiend(?:e|en)|atend[eé]s|trabaj(?:a|an|[aá]s))"
+_DIA_HORARIO = (r"(hoy|ma[nñ]ana|esta\s+(tarde|noche)|(el|los)\s+(s[aá]bados?|domingos?|feriados?|"
+                r"lunes|martes|mi[eé]rcoles|jueves|viernes|fin\s+de\s+semana))")
 _PREGUNTA_HORARIO = re.compile(
-    r"\bhorarios?\b|\ba\s+qu[eé]\s+hora\s+(abren|abr[ií]s|cierran|cerr[aá]s|atienden|atend[eé]s)"
-    r"|\bhasta\s+qu[eé]\s+hora\b|\best[aá]n\s+abiert[oa]s?\b|\babren\s+(hoy|ma[nñ]ana|el|los)\b"
-    r"|\bqu[eé]\s+d[ií]as\s+(abren|atienden)\b",
+    r"\bhorarios?\b|\bhora\s+de\s+atenci[oó]n\b"
+    r"|\b(a\s+)?(qu[eé]|q)\s+hora\s+" + _VERBO_HORARIO +
+    r"|\bhasta\s+(qu[eé]|q)\s+hora\b|\bdesde\s+(qu[eé]|q)\s+hora\b"
+    r"|\best[aá]n?\s+(abiert[oa]s?|atendiendo|trabajando)\b"
+    r"|\b" + _VERBO_HORARIO + r"\s+" + _DIA_HORARIO + r"\b"
+    r"|\bcu[aá]ndo\s+" + _VERBO_HORARIO + r"\b"
+    r"|\bqu[eé]\s+d[ií]as\s+" + _VERBO_HORARIO + r"\b",
     re.IGNORECASE)
 
 

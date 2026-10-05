@@ -101,3 +101,21 @@ def test_respuesta_de_horario(svc, reloj):
     reloj.ahora = _dt(2026, 9, 29, 10, 0)
     assert "Ahora estamos abiertos" in responder_horario(svc, HORARIO)
     assert responder_horario(svc, {"enabled": False, "schedule": {}}) == ""
+
+
+# 5/10: "¿A qué hora abre la farmacia?" caía a "no te entendí".
+@pytest.mark.parametrize("txt", [
+    "A que hora abre la farmacia?", "hasta q hora esta abierta?", "abre el sábado?",
+    "atienden los domingos?", "cuándo abren", "¿Están atendiendo?", "trabajan mañana?",
+    "desde qué hora atienden", "a q hora abren",
+])
+def test_pregunta_horario_formas(txt):
+    from app.services.checkout_helper import pregunta_horario
+    assert pregunta_horario(txt)
+
+
+@pytest.mark.parametrize("txt", ["no me abre el link", "trabajan con PAMI?",
+                                 "a qué hora me lo traen?", "abren el paquete"])
+def test_no_es_pregunta_horario(txt):
+    from app.services.checkout_helper import pregunta_horario
+    assert not pregunta_horario(txt)
