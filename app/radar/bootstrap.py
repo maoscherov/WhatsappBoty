@@ -4,7 +4,8 @@ Arranque de Radar sin shell en el servidor.
 asegurar_roles (RADAR_BOOTSTRAP_ROLES=true, Decisión 7): crea radar_admin y radar_app si faltan, con los
 atributos de scripts/radar_bootstrap_roles.sql, le cede radar_admin al rol de migración y le pone a radar_app
 la contraseña de RADAR_DATABASE_URL, solo si hace falta. Corre en el lifespan antes de las migraciones (r0001
-aborta sin los dos roles). Usa psycopg2 como Alembic: es bloqueante y el lifespan la corre en un hilo.
+aborta sin los dos roles). Usa psycopg2 como Alembic: es bloqueante y el lifespan la corre en un hilo. Dos
+arranques a la vez no chocan: un advisory lock deja a uno esperando al otro.
 
 La contraseña de radar_app es un secreto: no va a ningún log, a ningún mensaje de error ni al servidor. El
 ALTER ROLE lleva solo su verificador, calculado en el cliente, y esa sentencia la arma el servidor (format ...
@@ -105,6 +106,11 @@ def asegurar_roles(migrator_url: str, app_url: str) -> None:
     try:
         con.autocommit = True
         with con.cursor() as cur:
+            # Dos instancias que arrancan a la vez (un redeploy que se solapa) verían las dos que faltan los roles,
+            # y la segunda chocaría en el CREATE ROLE y no arrancaría. Con el candado la segunda espera a la primera,
+            # ve los roles y no hace nada. Es de sesión: se suelta al cerrar la conexión, salga como salga. Los
+            # advisory locks son por base: alcanza porque las instancias usan la misma RADAR_MIGRATOR_DATABASE_URL.
+            cur.execute("SELECT pg_advisory_lock(hashtext('radar_bootstrap_roles'))")
             cur.execute("SELECT rolsuper, rolcreaterole FROM pg_roles WHERE rolname = current_user")
             superusuario, createrole = cur.fetchone()
             if not (superusuario or createrole):

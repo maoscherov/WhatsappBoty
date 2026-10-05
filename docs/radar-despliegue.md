@@ -91,6 +91,8 @@ Con `RADAR_BOOTSTRAP_ROLES=true`, el arranque (`asegurar_roles`, `app/radar/boot
   el script con `:migrator`.
 - Le pone a `radar_app` la contraseña de `RADAR_DATABASE_URL` solo si hace falta: si lo acaba de crear, o si
   `radar_app` no entra con esa URL (por ejemplo, porque se cambió la contraseña en la variable).
+- Dos instancias que arrancan a la vez (un redeploy que se solapa) no chocan: toma un advisory lock de sesión en la
+  base de `RADAR_MIGRATOR_DATABASE_URL`, así la segunda espera a la primera, ve los roles y no crea nada.
 
 Necesita que el rol de migración pueda crear roles: superusuario (en Railway, `postgres`) o `CREATEROLE`. Si
 no puede, deja un aviso en el log y no crea nada (las migraciones fallan después con "falta el rol

@@ -20,6 +20,7 @@ import json
 import logging
 import pathlib
 import re
+import threading
 import time
 import traceback
 from dataclasses import dataclass
@@ -27,6 +28,7 @@ from urllib.parse import quote
 
 import asyncpg
 import psycopg2
+import psycopg2.extensions
 import pytest
 from starlette.testclient import TestClient
 
@@ -206,6 +208,58 @@ def test_correrlo_dos_veces_no_falla_ni_cambia_nada(cluster_vacio):
     asegurar_roles(cluster_vacio.url(), cluster_vacio.url_app())
     # rolpassword igual: un ALTER ROLE ... PASSWORD, aun con la misma contraseña, cambia la sal.
     assert (_roles(cluster_vacio), _membresias(cluster_vacio)) == antes
+
+
+def test_dos_arranques_a_la_vez_no_chocan_al_crear_los_roles(cluster_vacio, monkeypatch, caplog):
+    """Dos instancias que arrancan juntas (un redeploy que se solapa). Sin serializar, las dos ven que faltan los roles
+    y la segunda choca en el CREATE ROLE con un error de psycopg2 sin envolver: esa instancia no arranca. Con el
+    advisory lock la segunda espera a la primera, ve los roles y no hace nada.
+
+    La cita fuerza ese cruce: cada CREATE ROLE espera, hasta 2 s, a que la otra instancia llegue al suyo. Con el
+    candado nunca llega (está esperando el candado) y la primera sigue sola al vencer la espera."""
+    caplog.set_level(logging.INFO)
+    cita = threading.Barrier(2, timeout=2)
+
+    class CursorConCita(psycopg2.extensions.cursor):
+        def execute(self, query, vars=None):
+            if query.startswith("CREATE ROLE"):
+                try:
+                    cita.wait()
+                except threading.BrokenBarrierError:
+                    pass                        # la otra instancia no llegó al CREATE ROLE: sigue esta sola
+            return super().execute(query, vars)
+
+    conectar = bootstrap._conectar
+
+    def conectar_con_cita(url, variable):
+        con = conectar(url, variable)
+        con.cursor_factory = CursorConCita
+        return con
+
+    monkeypatch.setattr(bootstrap, "_conectar", conectar_con_cita)
+    errores = []
+
+    def arrancar():
+        try:
+            asegurar_roles(cluster_vacio.url(), cluster_vacio.url_app())
+        except Exception as e:                  # noqa: BLE001 — se mira abajo, en el hilo del test
+            errores.append(e)
+
+    hilos = [threading.Thread(target=arrancar) for _ in range(2)]
+    for hilo in hilos:
+        hilo.start()
+    for hilo in hilos:
+        hilo.join(timeout=60)
+    assert not any(h.is_alive() for h in hilos)
+    assert [type(e).__name__ for e in errores] == []
+    assert set(_roles(cluster_vacio)) == {"radar_app", "radar_admin"}
+    assert _entra_con(cluster_vacio.url_app())
+    hechos = sorted(r.getMessage() for r in caplog.records if r.name == "app.radar.bootstrap")
+    assert hechos == ["RADAR_BOOTSTRAP_ROLES: roles creados: ninguno; contraseña de radar_app: sin cambios (ya entra "
+                      "con RADAR_DATABASE_URL)",
+                      "RADAR_BOOTSTRAP_ROLES: roles creados: radar_app, radar_admin; contraseña de radar_app: fijada"]
+    for secreto in (CLAVE, CLAVE_EN_URL, cluster_vacio.url_app(), cluster_vacio.url()):
+        assert secreto not in caplog.text
 
 
 def test_crea_los_roles_con_los_atributos_del_script_manual():
