@@ -28,6 +28,9 @@ CAMPOS_LISTA = {"id", "nombre", "base_url", "engine", "max_sesiones", "sesiones"
                 "activo", "clave_cargada"}
 IDS_WORKERS = {"workers", "worker-nombre", "worker-url", "worker-motor", "worker-max", "worker-disco", "worker-clave",
                "btn-worker", "worker-reemplazo", "worker-clave-nueva", "btn-worker-clave"}
+# Los dos párrafos de la sección: el aviso de lo que salió bien y el error propio (el de arriba de la página no se ve
+# desde un formulario que está abajo de todo), más los dos formularios.
+IDS_WORKERS_EXTRA = {"worker-aviso", "worker-error", "form-worker", "form-worker-clave"}
 
 
 @pytest.fixture
@@ -244,8 +247,9 @@ async def test_disco_no_acepta_nan_ni_infinito(cliente, ctx, waha, numero):
     assert r.status_code == 422 and waha.llamadas == []
 
 
-@pytest.mark.parametrize("clave", ["clave con espacios 0123456789", "clave-con-ñ-0123456789",
-                                   "clave\ncon-salto-0123456"])
+@pytest.mark.parametrize("clave", ["clave-con-ñ-0123456789", "clave\ncon-salto-0123456", "clave\tcon-tab-0123456789",
+                                   " empieza-con-un-espacio-0123", "termina-con-un-espacio-0123456 ",
+                                   CLAVE + "\n"])                         # el salto de línea que trae un copiar y pegar
 async def test_una_clave_que_no_cabe_en_una_cabecera_es_clave_incorrecta(cliente, ctx, waha, clave):
     """No sale a la red: httpx lanzaría un UnicodeEncodeError cuyo mensaje trae un carácter de la clave."""
     await _admin(cliente, ctx)
@@ -255,6 +259,15 @@ async def test_una_clave_que_no_cabe_en_una_cabecera_es_clave_incorrecta(cliente
     r = await cliente.put(f"{URL}/{wid}/clave", json={"admin_key": clave})
     assert r.status_code == 422 and r.json() == {"detail": {"error": "clave_incorrecta"}}
     assert waha.llamadas == [] and _claves_guardadas(ctx) == []
+
+
+async def test_una_clave_con_espacios_en_el_medio_es_valida(cliente, ctx, waha):
+    """WAHA toma la clave como un texto cualquiera: una frase de paso es válida y se manda tal cual."""
+    await _admin(cliente, ctx)
+    frase = "una frase de paso con espacios 123"
+    wid = await _registrar(cliente, admin_key=frase)
+    assert waha.pedidos_version == [(f"{URL_WAHA}/api/server/version", frase)]
+    assert ctx.secretos.get(nombre_clave_admin(uuid.UUID(wid))) == frase.encode()
 
 
 SECRETO = "secreto-que-no-debe-volver-0123"
@@ -407,7 +420,7 @@ async def test_la_clave_no_se_filtra_a_logs_salida_respuestas_ni_base(cliente, c
         waha.version_sin_red = False
         respuestas.append(await cliente.post(URL, json=_alta()))                                   # 409 duplicado
         respuestas.append(await cliente.post(URL, json=_alta(admin_key=CLAVE[:10])))               # 422 de validación
-        respuestas.append(await cliente.post(URL, json=_alta(admin_key="con espacio " + CLAVE)))   # 422 incorrecta
+        respuestas.append(await cliente.post(URL, json=_alta(admin_key=CLAVE + "\n")))             # 422 incorrecta
     assert [r.status_code for r in respuestas] == [201, 200, 200, 200, 422, 422, 422, 409, 422, 422]
     assert "canario" in caplog.text
 
@@ -435,7 +448,7 @@ def test_consola_tiene_servidores_waha():
     html = (ESTATICOS / "consola.html").read_text(encoding="utf-8")
     _sin_inline(html)
     ids = re.findall(r'\bid="([a-z0-9-]+)"', html)
-    assert IDS_WORKERS <= set(ids), IDS_WORKERS - set(ids)
+    assert IDS_WORKERS | IDS_WORKERS_EXTRA <= set(ids), (IDS_WORKERS | IDS_WORKERS_EXTRA) - set(ids)
     assert len(ids) == len(set(ids)), "ids repetidos"
     # el campo de la clave es de contraseña y el navegador no la recuerda
     for id_ in ("worker-clave", "worker-clave-nueva"):
@@ -464,3 +477,10 @@ def test_el_js_de_servidores_waha():
     # la clave se vacía al terminar, con éxito o sin él: va en un finally
     for id_ in ("worker-clave", "worker-clave-nueva"):
         assert re.search(rf'finally\s*\{{[^}}]*\$\("{id_}"\)\.value\s*=\s*""', js), id_
+    # probar la clave es un pedido a otro servidor, que puede tardar hasta el timeout: se avisa que está pasando
+    assert "Probando la clave contra el servidor" in js
+    # los errores de la sección salen en la sección (#worker-error), no arriba de la página: los dos formularios y el
+    # botón "Disco" de cada fila
+    for fragmento in ('registrarWorker, "worker-error")', 'reemplazarClave, "worker-error")',
+                      'accion(() => actualizarDisco(w), "worker-error")'):
+        assert fragmento in js, fragmento

@@ -55,8 +55,11 @@
     abortado: "No se pudo preparar la conexión.",
   };
 
-  function mostrarError(e) {
-    $("error").textContent = e ? (MENSAJES[e.message] || ("Error: " + e.message)) : "";
+  // El error va al párrafo #error de arriba, salvo que la acción pida el suyo (la sección de servidores está abajo de
+  // todo y un mensaje allá arriba no se vería).
+  function mostrarError(e, destino) {
+    const lugar = destino ? $(destino) : $("error");
+    lugar.textContent = e ? (MENSAJES[e.message] || ("Error: " + e.message)) : "";
   }
 
   function base() {
@@ -82,8 +85,8 @@
     return datos;
   }
 
-  async function accion(fn) {
-    try { await fn(); mostrarError(null); } catch (e) { mostrarError(e); }
+  async function accion(fn, destino) {
+    try { await fn(); mostrarError(null, destino); } catch (e) { mostrarError(e, destino); }
   }
 
   function enlazar(id, fn) {
@@ -416,7 +419,7 @@
       const boton = document.createElement("button");
       boton.type = "button";
       boton.textContent = "Disco";
-      boton.addEventListener("click", () => accion(() => actualizarDisco(w)));
+      boton.addEventListener("click", () => accion(() => actualizarDisco(w), "worker-error"));
       td.appendChild(boton);
       tr.appendChild(td);
       cuerpo.appendChild(tr);
@@ -428,8 +431,11 @@
     pintarWorkers(await pedir("GET", "/radar/admin/workers"));
   }
 
+  // Probar la clave es un pedido a otro servidor: si no contesta, tarda hasta el timeout (20 s por defecto).
+  const PROBANDO = "Probando la clave contra el servidor…";
+
   async function registrarWorker() {
-    $("worker-aviso").textContent = "";
+    $("worker-aviso").textContent = PROBANDO;
     const nombre = $("worker-nombre").value.trim();
     let r;
     try {
@@ -443,6 +449,7 @@
       });
     } finally {
       $("worker-clave").value = "";                      // ni siquiera si WAHA la rechazó queda en la página
+      $("worker-aviso").textContent = "";
     }
     // Ya está registrado: el formulario se limpia antes de refrescar, así un refresco que falle no deja el
     // formulario lleno para registrar el mismo nombre otra vez (daría el 409).
@@ -453,7 +460,7 @@
   }
 
   async function reemplazarClave() {
-    $("worker-aviso").textContent = "";
+    $("worker-aviso").textContent = PROBANDO;
     const sel = $("worker-reemplazo");
     const nombre = sel.selectedOptions[0].textContent;
     let r;
@@ -462,6 +469,7 @@
                       { admin_key: $("worker-clave-nueva").value.trim() });
     } finally {
       $("worker-clave-nueva").value = "";
+      $("worker-aviso").textContent = "";
     }
     $("worker-aviso").textContent = "Clave de " + nombre + " reemplazada: WAHA " + (r.version || "sin versión") +
       ", motor " + r.engine + ".";
@@ -481,11 +489,11 @@
 
   // El envío nativo de un formulario lo bloquea la CSP (form-action 'none'), así que lo manda este JS, como en el
   // login. Un doble clic duplicaría un cliente que no se puede borrar: el botón queda inactivo mientras viaja el pedido.
-  function alEnviar(form, boton, fn) {
+  function alEnviar(form, boton, fn, destino) {
     form.addEventListener("submit", (ev) => {
       ev.preventDefault();
       boton.disabled = true;
-      accion(fn).finally(() => { boton.disabled = false; });
+      accion(fn, destino).finally(() => { boton.disabled = false; });
     });
   }
 
@@ -506,8 +514,8 @@
     alEnviar($("form-alta"), $("btn-alta"), crearCliente);
     alEnviar($("form-linea"), $("btn-agregar-linea"), agregarLinea);
     alEnviar($("form-invitacion"), $("btn-invitar"), reenviarInvitacion);
-    alEnviar($("form-worker"), $("btn-worker"), registrarWorker);
-    alEnviar($("form-worker-clave"), $("btn-worker-clave"), reemplazarClave);
+    alEnviar($("form-worker"), $("btn-worker"), registrarWorker, "worker-error");
+    alEnviar($("form-worker-clave"), $("btn-worker-clave"), reemplazarClave, "worker-error");
     $("alta-rubro").addEventListener("change", () => accion(mostrarPropuesta));
     $("filtro-estado").addEventListener("change", () => accion(cargarLineas));
     $("filtro-cliente").addEventListener("change", () => accion(cargarLineas));

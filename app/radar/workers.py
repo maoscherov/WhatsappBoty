@@ -29,9 +29,10 @@ logger = logging.getLogger("app.radar.workers")
 UMBRAL_SESIONES = 0.8
 UMBRAL_DISCO = 0.7
 MOTORES = ("NOWEB", "GOWS")
-# Lo que cabe en la cabecera HTTP que lleva la clave: ASCII visible, sin espacios ni saltos de línea. Otra cosa no
-# puede ser la clave de un WAHA, y httpx fallaría con un error cuyo mensaje trae un carácter de la clave.
-_CLAVE_ADMIN = re.compile(r"[\x21-\x7e]+")
+# Lo que cabe en la cabecera HTTP que lleva la clave: ASCII imprimible, sin espacios al principio ni al final (una
+# frase con espacios en el medio es válida) y sin tabuladores ni saltos de línea. Otra cosa no puede ser la clave de
+# un WAHA, y httpx fallaría con un error cuyo mensaje trae un carácter de la clave.
+_CLAVE_ADMIN = re.compile(r"[\x21-\x7e](?:[\x20-\x7e]*[\x21-\x7e])?")
 
 
 class SinCapacidad(RuntimeError):
