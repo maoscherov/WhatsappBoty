@@ -15,7 +15,8 @@ def correr() -> None:
     config = context.config
     url = config.get_main_option("sqlalchemy.url") or ""
     if not url:
-        url = context.get_x_argument(as_dictionary=True).get("url", "")
+        from app.radar.migrate import con_driver_psycopg2
+        url = con_driver_psycopg2(context.get_x_argument(as_dictionary=True).get("url", ""))
     if not url:
         raise RuntimeError("Falta la URL: usar app.radar.migrate o `alembic -c <ini> -x url=... upgrade head`")
     version_table = config.get_main_option("version_table") or "alembic_version_radar"

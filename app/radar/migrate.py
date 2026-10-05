@@ -11,13 +11,22 @@ from alembic.config import Config
 RAIZ = Path(__file__).resolve().parent.parent.parent
 
 
+_ESQUEMAS_POSTGRES = ("postgres://", "postgresql://", "postgresql+asyncpg://", "postgresql+psycopg://",
+                      "postgresql+psycopg2://")
+
+
+def con_driver_psycopg2(url: str) -> str:
+    """Alembic usa psycopg2, y la URL lo nombra: SQLAlchemy 2.1 cambió el driver
+    por defecto de `postgresql://` a psycopg (v3), que requirements.txt no trae."""
+    for esquema in _ESQUEMAS_POSTGRES:
+        if url.startswith(esquema):
+            return "postgresql+psycopg2://" + url[len(esquema):]
+    return url
+
+
 def _url_psycopg(url: str) -> str:
-    """Alembic usa psycopg2: normaliza el esquema y escapa % para configparser."""
-    if url.startswith("postgres://"):
-        url = url.replace("postgres://", "postgresql://", 1)
-    if url.startswith("postgresql+asyncpg://"):
-        url = url.replace("postgresql+asyncpg://", "postgresql://", 1)
-    return url.replace("%", "%%")
+    """La URL de con_driver_psycopg2, con % escapado para configparser."""
+    return con_driver_psycopg2(url).replace("%", "%%")
 
 
 def _config(ini: str, url: str) -> Config:
