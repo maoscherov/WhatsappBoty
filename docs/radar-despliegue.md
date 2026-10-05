@@ -4,6 +4,10 @@ Radar corre con la misma imagen que el bot, en un servicio de Railway aparte,
 con `APP_MODE=radar`, Postgres y Redis propios. Nunca comparte la base de un
 cliente de Remedia (spec §6.2, S7). En este tramo, Redis no se usa todavía.
 
+Para levantar un staging en Railway paso a paso está el asistente
+`scripts/radar_staging_railway.sh`; ver [radar-staging-railway.md](radar-staging-railway.md).
+Este documento explica cada variable y cada pieza.
+
 ## Variables
 
 | Variable | Qué es |
@@ -400,7 +404,8 @@ Postgres; solo la lee `app/radar/workers.py::cliente_de`.
 ## Antes de dar staging por bueno
 
 Lo que la suite no puede probar: corre con un WAHA y un SMTP falsos, sin el proxy de Railway y con versiones más nuevas
-de las dependencias que las de `requirements.txt`.
+de las dependencias que las de `requirements.txt`. (Las migraciones nombran el driver, `postgresql+psycopg2://`:
+`requirements.txt` no fija SQLAlchemy, y desde la 2.1 `postgresql://` usa psycopg v3, que no está instalado.)
 
 1. **WAHA rechaza una clave incorrecta.** La Consola prueba cada clave contra `GET /api/server/version`: si el WAHA
    contestara esa ruta sin pedir clave, cualquier clave pasaría la prueba. Tiene que dar `401`:
