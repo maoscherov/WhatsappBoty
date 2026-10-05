@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.middleware import log_errores
+from app.radar.bootstrap import asegurar_roles
 from app.radar.contexto import RadarContexto
 from app.radar.db import RadarDB
 from app.radar.fuente import FuenteStore
@@ -78,6 +79,10 @@ async def _lifespan_radar(app: FastAPI):
     propio = app.state.radar is None
     if propio:
         validar_settings(rs)
+        if rs.bootstrap_roles:
+            # Antes de migrar: r0001 aborta si faltan radar_app o radar_admin.
+            await asyncio.wait_for(asyncio.to_thread(asegurar_roles, rs.migrator_database_url, rs.database_url),
+                                   timeout=60)
         await asyncio.wait_for(asyncio.to_thread(migrar_resultados, rs.migrator_database_url), timeout=60)
         await asyncio.wait_for(asyncio.to_thread(migrar_fuente, rs.fuente_database_url), timeout=60)
         app.state.radar = await construir_contexto(rs)

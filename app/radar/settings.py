@@ -8,20 +8,27 @@ ninguna de estas URLs es DATABASE_URL.
 
 from functools import lru_cache
 
-from pydantic import SecretStr
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class RadarSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="RADAR_", env_file=".env", extra="ignore")
 
-    # Base de resultados, dos URLs y dos roles (§6.4, RLS efectiva).
-    database_url: str = ""            # rol radar_app: NOSUPERUSER, NOBYPASSRLS, no dueño
-    migrator_database_url: str = ""   # dueño de las tablas; solo Alembic
+    # Base de resultados, dos URLs y dos roles (§6.4, RLS efectiva). Las tres URLs
+    # llevan contraseñas: repr=False para que no salgan en el repr de los settings
+    # ni en el del RadarContexto que los lleva.
+    database_url: str = Field("", repr=False)            # rol radar_app: NOSUPERUSER, NOBYPASSRLS, no dueño
+    migrator_database_url: str = Field("", repr=False)   # dueño de las tablas; solo Alembic
+
+    # Roles de Postgres al arrancar (app/radar/bootstrap.py): crea radar_admin y
+    # radar_app si faltan y le pone a radar_app la contraseña de database_url.
+    # Apagado: se crean a mano con scripts/radar_bootstrap_roles.sql.
+    bootstrap_roles: bool = False
 
     # Almacén de fuente permanente (§6.4). En este tramo no tiene tablas de
     # conversación: solo su marcador de esquema.
-    fuente_database_url: str = ""
+    fuente_database_url: str = Field("", repr=False)
 
     # Secretos fuera de la base: directorio del FileSecretStore (volumen,
     # fuera de los backups de Postgres). Ver docs/radar-despliegue.md.

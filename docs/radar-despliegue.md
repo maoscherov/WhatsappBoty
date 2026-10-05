@@ -11,6 +11,7 @@ cliente de Remedia (spec §6.2, S7). En este tramo, Redis no se usa todavía.
 | `APP_MODE=radar` | Monta los routers de Radar y ninguno del bot. Por defecto `bot` (`app/config.py`). |
 | `RADAR_MIGRATOR_DATABASE_URL` | Rol dueño de las tablas (en Railway, el usuario por defecto). Solo lo usa Alembic en el arranque. |
 | `RADAR_DATABASE_URL` | Rol `radar_app`: `NOSUPERUSER`, `NOBYPASSRLS`, no dueño. La app aborta si conecta con un superusuario o con `BYPASSRLS`. |
+| `RADAR_BOOTSTRAP_ROLES` | `true`: el arranque crea `radar_admin` y `radar_app` si faltan y le pone a `radar_app` la contraseña de `RADAR_DATABASE_URL`, sin `psql` (ver "Roles al arrancar"). Con ella, `RADAR_DATABASE_URL` tiene que ser del usuario `radar_app`, con una contraseña de 16+ caracteres, y puede escribirse con las referencias de Railway: `postgresql://radar_app:<contraseña>@${{Postgres.PGHOST}}:${{Postgres.PGPORT}}/${{Postgres.PGDATABASE}}`. Default `false`: los roles se crean a mano con `scripts/radar_bootstrap_roles.sql`, como antes (ver "Primera vez"). |
 | `RADAR_FUENTE_DATABASE_URL` | Postgres del almacén de fuente permanente (servidor distinto del de resultados, con backups). En este tramo solo tiene la tabla `fuente_meta`. |
 | `RADAR_SECRETS_DIR` | Directorio de `FileSecretStore` para las `k_tenant`: un volumen de Railway montado ahí, fuera de los backups de Postgres. Default `/data/radar-secrets`. |
 | `RADAR_COOKIE_SECRET` | 32+ caracteres aleatorios para firmar la cookie de sesión (`python -c "import secrets; print(secrets.token_urlsafe(48))"`). Con menos de 32 la app no arranca (`validar_settings`, `app/radar/app.py`). |
@@ -76,9 +77,45 @@ completo o la respuesta del servidor), la contraseña ni el cuerpo:
 - `TimeoutError`, `ConnectionRefusedError`, `gaierror`: host, puerto o red (revisá
   también que el plan del hosting permita SMTP saliente).
 
+## Roles al arrancar
+
+Con `RADAR_BOOTSTRAP_ROLES=true`, el arranque (`asegurar_roles`, `app/radar/bootstrap.py`) hace el paso 1 de
+"Primera vez" antes de las migraciones, sin `psql`:
+
+- Crea `radar_admin` y `radar_app` si faltan, con los atributos de `scripts/radar_bootstrap_roles.sql`. A un
+  rol que ya existe no le cambia ningún atributo.
+- Le cede `radar_admin` al rol de `RADAR_MIGRATOR_DATABASE_URL` (`GRANT radar_admin TO CURRENT_USER`), como
+  el script con `:migrator`.
+- Le pone a `radar_app` la contraseña de `RADAR_DATABASE_URL` solo si hace falta: si lo acaba de crear, o si
+  `radar_app` no entra con esa URL (por ejemplo, porque se cambió la contraseña en la variable).
+
+Necesita que el rol de migración pueda crear roles: superusuario (en Railway, `postgres`) o `CREATEROLE`. Si
+no puede, deja un aviso en el log y no crea nada (las migraciones fallan después con "falta el rol
+radar_app"). Con `CREATEROLE` sin superusuario, desde Postgres 16 solo puede cambiar la contraseña de un
+`radar_app` que creó él o sobre el que tiene `ADMIN`; si no, la app no arranca y la contraseña se fija a mano.
+
+En Railway:
+
+    RADAR_BOOTSTRAP_ROLES=true
+    RADAR_MIGRATOR_DATABASE_URL=${{Postgres.DATABASE_URL}}
+    RADAR_DATABASE_URL=postgresql://radar_app:<contraseña>@${{Postgres.PGHOST}}:${{Postgres.PGPORT}}/${{Postgres.PGDATABASE}}
+
+La contraseña la elige quien despliega: 16+ caracteres, por ejemplo
+`python -c "import secrets; print(secrets.token_urlsafe(32))"`, que no hace falta codificar. Si tiene
+caracteres reservados (`@`, `:`, `/`, `%`...), van codificados en la URL (`@` es `%40`) y el rol queda con la
+contraseña decodificada, la que mandan asyncpg y libpq al conectar. Con otro usuario que `radar_app` (las
+migraciones le otorgan los permisos por nombre) o con una contraseña más corta, la app no arranca.
+
+El log dice qué hizo (`RADAR_BOOTSTRAP_ROLES: roles creados: ...; contraseña de radar_app: ...`), nunca la
+contraseña ni las URLs; los errores nombran la variable, nunca el valor. La contraseña viaja al servidor
+dentro del `ALTER ROLE`, como con `psql`: un Postgres que escriba las sentencias en su log (`log_statement`
+en `ddl` o `all`, o `log_min_duration_statement`) la dejaría ahí; con los defaults, no. Sin la variable nada
+cambia: los roles se crean a mano como en "Primera vez".
+
 ## Primera vez
 
-1. Crear los roles en el Postgres de resultados, como superusuario:
+1. Crear los roles en el Postgres de resultados (con `RADAR_BOOTSTRAP_ROLES=true` lo hace el arranque: ver
+   "Roles al arrancar"), como superusuario:
    `psql "$URL_SUPERUSUARIO" -v migrator=postgres -f scripts/radar_bootstrap_roles.sql`
    (crea `radar_app LOGIN NOSUPERUSER NOBYPASSRLS` y `radar_admin NOLOGIN`, y le
    cede `radar_admin` al rol `:migrator` para que Alembic pueda `ALTER ... OWNER
@@ -115,7 +152,8 @@ Dos roles en el Postgres de resultados (§6.4):
 - `radar_admin` (`NOLOGIN`): dueño de las tablas y de las funciones
   `SECURITY DEFINER` (`radar_admin_crear_tenant`, `radar_admin_listar_tenants`).
   Alembic corre como el `:migrator` (por defecto el usuario `postgres` de
-  Railway) y le cede `radar_admin` con `GRANT radar_admin TO :migrator`.
+  Railway) y le cede `radar_admin` con `GRANT radar_admin TO :migrator` (o el
+  arranque, con `RADAR_BOOTSTRAP_ROLES=true`).
 - `radar_app` (`LOGIN NOSUPERUSER NOBYPASSRLS`): el rol de la aplicación en
   tiempo de ejecución. `RadarDB.connect()` (`app/radar/db.py`) aborta la
   conexión si detecta que el rol conectado es superusuario o tiene
