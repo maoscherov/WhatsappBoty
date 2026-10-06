@@ -69,6 +69,8 @@ async def crear(db, phone: str, categoria: str, observacion: str,
     observacion = (observacion or "").strip()
     if not observacion:
         raise ValueError("La observación es obligatoria")
+    from app.services.operadores_service import canonico
+    autor = canonico(autor)
     row = await db.fetchrow(
         "INSERT INTO marcas (phone, message_id, categoria, observacion, autor, conversacion_id) "
         "VALUES ($1, $2, $3, $4, $5, COALESCE("

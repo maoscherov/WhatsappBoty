@@ -154,7 +154,7 @@ class SessionService:
 
     async def armar_cotizacion(self, phone: str, sku_id: str, sku_nombre: str,
                                precio: float, delegar: bool = True,
-                               items: list[dict] | None = None):
+                               items: list[dict] | None = None, agente: str | None = None):
         """
         Deja armado el pedido que el OPERADOR cotizó (receta ya vista por él):
         el cliente recibe la oferta sin link, y su "sí" sigue el flujo normal
@@ -181,6 +181,10 @@ class SessionService:
             "pending_items": items,
             "receta_validada": True,
         })
+        # Quién cotizó: queda en el pedido aunque el bot cierre la venta (6/10).
+        _cot = agente or session.get("agente")
+        if _cot:
+            session["_cotizado_por"] = _cot
         session.pop("_espera_eleccion", None)
         if delegar:
             session["estado"] = "esperando_confirmacion"
@@ -302,7 +306,8 @@ class SessionService:
         session["_operador_at"] = ahora
         session.setdefault("atendida_at", ahora)
         if agente and not session.get("agente"):
-            session["agente"] = agente
+            from app.services.operadores_service import canonico
+            session["agente"] = canonico(agente)
         await self.save(phone, session)
 
     async def delete(self, phone: str):
