@@ -54,9 +54,9 @@ Criterio de éxito:
    empleado, oferta del farmacéutico ni el CSV de la farmacia.
 2. Ante un síntoma, el bot no ofrece productos y deriva con `consulta_salud`.
 3. La farmacia no cambia: prompt idéntico byte a byte, mismos textos y la suite
-   completa (933 tests) en verde. Única excepción: la corrección de la pregunta
-   en `esperando_entrega` (§5), marcada como **cambio que también afecta a la
-   farmacia**.
+   completa (933 tests) en verde. Únicas excepciones: las correcciones de §5
+   (la pregunta en `esperando_entrega` y los pesos y presentaciones), marcadas
+   como **cambio que también afecta a la farmacia**.
 4. La mutual queda registrada como perfil sin cambios de comportamiento.
 5. Con un `VERTICAL` desconocido, el arranque se corta con un error claro.
 
@@ -719,6 +719,57 @@ horario en esperando_entrega:
                     Atendemos {horario cargado en el panel} 🕐 ¿Preferís *retiro en {retiro_sucursal}* o *envío a domicilio*? 🙂
 ```
 
+### Correcciones de pesos y presentaciones (decisión del usuario del 6/10: entran al go-live)
+
+> **CAMBIO QUE TAMBIÉN AFECTA A LA FARMACIA.** Son correcciones, sin
+> capacidad, para todos los perfiles. Las dos cobran el producto equivocado y en
+> un petshop los pesos aparecen en casi todos los mensajes.
+
+**Bug 1: "15 kg" se toma como domicilio.** `_NO_DIR` (`checkout_helper.py:66-71`)
+reconoce `mg`, `ml`, `gr` y `cc`, pero no `kg`. En "la bolsa de 15 kg", el `15`
+pasa como número de calle y `extraer_direccion_de` devuelve "bolsa de 15": en
+`esperando_entrega` sale un link con envío a esa "dirección".
+
+| Archivo:línea | Hoy | Cambio | Farmacia |
+|---|---|---|---|
+| `checkout_helper.py:66-71` (`_NO_DIR`) | Grupo de unidades `(mg\|ml\|gr?s?\|cc\|mcg\|ui\|%)` | El grupo pasa a `(mg\|ml\|gr?s?\|kgs?\|lts?\|cc\|mcg\|ui\|%)` y la lista de palabras suma `kilos?\|kilogram\w*\|litros?\|bolsa\w*\|lata\w*`. **No** se agrega `kilo\w*`: excluiría "Ruta 8 kilómetro 52", que es una dirección válida. | **cambia** (ningún peso era un domicilio válido) |
+
+**Bug 2: "el de 3 kg" confirma la bolsa de 15.** `entidad_contradice_pendiente`
+(`checkout_helper.py:1556-1569`) compara con `numeros_de`
+(`sku_service.py:99, 138-140`), que por diseño ignora los números de una cifra
+y los decimales ("dame 2" es una cantidad). Con un pendiente "ROYAL CANIN
+MEDIUM ADULT 15KG", "sí, pero el de 3 kg" no aporta números, no hay
+contradicción y se cobra la de 15. Lo mismo pasa con "el de 2 litros" frente a
+"1L" y con "el nº 3" frente a "PRETAL KIPPER Nº 4".
+
+| Archivo:línea | Hoy | Cambio | Farmacia |
+|---|---|---|---|
+| `checkout_helper.py`, junto a 1556 (nuevo) | No hay comparación de presentaciones con unidad | Función pura `presentaciones_de(t) -> set[tuple[str, float]]`: pares `(tipo, valor normalizado)` para peso (`g`; `kg` ×1000), volumen (`ml`; `l`/`lt`/`litro` ×1000) y talle (`n`: "nº", "n°", "n", "numero", "talle"). Acepta una cifra y decimales con punto o coma ("7.5 kg", "1,5 l"); los valores se redondean a 3 decimales. Regex: `(\d+(?:[.,]\d+)?)\s*(kgs?\|kilos?\|kilogram\w*\|grs?\|g\|gramos?\|mg\|ml\|cc\|lts?\|l\|litros?)\b` para peso y volumen, y `\b(?:n[º°o]?\|numero\|número\|talle)\.?\s*(\d{1,2})\b` para talle. La `º` es opcional porque el prompt de petshop le pide al modelo escribir `pretal kipper n 4`. | sin cambio (función nueva) |
+| `checkout_helper.py:1567-1569` (`entidad_contradice_pendiente`) | Mismo nombre y `numeros_de` disjuntos → contradicción | Primero: `p_ent, p_pend = presentaciones_de(entidad), presentaciones_de(pending_nombre)`. Si para algún **tipo** los dos tienen valores y no comparten ninguno → `True`. Si no, sigue la regla de hoy con `numeros_de`. `numeros_de` no se toca: alimenta el ranking de la búsqueda. | **cambia**: "el de 2 litros" sobre "1L" deja de confirmar. Lo que hoy contradice sigue contradiciendo. |
+
+Casos (todos con el mismo nombre de producto, así `nombre_coincide` da True):
+
+| Entidad | Pendiente | Hoy | Después |
+|---|---|---|---|
+| "royal canin 3 kg" | "ROYAL CANIN MEDIUM ADULT 15KG" | confirma (bug) | contradice |
+| "royal canin 15 kg" | "ROYAL CANIN MEDIUM ADULT 15KG" | confirma | confirma |
+| "royal canin 7.5 kg" | "ROYAL CANIN … 7,5 KG" | confirma | confirma (7500 g = 7500 g) |
+| "royal urinary 400 gr" | "ROYAL URINARY CAT … 400GRS" | confirma | confirma |
+| "royal urinary 1.5 kg" | "ROYAL URINARY CAT … 400GRS" | confirma (bug) | contradice |
+| "shampoo 2 litros" | "SHAMPOO … 1L" | confirma (bug) | contradice |
+| "pretal kipper nº 3" | "PRETAL KIPPER Nº 4" | confirma (bug) | contradice |
+| "pretal kipper n 3" | "PRETAL KIPPER Nº 4" | confirma (bug) | contradice |
+| "curflex x 30" | "CURFLEX PLUS X 60" | contradice | contradice (regla de hoy) |
+| "ibuprofeno 600" | "IBUPROFENO 600 MG X 10" | confirma | confirma (la entidad no tiene unidad: regla de hoy) |
+| "royal canin" | "ROYAL CANIN MEDIUM ADULT 15KG" | confirma | confirma (sin presentación en la entidad) |
+
+Verificado sobre `07a1d7a`: la columna "Hoy" con la función real (en los 11
+pares `nombre_coincide` da True) y la columna "Después" con un prototipo de
+`presentaciones_de`. Del bug 1, también con prototipo: "la bolsa de 15 kg",
+"mandame la de 15 kilos" y "dos latas de 85" dejan de ser domicilio, y "san
+javier 837", "Ruta 8 kilómetro 52", "16 de enero 9279" y "donado 608 piso 2"
+lo siguen siendo.
+
 ## 6. Pruebas
 
 TDD: cada test nuevo se escribe antes que el código y se ve fallar. Los dos
@@ -917,6 +968,27 @@ tienen que pasar en verde con el código de hoy.
 - (a), (b), (c), (e) y (f) fallan sobre el código actual; (d) pasa antes y
   después.
 
+**`tests/test_pesos.py` (correcciones de pesos de §5; corre con farmacia y con petshop)**
+- `extraer_direccion_de` da `None` con: "la bolsa de 15 kg", "mandame la de 15
+  kilos", "dos latas de 85", "el de 2 litros", "una de 3 kgs". Sigue
+  devolviendo la dirección con: "san javier 837", "Ruta 8 kilómetro 52", "16 de
+  enero 9279", "donado 608 piso 2" (y los casos de `test_direccion_envio.py`,
+  sin cambios).
+- `presentaciones_de`: "royal canin 7,5 kg" → `{("g", 7500.0)}`; "400GRS" →
+  `{("g", 400.0)}`; "1L" → `{("ml", 1000.0)}`; "pretal kipper n 4" y "Nº 4" →
+  `{("n", 4.0)}`; "ibuprofeno 600" → `set()`.
+- `entidad_contradice_pendiente`: los 12 pares de la tabla de §5, con el
+  resultado de la columna "Después".
+- Webhook, en `esperando_entrega` con un pendiente "ROYAL CANIN MEDIUM ADULT
+  15KG": "la bolsa de 15 kg" no genera link con envío ni pasa a
+  `esperando_pago`. En `esperando_confirmacion`: "sí, pero el de 3 kg" no
+  confirma (va como otro pedido), y "sí, la de 15 kg" confirma.
+- Fallan sobre el código actual: "la bolsa de 15 kg", "mandame la de 15 kilos"
+  y "dos latas de 85" en `extraer_direccion_de`; todo `presentaciones_de` (no
+  existe); los pares marcados "(bug)" en la tabla; y los dos casos de webhook
+  con 15 kg y 3 kg. "el de 2 litros" y "una de 3 kgs" ya dan `None` hoy (una
+  cifra no es altura de calle): quedan como guarda.
+
 ### 6.3 Tests existentes
 
 Ninguno cambia de expectativa. Se tocan solo los fakes de §6.1. Tienen que
@@ -1054,15 +1126,8 @@ Lista aprobada:
   pueda cerrar en cuenta corriente con 💊 sin mirar la capacidad).
 
 No están en la lista literal, pero quedan afuera porque el diseño no los pide
-(a validar, §9.1):
-- `_NO_DIR` sin kg/kilos (`checkout_helper.py:66-71`): "la bolsa de 15 kg"
-  en `esperando_entrega` se toma como domicilio y sale un link con envío.
-  **Riesgo alto; se recomienda reconsiderarlo para el go-live** (es una línea y
-  un test).
-- `entidad_contradice_pendiente` (`checkout_helper.py:1567-1569`) ignora números
-  de 1 dígito y decimales: "sí, pero el de 3 kg" sobre un pendiente de 15 kg
-  confirma y **cobra** la bolsa de 15. **Se recomienda reconsiderarlo para el
-  go-live.**
+(validado por el usuario el 6/10). `_NO_DIR` con kg y
+`entidad_contradice_pendiente` estaban acá y **pasaron al go-live** (§5):
 - Antifraude de Payway: el email de respaldo `cliente@remedia.ar`,
   `dispatch_method` fijo en "Store Pick Up" y X-Source `remedia`.
 - "Tiempo estimado: 30 min" en el aviso de pedido listo (se mitiga con
@@ -1095,7 +1160,12 @@ No aplica a petshop:
 
 ## 9. Riesgos
 
-### 9.1 Decisiones tomadas al consolidar (validar con el usuario)
+### 9.1 Decisiones tomadas al consolidar
+
+Validadas por el usuario el 6/10: la frontera de salud del punto 7 ("algo para
+las pulgas" se vende), el descuento de empleado apagado del punto 2 (MO no lo
+necesita) y el punto 10 (los dos bugs de pesos **entran al go-live**, §5). El
+resto son decisiones de diseño que se revisan en el spec.
 
 1. **Campos agregados al `Perfil`**: `venta`, `catalogo_csv_base`,
    `descriptor_tarjeta`, `razon_social` y `wordmark_html` (§3.7). Sin ellos, o
@@ -1127,8 +1197,8 @@ No aplica a petshop:
    y compuerta A, para no tocar la regex de la farmacia.
 9. `consulta_saldo_message` y `cc_no_habilitada_message` conservan su fallback
    literal (§3.4), para que el `get_all()` de la farmacia no cambie.
-10. Fuera de alcance con recomendación de revisar: `_NO_DIR` con kg y
-    `entidad_contradice_pendiente` (§8).
+10. `_NO_DIR` con kg y `entidad_contradice_pendiente`: el usuario decidió que
+    entran al go-live (§5, "Correcciones de pesos y presentaciones").
 
 ### 9.2 Riesgos
 
