@@ -794,6 +794,14 @@ tienen que pasar en verde con el código de hoy.
   Sin el `cache_clear` del teardown, el perfil petshop se filtra al resto de
   la suite. Los tests que pasan por `get_intent_service` además hacen
   `intent_service._instance = None`.
+
+  **Corrección al planificar (6/10):** la fixture final **no** usa `setenv` +
+  `get_settings.cache_clear()`. La fixture `pg_dsn` deja `DATABASE_URL` en el
+  entorno, así que un `Settings` nuevo apuntaría el resto de la suite al
+  Postgres de prueba. `usar_perfil` pisa `vertical` y `comercio_nombre` en el
+  `Settings` cacheado (`monkeypatch.setattr`) y limpia solo `get_perfil`. El
+  código de arriba queda como ilustración de la interfaz; vale el del plan
+  (`docs/superpowers/plans/2026-10-06-vertical-petshop.md`, Task 1).
 - `tests/test_webhook_secuencias.py`: el `_Intent` falso guarda los kwargs
   además del mensaje. El `_Cfg` falso se arma con `config_service.valores_base()`
   (y no con `dict(DEFAULTS)`) y suma `texto_horario`. Hace falta una variante de
