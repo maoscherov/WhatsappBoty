@@ -1,0 +1,1179 @@
+# Vertical petshop — Mascotas del Oeste sobre un perfil de rubro
+
+Diseño aprobado por el usuario el 6/10/2026 (secciones 1-3 más el agregado de
+la pregunta en `esperando_entrega`). Rama `feature/vertical-petshop`. Todas las
+líneas citadas son del commit `07a1d7a`. Inventario relevado por grupo y
+revisado por un crítico de cobertura. Donde hubo contradicciones, se resolvieron
+a favor del diseño aprobado (ver §3.7 y §9.1).
+
+---
+
+## 1. Contexto
+
+El bot de ventas por WhatsApp (FastAPI + Redis + Postgres + Claude) hoy atiende
+a una farmacia (Remedia) y a una mutual (CERCA / Mutual AMI). El rubro se elige
+con la env `VERTICAL`.
+
+Se suma **Mascotas del Oeste (MO)**, una cadena de petshops. Corre como
+instancia separada del mismo código: servicio propio en Railway, con su Postgres
+y su Redis (no es un tenant). El catálogo sale del ERP Mercurio (alimento,
+accesorios, piedras sanitarias, snacks, higiene y salud animal sin receta; ver
+`2026-09-14-mercurio-api-v1.md`). Se cobra con MP o Payway en la cuenta de MO.
+
+Hoy `VERTICAL=petshop` no existe. `intent_service.py:181` lo coacciona a
+farmacia sin avisar, y MO vende como Remedia: se presenta como Remedia, deriva
+por receta, contesta por obras sociales, busca socios en el padrón, ofrece
+cuenta corriente y firma con 💊.
+
+Por qué un vertical y no un `if` más: los ganchos de farmacia están
+desparramados en el webhook, el checkout, la visión, los pagos y el arranque.
+Preguntar en cada uno por un nombre de rubro no escala. Preguntar por una
+**capacidad** sí.
+
+**Decisiones del usuario**
+- Identidad: "Soy el asistente virtual de Mascotas del Oeste", sin nombre propio.
+- Salud animal: vende los productos de salud que el cliente pide por nombre.
+  Ante un síntoma ("mi perro vomita, ¿qué le doy?") no recomienda tratamiento
+  ni dosis y **deriva a una persona** (motivo `consulta_salud`).
+- Entrega MVP: envío a domicilio y retiro en **una** sucursal piloto. La
+  dirección la carga MO desde el panel. El bot no inventa direcciones.
+- Enfoque B: **perfil de rubro con capacidades**. Cada gancho pregunta por una
+  capacidad (`perfil.cuenta_corriente`), nunca por el nombre del vertical.
+
+## 2. Objetivo y criterio de éxito
+
+Que MO venda por WhatsApp con su identidad y sus reglas, desde el mismo código
+y sin tocar a la farmacia.
+
+Criterio de éxito:
+1. Un cliente de MO compra de punta a punta: consulta, oferta con precio,
+   confirmación, retiro o envío, link de pago, confirmación del pago y aviso de
+   pedido listo. En ningún paso el bot menciona farmacia, recetas, obras
+   sociales, socios, mutual ni cuenta corriente. Tampoco dispara lógica de
+   farmacia: derivación por receta, OCR, bonos, padrón, descuento de socio o
+   empleado, oferta del farmacéutico ni el CSV de la farmacia.
+2. Ante un síntoma, el bot no ofrece productos y deriva con `consulta_salud`.
+3. La farmacia no cambia: prompt idéntico byte a byte, mismos textos y la suite
+   completa (933 tests) en verde. Única excepción: la corrección de la pregunta
+   en `esperando_entrega` (§5), marcada como **cambio que también afecta a la
+   farmacia**.
+4. La mutual queda registrada como perfil sin cambios de comportamiento.
+5. Con un `VERTICAL` desconocido, el arranque se corta con un error claro.
+
+## 3. Arquitectura
+
+### 3.1 Módulos nuevos
+
+- `app/services/prompts.py`: solo textos, sin imports de `app`. Contiene el
+  prompt de farmacia armado por bloques (re-exportado por `intent_service`),
+  la plantilla de petshop y los prompts de visión de los dos rubros.
+- `app/services/perfil.py`: las dataclasses, el registro de perfiles,
+  `get_perfil()` y `perfil_por_clave()`.
+
+`perfil.py` importa solo stdlib, `app.config`, `app.services.prompts` y
+`app.services.mutual_helper` (que solo usa stdlib). `config_service.DEFAULTS`
+se importa **adentro** de la función que arma el registro, porque
+`config_service` importa `perfil`. `perfil.py` nunca importa `intent_service`,
+`sku_service`, `image_service` ni `checkout_helper`, porque todos ellos importan
+`perfil` y se armaría un ciclo. Por eso la lista de marcas de audio pasa a
+`perfil.py`, y los prompts a `prompts.py`.
+
+Regla de uso: `get_perfil()` se llama en el momento de usarlo, adentro de cada
+función. Nunca se guarda en una variable de módulo, en un `__init__` ni en un
+singleton (`IntentService`, `PaymentService`, `PaywayService`, `ConfigService`).
+
+### 3.2 Dataclasses
+
+```python
+@dataclass(frozen=True)
+class VocabularioAudio:
+    prefijo: str                    # "Consulta a una farmacia"
+    marcas_base: tuple[str, ...]    # marcas fijas, antes de las del catálogo
+
+@dataclass(frozen=True)
+class VisionPerfil:
+    categorias: tuple[str, ...]     # tipos válidos; cualquier otro pasa a "otro"
+    prompt: str                     # prompt del clasificador de imágenes
+
+@dataclass(frozen=True)
+class Perfil:
+    clave: str                      # "farmacia" | "mutual" | "petshop"
+    comercio: str                   # nombre visible; COMERCIO_NOMBRE lo pisa
+    system_prompt: str
+    emoji: str
+    rotulo_kb: str                  # sin corchetes
+    vocabulario_audio: VocabularioAudio
+    recetas: bool
+    obras_sociales: bool
+    socios: bool
+    cuenta_corriente: bool
+    links_como_receta: bool
+    sintomas: Literal["farmaceutico", "derivar"]
+    vision: VisionPerfil
+    textos: Mapping[str, str]       # MappingProxyType: un test no lo puede mutar
+    # Agregados al diseño (justificación en §3.7)
+    venta: bool                     # False = solo informa (mutual)
+    catalogo_csv_base: bool         # puede cargar data/catalogo_base.csv
+    descriptor_tarjeta: str = ""    # "" = derivado de comercio
+    razon_social: str = ""          # "" = comercio
+    wordmark_html: str = ""         # "" = html.escape(comercio)
+```
+
+### 3.3 Valores de los tres perfiles
+
+| Campo | farmacia | mutual | petshop |
+|---|---|---|---|
+| `clave` | `farmacia` | `mutual` | `petshop` |
+| `comercio` | `Remedia` | `Remedia` (es lo que hoy muestran /pay y Payway) | `Mascotas del Oeste` |
+| `system_prompt` | `prompts.SYSTEM_PROMPT` (sha256 `1953a4e6…0749`, 14.680 caracteres) | `mutual_helper.SYSTEM_PROMPT_MUTUAL`, el mismo objeto (sha256 `4377db47…c469`) | plantilla petshop resuelta (§4.1) |
+| `emoji` | 💊 | 💊 | 🐾 |
+| `rotulo_kb` | `INFORMACIÓN DE LA FARMACIA` | `INFORMACIÓN DE LA FARMACIA` (así se comporta hoy; ver §9) | `INFORMACIÓN DEL COMERCIO` |
+| `vocabulario_audio` | `Consulta a una farmacia` + las 38 marcas de hoy, en el mismo orden | igual que farmacia | `Consulta a un petshop` + `()` |
+| `recetas` / `obras_sociales` / `socios` / `cuenta_corriente` / `links_como_receta` | True | True | False |
+| `sintomas` | `farmaceutico` | `farmaceutico` | `derivar` |
+| `vision` | `VISION_FARMACIA` | `VISION_FARMACIA` (el mismo objeto) | `VISION_PETSHOP` |
+| `textos` | las 13 claves de §3.4, tomadas de `DEFAULTS` | igual que farmacia | las 13 claves de petshop + `consulta_salud_message` + `indicacion_veterinaria_message` |
+| `venta` | True | False | True |
+| `catalogo_csv_base` | True | True | False |
+| `descriptor_tarjeta` | `FARMACIA AMI` | `FARMACIA AMI` | `""` (da `MASCOTAS DEL OESTE`) |
+| `razon_social` | `Farmacia Mutual Independencia` | igual | `""` |
+| `wordmark_html` | `Remed<b>IA</b>` | igual | `""` |
+
+La mutual lleva todas las capacidades de farmacia en True. Los bloques de
+imagen, horario, link y padrón corren hoy **antes** del desvío a
+`_flujo_mutual` (`webhook.py:1171`), y `receta_referencia.inicializar` corre
+en todos los verticales. Si alguna capacidad quedara en False, la mutual
+cambiaría.
+
+### 3.4 Textos del perfil
+
+`CLAVES_TEXTO_RUBRO` (constante en `perfil.py`) son las 13 claves de `DEFAULTS`
+que tienen vocabulario o emoji de farmacia:
+
+`pedido_listo_retiro_message`, `pedido_listo_envio_message`,
+`efectivo_retiro_message`, `efectivo_envio_message`,
+`sintoma_farmaceutico_message`, `receta_recibida_message`,
+`socio_discount_message`, `socio_discount_info_message`,
+`socio_discount_off_message`, `bono_recibido_message`,
+`bono_no_reconocido_message`, `bono_consulta_si_message`,
+`comprobante_recibido_message`.
+
+Reglas:
+- Farmacia y mutual: `textos = {k: DEFAULTS[k] for k in CLAVES_TEXTO_RUBRO}`.
+  Se arman **desde** `DEFAULTS`, así que el merge no cambia nada.
+- Todo perfil define las 13. Así un fallback `perfil.textos[x]` nunca da
+  `KeyError` (era una contradicción entre grupos).
+- Las claves exclusivas de una capacidad (`consulta_salud_message`,
+  `indicacion_veterinaria_message`) solo existen en los perfiles que tienen esa
+  capacidad, y solo se leen detrás de su gate. Un test lo garantiza:
+  `sintomas == "derivar"` ⇒ existe `consulta_salud_message`;
+  `"indicacion_veterinaria" in vision.categorias` ⇒ existe
+  `indicacion_veterinaria_message`.
+- `DEFAULTS` no se modifica, salvo las tres claves nuevas de §4.4 y §5
+  (`pago_mp_manual`, `retiro_sucursal`, `retiro_info_message`), cuyos
+  defaults dejan todo como hoy.
+
+**Merge.** En `config_service` se agrega `valores_base() -> dict` que devuelve
+`{**DEFAULTS, **get_perfil().textos}`. Los tres `return` de `get_all`
+(413, 428 y 430) pasan a `{**valores_base(), **guardado}`, y `get` (459-461)
+usa `valores_base().get(key, "")` como default. Lo guardado sigue ganando.
+`valores_base()` es pública, para que los tests de petshop armen su config
+falsa con los textos del perfil.
+
+**Fallbacks del código que pasan a `perfil.textos[x]`** (un solo dueño:
+arranque-config):
+
+| Archivo:línea | Clave |
+|---|---|
+| `orders_api.py:162-166` | `pedido_listo_envio_message` |
+| `orders_api.py:168-173` | `pedido_listo_retiro_message` |
+| `checkout_helper.py:1695-1699` | `efectivo_envio_message` |
+| `checkout_helper.py:1701-1705` | `efectivo_retiro_message` |
+| `checkout_helper.py:1544-1545` (`agregar_oferta_farmaceutico`) | `sintoma_farmaceutico_message` |
+| `webhook.py:986-990` | `receta_recibida_message` |
+| `webhook.py:995-998` | `comprobante_recibido_message` |
+| `webhook.py:1482-1485` | `socio_discount_info_message` |
+| `webhook.py:1487-1490` | `socio_discount_off_message` |
+| `checkout_helper.py:1524-1526` | `bono_recibido_message` |
+| `checkout_helper.py:1528-1530` | `bono_consulta_si_message` |
+| `checkout_helper.py:1532-1535` | `bono_no_reconocido_message` |
+
+Cada literal de hoy es igual a `DEFAULTS[k]`, así que la farmacia queda
+idéntica. No cambian:
+- `socio_discount_message` (`checkout_helper.py:1121`) sigue con `or ''`: si
+  pasara a `perfil.textos`, un texto vaciado en el panel volvería a mostrar la
+  línea en la farmacia.
+- Los fallbacks con texto neutro o que solo se alcanzan con una capacidad
+  prendida: `consulta_saldo_message` (`webhook.py:1229-1231`),
+  `cc_no_habilitada_message` (1369-1371), `imagen_no_reconocida_message`
+  (1026-1029 y 1067-1069), `sin_stock_derivar`, `encargo`, `pago_*`,
+  `obras_sociales_*`, `bono_consulta_no_message`, `closed_message` y los de
+  la mutual. Así `get_all()` de la farmacia sigue siendo igual a `DEFAULTS`.
+  Un grupo proponía meter `consulta_saldo_message` y
+  `cc_no_habilitada_message` en los textos de farmacia; se descartó porque eso
+  cambiaba el `get_all()` de la farmacia.
+
+**Textos de petshop** (el 🐾 sale de `perfil.emoji` al armar el registro):
+
+```
+pedido_listo_retiro_message:
+🎉 *¡Tu pedido está listo para retirar!*\n\n*{producto}* — ${total}\n🔑 *Código de retiro: {codigo}*{horario}\n\nPresentá este código y te lo entregamos. ¡Te esperamos! 🐾
+
+pedido_listo_envio_message:
+🎉 *¡Tu pedido está listo!*\n\n*{producto}* — ${total}\n🚚 Sale para *{direccion}*. Te avisamos cuando esté en camino. 🐾
+
+efectivo_retiro_message:
+✅ *¡Listo! Tomamos tu pedido* 🙌\n\n*{producto}* — ${total}\n💵 Lo pagás en efectivo al retirar.{plazo}\n🔑 *Tu código de retiro es: {codigo}*\n\n¡Muchas gracias! 🐾
+
+efectivo_envio_message:
+✅ *¡Listo! Tomamos tu pedido* 🙌\n\n*{producto}* — ${total}{envio}\n🚚 Te lo enviamos a *{direccion}* y lo pagás en efectivo al recibirlo.\n📋 Código de pedido: *{codigo}*\n\n¡Muchas gracias! 🐾
+
+sintoma_farmaceutico_message:   (vacío: apaga el agregado)
+
+receta_recibida_message / bono_recibido_message / bono_no_reconocido_message:
+¡Hola {nombre}! Recibí tu imagen 🙌 Te paso con alguien del equipo que la mira y te ayuda.
+
+socio_discount_message:
+🎉 Te aplicamos un {pct}% de descuento (precio de lista: ${antes}).
+
+socio_discount_info_message / socio_discount_off_message:
+Por ahora te puedo ofrecer el precio de lista 🙂
+
+bono_consulta_si_message:
+Eso lo confirma el equipo: te paso con alguien para que lo vea con vos 🙂
+
+comprobante_recibido_message:   (sin {nombre}: MO no tiene padrón y hoy saldría "¡Listo !")
+¡Listo! Recibimos tu comprobante 🙌 Lo verificamos y te confirmamos en un rato.
+
+consulta_salud_message:         (solo petshop)
+Para temas de salud prefiero que te atienda una persona del equipo, así no te recomiendo nada a ciegas 🐾 Ya te paso. Si lo notás muy decaído o empeora, no esperes y consultá con un veterinario.
+
+indicacion_veterinaria_message: (solo petshop)
+¡Hola {nombre}! Recibí la indicación del veterinario 🐾 Te paso con alguien del equipo que la revisa y te ayuda con lo que necesita tu mascota.
+```
+
+Con el perfil petshop, varias de estas claves nunca se leen, porque sus ganchos
+quedan apagados por capacidad. Igual tienen un texto neutro: si un gancho
+quedara sin gate, el cliente no lee "receta", "bono" ni "socio".
+
+### 3.5 `get_perfil()` y falla al arrancar
+
+```python
+@lru_cache
+def get_perfil() -> Perfil:
+    s = get_settings()
+    clave = (s.vertical or "").strip().lower() or "farmacia"
+    registro = _registro()                      # lru_cache; importa DEFAULTS adentro
+    if clave not in registro:
+        raise ValueError(f"VERTICAL desconocido: {s.vertical!r}. "
+                         "Valores válidos: farmacia, mutual, petshop")
+    p = registro[clave]
+    nombre = (s.comercio_nombre or "").strip()
+    if nombre:
+        p = replace(p, comercio=nombre, descriptor_tarjeta="",
+                    razon_social="", wordmark_html="")
+        if p.clave == "petshop":
+            p = replace(p, system_prompt=resolver_plantilla(
+                prompts.SYSTEM_PROMPT_PETSHOP_PLANTILLA, nombre, p.emoji))
+    return p
+
+def perfil_por_clave(clave: str) -> Perfil:    # sin cache ni env; para tests
+    return _registro()[clave]
+```
+
+- `app/config.py:25-27`: se agrega `comercio_nombre: str = ""` (env
+  `COMERCIO_NOMBRE`, opcional) y el comentario de `vertical` pasa a
+  `"farmacia" | "mutual" | "petshop"`; un valor desconocido corta el arranque.
+- `COMERCIO_NOMBRE` pisa `perfil.comercio` y vacía los tres campos de marca, así
+  todo sale del nombre. En petshop además se vuelve a resolver la plantilla del
+  prompt. En farmacia y mutual el prompt es constante y no se toca, para
+  conservar los bytes.
+- `resolver_plantilla` usa `.replace("{comercio}", …).replace("{emoji}", …)`,
+  nunca `str.format`, porque el JSON del prompt tiene llaves.
+- `app/main.py:24-27` (lifespan, justo después de `logging.basicConfig`):
+  `perfil = get_perfil()` sin try/except, **antes** de tocar Redis, el
+  catálogo o Postgres, y después
+  `logger.info(f"Perfil de rubro: {perfil.clave} ({perfil.comercio})")`.
+  El `ValueError` corta el startup de uvicorn ("Application startup failed").
+- Reemplaza la coerción silenciosa de `intent_service.py:181`.
+
+### 3.6 Cómo lo consumen
+
+| Archivo:línea | Hoy | Cambio |
+|---|---|---|
+| `intent_service.py:36-171` | `SYSTEM_PROMPT` literal | `from app.services.prompts import SYSTEM_PROMPT` (re-export). `_SYSTEM_CACHED` (174) queda. `tests/test_logic.py:1372` sigue importándolo de acá. |
+| `intent_service.py:178-185` | parámetro `vertical` y coerción en 181 | se quitan los dos; el log pasa a `IntentService: perfil '{get_perfil().clave}', proveedor primario ...` |
+| `intent_service.py:187-192` (`_system_prompt`) | elige por `self._vertical` | `return get_perfil().system_prompt`, en cada llamada. El singleton nunca queda con un perfil viejo. |
+| `intent_service.py:385-393` (`get_intent_service`) | el primer llamador fija el vertical | se quita el parámetro `vertical` |
+| `webhook.py:257` (`_deps`) | pasa `s.vertical` | `get_intent_service(s.anthropic_api_key, s.openai_api_key, s.llm_provider)` |
+| `simulate.py:90` | arma el bot sin vertical (queda farmacia y puede fijar el singleton) | sin cambio de código: queda corregido porque el prompt sale de `get_perfil()` |
+| `config_service.py:407-430, 459-461` | `{**DEFAULTS, **guardado}` | `valores_base()` (§3.4) |
+| `webhook.py:1170-1180` | `if _s.vertical == "mutual"` | `if not perfil.venta` (§4.8) |
+| `backoffice.py:602` (`bo_tablero`) | `settings.vertical` | `get_perfil().clave` |
+
+### 3.7 Campos agregados al diseño, y por qué
+
+El diseño fija la lista de campos. Para cumplir sus propias reglas ("cada
+gancho pregunta por una capacidad" y "farmacia reproduce EXACTAMENTE") hicieron
+falta estos agregados. Todos se marcan para validar (§9.1):
+
+- `venta`: `webhook.py:1171` pregunta hoy por el nombre `mutual`. Ningún campo
+  del diseño expresa "vende o solo informa".
+- `catalogo_csv_base`: hace cumplir "el perfil petshop NUNCA carga el CSV de la
+  farmacia" sin preguntar por el nombre del rubro.
+- `descriptor_tarjeta`, `razon_social` y `wordmark_html`: el diseño dice que el
+  `statement_descriptor`, la descripción de Payway y la página `/pay` usan
+  `perfil.comercio`. Aplicado al pie de la letra, eso cambia la farmacia: el
+  descriptor pasaría de `FARMACIA AMI` a `REMEDIA` y el pie de `/pay` dejaría de
+  decir "Farmacia Mutual Independencia". Vacíos significan "derivado de
+  `comercio`". Petshop los deja vacíos, así que cumple el diseño literalmente;
+  farmacia y mutual cargan los valores de hoy.
+- `VocabularioAudio` y `VisionPerfil` no son campos nuevos: son los tipos de
+  `vocabulario_audio` y `vision`, que ya estaban en el diseño.
+- Se descartó el campo `sitio` (subtítulo del simulador en `/`), porque
+  `index.html` no está en el diseño (§8).
+
+## 4. Comportamiento petshop por capacidad
+
+Convención de las tablas: **Hoy** describe el comportamiento en todos los
+verticales; **Cambio** dice qué se toca. Salvo indicación, farmacia y mutual
+quedan iguales.
+
+### 4.1 Prompt, identidad, contexto y audio
+
+| Archivo:línea | Hoy | Cambio | Capacidad |
+|---|---|---|---|
+| `intent_service.py:36-171` → `prompts.py` | Un literal único de farmacia (identidad Remedia, recetas, obras sociales, cuenta corriente, socios, farmacéutico, "link real de Mercado Pago", "actualizado semanalmente") | Se mueve a `prompts.py` y se arma por bloques (abajo). El prompt de farmacia queda idéntico byte a byte. | `system_prompt` |
+| `prompts.py` (nuevo) | MO se presenta como "el asistente virtual de Remedia" | `SYSTEM_PROMPT_PETSHOP_PLANTILLA` con `{comercio}` y `{emoji}`. No incluye cuenta corriente, obras sociales, receta ni personalización de socios. | `system_prompt`, `comercio`, `emoji` |
+| `intent_service.py:332-344` (`_con_contexto`) | Siempre agrega `[DATOS DEL SOCIO]` si hay contexto de cliente; la KB va rotulada `[INFORMACIÓN DE LA FARMACIA]` en todo vertical | Sigue siendo staticmethod (`test_degradation.py:42` la llama sobre la clase). Adentro: `p = get_perfil()`; el bloque de socio pasa a `if contexto_cliente and p.socios`; el rótulo pasa a `f"\n\n[{p.rotulo_kb}]\n{contexto_kb}\n"`. La instrucción que sigue no cambia. | `socios`, `rotulo_kb` |
+| `sku_service.py:714-720, 742-755` (`vocabulario_audio`) | Cada audio manda a Whisper "Consulta a una farmacia. Productos y marcas: " + 38 marcas de farmacia + marcas del catálogo | Las 38 marcas pasan a `perfil.py`. `MARCAS_AUDIO_BASE = list(...)` queda por compatibilidad. Firma: `vocabulario_audio(sku_svc, max_chars=650, perfil=None)`; `p = perfil or get_perfil()`; `fuentes = list(p.vocabulario_audio.marcas_base) + marcas_frecuentes(sku_svc)`; `out = f"{p.vocabulario_audio.prefijo}. Productos y marcas: "`. El dedup y el tope no cambian. El llamado de `webhook.py:846-850` no cambia. | `vocabulario_audio` |
+
+**Composición del prompt de farmacia** (líneas de `intent_service.py`; cada
+línea lleva su `\n` y la 171 va sin `\n` final). Verificada con un prototipo
+que reproduce el sha256 exacto:
+
+```
+Bloques compartidos (verbatim de farmacia, sin rubro):
+  SEGUIMIENTO 46-49 · DERIVACION 74-76 · RESERVAS 100-102
+  CONFIRMACIONES 124-126 · RESPUESTA_DIRECTA 127-130
+
+Bloque mecánico con huecos por perfil:
+  matriz_intenciones(fila_saludo, fila_consulta_abierta)
+    = 110-113 + fila_saludo + 115-118 + fila_consulta_abierta + 120-123
+  formato_respuesta(linea_entidad, parrafo_agregar, linea_por_sintoma,
+                    linea_rechazo, lineas_cambio)
+    = 141-144 + linea_entidad + 146-155 + parrafo_agregar + 157-159
+      + linea_por_sintoma + 161-163 + linea_rechazo + 165-167
+      + lineas_cambio + 170-171
+
+SYSTEM_PROMPT (farmacia)
+  = 36-45 + SEGUIMIENTO + 50-73 + DERIVACION + 77-99 + RESERVAS + 103-109
+    + matriz(114, 119) + CONFIRMACIONES + RESPUESTA_DIRECTA + 131-140
+    + formato(145, 156, 160, 164, 168-169)
+
+SYSTEM_PROMPT_PETSHOP_PLANTILLA
+  = PET_IDENTIDAD + SEGUIMIENTO + PET_VENTA + DERIVACION + PET_REGLAS
+    + RESERVAS + matriz(PET_SALUDO, PET_ABIERTA) + CONFIRMACIONES
+    + RESPUESTA_DIRECTA + PET_VARIOS
+    + formato(PET_ENTIDAD, PET_AGREGAR, PET_SINTOMA, PET_RECHAZO, PET_CAMBIO)
+```
+
+El enum de `intencion`, las claves del JSON, "REGLA ESTRICTA: solo podés
+ofrecer productos..." y "NUNCA incluyas URLs, links..." son idénticos en los dos
+prompts (test de contrato).
+
+**Bloques propios de petshop.** Al prototipo verificado se le sumaron las
+reglas del crítico (descuentos; "te paso con alguien del equipo" para que
+`cumplir_derivacion_prometida` derive de verdad) y la frontera de salud del
+grupo síntomas. Las líneas marcadas "= farmacia NN" se copian verbatim.
+
+```
+PET_IDENTIDAD
+Sos el asistente virtual de {comercio}, una cadena de petshops.
+
+IDENTIDAD Y TONO:
+- Sos cálido, cercano y amable. Como el equipo de un petshop de confianza que conoce y quiere a las mascotas de sus clientes.
+- Hablás en rioplatense correcto y cuidado: cordial y simpático, sin exagerar la informalidad ni sonar vendedor insistente. Evitá "bárbaro/genial/buenísimo" en exceso.
+- Si te preguntan quién sos o si sos un bot: "Soy el asistente virtual de {comercio}". No tenés nombre propio: no te inventes uno ni digas que sos una persona.
+- No sos un bot genérico. Sos parte del equipo de {comercio}.
+- Saludás al inicio de la conversación; después NO repitas el saludo en cada mensaje.
+- No conocés el nombre del cliente: saludá de forma genérica, sin inventar nombres. Si te cuenta cómo se llama su mascota, podés usarlo con naturalidad.
+- El canal es relacional antes de transaccional: primero conectás, después vendés.
+
+PET_VENTA
+ALTERNATIVAS SIEMPRE CON PRECIO:
+- Si mencionás un producto de la lista como alternativa, SIEMPRE con su precio ("tengo el Pedigree Adulto 3 kg a $9.800"). Nombrar un producto sin precio no sirve: el cliente no puede decidir y el sistema no lo toma como ofrecido.
+- NUNCA cierres con "¿te gustaría más información?", "¿te interesa alguna de estas opciones?" ni similares. Cerrá con una pregunta concreta de compra ("¿te sirve?", "¿cuál preferís?") o no preguntes nada.
+
+PRECIOS:
+- Si el cliente pregunta un precio y el producto está en el contexto, SIEMPRE respondé con el precio concreto (ej.: "Las piedras Sanicat de 4 kg están $6.200"). Nunca esquives la pregunta de precio.
+
+BÚSQUEDA EN CATÁLOGO SKU:
+- El catálogo tiene productos con stock disponible.
+(= farmacia 59-64)
+- Si la lista dice "Sin resultados en el catálogo" o no hay opciones que coincidan con lo que pidió el cliente, NO ofrezcas productos de otro tipo. Decí con honestidad que no lo tenés y ofrecé encargarlo o pasarlo con una persona del equipo. Nunca sugieras un producto de otro rubro ni para otra especie (ej.: si pide alimento para gato y no está, no ofrezcas alimento para perro ni un juguete).
+
+LÓGICA DE PAGO:
+(= farmacia 68-70)
+- El sistema envía el link de pago después de que confirme.
+(= farmacia 72-73)
+
+PET_REGLAS
+PAGO EN EFECTIVO Y OTRAS FORMAS DE PAGO:
+- NUNCA digas que se puede o que no se puede pagar en efectivo, al retirar o al recibir: lo resuelve el sistema según la configuración del comercio. Si el cliente lo pide y el sistema no lo resolvió, respondé "te paso con alguien del equipo para coordinarlo".
+- No existe pago diferido: no prometas "anotarlo", fiado, "a la cuenta" ni pagar más adelante; se paga con el link de pago. Si el cliente insiste, respondé "te paso con alguien del equipo".
+
+DESCUENTOS, PROMOCIONES Y CUPONES (PROHIBIDO AFIRMAR):
+- No tenés información de descuentos, promociones, cuotas, cupones ni convenios. Nunca afirmes ni inventes un descuento, una promo o un precio especial: los únicos precios son los del catálogo.
+- Si el cliente pregunta o insiste, decile que eso lo ve el equipo y respondé "te paso con alguien del equipo".
+
+SALUD DE LA MASCOTA (IMPORTANTE):
+- Los productos de salud sin indicación veterinaria (pipetas, antiparasitarios, collares antipulgas, etc.) se venden como cualquier otro cuando el cliente los pide por nombre, marca o tipo ("pipeta Frontline para perro de 10 a 20 kg", "Bravecto", "algo para las pulgas"): "por_sintoma": false. No expliques cómo ni cuánto darle.
+- Si el cliente cuenta un síntoma o un problema de salud de su mascota ("mi perro vomita, ¿qué le doy?", "tiene diarrea", "no quiere comer", "se rasca hasta lastimarse"), pregunta qué darle o cuánto darle (aunque nombre un producto: "¿cuánto Drontal le doy?") o pide hablar con un veterinario, poné "por_sintoma": true. NO diagnostiques ni recomiendes productos, tratamientos ni dosis, y no nombres productos del catálogo: respondé con calidez y decile que lo pasás con una persona del equipo. El sistema hace la derivación.
+
+ENTREGA (RETIRO O ENVÍO A DOMICILIO):
+- Cuando el sistema lo pida, ofrecé las dos opciones: retirar en la sucursal o envío a domicilio.
+- Si el cliente elige envío y el sistema no tiene su dirección, pedísela con amabilidad.
+- Nunca inventes la dirección ni los horarios de la sucursal: usá solo los que aparezcan en [INFORMACIÓN DEL COMERCIO]. Si no están, respondé "te paso con alguien del equipo" para que te los confirme.
+- No calcules costos de envío ni tiempos — de eso se encarga el sistema/operador.
+
+PET_SALUDO (fila de la matriz)
+| saludo | "Hola", "Buen día", "Buenas", "Cómo están", "Buenas tardes" | Saludar con calidez. Ejemplo: "¡Hola! Soy el asistente virtual de {comercio} {emoji} ¿En qué te puedo ayudar?". OJO: si además de saludar el cliente menciona o pide un PRODUCTO ("hola, tenés Royal Canin?"), NO es un simple saludo — usá la intención de producto (consulta_stock/consulta_precio/pedido) y poné el producto en entidad_producto. |
+
+PET_ABIERTA (fila de la matriz)
+| consulta_abierta | "Qué alimento me recomendás para un cachorro", "Algo para un gato castrado", "Qué piedras me conviene", "Un juguete para un perro grande" | Indagar lo que falte (especie, edad, tamaño o raza) → sugerir productos del catálogo. Si cuenta un síntoma o un problema de salud, no es consulta_abierta: poné "por_sintoma": true |
+
+PET_VARIOS
+PEDIDOS DE VARIOS PRODUCTOS:
+Si el cliente menciona MÁS de un producto en el mismo mensaje ("un alimento para gato, piedras sanitarias y unos snacks"):
+(= farmacia 133-134)
+UN PRODUCTO = TIPO + MARCA: "alimento Royal Canin", "pretal Kipper", "piedras Sanicat", "correa Petnation" son UN solo producto aunque la transcripción de un audio haya puesto una coma en el medio ("pretal, kipper"). No los separes.
+DOS TIPOS CON LA MISMA MARCA SON DOS PRODUCTOS: "alimento y snacks Pedigree" = "alimento pedigree" + "snacks pedigree"; "correa y pretal Kipper" = "correa kipper" + "pretal kipper". Repetí la marca en cada uno.
+ESCRIBÍ LA MARCA COMO LA DIJO EL CLIENTE: no la "corrijas" a una palabra común ("excellent" NO es "excelente", "kipper" no es "kiper"). El sistema busca con esas palabras.
+(= farmacia 138)
+(= farmacia 139, con la última oración cambiada por: Decir "no tengo las piedras" cuando el sistema encuentra las piedras dos líneas más abajo deja al bot contradiciéndose solo.)
+
+PET_ENTIDAD
+  "entidad_producto": "nombre del producto mencionado o null — CONSERVÁ los números y unidades tal como los dijo el cliente: peso, tamaño, cantidad, talle (ej: 'royal canin mini adult 3 kg', 'piedras sanicat 4 kg', 'pretal kipper n 4', 'dentastix x 7'); son lo que distingue una presentación de otra",
+
+PET_AGREGAR
+(= farmacia 156, con "sumale unos snacks" en lugar de "sumale unas gomitas")
+
+PET_SINTOMA
+El campo "por_sintoma": true si el cliente cuenta un síntoma o un problema de salud de su mascota, pregunta qué darle o qué dosis, o pide un veterinario ("mi perro vomita, ¿qué le doy?", "tiene diarrea", "cuántas gotas le pongo", "¿cuánto Drontal le doy?", "pasame con el veterinario"). false si pide un producto por nombre, marca o tipo ("una pipeta para perro de 10 kg", "algo para las pulgas", "alimento para gato castrado").
+
+PET_RECHAZO
+- false → el usuario cancela O pide un producto DIFERENTE al pendiente (ej: "mejor Pro Plan", "no, quiero Excellent", "prefiero otra marca"). En estos casos siempre false, nunca null.
+
+PET_CAMBIO
+Si el cliente rechaza el pendiente mencionando OTRO producto (ej: "no, un Excellent", "mejor dame Pro Plan", "prefiero Vitalcan"), NO es una simple cancelación. Además de confirmacion=false, DEBÉS:
+  - poner ese nuevo producto en "entidad_producto" (ej: "excellent", "pro plan", "vitalcan"),
+```
+
+Resuelto con los valores de MO, el saludo de ejemplo queda: "¡Hola! Soy el
+asistente virtual de Mascotas del Oeste 🐾 ¿En qué te puedo ayudar?".
+
+### 4.2 Recetas (`recetas = False`)
+
+| Archivo:línea | Hoy | Cambio | Capacidad |
+|---|---|---|---|
+| `catalog_rules.py:48-65` (`explicar_receta`; `ORIGENES` 38-45) | Aplica la regla de farmacia en todo vertical. Un rubro de Mercurio con "medicament" queda `ambiguo` y en modo conservador deriva. La usan `catalog_store._fila` (cada upsert), `recalcular_catalogo` y `receta_marcas.py:51`. | Primera línea: `if not get_perfil().recetas: return "no", "sin_recetas"`, antes de `es_venta_libre` y del import perezoso de `receta_referencia.buscar`. Se agrega `ORIGENES["sin_recetas"] = "Este comercio no vende con receta"` (solo lo ve el panel). | `recetas` |
+| `checkout_helper.py:581-588` (`necesita_receta`) | Es la llave única de la derivación por receta | Al principio: `if not get_perfil().recetas: return False`. Con eso quedan apagados, sin tocar su código: `derivar_si_receta` (591-664), `confirmar_pedido` paso 1 (1249-1266), `_sumar_productos_nuevos` (`webhook.py:555`), `referencia_ambigua_bloquea` (1685), agregar al pedido (2273) y los usos de `simulate.py` (287, 509). `quitar_receta_inventada` (2490-2497) pasa a correr siempre que haya productos ofrecidos con precio: es lo buscado, el bot de petshop no dice "necesita receta". | `recetas` |
+| `webhook.py:2344-2362` (adicionales) | `_top2` y `_top_rec` leen `requiere_receta` directo, sin pasar por `necesita_receta` | `_rec_on = get_perfil().recetas`, calculado una vez. `_top2`: `vendible and not (_rec_on and requiere_receta in ("si","ambiguo"))`. `_top_rec`: `vendible and _rec_on and ...`. Sin este gate, un adicional marcado desaparecería en silencio. | `recetas` |
+| `checkout_helper.py:1795-1801` (`texto_alternativas`) | Sufijo " (requiere receta)" | Solo con `get_perfil().recetas` | `recetas` |
+| `intent_service.py:360-361` (`_formatear_productos`) | Marca "REQUIERE RECETA" al modelo | Solo con `get_perfil().recetas` | `recetas` |
+| `webhook.py:1422-1437` (`pide_receta_nube`) | Deriva con motivo `receta_nube` y habla del "sistema de recetas 🩺" | `if get_perfil().recetas and pide_receta_nube(texto)`. Si no, el mensaje va al modelo. | `recetas` |
+| `main.py:127-138` | En cada arranque carga la referencia de recetas y recalcula `requiere_receta` de todo `catalog_items` | Se extrae a `async def _init_referencia_receta(db)`. Sin `recetas` loguea "Perfil sin recetas: no se carga la referencia ni se recalcula el catálogo" y devuelve `None`. Con `recetas` hace lo mismo que hoy. | `recetas` |
+| `webhook.py:949-1012` (foto `receta`) | Deriva `receta_foto`, OCR si `receta_ocr_enabled` | Dueño: §4.6 | `recetas` |
+
+Sin cambios: `config_service` (`receta_mode`, `receta_recibida_message`,
+`receta_ocr_enabled`, porque ningún camino las alcanza con `recetas=False`;
+ocultarlas en el panel queda fuera de alcance), `sku_service.VENTA_LIBRE`,
+`requiere_derivacion` y el prompt de farmacia (líneas 85 y 90-93: el prompt de
+petshop no las incluye).
+
+### 4.3 Links (`links_como_receta = False`)
+
+| Archivo:línea | Hoy | Cambio | Capacidad |
+|---|---|---|---|
+| `webhook.py:1155-1168` | Toda URL o nombre `.pdf/.jpg/.png` se toma como receta o bono: deriva `receta_link` con "Recibí tu link 🙌..." | `if get_perfil().links_como_receta and contiene_link(texto, dominio_propio(get_settings().public_base_url))`. En petshop, el mensaje con link va al modelo. | `links_como_receta` |
+| `checkout_helper.py:565-578` (`contiene_link`) | Excluye links con `remedia.ar` (fijo) o `/pay/` | Se agrega `dominio_propio(base_url) -> str`: hostname en minúsculas; si tiene 3 o más etiquetas y las dos últimas no son un sufijo genérico de segundo nivel (`com`, `net`, `org`, `gob`, `gov`, `edu` o `co` + código de país de 2 letras, como `com.ar`), devuelve el dominio padre (`cerca.remedia.ar` → `remedia.ar`); si no, el host tal cual (`bot.mascotasdeloeste.com.ar` queda igual, nunca `com.ar`); sin URL devuelve `""`. `contiene_link(t, dominio_propio="")`: `/pay/` se excluye siempre; el dominio propio, solo si no está vacío y aparece en el link. Se saca el literal `remedia.ar`. | `PUBLIC_BASE_URL` |
+
+Las dos propuestas de firma se unificaron en esta. La farmacia queda idéntica
+**solo si** su `PUBLIC_BASE_URL` en Railway es un host bajo `remedia.ar`
+(precondición del merge a develop, §7.6). Con `PUBLIC_BASE_URL` vacío, los
+links a `remedia.ar` pasarían a derivarse.
+
+### 4.4 Socios, cuenta corriente y obras sociales
+
+| Archivo:línea | Hoy | Cambio | Capacidad |
+|---|---|---|---|
+| `webhook.py:751` + `1095-1126` | En cada mensaje consulta el padrón, arma `[DATOS DEL SOCIO]`, agrega "Es EMPLEADO de la mutual" y la nota de precios con descuento. Se pasa a seis llamadas al modelo y a `_flujo_mutual`. | `perfil = get_perfil()` una vez al inicio de `procesar_mensajes`, junto a `_s = get_settings()`. Se envuelve 1097-1126 en `if perfil.socios:` con el código intacto. Si no: `_ctx_socio = None`, `_socio_data = None`, `_nombre_socio = ""`. | `socios` |
+| `checkout_helper.py:675-708` (`descuento_para`) | Único lugar que decide el descuento: empleado (`empleado_discount_pct`, 20 por default) o socio del padrón | Primera línea: `if not get_perfil().socios: return 0.0, ""`. **Apaga también el descuento de empleado**: es una extensión explícita del diseño, porque el 20% de empleado es regla de la farmacia. Cubre catálogo, link, prompt y cotización. | `socios` |
+| `webhook.py:1219-1237` (`consulta_saldo`) | "saldo", "mi deuda", "cuánto te debo" derivan con `consulta_cuenta_corriente` | `if perfil.cuenta_corriente and consulta_saldo(...)`. El fallback literal no cambia (§3.4). | `cuenta_corriente` |
+| `webhook.py:1324-1377` | "cuenta corriente", "a la cuenta", "anotalo"/"anotame" interceptan antes del modelo | `if perfil.cuenta_corriente and (pide_cuenta_corriente(texto) or (_hay_pedido_cc and pide_anotar(texto)))`. En petshop, "anotame 2 bolsas más" va al modelo como pedido. En farmacia no cambia la semántica de `cc_enabled`. | `cuenta_corriente` |
+| `checkout_helper.py:337-378` (`habilitado_cc`) | Sin gate de rubro | Gate defensivo al inicio: `if not get_perfil().cuenta_corriente: return None` | `cuenta_corriente` |
+| `checkout_helper.py:224-241` (`pide_pago_manual`) + `webhook.py:1379, 1391` | Incluye `cuenta corriente` como red de seguridad y toma `mercado pago` como pago manual: si MO cobra con MP, "¿puedo pagar con mercado pago?" saca al cliente de la venta | `pide_pago_manual(t, incluir_cuenta_corriente=True, incluir_mercado_pago=True)`. El webhook calcula una vez `_pide_pm = pide_pago_manual(texto, incluir_cuenta_corriente=perfil.cuenta_corriente, incluir_mercado_pago=str(cfg.get("pago_mp_manual", "true")).lower() != "false")` y la usa en 1379 y 1391. Clave nueva `DEFAULTS["pago_mp_manual"] = "true"` (todo igual que hoy), editable por `ConfigUpdate`. MO la pone en `"false"` si cobra con MP. No se ata al proveedor activo porque la farmacia cambiaría. | `cuenta_corriente` + config |
+| `webhook.py:1452-1468` (`dice_ser_socio`) | "soy socio" fuera del padrón deriva con `socio_no_reconocido` ("...padrón de socios...DNI") | `if perfil.socios and dice_ser_socio(texto) and ...` | `socios` |
+| `webhook.py:1470-1496` (`pregunta_descuento`) | Cualquier "descuento" corta el flujo con textos de socios, o "Como empleado tenés 20%... sin receta" | `if perfil.socios and pregunta_descuento(texto)`. En petshop va al modelo, y el prompt prohíbe afirmar descuentos (§4.1). | `socios` |
+| `webhook.py:1546-1574` (obra social y bono por texto) | Lista fija de más de 50 obras sociales con palabras comunes ("andar", "prensa"), "cobertura", cualquier "bono" | La detección va bajo `if perfil.obras_sociales:`; si no, `_os_preg = _bono_preg = None` y sigue al modelo. Las funciones no cambian. | `obras_sociales` |
+| `simulate.py:98-100` | Arma el contexto del socio sin gate | El mismo criterio que el webhook: con `socios` queda lo de hoy, y si no `None`/`""` | `socios` |
+
+La foto de bono y de credencial está en §4.6.
+
+### 4.5 Salud de la mascota (`sintomas = "derivar"`)
+
+Piezas nuevas compartidas con la visión:
+- En `checkout_helper.py`, junto a 1542: `MOTIVO_CONSULTA_SALUD = "consulta_salud"`
+  y `def texto_consulta_salud(cfg) -> str: return cfg.get("consulta_salud_message") or get_perfil().textos["consulta_salud_message"]`.
+  Solo se llama con `sintomas == "derivar"`.
+- En `webhook.py`: `async def _derivar_consulta_salud(deps, phone, texto) -> str`.
+  Hace `set_estado(phone, "operador", motivo="consulta_salud")`, envía
+  `texto_consulta_salud(await deps["config"].get_all())`, guarda el historial
+  (usuario y asistente) y devuelve el texto. La intención es
+  `derivado_consulta_salud`.
+
+| Archivo:línea | Hoy | Cambio | Capacidad |
+|---|---|---|---|
+| `webhook.py:2010-2012` (compuerta A, tras Claude 1 y antes de la KB) | Con `por_sintoma` y sin entidad busca en el catálogo con la frase, llama a Claude 2 y suma la oferta del farmacéutico | `if get_perfil().sintomas == "derivar" and intent_result.get("por_sintoma")`: `_derivar_consulta_salud` y `continue`. No consulta la KB, no busca, no llama a Claude 2 y no deja pendiente. | `sintomas` |
+| `webhook.py:2161-2162` (compuerta B, tras Claude 2) | Claude 2 puede marcar `por_sintoma` y el flujo sigue: pendiente, métrica, imagen y farmacéutico | Lo mismo que A, antes de `_sin_precios_inventados`, `set_pending`, la métrica o la imagen | `sintomas` |
+| `webhook.py:1796-1798` (compuerta C, `esperando_confirmacion`) | Ignora `por_sintoma`; manda el texto del modelo | Lo mismo que A. No confirma, no cambia de producto y no limpia el pendiente (igual que `pidio_humano`). | `sintomas` |
+| `webhook.py:563-585` (compuerta D, `_responder_consulta_en_flujo`; agregada por el crítico) | En `esperando_entrega` y `esperando_direccion` descarta `por_sintoma`. El prompt promete "te paso" y nadie deriva. | Si `sintomas == "derivar"` y `resultado.get("por_sintoma")`: `set_estado(..., "operador", motivo="consulta_salud")` y devuelve `texto_consulta_salud(cfg)`. Los llamadores (1600, 1661) lo envían como hoy. | `sintomas` |
+| `webhook.py:487-529` (`_sin_precios_inventados`, rama `sintoma` 517-524) | Con un precio inventado y síntoma: "Para eso lo mejor es que te asesore el farmacéutico" | Dentro de `if sintoma:`, con `derivar`: `set_estado(..., motivo="consulta_salud")` y `return texto_consulta_salud(cfg)`. Si no, la rama de farmacia tal cual. | `sintomas` |
+| `webhook.py:2164-2166` y `2501-2506` | `sintoma = por_sintoma or intencion == "consulta_abierta"` | `sintoma = bool(por_sintoma) or (intencion == "consulta_abierta" and get_perfil().sintomas == "farmaceutico")`. En petshop, "¿qué alimento para un gato castrado?" con un dato inventado cae en la rama genérica ("No lo encuentro en nuestro catálogo 😕 ¿Querés que lo consulte con el equipo?"), no en salud. | `sintomas` |
+| `webhook.py:2316-2322` | Agrega la oferta del farmacéutico y marca `farmaceutico_ofrecido` | `if get_perfil().sintomas == "farmaceutico" and por_sintoma` | `sintomas` |
+| `webhook.py:1511-1526` | Con `farmaceutico_ofrecido`, "farmacéutico" deriva con motivo `farmaceutico` | `if get_perfil().sintomas == "farmaceutico" and session.get("farmaceutico_ofrecido")` | `sintomas` |
+| `config_service.py:203-207` | El comentario dice "Vacío = apagado", pero es falso por el `or` | Se corrige el comentario: un espacio lo apaga; vacío vuelve al texto por defecto. El valor no cambia. | — |
+| `metrics_store.py:16-19` + `dashboard.html:290` | No cuentan las intenciones nuevas como derivación | Se agregan `derivado_consulta_salud` e `imagen_indicacion_veterinaria`. La farmacia nunca las emite. | — |
+
+Sin cambio: `_HUMANO` (`checkout_helper.py:140-166`). El crítico propuso sumar
+"veterinario", pero eso tocaba la regex de la farmacia. "Pasame con el
+veterinario" queda cubierto porque el prompt de petshop lo marca
+`por_sintoma: true` y la compuerta A deriva. "¿Me pasás con alguien?" sigue
+derivando con `pidio_humano`.
+
+### 4.6 Visión (`vision`)
+
+| Archivo:línea | Hoy | Cambio | Capacidad |
+|---|---|---|---|
+| `prompts.py` + `perfil.py` | Un único prompt "enviado a una farmacia" con las categorías receta, bono, credencial, comprobante, producto y otro | `VISION_FARMACIA = VisionPerfil(("receta","bono","credencial","comprobante","producto","otro"), prompt=<el _PROMPT de hoy, byte a byte, movido a prompts.py>)`. `VISION_PETSHOP = VisionPerfil(("producto","comprobante","indicacion_veterinaria","otro"), prompt=VISION_PROMPT_PETSHOP)`. | `vision` |
+| `image_service.py:27-50, 138, 154` | `_anthropic_vision` y `_openai_vision` mandan siempre el prompt de farmacia | Los dos usan `get_perfil().vision.prompt`. `_PROMPT = prompts.VISION_PROMPT_FARMACIA` queda como alias (`test_logic.py:2079-2081`). `leer_receta` no se toca. | `vision` |
+| `image_service.py:161-173` (`_parse`) | Tupla fija; lo desconocido pasa a `otro` | `_parse(raw, categorias=None)`; con `None` usa `get_perfil().vision.categorias`. En petshop, `receta`, `bono` y `credencial` llegan como `otro`. Sigue aceptando la llamada con un argumento. | `vision` |
+| `webhook.py:929-947` (foto `bono`) | Deriva `bono_foto` | `if img["tipo"] == "bono" and perfil.obras_sociales` (defensa: con el `_parse` de petshop no llega) | `obras_sociales` |
+| `webhook.py:949-1012` (receta, credencial, comprobante) | `receta` deriva `receta_foto` con OCR; `credencial` deriva con texto fijo; `comprobante` deriva `comprobante` | En 951: `receta` entra solo con `perfil.recetas` y `credencial` solo con `perfil.obras_sociales`. El OCR (964) exige `recetas` además de `receta_ocr_enabled`. El fallback de receta y el de comprobante pasan a `perfil.textos` (§3.4). Si en petshop llega un tipo apagado, sigue el camino normal de 1014 (con items va a la búsqueda; vacío va a `imagen_no_reconocida`). | `recetas`, `obras_sociales` |
+| `webhook.py`, entre 947 y 949 (rama nueva) | Una indicación del veterinario se clasifica como `receta` y responde "Recibimos tu receta... 10 minutos" | `if img["tipo"] == "indicacion_veterinaria"`: `_intencion = "imagen_indicacion_veterinaria"`, `set_estado(phone, "operador", motivo="consulta_salud")`, respuesta `personalizar_nombre(cfg.get("indicacion_veterinaria_message") or perfil.textos["indicacion_veterinaria_message"], nombre)`, envío, historial y `continue`. No busca en el catálogo. | `vision` + `sintomas` |
+| `webhook.py:1014-1034` (producto / otro) | Producto con items → búsqueda; si no, deriva `imagen_no_reconocida` | Sin cambio de lógica. Con el prompt de petshop, una bolsa o un accesorio vuelve como `producto` con MARCA + línea + especie + tamaño, y la foto de la mascota, una herida, la libreta sanitaria o un folleto caen en `otro`. | — |
+
+Este grupo es el **único dueño** del bloque de imagen 929-1034. Los grupos de
+recetas y de beneficios no lo editan aparte.
+
+```
+VISION_PROMPT_PETSHOP
+Analizá esta imagen o documento (puede ser un PDF) enviado por WhatsApp a un petshop (alimento balanceado, accesorios, piedras sanitarias, snacks, higiene y productos de salud para mascotas) y clasificala.
+Respondé SOLO con un JSON (sin texto extra) con este esquema:
+{"tipo": "producto|comprobante|indicacion_veterinaria|otro", "items": "nombres separados por coma o vacío"}
+
+- producto: es la foto de uno o más productos para mascotas (bolsa o lata de alimento, snack, piedras sanitarias, juguete, collar, correa, cama, comedero, shampoo, pipeta, antiparasitario...) o la captura de un producto (web, catálogo, redes).
+- comprobante: es un comprobante de pago — transferencia bancaria, captura de una billetera virtual (Mercado Pago, etc.) o ticket/recibo de pago.
+- indicacion_veterinaria: es una receta, orden o indicación escrita de un veterinario (manuscrita o impresa, con sello, firma o membrete de veterinaria), aunque nombre productos.
+- otro: cualquier otra cosa: la foto de la mascota o de una herida/síntoma, la libreta sanitaria o carnet de vacunas, un folleto o cupón de promoción, o algo que no encaje.
+En items va SOLO cuando el tipo es producto y hay productos identificables, UNO por envase, escrito como MARCA + línea + especie/etapa + tamaño o peso tal como figura en el envase (ej: 'Royal Canin Medium Adult 15kg, Pro Plan Gato Adulto 7.5kg', 'Pipeta Frontline Plus perro 10-20kg'). Un envase = un item. NUNCA listes ingredientes, composición ni tabla nutricional como items: no son productos pedidos. Si no hay productos identificables, dejalo vacío.
+```
+
+### 4.7 Pagos y avisos (`emoji`, `comercio` y campos de marca)
+
+| Archivo:línea | Hoy | Cambio | Capacidad |
+|---|---|---|---|
+| `mp_webhook.py:219-234` + `payway.py:263-278` | Las dos confirmaciones de pago son idénticas byte a byte y terminan en "¡Muchas gracias! 💊". No nombran la sucursal de retiro. | Función pura compartida `mensaje_pago_confirmado(nombre_producto, tipo_entrega, direccion_envio, pickup_code, pickup_text, emoji, sucursal="")`. `emoji = get_perfil().emoji`, leído al armar el mensaje. `sucursal` es `retiro_sucursal` de la config (`get_all`). Con sucursal cargada, la línea de retiro dice "Guardalo para presentarlo al retirar en *{sucursal}*."; vacía, el texto es el de hoy. | `emoji` |
+| `payment_service.py:48` | `statement_descriptor: "FARMACIA AMI"` en cualquier deploy | `perfil.descriptor_tarjeta`, o `perfil.comercio` en mayúsculas, sin tildes ni ñ (ASCII) y hasta 22 caracteres. Se lee en cada `crear_link`, no en `__init__`. | `descriptor_tarjeta`, `comercio` |
+| `payway_service.py:233, 164, 239` | `description` "Compra Remedia"; antifraude `last_name` "Remedia"; device de respaldo "remedia-web" | `f"Compra {comercio}"`; `last_name = comercio`; `f"{slug(comercio)}-web"` (minúsculas, espacios a guiones; en farmacia sigue dando `remedia-web`). Se lee en cada `crear_pago`. | `comercio` |
+| `payway.py:571, 580, 727` (+ reemplazos en 91-98 y 67-71) | `/pay` y las páginas de estado tienen fijos el logo "R", "Remed<b>IA</b>", "Pagar · Remedia" y "Remedia" | Placeholders `{{LOGO}}`, `{{WORDMARK}}` y `{{COMERCIO}}`, reemplazados por request en `pay_page` y `_status_page`: `LOGO = html.escape(comercio[:1].upper())`, `WORDMARK = wordmark_html or html.escape(comercio)`, `COMERCIO = html.escape(comercio)`. Paleta, textos y JS no cambian. | `comercio`, `wordmark_html` |
+| `payway.py:573-575` (pie) | "Pago seguro procesado por Payway · Farmacia Mutual Independencia" | `{{RAZON_SOCIAL}} = html.escape(razon_social or comercio)` | `razon_social` |
+
+Los avisos de pedido listo y de efectivo se resuelven por `perfil.textos`
+(§3.4). El prompt de petshop dice "link de pago", y el de farmacia sigue
+diciendo "link real de Mercado Pago" (§4.1).
+
+Petshop resuelto: descriptor `MASCOTAS DEL OESTE`, "Compra Mascotas del Oeste",
+device `mascotas-del-oeste-web`, `<title>Pagar · Mascotas del Oeste</title>`,
+logo "M", wordmark "Mascotas del Oeste" y pie "Pago seguro procesado por Payway
+· Mascotas del Oeste".
+
+### 4.8 Arranque, config y catálogo
+
+| Archivo:línea | Hoy | Cambio | Capacidad |
+|---|---|---|---|
+| `main.py:31-38` (blob `catalogo`) | Con `SKU_CSV_PATH=""`, `Path("").write_bytes` revienta, y el `except` común se saltea también el padrón | `if cat and settings.sku_csv_path:`. Se extrae a un helper `_restaurar_archivos(settings, perfil, blob)` para poder testearlo. | — |
+| `main.py:39-46` + `97-116` (padrón) | Siempre restaura `blob:socios` y carga o siembra la tabla `socios` | `if perfil.socios:`; si no, log "Perfil sin socios: no se carga el padrón". Es defensa en profundidad: con el padrón vacío, `find_by_phone` devuelve `None`. El bloque de empleados (118-125) no se toca: `descuento_para` ya lo apaga. | `socios` |
+| `main.py` (lifespan, después de cargar la config) | Sin horario guardado, `get_hours` usa `DEFAULT_HOURS` en silencio | `logger.warning("Horario no cargado: se usa DEFAULT_HOURS")` si no hay `hours` en Redis ni en Postgres. Es solo un log; la farmacia ya tiene horario. | — |
+| `catalog_source.py` (después de 24, nuevo) | Si no hay sucursal ERP, `aplicar_fuente` (134) recarga `data/catalogo_base.csv`, que tiene 17.192 filas de farmacia | `CSV_FARMACIA = Path(__file__).resolve().parents[2] / "data" / "catalogo_base.csv"` y `csv_de_arranque(ruta) -> str`. Si la ruta no está vacía, el perfil no tiene `catalogo_csv_base` y `Path(ruta).resolve() == CSV_FARMACIA.resolve()`, loguea `ERROR` ("SKU_CSV_PATH=… es el catálogo de la farmacia: el perfil petshop no lo carga; el catálogo sale del ERP") y devuelve `""`. Si no, devuelve la ruta tal cual. | `catalogo_csv_base` |
+| `sku_service.py:687-699` (`get_sku_service`, `reload_sku_service`) | Construyen `SKUService(csv_path)` con lo que reciban (arranque, fallback de `aplicar_fuente`, default sin argumento de `receta_marcas.py:93`, backoffice) | `SKUService(_csv_permitido(csv_path))`, con import diferido de `csv_de_arranque`. Petshop arranca con catálogo vacío (`SKUService("")`) hasta que el primer sync de Mercurio hace `set_sku_service` (`mercurio_service.py:390-397`). | `catalogo_csv_base` |
+| `webhook.py:1170-1180` | `if _s.vertical == "mutual":` es el único desvío por nombre | `if not get_perfil().venta:`. El orden no cambia. | `venta` |
+| `backoffice.py:602` | `vertical` sale de settings | `get_perfil().clave`. `metrics_store` no se toca: petshop recibe el tablero de venta. | `clave` |
+
+## 5. Corrección: pregunta en `esperando_entrega` y textos de retiro
+
+> **CAMBIO QUE TAMBIÉN AFECTA A LA FARMACIA.** Es una corrección, no un
+> comportamiento de rubro. Va sin capacidad y aplica a todos los perfiles.
+
+Caso real (prueba del usuario en MO): en `esperando_entrega` el cliente
+preguntó "¿en qué sucursal puede ser?". `_RETIRO` matchea `\bsucursal\b`, así
+que se tomó como elección de retiro: salió el link sin contestar y el estado
+pasó a `esperando_pago` (`webhook.py:1589-1616`). Pasa lo mismo con "¿dónde
+queda la sucursal?" y "¿cuál sucursal?". "¿Cuánto sale el envío?" pide la
+dirección. En `esperando_confirmacion` (1758-1775), la misma pregunta confirma
+el pedido con retiro.
+
+Regla: **una pregunta no es una elección**. Se responde (con la dirección y el
+horario de la sucursal piloto, si MO los cargó) y se vuelve a ofrecer la
+elección. Un pedido con forma de pregunta sigue siendo elección: "¿me lo podés
+enviar?", "¿lo puedo retirar hoy?". Esto mantiene lo que ya resolvieron los
+casos C-3854 y C-3912 del 5/10.
+
+| Archivo:línea | Hoy | Cambio | Farmacia |
+|---|---|---|---|
+| `checkout_helper.py`, después de 54 | No hay detección de pregunta | Funciones puras `es_pregunta_entrega`, `pregunta_por_retiro` y `responder_pregunta_retiro` (código abajo). `_RETIRO`, `_ENVIO` y `afirma_envio` no se tocan. | sin cambio (funciones nuevas) |
+| `config_service.py:274` (`DEFAULTS`, después de `envio_costo`) | No hay dato de sucursal | `"retiro_sucursal": ""` (nombre corto; vacío deja todo como hoy) y `"retiro_info_message": "Lo retirás en *{sucursal}* 🏪"` (respuesta a la pregunta; solo se usa con sucursal cargada). Ningún default trae una dirección. | sin cambio |
+| `backoffice.py:900-966` (`ConfigUpdate`) | Lista blanca: `PATCH /bo/config` descarta lo que no está declarado | `retiro_sucursal`, `retiro_info_message` y `pago_mp_manual` (§4.4), todos `str \| None = None` | sin cambio |
+| `checkout_helper.py:813-829` (`pregunta_entrega`) | "*retiro en sucursal*" fijo | `retiro_txt = f"*retiro en {(cfg.get('retiro_sucursal') or '').strip() or 'sucursal'}*"` en los dos textos. Cubre los llamadores `webhook.py:1312, 1351, 1608` y `checkout_helper.py:1298, 1340`. | idéntico con la sucursal vacía |
+| `checkout_helper.py:832-839` + `1218` (`texto_entrega`) | "🏪 Lo retirás en la sucursal (te enviamos el código al confirmar el pago)." | Parámetro `sucursal=""`; si viene, "🏪 Lo retirás en *{sucursal}* (te enviamos el código al confirmar el pago).". En 1218 se pasa `_cfg.get("retiro_sucursal") or ""`. | idéntico con la sucursal vacía |
+| `checkout_helper.py:1973-1986` (`responder_horario`) | Cierre fijo "¿Te ayudo con algo más?" | Parámetro `cierre="¿Te ayudo con algo más?"` (el default es el de hoy) | sin cambio |
+| `webhook.py:1439-1450` (interceptor de horario) | "¿Hasta qué hora puedo retirar?" en `esperando_entrega` contesta el horario y "¿Te ayudo con algo más?", y no vuelve a ofrecer la elección | Si el estado es `esperando_entrega` con pendiente: `cierre=pregunta_entrega(_cfg_pm, saludo=False, phone=phone, socio_svc=deps["socios"])`. En otros estados, igual que hoy. | **cambia** |
+| `webhook.py:1577-1622` (`esperando_entrega`) | Una pregunta con "sucursal" elige retiro y manda el link; "¿cuánto sale el envío?" pide la dirección | En el `else` de 1589: `_pregunta = es_pregunta_entrega(texto_lower)`; `_es_retiro = match_retiro(...) and not _pregunta`; `_es_envio = (match_envio(...) or afirma_envio(...)) and not _pregunta`. `_cfg_ent` se lee antes (se sube desde 1598). Si `_pregunta` y `pregunta_por_retiro`, y `responder_pregunta_retiro(_cfg_ent)` no está vacío: `_intencion = "consulta_retiro"`, respuesta = info + `"\n\n"` + `pregunta_entrega(_cfg_ent, saludo=False, ...)`. Si no eligió, va a `_responder_consulta_en_flujo` como hoy. Una pregunta nunca llega a `resolver_entrega`. | **cambia** |
+| `webhook.py:1598-1610` (situación para el modelo) | Pide terminar con "*retiro en sucursal*" y no prohíbe inventar | Usa la sucursal cargada (o "sucursal") y agrega al final "Nunca inventes direcciones, sucursales ni horarios.". El fallback sigue siendo `pregunta_entrega(...)`. | **cambia** (texto al modelo) |
+| `webhook.py:1758-1775` (`esperando_confirmacion`) | Una pregunta con "sucursal" confirma el pedido con retiro | Antes de ese `elif`: `elif es_pregunta_entrega(...) and pregunta_por_retiro(...) and responder_pregunta_retiro(_cfg_dx)`: `_intencion = "consulta_retiro"`, respuesta = info + `"\n\n¿Lo confirmamos?"`, se envía y `continue`, sin confirmar. Además, el `elif` de 1758 suma `and not es_pregunta_entrega(texto_lower)`. Sin sucursal cargada, la pregunta cae al modelo (1777 en adelante). | **cambia** |
+| `webhook.py:2012-2027` (consulta general con KB; agregado por el crítico) | "¿Dónde queda la sucursal?" fuera de esos estados va al modelo sin el dato | `_info_ret = responder_pregunta_retiro(cfg) if pregunta_por_retiro(texto_lower) else ""` (con `cfg` leído antes de 2016). La condición pasa a `if _general and (deps["rag"].enabled() or _info_ret)`; la búsqueda en la KB solo corre con RAG habilitado; `_kb_txt` = documentos de la KB + `_info_ret`. El modelo lo recibe como `[INFORMACIÓN DEL COMERCIO]`. | sin cambio (`retiro_sucursal` vacío) |
+| Confirmación de pago, rama retiro | No nombra la sucursal | Dueño: §4.7 (`mensaje_pago_confirmado(..., sucursal)`) | sin cambio con la sucursal vacía |
+
+El aviso de pedido listo no lleva un placeholder nuevo. Como hay una sola
+sucursal, MO carga el nombre en su `pedido_listo_retiro_message` desde el
+panel (§7.3).
+
+Código de detección (verificado contra los 31 casos de `es_pregunta_entrega`
+listados en §6.2: todos dan lo esperado; `pregunta_por_retiro` también):
+
+```python
+_INTERROGATIVO = re.compile(
+    r"\b(en|a|hasta|desde|para|por|de)\s+(qu[eé]|q)\b"
+    r"|\bqu[eé]\s+(sucursal\w*|local\w*|hora|horarios?|d[ií]as?|direcci[oó]n)\b|\bqué\b"
+    r"|\bcu[aá]l(es)?\b|\b(a)?d[oó]nde\b|\bcu[aá]ndo\b|\bc[oó]mo\b|\bcu[aá]nt[oa]s?\b",
+    re.IGNORECASE)
+_INTERROGATIVO_INICIO = re.compile(
+    r"^\W*(y|pero|che|perd[oó]n|disculp\w*|una\s+consulta)?\W*"
+    r"((en|a|hasta|desde)\s+(qu[eé]|q)\b|qu[eé]\s+(sucursal\w*|local\w*|hora|horarios?|direcci[oó]n)\b"
+    r"|cu[aá]l(es)?\b|(a)?d[oó]nde\b|cómo\b|cuándo\b|cuánto\b|qué\b)",
+    re.IGNORECASE)
+_LUGAR_RETIRO = re.compile(r"\b(sucursal(es)?|local(es)?)\b", re.IGNORECASE)
+_ACCION_ENTREGA = re.compile(
+    r"\b(retir\w*|pas\w*|busc\w*|voy|vamos|env[ií]\w*|mand\w*|tra[eé]\w*)\b", re.IGNORECASE)
+_TEMA_RETIRO = re.compile(
+    r"\b(retir\w*|d[oó]nde|direcci[oó]n|queda|local\w*|hora|horarios?|abren|cierran)\b",
+    re.IGNORECASE)
+
+def es_pregunta_entrega(t: str) -> bool:
+    """True si el mensaje PREGUNTA algo (no elige retiro/envío)."""
+    s = (t or "").strip().lower()
+    if not s:
+        return False
+    signo = "?" in s or "¿" in s
+    if signo and _INTERROGATIVO.search(s):
+        return True
+    if _INTERROGATIVO_INICIO.search(s):
+        return True
+    return bool(signo and _LUGAR_RETIRO.search(s) and not _ACCION_ENTREGA.search(s))
+
+def pregunta_por_retiro(t: str) -> bool:
+    s = (t or "").lower()
+    return (match_retiro(s) or bool(_TEMA_RETIRO.search(s))) and not match_envio(s)
+
+def responder_pregunta_retiro(cfg: dict) -> str:
+    """Vacío si no hay sucursal cargada: nunca se inventa una dirección."""
+    suc = (cfg.get("retiro_sucursal") or "").strip()
+    if not suc:
+        return ""
+    plantilla = cfg.get("retiro_info_message") or "Lo retirás en *{sucursal}* 🏪"
+    return plantilla.replace("{sucursal}", suc).strip()
+```
+
+Ajuste respecto de la regla "signo de pregunta + interrogativo": el signo solo
+cuenta junto con un interrogativo, o con "sucursal" o "local" sin un verbo de
+entrega ("¿tienen sucursal en Morón?"). Si cualquier "?" contara como pregunta,
+"¿me lo podés enviar?" se volvería a preguntar en lugar de elegir. Se suman
+"cuánto", "cuándo" y "qué" a los interrogativos. Consecuencia, también en la
+farmacia: en `esperando_entrega`, "¿cuánto sale el envío?" deja de pedir la
+dirección y lo contesta el modelo.
+
+**Textos de retiro con datos de MO** (los carga MO desde el panel; acá van
+como claves de config):
+
+```
+pregunta_entrega:   ¿Preferís *retiro en {retiro_sucursal}* o *envío a domicilio*? 🙂
+texto_entrega:      🏪 Lo retirás en *{retiro_sucursal}* (te enviamos el código al confirmar el pago).
+retiro_info_message (lo escribe MO, con la dirección y el horario reales de la sucursal piloto):
+                    Lo retirás en *{sucursal}*, <dirección cargada por MO>, <horario cargado por MO> 🐾
+respuesta a la pregunta en esperando_entrega:
+                    {retiro_info_message}\n\n¿Preferís *retiro en {retiro_sucursal}* o *envío a domicilio*? 🙂
+respuesta a la pregunta en esperando_confirmacion:
+                    {retiro_info_message}\n\n¿Lo confirmamos?
+horario en esperando_entrega:
+                    Atendemos {horario cargado en el panel} 🕐 ¿Preferís *retiro en {retiro_sucursal}* o *envío a domicilio*? 🙂
+```
+
+## 6. Pruebas
+
+TDD: cada test nuevo se escribe antes que el código y se ve fallar. Los dos
+goldens de farmacia (prompt y `DEFAULTS`) se escriben **antes** del refactor y
+tienen que pasar en verde con el código de hoy.
+
+### 6.1 Infraestructura
+
+- Fixture común en `tests/conftest.py`:
+  ```python
+  @pytest.fixture
+  def usar_perfil(monkeypatch):
+      def _usar(clave, comercio=None):
+          monkeypatch.setenv("VERTICAL", clave)
+          if comercio is not None:
+              monkeypatch.setenv("COMERCIO_NOMBRE", comercio)
+          get_settings.cache_clear(); get_perfil.cache_clear()
+          return get_perfil()
+      yield _usar
+      get_settings.cache_clear(); get_perfil.cache_clear()
+  ```
+  Sin el `cache_clear` del teardown, el perfil petshop se filtra al resto de
+  la suite. Los tests que pasan por `get_intent_service` además hacen
+  `intent_service._instance = None`.
+- `tests/test_webhook_secuencias.py`: el `_Intent` falso guarda los kwargs
+  además del mensaje. El `_Cfg` falso se arma con `config_service.valores_base()`
+  (y no con `dict(DEFAULTS)`) y suma `texto_horario`. Hace falta una variante de
+  `_Img` que devuelva `items`. Los tests existentes no cambian.
+- Los goldens van como hash adentro del test, no como `.txt`: el repo tiene
+  `core.autocrlf=true` sin `.gitattributes`.
+
+### 6.2 Tests nuevos
+
+**`tests/test_perfil.py` (arquitectura, prompt, textos, config, arranque)**
+- `test_prompt_farmacia_identico_byte_a_byte`: sha256 de
+  `perfil_por_clave("farmacia").system_prompt` y de `intent_service.SYSTEM_PROMPT`
+  == `1953a4e6815d855e635406c1da8f97ff83bb9be6a2fd040b69eabfae4c540749`, con
+  largo 14.680.
+- Mutual: `system_prompt is SYSTEM_PROMPT_MUTUAL` (sha256 `4377db47f567816d994d1824bd25adb7cb40e5bb9a96d00b74491f81258dc469`),
+  `venta` False, el resto de las capacidades y los textos iguales a farmacia,
+  `vision is` la de farmacia, `rotulo_kb == "INFORMACIÓN DE LA FARMACIA"`.
+- `VERTICAL="veterinaria"` → `ValueError` cuyo mensaje contiene
+  "veterinaria" y "farmacia, mutual, petshop". Entrar a `with TestClient(app)`
+  con ese valor falla al arrancar. `""` o sin setear → farmacia;
+  `" Petshop "` → petshop.
+- `COMERCIO_NOMBRE="MO Prueba"` en petshop → `comercio == "MO Prueba"`; el
+  prompt contiene "Soy el asistente virtual de MO Prueba" y no "Mascotas del
+  Oeste". En farmacia, el prompt mantiene el hash.
+- Prompt petshop: en `.lower()` no aparece `farmac`, `receta`, `socio`,
+  `obra social`, `remedia`, `mercado pago`, `mutual`, `medicament`, `remedio`,
+  `semanalmente`, `{comercio}`, `{emoji}`, `ibuprofeno`, `lotrial`, `bayer`,
+  `aveno` ni `talco`. Contiene "Soy el asistente virtual de Mascotas del Oeste",
+  "¡Hola! Soy el asistente virtual de Mascotas del Oeste 🐾 ¿En qué te puedo
+  ayudar?", "El sistema envía el link de pago después de que confirme.",
+  "SALUD DE LA MASCOTA", "DESCUENTOS, PROMOCIONES Y CUPONES",
+  "Nunca inventes la dirección" y "especie".
+- Contrato: cada bloque compartido es substring de los dos prompts; la línea del
+  enum `intencion` y el conjunto de claves del JSON son idénticos; "REGLA
+  ESTRICTA: solo podés ofrecer productos..." y "- NUNCA incluyas URLs,
+  links..." están en los dos.
+- Textos: para los tres perfiles `CLAVES_TEXTO_RUBRO ⊆ set(p.textos)`; para
+  farmacia y mutual `set(p.textos) == CLAVES_TEXTO_RUBRO` y `{**DEFAULTS, **p.textos} == DEFAULTS`.
+  En petshop, ningún valor matchea `farmac|receta|socio|mutual|bono|obra social`
+  ni contiene 💊. Invariantes: `sintomas == "derivar"` ⇒ `consulta_salud_message`
+  existe, contiene `perfil.emoji` y no contiene farmac/receta/socio/obra social;
+  `"indicacion_veterinaria" in vision.categorias` ⇒ `indicacion_veterinaria_message` existe;
+  `not recetas` ⇒ `"receta" not in vision.categorias`; `not obras_sociales` ⇒
+  `bono` y `credencial` no están.
+- Config (Redis caído, sin `DATABASE_URL`): en farmacia, `get_all() == DEFAULTS`,
+  y el sha256 de `json.dumps(<DEFAULTS sin las tres claves nuevas>, sort_keys=True,
+  ensure_ascii=False)` es igual al golden tomado antes del cambio (90 claves,
+  `655cbe78…0e1d`, verificado sobre `07a1d7a`). En petshop,
+  `pedido_listo_retiro_message` termina en 🐾, `sintoma_farmaceutico_message == ""`
+  y `send_images` sale de `DEFAULTS`; tras `set_many({"pedido_listo_retiro_message": "X"})`
+  devuelve `"X"`.
+- `IntentService("")._system_prompt()`: en farmacia `is SYSTEM_PROMPT`, en
+  petshop contiene "Mascotas del Oeste" y en mutual `is SYSTEM_PROMPT_MUTUAL`.
+  Singleton: se crea con farmacia, se cambia a petshop con `cache_clear` y la
+  misma instancia devuelve el prompt de petshop. `get_intent_service("", "", "anthropic")`
+  (la llamada de `simulate.py:90`) con petshop contiene "Mascotas del Oeste".
+- `_con_contexto("m", "Nombre de pila (para saludar): Ana", "Horario: 9 a 18")`
+  en petshop == `"m\n\n[INFORMACIÓN DEL COMERCIO]\nHorario: 9 a 18\nUsá esta información para responder si aplica. Si no alcanza, ofrecé pasar con una persona del equipo. No inventes datos."`.
+  En mutual siguen `[DATOS DEL SOCIO]` e `[INFORMACIÓN DE LA FARMACIA]`.
+- Audio: en farmacia, `marcas_base` tiene 38 elementos y empieza con
+  `("Aveno", "Atopix", "Actron")`. En petshop, con un `SKUService` de prueba
+  con ROYAL CANIN y SANICAT: empieza con "Consulta a un petshop. Productos y
+  marcas: ", contiene "Royal Canin" y "Sanicat", no contiene "Atopix" y
+  `len <= 650`.
+- Arranque: `_restaurar_archivos` con un blob falso. Farmacia con
+  `SKU_CSV_PATH=""` no tira y sigue restaurando el padrón; petshop no escribe el
+  padrón. `_init_referencia_receta`: petshop no llama a `inicializar`, y
+  farmacia y mutual la llaman una vez.
+- Catálogo: en petshop, `csv_de_arranque("data/catalogo_base.csv") == ""` con
+  un `ERROR` en `caplog`; `reload_sku_service("data/catalogo_base.csv").total == 0`;
+  un CSV temporal con 2 filas de MO da `total == 2`; `aplicar_fuente()` con
+  `catalogo_fuente="csv"` da `total_productos == 0`. En farmacia, el mismo
+  total que hoy, y `buscar("ibuprofeno")` devuelve resultados.
+- Tablero: en petshop, `GET /bo/tablero?mes=2026-09` → 200, `vertical == "petshop"`
+  y viene `producto`.
+
+**`tests/test_petshop.py` (unitarios por capacidad; cada uno con su par de farmacia "igual que hoy")**
+- Recetas: `explicar_receta("MEDICAMENTOS","PERROS","ANTIPARASITARIOS","Pipeta Frontline 10-20kg", referencia=lambda b: "si")`
+  → `("no","sin_recetas")`; `catalog_store._fila` con `category="MEDICAMENTOS"` →
+  `requiere_receta "no"`; `necesita_receta` → False en los dos modos;
+  `texto_alternativas` sin "(requiere receta)"; `_formatear_productos` sin
+  "REQUIERE RECETA". Farmacia: `("ambiguo","sin_referencia")` y
+  `("si","categoria_bajo_receta")`, como hoy.
+- Links: antes del cambio, regresión de farmacia con
+  `PUBLIC_BASE_URL=https://farmacia.remedia.ar` (hoy no hay tests de
+  `contiene_link`). `dominio_propio`: `cerca.remedia.ar` → `remedia.ar`,
+  `bot.mascotasdeloeste.com.ar` igual, `""` → `""`. `contiene_link`: links
+  propios y `/pay/` → False; drive o `receta.jpg` → True; con el dominio de MO,
+  `https://otra.com.ar/x` → True.
+- Beneficios: con un empleado cargado y descuentos de 20 y 15,
+  `descuento_para` → `(0.0, "")`; `aplicar_descuento_socio` no toca los precios;
+  `crear_link_y_responder` no agrega "🎉 Como empleado...";
+  `habilitado_cc` → `None`; `pide_pago_manual("me lo anotás en cuenta corriente?", incluir_cuenta_corriente=False)`
+  → False; `pide_pago_manual("lo pago con mercado pago", incluir_mercado_pago=False)` → False.
+- Síntomas: `_sin_precios_inventados(..., "Dale Vomitol $5.000", [], cfg, None, sintoma=True)`
+  → `consulta_salud_message`, operador con motivo `consulta_salud` y sin
+  `farmaceutico_ofrecido`. `agregar_oferta_farmaceutico("Te ofrezco Pipeta X", {"sintoma_farmaceutico_message": ""})`
+  → sin agregados.
+- Visión: `_parse` de `receta`, `bono` o `credencial` → `otro`;
+  `indicacion_veterinaria` → igual; `producto` con items los conserva. Con un
+  cliente Anthropic u OpenAI falso, el bloque de texto es `VISION_PETSHOP.prompt`
+  (en farmacia, `_PROMPT`).
+- Pagos: `mensaje_pago_confirmado` en las dos entregas y los dos perfiles
+  (petshop termina en 🐾 sin 💊; con sucursal, "al retirar en *Sucursal
+  Piloto*"). `crear_link` captura `statement_descriptor == "MASCOTAS DEL OESTE"`
+  (farmacia `FARMACIA AMI`; con `COMERCIO_NOMBRE` con ñ queda ASCII y ≤ 22).
+  `crear_pago`: `"Compra Mascotas del Oeste"`, `last_name` y
+  `mascotas-del-oeste-web`. `pay_page` y `payway_return`: título, logo "M",
+  wordmark y pie de MO, sin "Remed" ni "Farmacia". En farmacia, el body es
+  idéntico a un snapshot tomado antes del cambio. `armar_mensaje_pedido_listo`
+  y `_cerrar_venta_efectivo` con la clave vacía en `cfg` caen al texto petshop.
+
+**`tests/test_petshop_conversaciones.py` (punta a punta, reusa `entorno`, `_msg` y `PHONE` de `test_webhook_secuencias.py`)**
+
+| Grupo | Entrada (guion del `_Intent`) | Esperado en petshop |
+|---|---|---|
+| Recetas | Pendiente Pipeta `20` ("Medicamentos Bajo Receta"), "si" | No sale `derivado_receta` ni "receta"/"medicamento"; pregunta la entrega o manda el link |
+| Recetas | "quiero el alimento Dog Chow 3kg y una pipeta frontline" (adicional con "si") | "Sobre lo demás que me pediste:" con la pipeta y su precio; `extras_ofrecidos` incluye `20`; no deriva |
+| Recetas | "agregame la pipeta frontline" con un alimento pendiente | "¡Listo, lo sumé! Tu pedido queda así:" con `item_agregado` |
+| Recetas | "tengo la receta del veterinario cargada en el sistema" | Nada de "sistema de recetas" ni 🩺; el texto llega al modelo |
+| Recetas | El modelo responde "...Ojo que va con receta del veterinario. ¿La querés?" | Lo enviado conserva el precio y la pregunta, sin "receta" |
+| Links | "Hola, tenés este? https://www.instagram.com/p/C1abc/" | No sale "Recibí tu link"; estado ≠ operador; llega al modelo. Mutual: sigue derivando. |
+| Beneficios | "hola, tienen alimento para gato?" con padrón y empleado falsos | `contexto_cliente=None`; nada con mutual, socio ni empleado |
+| Beneficios | "cuánto te debo?", "tienen saldo de piedras?", "anotame 2 bolsas más", "sumale una bolsa a la cuenta", "lo anoto en la cuenta" (empleado, `cc_enabled`, link enviado) | Ninguno deriva por cuenta corriente ni cierra en cuenta; todos llegan al modelo |
+| Beneficios | "¿puedo pagar con cuenta corriente?" (`pago_manual_mode=derivar`) | No deriva `transferencia_efectivo`. Control: "te pago por transferencia" sí deriva. |
+| Beneficios | "Hola, soy socio del club, tienen piedras sanitarias?" | Nada de "padrón" ni "DNI"; llega al modelo |
+| Beneficios | "¿tienen descuento por bolsa grande?" / empleado + "tengo descuento?" | Nada de "socios", "lo estamos habilitando", "Como empleado" ni "sin receta" |
+| Beneficios | "¿Le va a andar bien a mi perro?", "¿tienen cobertura de envío a Castelar?", "aceptan el bono de Royal Canin?" | No dispara obra social ni bono; llega al modelo |
+| Síntomas A | "mi perro vomita, ¿qué le doy?" (`consulta_abierta`, `por_sintoma` True, respuesta "Dale Reliveran $3.000") | 1 mensaje = `consulta_salud_message`; operador con `consulta_salud`; `vistos` solo `rapido`; sin pendiente; sin "farmac" ni "$" |
+| Síntomas A | "pasame con el veterinario" (`desconocido`, `por_sintoma` True) | `consulta_salud`, no `no_entendido` |
+| Síntomas, venta | "tenés pipeta Frontline para perro de 10 a 20 kg?" (`por_sintoma` False) | Queda pendiente; estado ≠ operador |
+| Síntomas B | Claude 1 `por_sintoma` False; Claude 2 True con producto | Deriva `consulta_salud`; sin pendiente; sin evento `producto_ofrecido` |
+| Síntomas C | Pendiente cargado + "che, y mi gata está vomitando, ¿qué le doy?" | Deriva; sin link; el "dale" siguiente no genera mensaje |
+| Síntomas D | En `esperando_entrega`, "mi perro vomita, que le doy?" | Operador con `consulta_salud` |
+| Síntomas | "qué alimento me recomendás para un gato castrado?" con nombre o precio inventado | "No lo encuentro en nuestro catálogo..."; `derivacion_ofrecida`; sin "farmac" ni "25.000" |
+| Síntomas | Sesión con `farmaceutico_ofrecido` puesta a mano + "farmacéutico" | No deriva con motivo `farmaceutico` |
+| Visión | Foto `indicacion_veterinaria` | "Recibí la indicación del veterinario 🐾 ..."; operador con `consulta_salud`; `vistos` vacío; después "Hola" no responde |
+| Visión | Foto `comprobante` | "¡Listo! Recibimos tu comprobante 🙌 ..."; motivo `comprobante` |
+| Visión | Foto `producto` con "Royal Canin Medium Adult 15kg" / foto `otro` | Llega al modelo / "Recibí tu imagen 🙌 ..." con `imagen_no_reconocida` |
+| Visión | `entorno(img_tipo="receta")` con `receta_ocr_enabled="true"` | `leer_receta` no se llama; nada con "receta"; motivo ≠ `receta_foto` |
+| Venta | "hola" con `wh._flujo_mutual` falso | No se llama en petshop ni en farmacia; en mutual se llama una vez |
+| Compra completa | "hola" → "tenés dog chow 15 kg?" → "si" → "retiro" | Link de retiro con la sucursal; ningún enviado contiene farmacia, receta, socio, obra social, mutual, cuenta corriente ni 💊 |
+
+**`tests/test_entrega_sucursal.py` (corrección §5; corre con farmacia y con petshop)**
+- `es_pregunta_entrega` da True con: "en que sucursal puede ser?", "en qué
+  sucursal lo retiro?", "donde queda la sucursal?", "a que hora puedo pasar?",
+  "como hago para retirarlo?", "cual sucursal?", "que sucursal me queda mas
+  cerca?", "tienen sucursal en moron?", "¿Dónde retiro?", "cuánto sale el
+  envío?", "en q sucursal?" y "dónde lo retiro".
+- Da False con: "retiro", "retiro en sucursal", "lo paso a buscar", "voy a la
+  sucursal", "envio", "a domicilio", "mandámelo a casa", "si ahí", "dale ahí",
+  "sí, a mi domicilio", "me lo podés enviar", "¿me lo podés enviar?", "me lo
+  envías?", "lo puedo retirar hoy?", "hacen envío a Funes?", "cuando salga del
+  trabajo lo paso a buscar", "como siempre, retiro", "dale, lo busco" y "ok".
+- `pregunta_por_retiro("cuánto sale el envío?")` es False;
+  `responder_pregunta_retiro({})` es `""`.
+- `pregunta_entrega({})` y `texto_entrega("retiro", None)` dan el texto de hoy,
+  byte a byte. Con `retiro_sucursal="Sucursal Piloto"`, nombran la sucursal.
+- Webhook, con `cfg {"retiro_sucursal": "Sucursal Piloto", "retiro_info_message": "Lo retirás en *{sucursal}*, Calle Falsa 123, de 9 a 20 hs 🐾"}`:
+  (a) `esperando_entrega` + "en que sucursal puede ser?" → contiene "Calle
+  Falsa 123" y "*retiro en Sucursal Piloto*", no hay link y el estado no
+  cambia; después "retiro" genera el link `[("retiro", None)]`. (b) Farmacia sin
+  sucursal: responde el modelo, no hay link, el estado no cambia y la situación
+  contiene "Nunca inventes direcciones". (c) "cuánto sale el envío?" → responde
+  el modelo y el estado no cambia. (d) Guarda: "¿me lo podés enviar?" sigue
+  llevando a `esperando_direccion`. (e) `esperando_confirmacion` + "en que
+  sucursal puede ser?" → info + "¿Lo confirmamos?", sin link; en farmacia sin
+  sucursal, va a `procesar`. (f) "hasta qué hora puedo retirar?" en
+  `esperando_entrega` → "Atendemos ... 🕐" + re-pregunta, sin "¿Te ayudo con
+  algo más?". (g) "¿dónde queda la sucursal?" sin pendiente
+  (`desconocido`) → el modelo recibe la info en `contexto_kb`.
+- (a), (b), (c), (e) y (f) fallan sobre el código actual; (d) pasa antes y
+  después.
+
+### 6.3 Tests existentes
+
+Ninguno cambia de expectativa. Se tocan solo los fakes de §6.1. Tienen que
+seguir en verde sin edición, entre otros: `test_logic.py:1372-1374` (import de
+`SYSTEM_PROMPT`), `test_degradation.py:40-45, 62-79`,
+`test_webhook_secuencias.py:288-296, 434-439` y los de receta, saldo y cuenta
+corriente, `test_logic.py:129-143, 245-250, 1151-1155, 1565-1613, 2073-2092, 2321-2328, 3027-3036, 3090+, 3343`,
+`test_casos_5_10.py:11-31`, `test_descuento_entrega.py:74-81`,
+`test_receta_marcas.py:224, 261, 277`, `test_direccion_envio.py:13-27`,
+`test_horarios.py:87-121`, `test_cotizacion_varios.py` y
+`test_pedido_operador.py:60`.
+
+### 6.4 Regresión
+
+La suite completa con el perfil farmacia (sin `VERTICAL`) en verde: los 933 de
+hoy más los nuevos. Después, una corrida con `VERTICAL=petshop` solo sobre
+`test_perfil.py`, `test_petshop*.py` y `test_entrega_sucursal.py`.
+
+### 6.5 Pruebas manuales con el LLM real
+
+Los tests de webhook usan un `_Intent` falso: ninguno ejercita la calidad del
+prompt. `/simulate` devuelve la intención pero no `por_sintoma`, y además no
+aplica las compuertas ni la corrección de §5. Por eso se agrega
+`scripts/probar_prompt_petshop.py`: con `VERTICAL=petshop`, pasa una lista de
+frases por `procesar_rapido` y `procesar` (Haiku y Sonnet) e imprime
+`intencion`, `entidad_producto`, `entidades_adicionales`, `por_sintoma` y
+`respuesta`. Lista mínima y resultado esperado:
+
+| Frase | Esperado |
+|---|---|
+| "hola" | Saludo de Mascotas del Oeste, sin nombre propio |
+| "¿sos un bot?" | "Soy el asistente virtual de Mascotas del Oeste" |
+| "hola, tenés royal canin?" | `consulta_stock`, entidad "royal canin" |
+| "mi perro vomita, que le doy?" / "mi gato tiene diarrea" / "cuantas gotas le pongo" / "¿cuánto Drontal le doy?" / "pasame con el veterinario" | `por_sintoma` true y sin productos |
+| "una pipeta para perro de 10 kg" / "algo para las pulgas" / "tenés pipeta Frontline 10-20 kg" | `por_sintoma` false |
+| "que alimento le doy a un cachorro" / "qué alimento para gato castrado" | `consulta_abierta`, `por_sintoma` false |
+| "alimento royal canin y piedras sanicat" | entidad "alimento royal canin", adicionales ["piedras sanicat"] |
+| "tenés alimento para gato?" sin resultados | No ofrece productos para perro |
+| "anotalo a mi cuenta" / "¿tienen descuento?" | No promete ni inventa; "te paso con alguien del equipo" |
+| "donde queda la sucursal?" sin dato | No inventa la dirección |
+
+Después, en el número de prueba de MO, por WhatsApp real: la compra completa
+con retiro y con envío, un síntoma, una foto de un producto, una foto de una
+indicación veterinaria, un link de Instagram y "¿en qué sucursal puede ser?" en
+la elección de entrega.
+
+## 7. Despliegue y vuelta atrás
+
+### 7.1 Orden
+
+Primero **solo MO**: su servicio de Railway despliega `feature/vertical-petshop`.
+La farmacia y la mutual siguen en `develop` hasta §7.6.
+
+### 7.2 Variables de entorno del servicio de MO
+
+- `VERTICAL=petshop`.
+- `COMERCIO_NOMBRE`: vacío (sale "Mascotas del Oeste"). Solo se carga para
+  otro nombre visible.
+- `SKU_CSV_PATH=""`. El default (`config.py:30`) es el CSV de la farmacia:
+  el guardia lo ignora, pero loguea un error en cada arranque.
+- `REDIS_URL` y `DATABASE_URL` propios. `bot:config`, `bot:hours`,
+  `blob:catalogo` y `blob:socios` no tienen namespace: compartidos, MO
+  heredaría textos, horario, padrón y descuentos de la farmacia.
+- `PUBLIC_BASE_URL` con el host de MO, `WHATSAPP_VERIFY_TOKEN` propio (el
+  default es `farma_verify_token`) y las claves de Mercurio y del proveedor de
+  pago de MO.
+
+### 7.3 Configuración desde el panel o la API (antes de abrir el número)
+
+1. Horario real de la sucursal piloto: `PUT /bo/config/hours` con
+   `enabled=true`, y verificar con `GET /bo/config/hours`. Sin esto el bot
+   promete el horario de `DEFAULT_HOURS` (L a V 9 a 18, sáb 9 a 13) en la
+   respuesta de horario, en las confirmaciones de MP y Payway y en el aviso de
+   pedido listo. Y con `enabled=false`, `is_open_now` siempre da True.
+2. `retiro_sucursal` (nombre de la sucursal piloto) y `retiro_info_message`
+   (con la dirección y el horario reales) por `PATCH /bo/config`.
+3. `pedido_listo_retiro_message` con el nombre de la sucursal, partiendo del
+   texto petshop de §3.4.
+4. `pickup_minutes`: el valor que defina MO (`"0"` apaga "Tiempo estimado: 30
+   min").
+5. `payment_provider` de MO y, si cobra con MP, `pago_mp_manual="false"`.
+6. `efectivo_enabled="false"`: los pedidos en efectivo no llegan a Mercurio.
+7. Revisar la tabla `config` y el hash `bot:config` de MO, y **borrar** las
+   claves de texto guardadas con 💊 (`pedido_listo_*`, `efectivo_*` u otras de
+   §3.4). Lo guardado gana sobre el perfil.
+8. No cargar padrón, empleados ni KB de la mutual. No usar
+   `catalogo_fuente="csv"`: en petshop deja el catálogo vacío.
+9. Opcional, para que el panel no muestre "requiere receta" en filas viejas:
+   `UPDATE catalog_items SET requiere_receta='no' WHERE branch_id='mascotas-oeste'`.
+
+### 7.4 Verificación
+
+- El log del arranque dice `Perfil de rubro: petshop (Mascotas del Oeste)` y
+  "Perfil sin recetas" / "Perfil sin socios".
+- `/bo/catalogo/estado` muestra `fuente="erp"` y `total_productos > 0` (el
+  primer sync tarda unas 47 páginas).
+- `GET /bo/config` sin 💊 en ningún texto.
+- Correr `scripts/probar_prompt_petshop.py` y las conversaciones reales de §6.5.
+- Recién después, abrir el número.
+
+### 7.5 Vuelta atrás
+
+`VERTICAL=farmacia` en el servicio de MO y reiniciar. Vuelve exactamente al
+comportamiento que MO tiene hoy: prompt y textos de farmacia, recetas,
+socios, `catalogo_csv_base=True` (si falla el sync de Mercurio, vuelve a ofrecer
+el CSV de la farmacia). Los textos guardados en la config de MO se mantienen.
+Si se quiere volver también el código, redeploy del commit anterior en Railway.
+
+### 7.6 Merge a `develop` (farmacia y mutual, después del go-live de MO)
+
+Antes de mergear:
+- Confirmar en Railway que Remedia y CERCA tienen `VERTICAL` en minúsculas o
+  sin setear. Hoy "Mutual" con mayúscula se coacciona a farmacia, y con la
+  normalización pasaría a mutual.
+- Confirmar que su `PUBLIC_BASE_URL` es un host bajo `remedia.ar` (§4.3).
+- Suite completa en verde y aviso al equipo de la farmacia por la corrección
+  de §5.
+
+## 8. Fuera de alcance
+
+Lista aprobada:
+- Plantillas de WhatsApp para la ventana de 24 h.
+- Guarda de línea (`phone_number_id`).
+- Historial honesto de envíos fallidos.
+- **Tramo 2, calidad de búsqueda petshop**: indexar `category`, kg/kilos,
+  números de 1 dígito y "por NN" → `fps`. Se suman explícitamente: unidades de
+  petshop (latas, bolsas, sobres), el borrado de "caja de" y "tiras de"
+  (`sku_service.py:99-167`), y el caption de la foto que pisa `img["items"]`
+  (`webhook.py:1014`; en el camino Meta ni se parsea).
+- Ocultar las pantallas de receta del panel (incluye `cotizar_receta` →
+  "Sale por obra social $X", el OCR del panel y los textos `receta_cotizacion_*`).
+- Bugs de regex de retiro y envío que no sean el caso de la pregunta ("busco",
+  "paso", "voy", "casa"; `_RETIRO`, `_ENVIO`, `afirma_envio`).
+- Efectivo y cuenta corriente sin alta en el ERP (incluye que `backoffice_pedidos`
+  pueda cerrar en cuenta corriente con 💊 sin mirar la capacidad).
+
+No están en la lista literal, pero quedan afuera porque el diseño no los pide
+(a validar, §9.1):
+- `_NO_DIR` sin kg/kilos (`checkout_helper.py:66-71`): "la bolsa de 15 kg"
+  en `esperando_entrega` se toma como domicilio y sale un link con envío.
+  **Riesgo alto; se recomienda reconsiderarlo para el go-live** (es una línea y
+  un test).
+- `entidad_contradice_pendiente` (`checkout_helper.py:1567-1569`) ignora números
+  de 1 dígito y decimales: "sí, pero el de 3 kg" sobre un pendiente de 15 kg
+  confirma y **cobra** la bolsa de 15. **Se recomienda reconsiderarlo para el
+  go-live.**
+- Antifraude de Payway: el email de respaldo `cliente@remedia.ar`,
+  `dispatch_method` fijo en "Store Pick Up" y X-Source `remedia`.
+- "Tiempo estimado: 30 min" en el aviso de pedido listo (se mitiga con
+  `pickup_minutes="0"`).
+- Falsos positivos de `_PREGUNTA_HORARIO` ("¿la bolsa está abierta?").
+- La raíz `/` (`app/static/index.html`) sigue mostrando el simulador con la
+  marca Remedia en el host de MO.
+- `/simulate`: no aplica las compuertas de salud, `/simulate/image` responde
+  "Recibí la receta" y su `esperando_entrega` (`simulate.py:139-153, 211-231`)
+  conserva el bug de la pregunta.
+- El rótulo de KB de la mutual: `SYSTEM_PROMPT_MUTUAL` espera
+  `[INFORMACIÓN DE LA MUTUAL]` y recibe `[INFORMACIÓN DE LA FARMACIA]`.
+- `sintoma_farmaceutico_message` vacío vuelve al texto por defecto en la
+  farmacia (solo un espacio lo apaga).
+- `personalizar_nombre` no limpia "¡Listo {nombre}!" en la farmacia.
+- La respuesta de una foto mientras atiende un operador.
+- El prompt de farmacia sigue diciendo "link real de Mercado Pago" aunque
+  cobre con Payway.
+- Las claves `mutual_*` en el `GET /bo/config` de MO, la pastilla y las
+  secciones de farmacia en `tablero.html`, y `SOCIOS_AREA_DEFAULT=341`.
+- `consulta_salud_message` e `indicacion_veterinaria_message` no se editan
+  desde el panel (no entran en `ConfigUpdate`).
+
+No aplica a petshop:
+- Redis compartido con la farmacia: es un error de despliegue y lo cubre §7.2.
+- `POST /bo/kb/cargar-mutual` (`backoffice.py:1814-1840`): ningún flujo lo
+  llama.
+- Mensajes `interactive`, `button` u `order` descartados: el bot de MO solo
+  manda texto y el catálogo sale de Mercurio.
+
+## 9. Riesgos
+
+### 9.1 Decisiones tomadas al consolidar (validar con el usuario)
+
+1. **Campos agregados al `Perfil`**: `venta`, `catalogo_csv_base`,
+   `descriptor_tarjeta`, `razon_social` y `wordmark_html` (§3.7). Sin ellos, o
+   se pregunta por el nombre del rubro o la farmacia cambia. Con
+   `COMERCIO_NOMBRE` seteado, los tres campos de marca se vacían y todo sale del
+   nombre.
+2. **El descuento de empleado se apaga con `socios=False`**. El diseño solo
+   nombra el de socio; el de empleado (20% por default) es regla de la
+   farmacia. Si MO quiere descuento para sus empleados, hace falta un campo
+   nuevo.
+3. **`pago_mp_manual`** (clave de config nueva): sin ella, si MO cobra con MP,
+   "¿puedo pagar con Mercado Pago?" deriva o contesta "solo tarjeta".
+4. **La corrección de §5 se extiende** al interceptor de horario y a
+   `esperando_confirmacion` (el mismo bug, en el estado vecino), y en
+   `esperando_entrega` "¿cuánto sale el envío?" pasa a contestarlo el modelo.
+   Los tres cambian a la farmacia.
+5. **El signo "?" solo no alcanza para que sea pregunta** (§5), para que
+   "¿me lo podés enviar?" siga eligiendo envío.
+6. **Reglas propias del prompt petshop** que el diseño no dicta literalmente:
+   no ofrecer productos para otra especie; no prometer "anotarlo", fiado ni
+   pago diferido; no afirmar descuentos, promos ni cupones; no inventar la
+   dirección ni el horario; y responder "te paso con alguien del equipo" para
+   que la derivación se cumpla.
+7. **Frontera de salud**: pedir por nombre o tipo vende ("algo para las
+   pulgas", "pipeta para perro de 10 kg"); contar un síntoma, pedir una dosis o
+   pedir un veterinario deriva. Hay que validarlo con MO: si prefieren derivar
+   también "algo para las pulgas", solo cambia el ejemplo del prompt.
+8. **Sin cambio en `_HUMANO`**: "pasame con el veterinario" se cubre por prompt
+   y compuerta A, para no tocar la regex de la farmacia.
+9. `consulta_saldo_message` y `cc_no_habilitada_message` conservan su fallback
+   literal (§3.4), para que el `get_all()` de la farmacia no cambie.
+10. Fuera de alcance con recomendación de revisar: `_NO_DIR` con kg y
+    `entidad_contradice_pendiente` (§8).
+
+### 9.2 Riesgos
+
+- **Ciclo de imports**: si `perfil.py` importa `intent_service`, `sku_service`,
+  `image_service` o `checkout_helper`, el arranque falla. Por eso existe
+  `prompts.py` y las marcas de audio viven en `perfil.py`.
+- **Caché en tests**: `get_perfil` y `get_settings` usan `lru_cache`. Un test
+  que no use la fixture de §6.1 deja el perfil petshop para el resto de la
+  suite. Si un módulo guarda el perfil en una variable de módulo o en un
+  `__init__`, los tests no pueden cambiarlo.
+- **Calidad del prompt**: la derivación depende de que el modelo marque bien
+  `por_sintoma`. Un falso positivo deriva (falla segura, con costo operativo).
+  Un falso negativo cae en la venta, y ahí solo protegen el prompt y el control
+  de precios y nombres inventados. Mitigación: §6.5 antes de abrir.
+- **Con `socios` y `obras_sociales` apagados**, "descuento", "promo", "bono" y
+  "cupón" van al modelo. El interceptor de descuentos se había puesto porque el
+  modelo inventó un descuento (caso 29). El guard de precios ataja importes,
+  pero no frases como "tenés 10% off": solo lo frena la regla nueva del prompt.
+- **Config guardada en MO**: lo guardado pisa a `perfil.textos`. Si quedaron
+  textos con 💊 de una corrida anterior, MO los sigue mandando (§7.3, paso 7).
+- **Horario, demora y sucursal sin cargar**: el bot promete `DEFAULT_HOURS` y
+  30 minutos, y ante "¿dónde queda la sucursal?" deriva sin dato. Es un paso
+  obligatorio del despliegue.
+- **Filas viejas en Postgres de MO** con `requiere_receta` en `si` o `ambiguo`:
+  el bot las ignora por los gates, pero el panel las muestra (§7.3, paso 9).
+- **Primer arranque de MO**: hasta que termina el primer sync de Mercurio, el
+  catálogo está vacío y el bot dice que no tiene nada.
+- **`contiene_link` de la farmacia** depende de su `PUBLIC_BASE_URL` (§4.3).
+- **Normalización de `VERTICAL`** con `strip().lower()` (§7.6).
+- **El rótulo de KB de la mutual** queda con el bug de hoy, para no cambiarla;
+  corregirlo es una decisión aparte.
+- **`statement_descriptor`**: no está verificado qué largo y qué caracteres
+  acepta MP para "MASCOTAS DEL OESTE" (18 caracteres); hay que confirmarlo en
+  la primera venta real.
+- **Frontera de la visión**: una indicación del veterinario que nombra
+  productos que MO vende se deriva igual; una caja de pipeta con sticker de
+  veterinaria puede caer en cualquiera de los dos tipos. Hay que probarlo con
+  fotos reales de MO.
+- **Fricción en `esperando_confirmacion`**: "dale, retiro. ¿a qué hora paso?"
+  ya no confirma; contesta y vuelve a preguntar "¿Lo confirmamos?".
+- **Un pendiente queda en la sesión** al derivar por salud con un link ya
+  enviado. Si el cliente paga, el pago sigue su curso normal (igual que con
+  `pidio_humano`).
+- **La compuerta A va antes de la KB**: una consulta de salud nunca se responde
+  con la información del comercio, aunque MO cargue "tenemos veterinario".
+- **El panel real (Lovable) está fuera del repo**: las claves nuevas
+  (`retiro_sucursal`, `retiro_info_message`, `pago_mp_manual`) hay que
+  exponerlas allá o cargarlas por API en el despliegue.
