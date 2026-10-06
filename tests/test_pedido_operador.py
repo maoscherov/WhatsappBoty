@@ -153,6 +153,8 @@ async def test_link_con_descuento_de_socio(cli, entorno):
 
 
 async def test_validaciones(cli):
+    from app.services import checkout_helper as _ch
+    _ch._ULTIMA_DIRECCION.clear()        # sin dirección recordada de otros tests
     assert (await cli.post("/bo/pedido", json={"phone": PHONE, "items": []})).status_code == 422
     assert (await cli.post("/bo/pedido", json={"phone": PHONE, "items": [{"sku_id": "999"}]})).status_code == 404
     assert (await cli.post("/bo/pedido", json={"phone": PHONE, "items": [{"detalle": "x"}]})).status_code == 422

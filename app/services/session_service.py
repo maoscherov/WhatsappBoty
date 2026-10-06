@@ -253,6 +253,15 @@ class SessionService:
         session["tipo_entrega"] = tipo
         session["direccion_envio"] = direccion
         await self.save(phone, session)
+        if tipo == "envio" and direccion:
+            # Para ofrecerla la próxima vez (domicilio precargado, 5/10).
+            try:
+                from app.config import get_settings as _gs
+                from app.services.checkout_helper import guardar_direccion
+                from app.services.db import get_db as _gdb
+                await guardar_direccion(_gdb(_gs().database_url), phone, direccion)
+            except Exception as e:
+                logger.debug(f"guardar_direccion({phone}): {e}")
 
     async def set_estado(self, phone: str, estado: str, motivo: str | None = None):
         session = await self.get(phone)

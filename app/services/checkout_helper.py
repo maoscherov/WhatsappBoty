@@ -19,7 +19,13 @@ _RETIRO = [r"\bretiro\b", r"\bretirar\b", r"\bsucursal\b", r"\bpaso\b", r"\bbusc
            r"\bvoy\b", r"\bretiro yo\b", r"\ben el local\b", r"\bpasar\b"]
 _ENVIO  = [r"\benv[ií]o\b", r"\benviar\b", r"\benv[ií]en\b", r"\bdomicilio\b",
            r"\bmand[aá]\b", r"\bmandame\b", r"\bmanden\b", r"\bcasa\b", r"\bdelivery\b",
-           r"\ba domicilio\b"]
+           r"\ba domicilio\b",
+           # 5/10 (C-3854, C-3912): "mandámelo", "me lo envías", "me lo podés
+           # enviar", "traémelo" se tomaban como otra cosa y el bot repreguntaba.
+           r"\bmand[aá](lo|melo|mela)\b", r"\benvi[aá](lo|melo|mela|me)\b",
+           r"\btra[eé](lo|melo|mela)\b",
+           r"\bme\s+lo\s+(env[ií]\w*|mand\w*|tra[eé]\w*)\b",
+           r"\bme\s+lo\s+\w+\s+(enviar|mandar|traer)\b"]
 
 
 def match_retiro(t: str) -> bool:
@@ -27,6 +33,10 @@ def match_retiro(t: str) -> bool:
 
 
 def match_envio(t: str) -> bool:
+    # "mandame el link" no es un envío a domicilio.
+    if re.search(r"\b(link|pago|comprobante|foto|lista)\b", t or "", re.IGNORECASE) and \
+            not re.search(r"\b(env[ií]o|domicilio|delivery|casa)\b", t or "", re.IGNORECASE):
+        return False
     return any(re.search(p, t, re.IGNORECASE) for p in _ENVIO)
 
 
@@ -280,7 +290,8 @@ _SALDO_FUERTE = [
 # cuenta como consulta de saldo sin compra abierta.
 _SALDO_DEBIL = [
     r"\bcu[aá]nto\s+(te\s+|les\s+|le\s+)?deb\w*",
-    r"\blo\s+que\s+(te\s+|les\s+|le\s+)?debo\b",
+    # "lo q / lo qe / lo qie debo" (C-4115); "lo que debo tomar" es otra cosa.
+    r"\blo\s+q\w{0,3}\s+(te\s+|les\s+|le\s+)?debo\b(?!\s+(tomar|hacer|usar|comprar|pedir))",
     r"\b(les|le|te)\s+debo\b",
     r"\bdebo\s+algo\b",
 ]
@@ -745,8 +756,44 @@ def costo_envio_de(cfg: dict) -> float:
         return 0.0
 
 
+# Última dirección de envío por teléfono (tabla direcciones_cliente, se carga
+# al arrancar y se actualiza en cada envío). Minuta 24/9 punto 8 y C-3854:
+# una empleada pidió envío y el bot le volvió a pedir la dirección.
+_ULTIMA_DIRECCION: dict[str, str] = {}
+
+
+def recordar_direccion(phone: str, direccion: Optional[str]) -> None:
+    if phone and direccion and parece_direccion(direccion):
+        _ULTIMA_DIRECCION[phone] = direccion.strip()
+
+
+async def cargar_direcciones(db) -> int:
+    if db is None or not db.available():
+        return 0
+    filas = await db.fetch("SELECT phone, direccion FROM direcciones_cliente")
+    for f in filas or []:
+        _ULTIMA_DIRECCION[f["phone"]] = f["direccion"]
+    return len(filas or [])
+
+
+async def guardar_direccion(db, phone: str, direccion: Optional[str]) -> None:
+    """Persiste la última dirección de envío (best-effort)."""
+    if not (phone and direccion and parece_direccion(direccion)):
+        return
+    recordar_direccion(phone, direccion)
+    if db is not None and db.available():
+        await db.execute(
+            "INSERT INTO direcciones_cliente (phone, direccion, updated_at) VALUES ($1, $2, now()) "
+            "ON CONFLICT (phone) DO UPDATE SET direccion = EXCLUDED.direccion, updated_at = now()",
+            phone, direccion.strip())
+
+
 def domicilio_de(phone: Optional[str], socio_svc=None) -> str:
-    """Domicilio del socio en el padrón, o "" si no es socio o no lo tiene."""
+    """
+    Domicilio para ofrecer el envío: el del padrón de socios o, si no hay, la
+    última dirección a la que se le mandó un pedido a ese teléfono. "" si no
+    hay ninguno.
+    """
     if not phone:
         return ""
     try:
@@ -755,9 +802,12 @@ def domicilio_de(phone: Optional[str], socio_svc=None) -> str:
             from app.services.socio_service import get_socio_service as _gss
             socio_svc = _gss(_gs().socios_path)
         socio = socio_svc.find_by_phone(phone)
-        return ((socio or {}).get("domicilio") or "").strip()
+        dom = ((socio or {}).get("domicilio") or "").strip()
+        if dom:
+            return dom
     except Exception:
-        return ""
+        pass
+    return _ULTIMA_DIRECCION.get(phone, "")
 
 
 def pregunta_entrega(cfg: dict, extra: str = "", saludo: bool = True,
@@ -1265,10 +1315,12 @@ async def resolver_entrega(
         return respuesta, "pedido_confirmado"
 
     if es_envio and not es_retiro:
-        socio = socio_svc.find_by_phone(phone) if socio_svc else None
-        if socio and socio.get("domicilio"):
+        # La dirección ya se mostró en la pregunta ("envío a San Javier 837 —
+        # si es a otra, decímela"): elegir envío la confirma.
+        dom = domicilio_de(phone, socio_svc)
+        if dom:
             respuesta, _ = await crear_link_y_responder(
-                payment_svc, session_svc, phone, session, "envio", socio["domicilio"]
+                payment_svc, session_svc, phone, session, "envio", dom
             )
             return respuesta, "pedido_confirmado"
         await session_svc.set_estado(phone, "esperando_direccion")
@@ -2123,7 +2175,7 @@ def pide_encargo(texto: str, history: list) -> bool:
 
 
 # ── Precios absurdos del ERP (auditoría 2/10) ─────────────────────────────────
-def marcar_precio_dudoso(resultados: list[dict], cfg: dict) -> list[dict]:
+def marcar_precio_dudoso(resultados: list[dict], cfg: dict, sku_svc=None) -> list[dict]:
     """
     Productos con precio por debajo de `precio_minimo_venta` (precio viejo del
     ERP: shampoo Dove $56,90, Head & Shoulders $49,66): el bot no los cotiza
@@ -2134,12 +2186,61 @@ def marcar_precio_dudoso(resultados: list[dict], cfg: dict) -> list[dict]:
         minimo = float(cfg.get("precio_minimo_venta") or 0)
     except (TypeError, ValueError):
         minimo = 0.0
-    if minimo <= 0 or not resultados:
+    if not resultados:
         return resultados
     out = []
     for r in resultados:
         precio = float(r.get("precio_lista") or r.get("precio") or 0)
-        if 0 < precio < minimo:
+        # El mismo producto cargado dos veces en el ERP con un precio viejo
+        # (C-3996: "ELVIVE COLOR VIVE SHA X 400" a $1.006 y "(NUEVO)" a
+        # $9.591; se vendió a $804 con descuento): si otro con el mismo
+        # nombre vale más del triple, el barato no se cotiza.
+        ref = sku_svc.precio_referencia(r.get("nombre") or "") if sku_svc else 0.0
+        if precio > 0 and ((minimo > 0 and precio < minimo) or (ref and precio * 3 < ref)):
             r = dict(r, vendible=False, precio_dudoso=True)
         out.append(r)
     return out
+
+
+
+# C-4148 (5/10): el modelo nombró "Tratamiento Alisante Sin Formol de la marca
+# Liss" — sin precio, así que el control de precios no lo vio — y después
+# dijo que no lo tenía. Un nombre entre comillas o "de la marca X" que no
+# está en ningún resultado es un producto inventado.
+_NOMBRE_CITADO_RE = re.compile(r'[“"«]([^”"»\n]{4,70})[”"»]|\bde\s+la\s+marca\s+[“"«]?([A-ZÁÉÍÓÚÑ][\w\-]{2,30})')
+
+
+def nombres_inventados(respuesta: str, resultados) -> list[str]:
+    """Nombres de producto citados en la respuesta que no salen de ningún resultado."""
+    nombres = " ".join((r.get("nombre") or "").lower() for r in (resultados or []))
+    malos = []
+    for a, b in _NOMBRE_CITADO_RE.findall(respuesta or ""):
+        cita = (a or b).strip()
+        toks = [t for t in re.findall(r"[a-záéíóúñ0-9]{4,}", cita.lower())]
+        if not toks:
+            continue
+        presentes = sum(1 for t in toks if t in nombres)
+        if presentes * 2 < len(toks):
+            malos.append(cita)
+    return malos
+
+
+
+# C-4051 (5/10): "protector solar drenarlos" → … → "Dermaglos" a secas.
+def es_refinamiento_de_marca(nueva: str, previa: str) -> bool:
+    """La nueva búsqueda es solo una marca (1-2 palabras, sin tipo de producto)
+    que refina la búsqueda anterior, que sí decía qué tipo de producto era."""
+    from app.services.catalogo_enriquecido import tipos_mencionados
+    toks = re.findall(r"[a-záéíóúñ0-9]+", (nueva or "").lower())
+    prev = re.findall(r"[a-záéíóúñ0-9]+", (previa or "").lower())
+    if not toks or len(toks) > 2 or len(prev) < 2:
+        return False
+    if tipos_mencionados(nueva) or set(toks) <= set(prev):
+        return False
+    return True
+
+
+def marca_en_resultado(marca: str, nombre: str) -> bool:
+    toks = [t for t in re.findall(r"[a-záéíóúñ0-9]{4,}", (marca or "").lower())]
+    n = (nombre or "").lower()
+    return bool(toks) and all(t in n for t in toks)

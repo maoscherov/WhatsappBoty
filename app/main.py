@@ -137,6 +137,14 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error(f"No se pudo inicializar la referencia de receta: {e}")
 
+        # Últimas direcciones de envío (domicilio precargado, 5/10).
+        try:
+            from app.services.checkout_helper import cargar_direcciones
+            _n_dir = await asyncio.wait_for(cargar_direcciones(get_db(settings.database_url)), timeout=20.0)
+            logger.info(f"Direcciones de envío cargadas: {_n_dir}")
+        except Exception as e:
+            logger.warning(f"No se pudieron cargar las direcciones de envío: {e}")
+
         # Diccionario del catálogo (2/10): abreviaturas y sinónimos desde
         # Postgres ANTES de armar el índice de búsqueda del catálogo ERP.
         try:

@@ -858,3 +858,34 @@ async def test_confirma_y_pide_otro_producto_lo_busca_y_lo_suma(entorno):
     s = await deps["session"].get(PHONE)
     assert [i["sku_id"] for i in s["pending_items"]] == ["83744", "86260"]
     assert s["estado"] == "esperando_entrega"          # confirmó: pasa a retiro/envío
+
+
+# ── 5/10: C-4115, C-3912, C-4033 ────────────────────────────────────────────────
+async def test_no_gracias_a_la_consulta_ofrecida_cierra_amable(entorno):
+    deps = entorno()
+    s = await deps["session"].get(PHONE)
+    s["derivacion_ofrecida"] = "obra social osde"
+    await deps["session"].save(PHONE, s)
+    await wh.procesar_mensajes([_msg("No gracias")])
+    assert deps["wa"].enviados[-1] == "¡Dale! Cualquier cosa me escribís 🙂"
+    assert (await deps["session"].get(PHONE)).get("estado") != "operador"
+
+
+async def test_pedido_cerrado_y_pide_envio_deriva(entorno):
+    deps = entorno()
+    await _pendiente_colpuril(deps["session"])
+    await deps["session"].set_entrega(PHONE, "retiro", None)
+    await deps["session"].set_estado(PHONE, "pedido_confirmado")
+    await wh.procesar_mensajes([_msg("bueno pero me lo podés enviar")])
+    s = await deps["session"].get(PHONE)
+    assert s["estado"] == "operador" and s["derivada_motivo"] == "cambio_entrega"
+
+
+async def test_no_repite_textual_el_mensaje_anterior(entorno):
+    txt = "No importa q sea algabo"
+    rep = "Justo no tengo stock del talco para pies. ¿Te gustaría que te muestre alternativas?"
+    deps = entorno({txt: {"intencion": "social", "respuesta": rep}})
+    await deps["session"].add_message(PHONE, "assistant", rep)
+    await wh.procesar_mensajes([_msg(txt)])
+    assert deps["wa"].enviados[-1] != rep
+    assert "alguien del equipo" in deps["wa"].enviados[-1]

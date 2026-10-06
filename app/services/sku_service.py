@@ -305,11 +305,28 @@ class SKUService:
                     or (actual.pausado and not sku.pausado):
                 self._by_barcode[cb] = sku
 
+    @staticmethod
+    def _clave_nombre(nombre: str) -> str:
+        """Nombre normalizado para encontrar el mismo producto cargado dos veces."""
+        t = _re_mod.sub(r"\(?\bnuevo\b\)?", " ", (nombre or "").lower())
+        return " ".join(sorted(set(_re_mod.findall(r"[a-záéíóúñ0-9]+", t)) - {"env", "x"}))
+
+    def precio_referencia(self, nombre: str) -> float:
+        """Precio más alto entre los productos con el mismo nombre normalizado."""
+        return getattr(self, "_precio_max", {}).get(self._clave_nombre(nombre), 0.0)
+
     def _build_df(self):
         # Frecuencia de cada token en el catálogo: permite distinguir palabras
         # distintivas ("framintrol", en 2 productos) de genéricas de marketing
         # ("power", en decenas) al ordenar los resultados.
         from collections import Counter
+        self._precio_max: dict[str, float] = {}
+        for sku in self._skus:
+            if sku.pausado or not sku.precio_venta:
+                continue
+            k = self._clave_nombre(sku.sku_nombre_original or sku.sku_nombre)
+            if sku.precio_venta > self._precio_max.get(k, 0.0):
+                self._precio_max[k] = float(sku.precio_venta)
         df: Counter = Counter()
         for texto in self._search_index:
             for tok in set(_tokens(texto)):
