@@ -107,8 +107,22 @@ class OrderService:
             await self._redis.zadd(ORDERS_IDX, {order_id: ts})
         except Exception as e:
             logger.error(f"OrderService.create error: {e}")
+        await self._persistir(order)
         logger.info(f"Pedido creado: {order_id} phone={phone} producto={sku_nombre}")
         return order
+
+    @staticmethod
+    async def _persistir(order: dict) -> None:
+        """Copia durable en Postgres (tabla orders, migración 0017): un pedido
+        COBRADO no puede depender del TTL de 7 días de Redis. Best-effort —
+        sin Postgres el bot sigue solo con Redis, como el resto del sistema."""
+        try:
+            from app.config import get_settings
+            from app.services.db import get_db
+            from app.services.order_store import get_order_store
+            await get_order_store(get_db(get_settings().database_url)).upsert(order)
+        except Exception as e:
+            logger.error(f"OrderService._persistir({order.get('order_id')}) error: {e}")
 
     @staticmethod
     def _with_trace_defaults(order: dict) -> dict:
@@ -127,6 +141,7 @@ class OrderService:
             await self._redis.setex(self._key(order["order_id"]), ORDER_TTL, json.dumps(order))
         except Exception as e:
             logger.error(f"OrderService._save error: {e}")
+        await self._persistir(order)
 
     async def get(self, order_id: str) -> Optional[dict]:
         try:

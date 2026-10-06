@@ -54,6 +54,12 @@ class MercurioConvivenciaError(MercurioError):
     sucursal y el bot dejó de recargar su catálogo."""
 
 
+class MercurioPedidoRechazado(MercurioError):
+    """422 del POST /pedidos: el ERP NO registró el pedido y reintentar con el
+    mismo cuerpo va a fallar igual (validación). Se marca rechazado y lo mira
+    un humano; distinto de un 5xx/red, que queda pendiente y se reintenta."""
+
+
 # ── Parseo de campos (todo llega como string) ─────────────────────────────────
 
 def parsear_stock_x_deposito(valor: Optional[str]) -> dict[str, float]:
@@ -197,6 +203,55 @@ class MercurioClient:
                 raise MercurioError(f"{path}: respuesta no JSON ({e})")
         raise ultimo or MercurioError(f"{path}: sin respuesta")
 
+    async def _post(self, path: str, body: dict, headers: dict) -> httpx.Response:
+        """POST con los mismos reintentos que _get. Reintentar un POST es
+        seguro SOLO porque todo POST de esta API lleva Idempotency-Key: el
+        mismo pedido reintentado vuelve con Idempotent-Replay, no duplicado."""
+        ultimo: Optional[Exception] = None
+        for intento in range(MAX_REINTENTOS):
+            try:
+                r = await self._client.post(f"{self._base}{path}", json=body, headers=headers)
+            except httpx.HTTPError as e:
+                ultimo = MercurioError(f"{path}: {e}")
+                await asyncio.sleep(2 ** intento)
+                continue
+            if r.status_code == 429:
+                espera = int(r.headers.get("Retry-After") or 60)
+                logger.warning(f"Mercurio 429 en {path}: espero {espera}s")
+                await asyncio.sleep(min(espera, 120))
+                continue
+            if r.status_code >= 500:
+                ultimo = MercurioError(f"{path}: HTTP {r.status_code}")
+                await asyncio.sleep(2 ** intento)
+                continue
+            return r
+        raise ultimo or MercurioError(f"{path}: sin respuesta")
+
+    async def crear_pedido(self, pedido: dict, idempotency_key: str) -> dict:
+        """
+        POST /pedidos (spec 14/9). 201 → {id_comprobante, numero, replay};
+        422 → MercurioPedidoRechazado (el ERP no lo registró; no reintentar).
+        La Idempotency-Key (única por pedido, 7 días) es nuestra order_id.
+        """
+        r = await self._post("/pedidos", pedido, {"Idempotency-Key": idempotency_key})
+        if r.status_code == 422:
+            try:
+                detalle = r.json().get("message") or r.text[:200]
+            except ValueError:
+                detalle = r.text[:200]
+            raise MercurioPedidoRechazado(f"pedido {idempotency_key}: {detalle}")
+        if r.status_code >= 400:
+            raise MercurioError(f"/pedidos: HTTP {r.status_code} {r.text[:200]}")
+        try:
+            body = r.json()
+        except ValueError as e:
+            raise MercurioError(f"/pedidos: respuesta no JSON ({e})")
+        return {
+            "id_comprobante": _texto(body.get("id_comprobante")),
+            "numero": _texto(body.get("numero")),
+            "replay": (r.headers.get("Idempotent-Replay") or "").lower() == "true",
+        }
+
     async def estado(self) -> dict:
         return await self._get("/estado")
 
@@ -281,6 +336,7 @@ class MercurioSync:
         tax = await self._client.taxonomias()
         paginas = await self._client.paginas()
         items: list[CatalogItemIn] = []
+        codigos: list[tuple[str, str, str]] = []   # (external_id, codigo, codigo_padre)
         padres = 0
         for p in range(1, max(paginas, 1) + 1):
             for art in await self._client.articulos(p):
@@ -288,9 +344,18 @@ class MercurioSync:
                     padres += 1
                     continue
                 try:
-                    items.append(articulo_a_item(art, tax))
+                    item = articulo_a_item(art, tax)
                 except Exception as e:
                     logger.warning(f"Mercurio: artículo {art.get('id_articulo_mercurio')} omitido: {e}")
+                    continue
+                items.append(item)
+                # El POST /pedidos exige variant_id = codigo y product_id =
+                # codigo_padre; catalog_items no los guarda (contrato
+                # compartido con el agente), van a la tabla satélite.
+                codigo = _texto(art.get("codigo"))
+                if codigo:
+                    codigos.append((item.external_id, codigo,
+                                    _texto(art.get("codigo_padre")) or codigo))
 
         store = get_catalog_store(self._db)
         received = upserted = 0
@@ -304,6 +369,13 @@ class MercurioSync:
         if items:
             _, deactivated = await store.full_manifest(
                 self._branch, [ManifestEntryIn(external_id=i.external_id, hash=i.hash) for i in items])
+        for i in range(0, len(codigos), 500):
+            await self._db.executemany(
+                "INSERT INTO mercurio_codigos (branch_id, external_id, codigo, codigo_padre) "
+                "VALUES ($1, $2, $3, $4) "
+                "ON CONFLICT (branch_id, external_id) DO UPDATE "
+                "SET codigo = EXCLUDED.codigo, codigo_padre = EXCLUDED.codigo_padre",
+                [(self._branch, e, c, cp) for e, c, cp in codigos[i:i + 500]])
         await get_branch_store(self._db).heartbeat(
             self._branch, agent_version="mercurio-rest", erp_version="v1", erp_status="ok",
             catalog_count=len(items), pending_batches=0)

@@ -289,6 +289,13 @@ async def payway_charge(body: ChargeIn):
                 await _gms(_gdb(settings.database_url)).save(phone, "assistant", mensaje)
             except Exception as e:
                 logger.debug(f"messages (Payway): {e}")
+            # Alta del pedido en el ERP de MO (F5) — después de confirmar al
+            # cliente. No-op sin MERCURIO_PEDIDOS_ENABLED (deploy farmacia).
+            try:
+                from app.services.mercurio_pedidos import despachar_alta_erp
+                await despachar_alta_erp(order)
+            except Exception as e:
+                logger.error(f"Alta ERP (Payway) {order['order_id']}: {e}")
         except Exception as e:
             logger.error(f"Post-pago Payway: {e}")
         return {"status": "approved"}

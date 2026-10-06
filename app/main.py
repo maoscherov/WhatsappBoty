@@ -191,6 +191,12 @@ async def lifespan(app: FastAPI):
         logger.info(f"Sync de Mercurio activo cada {settings.mercurio_sync_interval_secs}s "
                     f"(sucursal {settings.mercurio_branch_id})")
 
+    # Alta de pedidos en el ERP (F5): reintenta los que quedaron pendientes.
+    pedidos_task = None
+    if settings.mercurio_pedidos_enabled and settings.mercurio_api_key and settings.database_url:
+        pedidos_task = asyncio.create_task(_reintentar_pedidos_periodico())
+        logger.info(f"Reintento de pedidos ERP activo cada {settings.mercurio_pedidos_retry_secs}s")
+
     # Adjuntos de las conversaciones: se borran los de más de 6 meses (al
     # arrancar y una vez por día).
     media_task = asyncio.create_task(_limpiar_adjuntos_periodico())
@@ -202,6 +208,8 @@ async def lifespan(app: FastAPI):
         cierre_task.cancel()
     if mercurio_task:
         mercurio_task.cancel()
+    if pedidos_task:
+        pedidos_task.cancel()
     try:
         await get_db(settings.database_url).close()
     except Exception:
@@ -265,6 +273,23 @@ async def _sync_mercurio_periodico():
         except Exception as e:
             logger.error(f"Sync de Mercurio falló: {e}")
         await asyncio.sleep(max(60, settings.mercurio_sync_interval_secs))
+
+
+async def _reintentar_pedidos_periodico():
+    """Retoma los pedidos COBRADOS que quedaron 'pendiente' de alta en el ERP
+    (Mercurio caído o proceso reiniciado en el momento del cobro). Seguro de
+    repetir: la Idempotency-Key del POST es la order_id."""
+    from app.services.mercurio_pedidos import reintentar_pedidos_pendientes
+    logger = logging.getLogger("app.mercurio")
+    settings = get_settings()
+    while True:
+        await asyncio.sleep(max(60, settings.mercurio_pedidos_retry_secs))
+        try:
+            await reintentar_pedidos_pendientes()
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            logger.error(f"Reintento de pedidos ERP falló: {e}")
 
 
 async def _cerrar_sesiones_inactivas():
