@@ -60,10 +60,13 @@ def test_defaults_golden():
 # idéntico a un snapshot tomado antes del cambio") ─────────────────────────────
 
 @pytest.fixture
-def payway_falso(monkeypatch):
-    """pay_page sin Redis ni Payway: pago pendiente fijo y servicio falso."""
+def payway_falso(monkeypatch, usar_perfil):
+    """pay_page sin Redis ni Payway: pago pendiente fijo y servicio falso. El
+    snapshot es de la farmacia aunque el entorno diga otro VERTICAL."""
     from app.config import get_settings
     from app.routers import payway as pw
+
+    usar_perfil("farmacia")
 
     async def _pending(pid):
         if pid == "abc123":

@@ -20,34 +20,15 @@ from typing import Optional
 import anthropic
 import openai
 
+from app.services.prompts import VISION_PROMPT_FARMACIA
+
 logger = logging.getLogger(__name__)
 
 _VISION_MODELS = {"anthropic": "claude-haiku-4-5-20251001", "openai": "gpt-4o"}
 
-_PROMPT = (
-    "Analizá esta imagen o documento (puede ser un PDF) enviado a una farmacia por WhatsApp y clasificala.\n"
-    "Respondé SOLO con un JSON (sin texto extra) con este esquema:\n"
-    '{"tipo": "receta|bono|credencial|comprobante|producto|otro", "items": "nombres separados por coma o vacío"}\n\n'
-    "- receta: es una receta o prescripción médica: manuscrita, impresa, o una "
-    "captura de pantalla de una receta electrónica (app o portal de una obra "
-    "social/prepaga con medicamentos recetados).\n"
-    "- bono: es un bono/cupón de descuento de un LABORATORIO (Cassará, Cepage, "
-    "Elea, Bagó, Roemmers...) para canjear en farmacia: suele tener el logo del "
-    "laboratorio, casilleros para marcar productos y un porcentaje o precio "
-    "bonificado. NO es una receta médica. En items poné SOLO el nombre del "
-    "laboratorio (ej: 'Cassará').\n"
-    "- credencial: es una credencial/carnet de obra social o prepaga (PAMI, IOMA, etc.).\n"
-    "- comprobante: es un comprobante de pago — transferencia bancaria, captura "
-    "de una billetera virtual (Mercado Pago, etc.) o ticket/recibo de pago.\n"
-    "- producto: es la foto de uno o más productos (cajas/envases) de farmacia o perfumería.\n"
-    "- otro: cualquier otra cosa que no encaje.\n"
-    "En items va SOLO cuando hay productos identificables, UNO por envase, escrito como "
-    "MARCA + concentración/dosis + forma + tamaño tal como figura en el envase "
-    "(ej: 'Ibumar 4% suspensión 90ml, Ditral dipirona jarabe 70ml', 'Aveno protector solar "
-    "infantil FPS 65 175ml'). Una caja = un item. NUNCA listes la fórmula, los ingredientes "
-    "ni la composición del envase (xylitol, niacinamida, manteca de karité, excipientes...) "
-    "como items: no son productos pedidos. Si no hay productos identificables, dejalo vacío."
-)
+# El prompt vive en prompts.py; el alias queda por compatibilidad
+# (tests/test_logic.py lo importa de acá).
+_PROMPT = VISION_PROMPT_FARMACIA
 
 
 def es_pdf(media_type: str) -> bool:

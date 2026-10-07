@@ -22,9 +22,12 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379"
     database_url: str = ""   # Postgres (Railway) — vacío = features de Postgres/RAG inactivas
 
-    # Rubro del asistente: "farmacia" (catálogo, carrito y cobro) o
-    # "mutual" (información institucional + derivación, sin venta).
+    # Rubro del asistente: "farmacia" | "mutual" | "petshop" (perfil de rubro,
+    # app/services/perfil.py). Un valor desconocido corta el arranque.
     vertical: str = "farmacia"
+    # Nombre visible del comercio (opcional): pisa perfil.comercio y vacía
+    # descriptor_tarjeta, razon_social y wordmark_html, así todo sale del nombre.
+    comercio_nombre: str = ""
 
     env: str = "development"
     sku_csv_path: str = "data/catalogo_base.csv"

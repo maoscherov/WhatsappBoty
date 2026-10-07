@@ -16,6 +16,7 @@ from app.services.sku_service import get_sku_service
 from app.services.session_service import get_session_service
 from app.services.blob_store import get_blob_store
 from app.services.db import get_db
+from app.services.perfil import get_perfil
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -25,6 +26,12 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     logging.basicConfig(level=settings.log_level)
     logger = logging.getLogger(__name__)
+
+    # Perfil de rubro (VERTICAL). Sin try/except a propósito: un VERTICAL
+    # desconocido es un ValueError que corta el arranque ("Application startup
+    # failed") ANTES de tocar Redis, el catálogo o Postgres.
+    perfil = get_perfil()
+    logger.info(f"Perfil de rubro: {perfil.clave} ({perfil.comercio})")
 
     # Restaurar archivos subidos (catálogo/padrón) desde Redis — el filesystem
     # de Railway es efímero y se borra en cada deploy.
