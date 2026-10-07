@@ -300,6 +300,96 @@ async def test_si_pelado_sigue_confirmando(perfil, entorno, monkeypatch, txt):
     assert not _llego_al_modelo(deps, txt)
 
 
+# ── Ronda de arreglo 2, residuo del hallazgo 2: el atajo con palabra de entrega ──
+# "sí, la de 3, la paso a buscar": match_retiro/match_envio confirmaban la de 15
+# sin pasar por el modelo ni por entidad_contradice_pendiente. Un número que no
+# es del pendiente manda el mensaje al modelo; sin número (o con el del
+# pendiente) el atajo sigue igual que hoy.
+@pytest.mark.parametrize("txt", [
+    "sí, la de 3, la paso a buscar",
+    "si la de 3 la retiro",
+    "dale la de 3, mandamela",
+    "sí, la de 3 kg, la retiro",
+    "si, el de 3 lo busco",
+])
+async def test_entrega_con_otro_numero_no_confirma_la_de_15(perfil, entorno, monkeypatch, txt):
+    deps, pago = _armar(entorno, monkeypatch, {txt: {
+        "intencion": "pedido", "confirmacion": True,
+        "entidad_producto": "royal canin 3 kg",
+        "respuesta": "Tengo la Royal Canin Medium Adult de 3 kg. ¿Te sirve?"}})
+    await _pendiente_royal_15(deps, "esperando_confirmacion")
+
+    await wh.procesar_mensajes([_msg(txt)])
+
+    s = await deps["session"].get(PHONE)
+    assert _llego_al_modelo(deps, txt)                        # lo decide el modelo
+    assert pago.links == []                                   # ningún link de la de 15
+    assert s["estado"] == "esperando_confirmacion"            # ni pidió la dirección
+    assert "dirección" not in deps["wa"].enviados[-1].lower()
+    assert "RC3" in [o["sku_id"] for o in s.get("pending_opciones") or []]
+
+
+@pytest.mark.parametrize("txt,estado,links", [
+    ("sí, lo retiro", "esperando_pago", ["ROYAL CANIN MEDIUM ADULT 15KG"]),
+    ("sí, la de 15, la retiro", "esperando_pago", ["ROYAL CANIN MEDIUM ADULT 15KG"]),
+    ("sí, la de 15 kg, la retiro", "esperando_pago", ["ROYAL CANIN MEDIUM ADULT 15KG"]),
+    ("mandámelo", "esperando_direccion", []),
+    ("si, envío", "esperando_direccion", []),
+    ("si lo retiro en 2 horas", "esperando_pago", ["ROYAL CANIN MEDIUM ADULT 15KG"]),
+])
+async def test_entrega_sin_otro_numero_sigue_por_el_atajo(perfil, entorno, monkeypatch, txt,
+                                                          estado, links):
+    """Guarda: sin número, o con el número del pendiente (o uno que no es una
+    presentación, como la hora), el atajo confirma con la entrega como hoy."""
+    deps, pago = _armar(entorno, monkeypatch, {})
+    await _pendiente_royal_15(deps, "esperando_confirmacion")
+
+    await wh.procesar_mensajes([_msg(txt)])
+
+    s = await deps["session"].get(PHONE)
+    assert not _llego_al_modelo(deps, txt)
+    assert s["estado"] == estado
+    assert s["pending_sku_id"] == "RC15"
+    assert pago.links == links
+
+
+async def test_si_el_modelo_confirma_se_conserva_la_entrega(perfil, entorno, monkeypatch):
+    """El atajo se saltea por el número, pero si el modelo igual confirma el
+    pendiente, la entrega que eligió en el mismo mensaje no se pierde."""
+    txt = "sí, la de 3, la paso a buscar"
+    deps, pago = _armar(entorno, monkeypatch, {txt: {
+        "intencion": "pedido", "confirmacion": True,
+        "entidad_producto": "royal canin 15 kg",
+        "respuesta": "¡Perfecto!"}})
+    await _pendiente_royal_15(deps, "esperando_confirmacion")
+
+    await wh.procesar_mensajes([_msg(txt)])
+
+    s = await deps["session"].get(PHONE)
+    assert _llego_al_modelo(deps, txt)
+    assert s["estado"] == "esperando_pago" and s.get("tipo_entrega") == "retiro"
+    assert pago.links == ["ROYAL CANIN MEDIUM ADULT 15KG"]
+
+
+@pytest.mark.parametrize("txt,pendiente,contradice", [
+    ("sí, la de 3, la paso a buscar", "ROYAL CANIN MEDIUM ADULT 15KG", True),
+    ("sí, la de 3 kg, la retiro", "ROYAL CANIN MEDIUM ADULT 15KG", True),
+    ("dale la de 3, mandamela", "ROYAL CANIN MEDIUM ADULT 15KG", True),
+    ("si, el x 30, lo retiro", "CURFLEX PLUS X 60", True),
+    ("si, el de 400 lo retiro", "IBUPROFENO 600 MG X 10", True),
+    ("sí, la de 15, la retiro", "ROYAL CANIN MEDIUM ADULT 15KG", False),
+    ("sí, la de 15 kg, la retiro", "ROYAL CANIN MEDIUM ADULT 15KG", False),
+    ("si, el de 600 lo retiro", "IBUPROFENO 600 MG X 10", False),
+    ("si lo retiro en 2 horas", "ROYAL CANIN MEDIUM ADULT 15KG", False),
+    ("si lo retiro a las 5", "ROYAL CANIN MEDIUM ADULT 15KG", False),
+    ("si, mandamelo a corrientes 1234", "ROYAL CANIN MEDIUM ADULT 15KG", False),
+    ("dale, envio a san martin 456 rosario", "ROYAL CANIN MEDIUM ADULT 15KG", False),
+    ("sí, lo retiro", "ROYAL CANIN MEDIUM ADULT 15KG", False),
+])
+def test_numero_contradice_pendiente(perfil, txt, pendiente, contradice):
+    assert ch.numero_contradice_pendiente(txt, pendiente) is contradice
+
+
 # ── Revisión final, hallazgo 3: un peso sin unidad no es un domicilio ───────────
 @pytest.mark.parametrize("txt", [
     "la de 15",

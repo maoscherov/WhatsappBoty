@@ -57,7 +57,7 @@ from app.services.checkout_helper import (
     nombres_inventados, es_refinamiento_de_marca, marca_en_resultado, match_envio,
     pide_cancelar_pedido, pregunta_obra_social, responder_obra_social, parsear_lista,
     pregunta_bono, responder_bono, agregar_oferta_farmaceutico, acepta_farmaceutico,
-    entidad_contradice_pendiente, debe_derivar_desconocido,
+    entidad_contradice_pendiente, numero_contradice_pendiente, debe_derivar_desconocido,
     quiere_cambiar_direccion, extraer_direccion_de, contiene_link, dominio_propio, pide_pago_manual,
     necesita_receta, pide_foto, quitar_frases_de_espera, pide_receta_nube,
     pregunta_descuento, aplicar_descuento_socio, pide_todos, texto_deictico,
@@ -1785,6 +1785,20 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
             # ── Caso especial: hay producto pendiente de confirmar ───────────
             if session.get("estado") == "esperando_confirmacion" and session.get("pending_sku_id"):
                 texto_lower = texto.lower().strip()
+                # Un número que no es del pendiente ("sí, la de 3, la paso a
+                # buscar" con la bolsa de 15) no toma el atajo de confirmación
+                # con palabra de entrega: va al modelo, como "sí, la de 3". Si
+                # el modelo igual confirma el pendiente, la entrega que eligió
+                # en el mismo mensaje se usa (ronda de arreglo 2, hallazgo 2).
+                _num_ajeno = numero_contradice_pendiente(texto_lower, " ".join(
+                    [session.get("pending_sku_nombre") or ""]
+                    + [str(i.get("nombre") or "") for i in session.get("pending_items") or []]))
+                _entrega_diferida = None
+                if _num_ajeno and not _empieza_con_no(texto_lower) \
+                        and not session.get("_espera_eleccion") \
+                        and not es_pregunta_entrega(texto_lower):
+                    _entrega_diferida = ("envio" if match_envio(texto_lower)
+                                         else "retiro" if match_retiro(texto_lower) else None)
                 # "Necesito eso" NO confirma un pedido pendiente si el cliente
                 # mandó un adjunto después (se refiere al adjunto), ni si el
                 # producto lleva receta (caso real 23/9: receta en PDF +
@@ -1883,7 +1897,8 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                       or match_retiro(texto_lower)) \
                         and not _empieza_con_no(texto_lower) \
                         and not session.get("_espera_eleccion") \
-                        and not es_pregunta_entrega(texto_lower):
+                        and not es_pregunta_entrega(texto_lower) \
+                        and not _num_ajeno:
                     # Confirma. Si además ya indicó cómo recibirlo, se resuelve sin re-preguntar.
                     _entrega = ("envio" if match_envio(texto_lower)
                                 else "retiro" if match_retiro(texto_lower) else None)
@@ -2056,7 +2071,8 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                         cfg_all = await deps["config"].get_all()
                         respuesta, _intencion = await confirmar_pedido(
                             deps["sku"], deps["payment"], deps["session"], deps["socios"],
-                            cfg_all, phone, session, nombre=_nombre_socio,
+                            cfg_all, phone, session, entrega=_entrega_diferida,
+                            nombre=_nombre_socio,
                         )
                     elif _es_cambio:
                         # Cambio genuino de producto (ej: "mejor bayer", "no, un lotrial")

@@ -1823,6 +1823,40 @@ def entidad_contradice_pendiente(entidad: Optional[str], pending_nombre: Optiona
     return bool(n_ent and n_pend and not (n_ent & n_pend))
 
 
+# Un número que elige otra presentación en el mensaje del cliente: "la de 3",
+# "el de 400", "los del 20" (artículo + de/del + número) o "x 30".
+_NUM_ELEGIDO_RE = re.compile(
+    r"\b(?:el|la|los|las|uno|una|unos|unas)\s+del?\s+(\d+(?:[.,]\d+)?)\b"
+    r"|\bx\s*(\d{1,4})\b", re.IGNORECASE)
+_NUM_RE = re.compile(r"\d+(?:[.,]\d+)?")
+
+
+def numero_contradice_pendiente(texto: Optional[str], pending_nombre: Optional[str]) -> bool:
+    """
+    True si el MENSAJE del cliente trae un número que no es del producto
+    pendiente: una presentación con unidad que el pendiente no tiene ("sí, la
+    de 3 kg, la retiro" con la bolsa de 15 pendiente), o un número que elige
+    otra ("la de 3", "el de 400", "x 30"). El atajo de confirmación con
+    palabra de entrega no confirma en ese caso: el mensaje va al modelo y a
+    entidad_contradice_pendiente (ronda de arreglo 2, residuo del hallazgo 2).
+
+    Los números que no eligen producto no cuentan ("lo retiro en 2 horas", "a
+    las 5", "mandámelo a Corrientes 1234"), ni los que el pendiente tiene ("sí,
+    la de 15, la retiro" con la de 15).
+    """
+    if not texto or not re.search(r"\d", texto):
+        return False
+    p_txt = presentaciones_de(texto)
+    if p_txt and p_txt - presentaciones_de(pending_nombre or ""):
+        return True
+    del_pendiente = {float(n.replace(",", ".")) for n in _NUM_RE.findall(pending_nombre or "")}
+    for m in _NUM_ELEGIDO_RE.finditer(texto):
+        n = float((m.group(1) or m.group(2)).replace(",", "."))
+        if n not in del_pendiente:
+            return True
+    return False
+
+
 # ── 5: lo que no se entiende, se deriva ────────────────────────────────────────
 def debe_derivar_desconocido(intencion: str, entidad: Optional[str], tuvo_kb: bool, cfg: dict) -> bool:
     """
