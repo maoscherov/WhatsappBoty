@@ -383,3 +383,206 @@ async def test_beneficios_petshop_sin_obra_social_ni_bono(con_beneficios, txt):
     assert _llego_al_modelo(deps, txt)
     s = await deps["session"].get(PHONE)
     assert s.get("estado") != "operador" and not s.get("derivacion_ofrecida")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Salud de la mascota (§4.5): compuertas A, B, C y D por el webhook completo
+# ══════════════════════════════════════════════════════════════════════════════
+from app.routers import webhook as wh
+from app.services.config_service import valores_base
+from app.services.sku_service import SKUService
+from test_webhook_secuencias import PHONE, _msg, entorno  # noqa: F401  (entorno es fixture)
+
+
+def _catalogo_mo_salud():
+    base = {"hash": "c" * 64, "barcodes": [], "troquel": None, "brand": "", "drug": None,
+            "form": None, "category": "ALIMENTOS", "rubro": "PERROS", "subrubro": "",
+            "therapeutic_actions": [], "stock": 5, "visible": True, "active": True,
+            "requiere_receta": "no", "source": "t"}
+    return SKUService.from_rows([
+        {**base, "external_id": "30", "name": "DOG CHOW ADULTO RAZAS MEDIANAS 15KG", "price": 52000.0},
+        {**base, "external_id": "31", "name": "ROYAL CANIN MEDIUM ADULT 15KG", "price": 98000.0},
+        {**base, "external_id": "32", "name": "PIPETA FRONTLINE PLUS PERRO 10-20KG", "price": 15000.0,
+         "category": "SALUD ANIMAL"},
+    ])
+
+
+def _deps_mo_salud(entorno, usar_perfil, guion=None, img_tipo="otro", cfg=None, catalogo_mo=True):
+    """Webhook con el perfil petshop. La config falsa lleva los textos del
+    perfil (valores_base) más lo que pida el test. Devuelve (deps, perfil)."""
+    p = usar_perfil("petshop")
+    deps = entorno(guion, img_tipo, {**valores_base(), **(cfg or {})})
+    if catalogo_mo:
+        deps["sku"] = _catalogo_mo_salud()
+    return deps, p
+
+
+class _IntentPorPaso:
+    """Claude 1 (procesar_rapido) y Claude 2 (procesar) con guiones distintos."""
+    def __init__(self, rapido, procesar):
+        self.rapido, self.proc, self.vistos = rapido, procesar, []
+
+    async def procesar_rapido(self, mensaje, **k):
+        self.vistos.append(("rapido", mensaje))
+        return self.rapido.get(mensaje, {"intencion": "saludo", "respuesta": "¡Hola!"})
+
+    async def procesar(self, mensaje, **k):
+        self.vistos.append(("procesar", mensaje))
+        return self.proc.get(mensaje, {"intencion": "desconocido", "respuesta": "¿En qué te ayudo?"})
+
+
+def _vistos(deps):
+    """(paso, mensaje) de cada llamada al modelo falso."""
+    return [tuple(v[:2]) for v in deps["intent"].vistos]
+
+
+def _intenciones_registradas(deps):
+    """Intenciones que el webhook dejó en las métricas (deps["metrics"].record)."""
+    return [a[2] for n, a, k in deps["metrics"].llamadas if n == "record"]
+
+
+async def _pendiente_royal_mo(ss):
+    await ss.set_pending(PHONE, sku_id="31", sku_nombre="ROYAL CANIN MEDIUM ADULT 15KG",
+                         precio=98000.0, cantidad=1, opciones=[])
+
+
+_VOMITA = "mi perro vomita, ¿qué le doy?"
+
+
+async def test_sintoma_deriva_sin_buscar_ni_ofrecer(entorno, usar_perfil):
+    guion = {_VOMITA: {"intencion": "consulta_abierta", "entidad_producto": None,
+                       "por_sintoma": True, "respuesta": "Dale Reliveran $3.000"}}
+    deps, p = _deps_mo_salud(entorno, usar_perfil, guion)
+    await wh.procesar_mensajes([_msg(_VOMITA)])
+    assert deps["wa"].enviados == [p.textos["consulta_salud_message"]]
+    s = await deps["session"].get(PHONE)
+    assert s["estado"] == "operador" and s["derivada_motivo"] == "consulta_salud"
+    assert _vistos(deps) == [("rapido", _VOMITA)]          # sin KB, sin búsqueda, sin Claude 2
+    assert not s.get("pending_sku_id")
+    assert not any("farmac" in t.lower() or "$" in t for t in deps["wa"].enviados)
+    assert "derivado_consulta_salud" in _intenciones_registradas(deps)
+    assert s["history"][-1]["content"] == p.textos["consulta_salud_message"]
+
+
+async def test_pasame_con_el_veterinario_deriva_por_salud(entorno, usar_perfil):
+    txt = "pasame con el veterinario"
+    guion = {txt: {"intencion": "desconocido", "entidad_producto": None, "por_sintoma": True,
+                   "respuesta": "Ya te paso con alguien del equipo."}}
+    deps, p = _deps_mo_salud(entorno, usar_perfil, guion)
+    await wh.procesar_mensajes([_msg(txt)])
+    s = await deps["session"].get(PHONE)
+    assert s["estado"] == "operador" and s["derivada_motivo"] == "consulta_salud"
+    assert deps["wa"].enviados == [p.textos["consulta_salud_message"]]
+
+
+async def test_producto_de_salud_pedido_por_nombre_se_vende(entorno, usar_perfil):
+    """Guarda: pedir una pipeta por nombre no es un síntoma."""
+    txt = "tenés pipeta Frontline para perro de 10 a 20 kg?"
+    guion = {txt: {"intencion": "consulta_stock",
+                   "entidad_producto": "pipeta frontline perro 10 a 20 kg",
+                   "por_sintoma": False, "sku_seleccionado_index": 1,
+                   "respuesta": "Sí, tengo la PIPETA FRONTLINE PLUS PERRO 10-20KG a $15.000. ¿Te sirve?"}}
+    deps, _ = _deps_mo_salud(entorno, usar_perfil, guion)
+    await wh.procesar_mensajes([_msg(txt)])
+    s = await deps["session"].get(PHONE)
+    assert s.get("estado") != "operador"
+    assert s.get("pending_sku_id") == "32"
+
+
+async def test_sintoma_marcado_por_claude_2_deriva_sin_pendiente(entorno, usar_perfil):
+    txt = "tenés pipeta frontline? se rasca mucho"
+    deps, p = _deps_mo_salud(entorno, usar_perfil)
+    deps["intent"] = _IntentPorPaso(
+        {txt: {"intencion": "consulta_stock", "entidad_producto": "pipeta frontline",
+               "por_sintoma": False, "respuesta": ""}},
+        {txt: {"intencion": "consulta_stock", "entidad_producto": "pipeta frontline",
+               "por_sintoma": True, "sku_seleccionado_index": 1,
+               "respuesta": "Para la picazón te sirve la PIPETA FRONTLINE PLUS PERRO 10-20KG a $15.000."}})
+    await wh.procesar_mensajes([_msg(txt)])
+    assert deps["wa"].enviados == [p.textos["consulta_salud_message"]]
+    s = await deps["session"].get(PHONE)
+    assert s["estado"] == "operador" and s["derivada_motivo"] == "consulta_salud"
+    assert not s.get("pending_sku_id")
+    assert not [c for c in deps["metrics"].llamadas
+                if c[0] == "evento" and c[1] and c[1][0] == "producto_ofrecido"]
+
+
+async def test_sintoma_con_pedido_pendiente_deriva_sin_confirmar(entorno, usar_perfil):
+    txt = "che, y mi gata está vomitando, ¿qué le doy?"
+    guion = {txt: {"intencion": "consulta_abierta", "confirmacion": None, "entidad_producto": None,
+                   "por_sintoma": True, "respuesta": "Dale Reliveran $3.000"}}
+    deps, p = _deps_mo_salud(entorno, usar_perfil, guion)
+    await _pendiente_royal_mo(deps["session"])
+    await wh.procesar_mensajes([_msg(txt)])
+    assert deps["wa"].enviados == [p.textos["consulta_salud_message"]]
+    s = await deps["session"].get(PHONE)
+    assert s["estado"] == "operador" and s["derivada_motivo"] == "consulta_salud"
+    assert s.get("pending_sku_id") == "31"          # no confirma, no cambia, no limpia
+    antes = len(deps["wa"].enviados)
+    await wh.procesar_mensajes([_msg("dale")])
+    assert len(deps["wa"].enviados) == antes        # modo operador: el bot calla
+    assert not any("http" in t for t in deps["wa"].enviados)
+
+
+async def test_sintoma_eligiendo_la_entrega_deriva(entorno, usar_perfil):
+    txt = "mi perro vomita, que le doy?"
+    guion = {txt: {"intencion": "consulta_abierta", "entidad_producto": None,
+                   "por_sintoma": True, "respuesta": "Dale Reliveran $3.000"}}
+    deps, p = _deps_mo_salud(entorno, usar_perfil, guion)
+    await _pendiente_royal_mo(deps["session"])
+    await deps["session"].set_estado(PHONE, "esperando_entrega")
+    await wh.procesar_mensajes([_msg(txt)])
+    s = await deps["session"].get(PHONE)
+    assert s["estado"] == "operador" and s["derivada_motivo"] == "consulta_salud"
+    assert deps["wa"].enviados[-1] == p.textos["consulta_salud_message"]
+
+
+async def test_sintoma_dando_la_direccion_deriva(entorno, usar_perfil):
+    txt = "mi perro vomita, que le doy?"
+    guion = {txt: {"intencion": "consulta_abierta", "entidad_producto": None,
+                   "por_sintoma": True, "respuesta": "Dale Reliveran $3.000"}}
+    deps, p = _deps_mo_salud(entorno, usar_perfil, guion)
+    await _pendiente_royal_mo(deps["session"])
+    await deps["session"].set_estado(PHONE, "esperando_direccion")
+    await wh.procesar_mensajes([_msg(txt)])
+    s = await deps["session"].get(PHONE)
+    assert s["estado"] == "operador" and s["derivada_motivo"] == "consulta_salud"
+    assert deps["wa"].enviados[-1] == p.textos["consulta_salud_message"]
+
+
+async def test_consulta_abierta_con_dato_inventado_no_va_por_salud(entorno, usar_perfil):
+    txt = "qué alimento me recomendás para un gato castrado?"
+    guion = {txt: {"intencion": "consulta_abierta", "entidad_producto": None, "por_sintoma": False,
+                   "respuesta": "Te recomiendo el Royal Canin Sterilised a $25.000 🐾"}}
+    deps, _ = _deps_mo_salud(entorno, usar_perfil, guion, catalogo_mo=False)
+    await wh.procesar_mensajes([_msg(txt)])
+    enviado = deps["wa"].enviados[-1]
+    assert enviado.startswith("No lo encuentro en nuestro catálogo")
+    assert "farmac" not in enviado.lower() and "25.000" not in enviado
+    s = await deps["session"].get(PHONE)
+    assert s.get("derivacion_ofrecida")
+    assert s.get("estado") != "operador"
+
+
+async def test_farmaceutico_ofrecido_no_deriva_en_petshop(entorno, usar_perfil):
+    deps, _ = _deps_mo_salud(entorno, usar_perfil)
+    s = await deps["session"].get(PHONE)
+    s["farmaceutico_ofrecido"] = True
+    await deps["session"].save(PHONE, s)
+    await wh.procesar_mensajes([_msg("farmacéutico")])
+    s = await deps["session"].get(PHONE)
+    assert s.get("derivada_motivo") != "farmaceutico"
+    assert not any("farmacéutico" in t for t in deps["wa"].enviados)
+
+
+async def test_sintoma_en_farmacia_sigue_ofreciendo_el_farmaceutico(entorno, usar_perfil):
+    """Par de farmacia (guarda): igual que hoy, sin consulta_salud."""
+    txt = "me duele la garganta, qué tomo?"
+    guion = {txt: {"intencion": "consulta_abierta", "entidad_producto": None, "por_sintoma": True,
+                   "respuesta": "Tomá Ibupirac a $3.000"}}
+    usar_perfil("farmacia")
+    deps = entorno(guion)
+    await wh.procesar_mensajes([_msg(txt)])
+    s = await deps["session"].get(PHONE)
+    assert s.get("derivada_motivo") != "consulta_salud"
+    assert "farmacéutico" in deps["wa"].enviados[-1]

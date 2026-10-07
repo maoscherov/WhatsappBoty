@@ -586,6 +586,12 @@ async def _responder_consulta_en_flujo(deps, phone: str, session: dict, texto: s
             contexto_cliente=ctx_socio,
             situacion=situacion,
         )
+        # Compuerta D: un síntoma mientras elige la entrega o da la dirección
+        # no lo contesta el modelo (prometía "te paso" y nadie derivaba). Los
+        # llamadores envían el texto como hoy.
+        if get_perfil().sintomas == "derivar" and resultado.get("por_sintoma"):
+            await deps["session"].set_estado(phone, "operador", motivo=MOTIVO_CONSULTA_SALUD)
+            return texto_consulta_salud(await deps["config"].get_all())
         return (resultado.get("respuesta") or "").strip() or fallback
     except Exception as e:
         logger.warning(f"No se pudo responder la consulta en flujo para {phone}: {e}")
@@ -1546,7 +1552,7 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 continue
 
             # ── Aceptó hablar con el farmacéutico ofrecido (feedback 48) ─────
-            if session.get("farmaceutico_ofrecido"):
+            if get_perfil().sintomas == "farmaceutico" and session.get("farmaceutico_ofrecido"):
                 _s_fo = await deps["session"].get(phone)
                 _s_fo.pop("farmaceutico_ofrecido", None)
                 await deps["session"].save(phone, _s_fo)
@@ -1836,6 +1842,14 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     _entidad_nueva = intent_result.get("entidad_producto")
                     sku_index     = intent_result.get("sku_seleccionado_index")
 
+                    # Compuerta C: un síntoma con un pedido pendiente deriva sin
+                    # confirmar, sin cambiar de producto y sin limpiar el
+                    # pendiente (igual que pidio_humano).
+                    if get_perfil().sintomas == "derivar" and intent_result.get("por_sintoma"):
+                        _intencion = "derivado_consulta_salud"
+                        respuesta = await _derivar_consulta_salud(deps, phone, texto)
+                        continue
+
                     # Un mensaje que arranca con "no" NUNCA confirma. "no está
                     # bien" es ambiguo ("no, está bien" vs "no está bien") y el
                     # modelo eligió confirmar (caso real → link no deseado).
@@ -2050,6 +2064,14 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
             respuesta = quitar_confirmaciones_fantasma(
                 quitar_frases_de_espera(intent_result.get("respuesta", "")))
 
+            # Compuerta A (salud de la mascota): un síntoma, una dosis o "pasame
+            # con el veterinario" va a una persona. Antes que la KB, la búsqueda
+            # y Claude 2, y sin dejar nada pendiente.
+            if get_perfil().sintomas == "derivar" and intent_result.get("por_sintoma"):
+                _intencion = "derivado_consulta_salud"
+                respuesta = await _derivar_consulta_salud(deps, phone, texto)
+                continue
+
             # Base de conocimiento (RAG): preguntas generales sin producto →
             # responder con la info de la farmacia si hay algo relevante.
             _general = intencion == "desconocido" or (intencion == "consulta_abierta" and not entidad)
@@ -2200,11 +2222,21 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 cantidad = max(1, int(intent_result.get("cantidad") or 1))
                 respuesta = quitar_confirmaciones_fantasma(
                 quitar_frases_de_espera(intent_result.get("respuesta", "")))
+                # Compuerta B: Claude 2 marcó un síntoma que Claude 1 no vio.
+                # Misma derivación, antes del control de precios, del pendiente,
+                # la métrica y la imagen.
+                if get_perfil().sintomas == "derivar" and intent_result.get("por_sintoma"):
+                    _intencion = "derivado_consulta_salud"
+                    respuesta = await _derivar_consulta_salud(deps, phone, texto)
+                    continue
                 # Antes de decidir qué producto se ofreció: un precio inventado
-                # no llega al cliente (auditoría 2/10).
+                # no llega al cliente (auditoría 2/10). La consulta abierta
+                # cuenta como síntoma solo donde la asesora el farmacéutico.
                 respuesta = await _sin_precios_inventados(
                     deps, phone, session, respuesta, resultados_sku, _cfg_desc, entidad,
-                    sintoma=bool(intent_result.get("por_sintoma")) or intencion == "consulta_abierta")
+                    sintoma=bool(intent_result.get("por_sintoma")) or (
+                        intencion == "consulta_abierta"
+                        and get_perfil().sintomas == "farmaceutico"))
 
                 # El modelo detectó que pide una foto (frases que el matcher no
                 # cubre): misma regla, lo atiende una persona.
@@ -2356,7 +2388,7 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                         )
                         # Pedido por síntoma (feedback 48): tras ofrecer venta
                         # libre, dejar a mano al farmacéutico.
-                        if intent_result.get("por_sintoma"):
+                        if get_perfil().sintomas == "farmaceutico" and intent_result.get("por_sintoma"):
                             respuesta = agregar_oferta_farmaceutico(respuesta, _cfg_desc)
                             _s_fo = await deps["session"].get(phone)
                             _s_fo["farmaceutico_ofrecido"] = True
@@ -2547,7 +2579,9 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 respuesta = await _sin_precios_inventados(
                     deps, phone, session, respuesta, None,
                     await deps["config"].get_all(), entidad,
-                    sintoma=bool(intent_result.get("por_sintoma")) or _intencion == "consulta_abierta")
+                    sintoma=bool(intent_result.get("por_sintoma")) or (
+                        _intencion == "consulta_abierta"
+                        and get_perfil().sintomas == "farmaceutico"))
 
             # El bot iba a repetir textual su mensaje anterior (C-4033: "no tengo
             # el de Algabo, ¿te muestro alternativas?" dos veces): no está
