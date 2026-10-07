@@ -47,7 +47,18 @@ def _row_a_dict(r) -> dict:
         "categoria": r["categoria"], "etiqueta": CATEGORIAS.get(r["categoria"], r["categoria"]),
         "observacion": r["observacion"], "autor": r["autor"],
         "ts": r["created_at"].isoformat(),
+        # #90 / C-4066 (5/10): para pasar la marca o la conversación a revisar.
+        "codigo": f"#{r['id']}",
+        "conversacion_id": _campo(r, "conversacion_id"),
+        "conversacion": f"C-{_campo(r, 'conversacion_id')}" if _campo(r, "conversacion_id") else None,
     }
+
+
+def _campo(r, nombre):
+    try:
+        return r[nombre]
+    except (KeyError, IndexError):
+        return None
 
 
 async def crear(db, phone: str, categoria: str, observacion: str,
@@ -58,10 +69,14 @@ async def crear(db, phone: str, categoria: str, observacion: str,
     observacion = (observacion or "").strip()
     if not observacion:
         raise ValueError("La observación es obligatoria")
+    from app.services.operadores_service import canonico
+    autor = canonico(autor)
     row = await db.fetchrow(
-        "INSERT INTO marcas (phone, message_id, categoria, observacion, autor) "
-        "VALUES ($1, $2, $3, $4, $5) "
-        "RETURNING id, phone, message_id, categoria, observacion, autor, created_at",
+        "INSERT INTO marcas (phone, message_id, categoria, observacion, autor, conversacion_id) "
+        "VALUES ($1, $2, $3, $4, $5, COALESCE("
+        "  (SELECT conversacion_id FROM messages WHERE id = $2),"
+        "  (SELECT conversacion_id FROM messages WHERE phone = $1 ORDER BY id DESC LIMIT 1))) "
+        "RETURNING id, phone, message_id, categoria, observacion, autor, created_at, conversacion_id",
         phone, message_id, categoria, observacion, (autor or None),
     )
     if row is None:
@@ -90,7 +105,7 @@ async def listar(db, phone: Optional[str] = None, desde: Optional[date] = None,
         conds.append(f"(created_at {TZ_SQL})::date <= ${len(args)}")
     where = f"WHERE {' AND '.join(conds)}" if conds else ""
     rows = await db.fetch(
-        f"SELECT id, phone, message_id, categoria, observacion, autor, created_at "
+        f"SELECT id, phone, message_id, categoria, observacion, autor, created_at, conversacion_id "
         f"FROM marcas {where} ORDER BY created_at DESC",
         *args,
     )
@@ -106,7 +121,7 @@ async def eliminar(db, marca_id: int) -> bool:
 async def marcas_de_phone(db, phone: str) -> list[dict]:
     """Todas las marcas de un teléfono (para /bo/history): una sola query."""
     rows = await db.fetch(
-        "SELECT id, phone, message_id, categoria, observacion, autor, created_at "
+        "SELECT id, phone, message_id, categoria, observacion, autor, created_at, conversacion_id "
         "FROM marcas WHERE phone = $1 ORDER BY created_at DESC",
         phone,
     )
@@ -184,7 +199,7 @@ async def para_export(db, desde: Optional[date] = None, hasta: Optional[date] = 
     momento = "COALESCE(msg.created_at, m.created_at)"
     rows = await db.fetch(
         f"SELECT m.id, m.phone, m.message_id, m.categoria, m.observacion, m.autor, "
-        f"m.created_at, msg.content AS mensaje, msg.role AS mensaje_rol, "
+        f"m.created_at, m.conversacion_id, msg.content AS mensaje, msg.role AS mensaje_rol, "
         f"msg.created_at AS mensaje_at, "
         f"(SELECT p.content FROM messages p WHERE p.phone = m.phone AND p.role = 'user' "
         f"   AND p.created_at <= {momento} AND (m.message_id IS NULL OR p.id < m.message_id) "
@@ -321,3 +336,33 @@ async def indicadores(db, desde: Optional[date] = None, hasta: Optional[date] = 
         "reinicia_conteo": reinicia_conteo,
         "habilita_migracion": habilita_migracion,
     }
+
+
+
+# Señales de una conversación con problemas además de las marcas (5/10): el
+# bot no entendió, falló, el cliente quedó sin respuesta o se bloqueó una
+# respuesta con precios inventados.
+_PROBLEMAS_DERIV = ("no_entendido", "error_bot", "cliente_sin_respuesta")
+
+
+async def problemas_por_phones(db, phones: list[str], desde: Optional[date] = None,
+                               hasta: Optional[date] = None) -> dict[str, dict]:
+    if not phones:
+        return {}
+    args: list = [phones, list(_PROBLEMAS_DERIV)]
+    conds = ["phone = ANY($1::text[])",
+             "((tipo = 'derivacion' AND dato = ANY($2::text[])) OR tipo = 'respuesta_bloqueada')"]
+    if desde:
+        args.append(desde)
+        conds.append(f"(created_at {TZ_SQL})::date >= ${len(args)}")
+    if hasta:
+        args.append(hasta)
+        conds.append(f"(created_at {TZ_SQL})::date <= ${len(args)}")
+    rows = await db.fetch(
+        "SELECT phone, CASE WHEN tipo = 'respuesta_bloqueada' THEN 'respuesta_bloqueada' "
+        "ELSE dato END AS motivo, COUNT(*) AS n FROM eventos WHERE "
+        + " AND ".join(conds) + " GROUP BY 1, 2", *args)
+    out: dict[str, dict] = {}
+    for r in rows or []:
+        out.setdefault(r["phone"], {})[r["motivo"]] = int(r["n"])
+    return out

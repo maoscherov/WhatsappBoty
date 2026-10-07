@@ -20,9 +20,17 @@ class MessageStore:
                    media_nombre: Optional[str] = None):
         if not content:
             return
+        # conversacion_id (5/10): la del último mensaje del teléfono si fue
+        # hace menos de 3 h; si no, arranca una nueva con el id de este.
         await self._db.execute(
-            "INSERT INTO messages (phone, role, content, autor, origen, media, media_nombre) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            "WITH nid AS (SELECT nextval(pg_get_serial_sequence('messages', 'id')) AS id), "
+            "prev AS (SELECT conversacion_id FROM messages WHERE phone = $1 "
+            "         AND created_at > now() - " + CORTE_CONVERSACION + " "
+            "         ORDER BY id DESC LIMIT 1) "
+            "INSERT INTO messages (id, phone, role, content, autor, origen, media, media_nombre, "
+            "                      conversacion_id) "
+            "SELECT nid.id, $1, $2, $3, $4, $5, $6, $7, "
+            "       COALESCE((SELECT conversacion_id FROM prev), nid.id) FROM nid",
             phone, role, content, (autor or None), (origen or None), (media or None),
             (media_nombre or None),
         )
@@ -37,13 +45,13 @@ class MessageStore:
         """
         if before_id:
             rows = await self._db.fetch(
-                "SELECT id, role, content, autor, origen, media, media_nombre, created_at FROM messages "
+                "SELECT id, role, content, autor, origen, media, media_nombre, conversacion_id, created_at FROM messages "
                 "WHERE phone = $1 AND id < $2 ORDER BY id DESC LIMIT $3",
                 phone, int(before_id), limit,
             )
         else:
             rows = await self._db.fetch(
-                "SELECT id, role, content, autor, origen, media, media_nombre, created_at FROM messages "
+                "SELECT id, role, content, autor, origen, media, media_nombre, conversacion_id, created_at FROM messages "
                 "WHERE phone = $1 ORDER BY id DESC LIMIT $2",
                 phone, limit,
             )
@@ -94,6 +102,14 @@ class MessageStore:
 _MEDIA_PREFIX = "📷 /media/chat/"
 
 
+CORTE_CONVERSACION = "interval '3 hours'"
+
+
+def codigo_conversacion(cid) -> "str | None":
+    """C-4066: cómo se nombra una conversación para pasarla a revisar."""
+    return f"C-{cid}" if cid else None
+
+
 def mensaje_a_dict(r) -> dict:
     """Fila de `messages` → dict del backoffice. Las fotos del cliente se
     guardan como "📷 /media/chat/{id}": se exponen en `media` para que la
@@ -111,6 +127,8 @@ def mensaje_a_dict(r) -> dict:
             "autor": r["autor"], "origen": origen, "media": chat_media.firmar(media),
             "media_tipo": chat_media.tipo_de(media) if media else None,
             "media_nombre": _col(r, "media_nombre"),
+            "conversacion_id": _col(r, "conversacion_id"),
+            "conversacion": codigo_conversacion(_col(r, "conversacion_id")),
             "ts": r["created_at"].isoformat()}
 
 
@@ -134,6 +152,8 @@ async def guardar_historico(phone: str, role: str, content: str, autor: Optional
         from app.services.db import get_db
         db = get_db(get_settings().database_url)
         if db.available():
+            from app.services.operadores_service import canonico
+            autor = canonico(autor)
             await get_message_store(db).save(phone, role, content, autor, origen=origen,
                                              media=media, media_nombre=media_nombre)
     except Exception as e:

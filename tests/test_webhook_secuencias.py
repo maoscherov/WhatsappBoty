@@ -782,3 +782,110 @@ async def test_encargalo_deriva_y_no_cobra_el_sustituto(entorno):
     assert not s.get("pending_sku_id")
     assert "encargarlo" in deps["wa"].enviados[-1]
     assert not any("retiro" in t.lower() for t in deps["wa"].enviados)
+
+
+# ── 5/10: "lo anoto en la cuenta" con el link ya enviado ────────────────────────
+async def _link_enviado(ss):
+    await _pendiente_colpuril(ss)
+    await ss.set_entrega(PHONE, "retiro", None)
+    await ss.set_estado(PHONE, "esperando_pago")
+
+
+class _Empleados:
+    def find_by_phone(self, phone):
+        return {"nombre": "María", "apellido": "Belén", "activo": True} if phone == PHONE else None
+
+
+async def test_empleada_anota_en_la_cuenta_con_link_enviado(entorno, monkeypatch):
+    from app.services import empleado_service as es
+    from app.services import checkout_helper as chh
+    monkeypatch.setattr(es, "get_empleado_service", lambda *a, **k: _Empleados())
+
+    async def _sin_freno(*a, **k):
+        return None, None
+    monkeypatch.setattr(chh, "_chequear_stock_vivo", _sin_freno)
+    deps = entorno()
+    await _link_enviado(deps["session"])
+    await wh.procesar_mensajes([_msg("lo anoto en la cuenta")])
+    assert "cuenta corriente" in deps["wa"].enviados[-1].lower()
+    s = await deps["session"].get(PHONE)
+    assert s["estado"] == "pedido_confirmado"
+
+
+async def test_cuenta_corriente_no_habilitada_deriva(entorno, monkeypatch):
+    from app.services import empleado_service as es
+
+    class _Nadie:
+        def find_by_phone(self, phone):
+            return None
+    monkeypatch.setattr(es, "get_empleado_service", lambda *a, **k: _Nadie())
+    deps = entorno()
+    await _link_enviado(deps["session"])
+    await wh.procesar_mensajes([_msg("lo anoto en la cuenta")])
+    assert "cargarlo a tu cuenta" in deps["wa"].enviados[-1]
+    s = await deps["session"].get(PHONE)
+    assert s["estado"] == "operador" and s["derivada_motivo"] == "cuenta_corriente_no_habilitada"
+    assert not any("Lo que tengo disponible" in t for t in deps["wa"].enviados)
+
+
+# ── 5/10: "bueno dale, y el talco quiero el grande el de 200g" ──────────────────
+def _catalogo_belen():
+    base = {"hash": "a" * 64, "barcodes": [], "troquel": None, "brand": "", "drug": None,
+            "form": None, "category": "Perfumeria", "rubro": "", "subrubro": "",
+            "therapeutic_actions": [], "stock": 5, "visible": True, "active": True,
+            "requiere_receta": "no", "source": "t"}
+    return SKUService.from_rows([
+        {**base, "external_id": "83744", "name": "SIEMPRE L ADAPT P NOCHE DIA TOA HIG TOA x 32", "price": 17183.43},
+        {**base, "external_id": "85746", "name": "REXONA EFFIC.TAL.ORIG TAL x 100", "price": 4284.49},
+        {**base, "external_id": "86260", "name": "REXONA EFFICIENT ORIGINAL 200GR POL TAL x 200", "price": 6605.68},
+    ])
+
+
+async def test_confirma_y_pide_otro_producto_lo_busca_y_lo_suma(entorno):
+    txt = "Bueno dale, y el talco quiero el grande el de 200g"
+    guion = {txt: {"intencion": "social", "confirmacion": True, "entidad_producto": None,
+                   "entidades_adicionales": ["talco rexona 200g"],
+                   "respuesta": "Perfecto. Sobre el talco de 200g no me figura disponible."}}
+    deps = entorno(guion)
+    deps["sku"] = _catalogo_belen()
+    await deps["session"].set_pending(PHONE, sku_id="83744",
+                                      sku_nombre="SIEMPRE L ADAPT P NOCHE DIA TOA HIG TOA x 32",
+                                      precio=17183.43, cantidad=1, opciones=[])
+    await wh.procesar_mensajes([_msg(txt)])
+    enviado = deps["wa"].enviados[-1]
+    assert "no me figura" not in enviado
+    assert "200GR" in enviado and "Tu pedido queda así" in enviado
+    s = await deps["session"].get(PHONE)
+    assert [i["sku_id"] for i in s["pending_items"]] == ["83744", "86260"]
+    assert s["estado"] == "esperando_entrega"          # confirmó: pasa a retiro/envío
+
+
+# ── 5/10: C-4115, C-3912, C-4033 ────────────────────────────────────────────────
+async def test_no_gracias_a_la_consulta_ofrecida_cierra_amable(entorno):
+    deps = entorno()
+    s = await deps["session"].get(PHONE)
+    s["derivacion_ofrecida"] = "obra social osde"
+    await deps["session"].save(PHONE, s)
+    await wh.procesar_mensajes([_msg("No gracias")])
+    assert deps["wa"].enviados[-1] == "¡Dale! Cualquier cosa me escribís 🙂"
+    assert (await deps["session"].get(PHONE)).get("estado") != "operador"
+
+
+async def test_pedido_cerrado_y_pide_envio_deriva(entorno):
+    deps = entorno()
+    await _pendiente_colpuril(deps["session"])
+    await deps["session"].set_entrega(PHONE, "retiro", None)
+    await deps["session"].set_estado(PHONE, "pedido_confirmado")
+    await wh.procesar_mensajes([_msg("bueno pero me lo podés enviar")])
+    s = await deps["session"].get(PHONE)
+    assert s["estado"] == "operador" and s["derivada_motivo"] == "cambio_entrega"
+
+
+async def test_no_repite_textual_el_mensaje_anterior(entorno):
+    txt = "No importa q sea algabo"
+    rep = "Justo no tengo stock del talco para pies. ¿Te gustaría que te muestre alternativas?"
+    deps = entorno({txt: {"intencion": "social", "respuesta": rep}})
+    await deps["session"].add_message(PHONE, "assistant", rep)
+    await wh.procesar_mensajes([_msg(txt)])
+    assert deps["wa"].enviados[-1] != rep
+    assert "alguien del equipo" in deps["wa"].enviados[-1]

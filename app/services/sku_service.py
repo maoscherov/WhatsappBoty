@@ -119,6 +119,22 @@ def normalizar_numeros(texto: str) -> str:
     return t
 
 
+_UNIDAD_DE_RE = _re_mod.compile(
+    r"\b(?:\d+|una?|dos|tres)?\s*(?:tiras?|bl[ií]sters?|cajas?|cajitas?|envases?)\s+de\b",
+    _re_mod.IGNORECASE)
+_GUION_RE = _re_mod.compile(r"(?<=[^\W\d_])-(?=[^\W_])")
+
+
+def separar_guiones(texto: str) -> str:
+    """
+    "G-famotidina" → "G famotidina": la línea de genéricos pega la G a la
+    droga con un guion y "famotidina" no matcheaba la palabra (5/10: el bot
+    ofreció Lazartidina con receta habiendo G-famotidina de venta libre).
+    Vale igual para "P-AD", "C-VAP", "S-PERF". No toca rangos numéricos.
+    """
+    return _GUION_RE.sub(" ", texto or "")
+
+
 def numeros_de(texto: str) -> list[str]:
     """Números discriminantes de un texto ('600', '65', '4%'). 1 dígito solo cuenta con %."""
     return _NUMERO_RE.findall(normalizar_numeros(texto or ""))
@@ -272,7 +288,7 @@ class SKUService:
         # JAB→jabón) + marca + laboratorio. Sin la expansión, "talco rexona"
         # no encontraba el talco y el bot ofrecía un desodorante en su lugar.
         search_text = " ".join(filter(None, [
-            normalizar_numeros(expandir_abreviaturas(sku.sku_nombre)).lower(),
+            normalizar_numeros(expandir_abreviaturas(separar_guiones(sku.sku_nombre))).lower(),
             sku.marca.lower(),
             sku.laboratorio.lower(),
             texto_extra.lower(),
@@ -289,11 +305,28 @@ class SKUService:
                     or (actual.pausado and not sku.pausado):
                 self._by_barcode[cb] = sku
 
+    @staticmethod
+    def _clave_nombre(nombre: str) -> str:
+        """Nombre normalizado para encontrar el mismo producto cargado dos veces."""
+        t = _re_mod.sub(r"\(?\bnuevo\b\)?", " ", (nombre or "").lower())
+        return " ".join(sorted(set(_re_mod.findall(r"[a-záéíóúñ0-9]+", t)) - {"env", "x"}))
+
+    def precio_referencia(self, nombre: str) -> float:
+        """Precio más alto entre los productos con el mismo nombre normalizado."""
+        return getattr(self, "_precio_max", {}).get(self._clave_nombre(nombre), 0.0)
+
     def _build_df(self):
         # Frecuencia de cada token en el catálogo: permite distinguir palabras
         # distintivas ("framintrol", en 2 productos) de genéricas de marketing
         # ("power", en decenas) al ordenar los resultados.
         from collections import Counter
+        self._precio_max: dict[str, float] = {}
+        for sku in self._skus:
+            if sku.pausado or not sku.precio_venta:
+                continue
+            k = self._clave_nombre(sku.sku_nombre_original or sku.sku_nombre)
+            if sku.precio_venta > self._precio_max.get(k, 0.0):
+                self._precio_max[k] = float(sku.precio_venta)
         df: Counter = Counter()
         for texto in self._search_index:
             for tok in set(_tokens(texto)):
@@ -472,7 +505,10 @@ class SKUService:
             r'en|de|para|un|una|unos|unas|el|la|los|las|me|mand[aá]s|env[ií]as|'
             r'env)\b'
         )
-        clean_query = normalizar_numeros(quitar_cantidades(query.lower()))
+        # "una tira de famotidina" / "1 blíster de" / "una caja de": es la
+        # unidad de venta, no el producto ("tira" traía las tiras reactivas, 5/10).
+        clean_query = _UNIDAD_DE_RE.sub(" ", separar_guiones(query.lower()))
+        clean_query = normalizar_numeros(quitar_cantidades(clean_query))
         clean_query = _re.sub(_STOP, '', clean_query)
         clean_query = _re.sub(r'\s+', ' ', clean_query).strip()
         if not clean_query:

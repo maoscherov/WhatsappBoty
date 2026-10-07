@@ -153,7 +153,8 @@ class SessionService:
         return items
 
     async def armar_cotizacion(self, phone: str, sku_id: str, sku_nombre: str,
-                               precio: float, delegar: bool = True):
+                               precio: float, delegar: bool = True,
+                               items: list[dict] | None = None, agente: str | None = None):
         """
         Deja armado el pedido que el OPERADOR cotizó (receta ya vista por él):
         el cliente recibe la oferta sin link, y su "sí" sigue el flujo normal
@@ -168,16 +169,22 @@ class SessionService:
         """
         session = await self.get(phone)
         session["pending_at"] = time.time()
+        # Varios productos (5/10): el carrito entero, el primero como principal.
+        items = items or [{"sku_id": sku_id, "nombre": sku_nombre,
+                           "precio": precio, "cantidad": 1}]
         session.update({
-            "pending_sku_id": sku_id,
-            "pending_sku_nombre": sku_nombre,
-            "pending_precio": precio,
-            "pending_cantidad": 1,
+            "pending_sku_id": items[0]["sku_id"],
+            "pending_sku_nombre": items[0]["nombre"],
+            "pending_precio": items[0]["precio"],
+            "pending_cantidad": max(1, int(items[0].get("cantidad", 1))),
             "pending_opciones": [],
-            "pending_items": [{"sku_id": sku_id, "nombre": sku_nombre,
-                               "precio": precio, "cantidad": 1}],
+            "pending_items": items,
             "receta_validada": True,
         })
+        # Quién cotizó: queda en el pedido aunque el bot cierre la venta (6/10).
+        _cot = agente or session.get("agente")
+        if _cot:
+            session["_cotizado_por"] = _cot
         session.pop("_espera_eleccion", None)
         if delegar:
             session["estado"] = "esperando_confirmacion"
@@ -250,6 +257,15 @@ class SessionService:
         session["tipo_entrega"] = tipo
         session["direccion_envio"] = direccion
         await self.save(phone, session)
+        if tipo == "envio" and direccion:
+            # Para ofrecerla la próxima vez (domicilio precargado, 5/10).
+            try:
+                from app.config import get_settings as _gs
+                from app.services.checkout_helper import guardar_direccion
+                from app.services.db import get_db as _gdb
+                await guardar_direccion(_gdb(_gs().database_url), phone, direccion)
+            except Exception as e:
+                logger.debug(f"guardar_direccion({phone}): {e}")
 
     async def set_estado(self, phone: str, estado: str, motivo: str | None = None):
         session = await self.get(phone)
@@ -290,7 +306,8 @@ class SessionService:
         session["_operador_at"] = ahora
         session.setdefault("atendida_at", ahora)
         if agente and not session.get("agente"):
-            session["agente"] = agente
+            from app.services.operadores_service import canonico
+            session["agente"] = canonico(agente)
         await self.save(phone, session)
 
     async def delete(self, phone: str):
