@@ -1418,7 +1418,8 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
             # ── Recetas "en la nube" / electrónicas → derivar ────────────────
             # El bot no accede al sistema de recetas. Prometer "un momento" y
             # no volver dejó a una clienta esperando hasta el cierre (19/8).
-            if pide_receta_nube(texto):
+            # Rubro sin recetas (petshop): el mensaje sigue al modelo.
+            if get_perfil().recetas and pide_receta_nube(texto):
                 _intencion = "receta_nube"
                 await deps["session"].set_estado(phone, "operador", motivo="receta_nube")
                 respuesta = (

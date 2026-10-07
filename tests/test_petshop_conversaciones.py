@@ -118,3 +118,20 @@ async def test_adicional_con_receta(usar_perfil, entorno, clave, deriva):
     assert [e["sku_id"] for e in s.get("extras_ofrecidos") or []] == ["20"]
     assert s["estado"] != "operador"
     assert _intenciones_perf(deps)[-1] != "derivado_receta"
+
+
+@pytest.mark.parametrize("clave,deriva", [("petshop", False), ("farmacia", True)])
+async def test_receta_cargada_en_el_sistema(usar_perfil, entorno, clave, deriva):
+    usar_perfil(clave)
+    txt = "tengo la receta del veterinario cargada en el sistema"
+    deps = entorno({txt: {"intencion": "social",
+                          "respuesta": "¡Dale! Contame qué producto necesitás y te lo busco 🐾"}})
+    await wh.procesar_mensajes([_msg(txt)])
+    enviado = deps["wa"].enviados[-1]
+    s = await deps["session"].get(PHONE)
+    if deriva:
+        assert "sistema de recetas" in enviado and s["derivada_motivo"] == "receta_nube"
+        return
+    assert "sistema de recetas" not in enviado and "🩺" not in enviado
+    assert _texto_llego_al_modelo(deps, txt)
+    assert s.get("estado") != "operador"
