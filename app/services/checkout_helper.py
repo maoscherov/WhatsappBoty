@@ -1792,9 +1792,10 @@ def alternativas_con_precio(resultados: list[dict], maximo: int = 3) -> list[dic
 
 
 def texto_alternativas(alternativas: list[dict]) -> str:
+    _rec_on = get_perfil().recetas      # sin recetas, nunca "(requiere receta)"
     lineas = []
     for a in alternativas:
-        receta = " (requiere receta)" if a.get("requiere_receta") == "si" else ""
+        receta = " (requiere receta)" if _rec_on and a.get("requiere_receta") == "si" else ""
         lineas.append(f"• {a['nombre']} — ${float(a['precio']):,.2f}{receta}")
     cierre = "¿Te sirve?" if len(alternativas) == 1 else "¿Te sirve alguno? Decime el nombre o el número."
     return "Lo que tengo disponible:\n" + "\n".join(lineas) + "\n\n" + cierre

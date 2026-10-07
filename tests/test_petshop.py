@@ -113,3 +113,26 @@ def test_necesita_receta_farmacia_igual_que_hoy(usar_perfil):
     assert necesita_receta(sku, "20", "estricto") is True
     assert necesita_receta(sku, "21", "conservador") is True
     assert necesita_receta(sku, "21", "estricto") is False
+
+
+_ALTS_RECETA = [
+    {"sku_id": "20", "nombre": "Pipeta Frontline Plus Perro 10-20kg", "precio": 25000.0,
+     "requiere_receta": "si"},
+    {"sku_id": "30", "nombre": "Dog Chow Adulto 3kg", "precio": 9800.0, "requiere_receta": "no"},
+]
+
+
+def test_texto_alternativas_petshop_sin_requiere_receta(usar_perfil):
+    from app.services.checkout_helper import texto_alternativas
+    usar_perfil("petshop")
+    t = texto_alternativas(_ALTS_RECETA)
+    assert "receta" not in t.lower()
+    assert "• Pipeta Frontline Plus Perro 10-20kg — $25,000.00\n" in t
+
+
+def test_texto_alternativas_farmacia_igual_que_hoy(usar_perfil):
+    from app.services.checkout_helper import texto_alternativas
+    usar_perfil("farmacia")
+    t = texto_alternativas(_ALTS_RECETA)
+    assert "• Pipeta Frontline Plus Perro 10-20kg — $25,000.00 (requiere receta)\n" in t
+    assert "• Dog Chow Adulto 3kg — $9,800.00\n" in t
