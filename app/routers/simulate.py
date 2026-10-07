@@ -24,6 +24,7 @@ from app.services.image_service import get_image_service
 from app.services.perf_service import get_perf_service
 from app.services.socio_service import get_socio_service
 from app.services.config_service import get_config_service
+from app.services.perfil import get_perfil
 from app.services.checkout_helper import (
     confirmar_pedido, resolver_entrega, capturar_direccion,
     match_retiro, match_envio, pide_humano, derivar_si_receta, afirma_envio,
@@ -95,9 +96,13 @@ async def simulate(req: SimulateRequest):
     payment_svc = payment_svc_para(await config_svc.get_all(), settings)
 
     session = await session_svc.get(req.phone)
-    _ctx_socio = socio_svc.contexto_para_prompt(req.phone)
-    _sd = socio_svc.find_by_phone(req.phone)
-    _nombre_socio = nombre_de_pila(_sd)
+    # Mismo criterio que el webhook: sin socios en el rubro, sin padrón.
+    if get_perfil().socios:
+        _ctx_socio = socio_svc.contexto_para_prompt(req.phone)
+        _sd = socio_svc.find_by_phone(req.phone)
+        _nombre_socio = nombre_de_pila(_sd)
+    else:
+        _ctx_socio, _sd, _nombre_socio = None, None, ""
     texto = req.message.strip()
     productos_encontrados: list[dict] = []
     link_pago = None

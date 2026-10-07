@@ -371,3 +371,55 @@ def test_beneficios_pago_mp_manual_default_y_editable():
     from app.services.config_service import DEFAULTS
     assert DEFAULTS["pago_mp_manual"] == "true"          # default: todo igual que hoy
     assert ConfigUpdate(pago_mp_manual="false").model_dump()["pago_mp_manual"] == "false"
+
+
+class _IntentSimBen:
+    def __init__(self):
+        self.kwargs = []
+
+    async def procesar_rapido(self, mensaje, **k):
+        self.kwargs.append(k)
+        return {"intencion": "saludo", "respuesta": "¡Hola!"}
+
+    async def procesar(self, mensaje, **k):
+        self.kwargs.append(k)
+        return {"intencion": "desconocido", "respuesta": "¿En qué te ayudo?"}
+
+
+async def _simular_hola(monkeypatch):
+    """POST /simulate con "hola" desde un socio del padrón; devuelve los kwargs al modelo."""
+    from app.routers import simulate as sim
+    from app.services.session_service import SessionService
+    intent = _IntentSimBen()
+    ss = SessionService("redis://127.0.0.1:1")
+
+    class _Perf:
+        async def record(self, *a, **k):
+            return None
+
+    class _Cfg:
+        async def get_all(self):
+            return {}
+    monkeypatch.setattr(sim, "get_sku_service", lambda *a, **k: None)
+    monkeypatch.setattr(sim, "get_session_service", lambda *a, **k: ss)
+    monkeypatch.setattr(sim, "get_intent_service", lambda *a, **k: intent)
+    monkeypatch.setattr(sim, "get_perf_service", lambda *a, **k: _Perf())
+    monkeypatch.setattr(sim, "get_socio_service",
+                        lambda *a, **k: _SociosBen({"549SIM": {"nombre": "Ana"}}))
+    monkeypatch.setattr(sim, "get_config_service", lambda *a, **k: _Cfg())
+    monkeypatch.setattr(sim, "payment_svc_para", lambda *a, **k: None)
+    r = await sim.simulate(sim.SimulateRequest(phone="549SIM", message="hola"))
+    assert r.respuesta == "¡Hola!"
+    return intent.kwargs
+
+
+async def test_beneficios_simulate_petshop_sin_contexto_de_socio(usar_perfil, monkeypatch):
+    usar_perfil("petshop")
+    kwargs = await _simular_hola(monkeypatch)
+    assert kwargs and all(k.get("contexto_cliente") is None for k in kwargs)
+
+
+async def test_beneficios_simulate_farmacia_igual_que_hoy(usar_perfil, monkeypatch):
+    usar_perfil("farmacia")
+    kwargs = await _simular_hola(monkeypatch)
+    assert kwargs[0]["contexto_cliente"] == "Nombre de pila (para saludar): Ana"
