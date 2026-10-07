@@ -65,6 +65,7 @@ from app.services.checkout_helper import (
     producto_respaldado, productos_con_precio, parece_direccion,
     personalizar_nombre, pide_cuenta_corriente, habilitado_cc, consulta_saldo,
     aviso_fuera_horario, dice_ser_socio, pregunta_horario, responder_horario,
+    es_pregunta_entrega, pregunta_por_retiro, responder_pregunta_retiro,
     MOTIVO_CONSULTA_SALUD, texto_consulta_salud,
 )
 
@@ -1512,7 +1513,13 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
 
             # ── "¿Qué horario tienen?" → horario del backoffice (29/9) ────────
             if pregunta_horario(texto):
-                _resp_h = responder_horario(deps["config"], _hours_msg)
+                # Eligiendo la entrega ("¿hasta qué hora puedo retirar?"): se
+                # contesta y se vuelve a ofrecer la elección (spec §5).
+                _cierre_h = "¿Te ayudo con algo más?"
+                if session.get("estado") == "esperando_entrega" and session.get("pending_sku_id"):
+                    _cierre_h = pregunta_entrega(_cfg_pm, saludo=False, phone=phone,
+                                                 socio_svc=deps["socios"])
+                _resp_h = responder_horario(deps["config"], _hours_msg, cierre=_cierre_h)
                 if _resp_h:
                     _intencion = "consulta_horario"
                     respuesta = _resp_h
@@ -1663,24 +1670,40 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                         deps["payment"], deps["session"], phone, session, _dir_expl,
                     )
                 else:
-                    _es_retiro = match_retiro(texto_lower)
-                    _es_envio = match_envio(texto_lower) or afirma_envio(texto_lower)
-                    if not _es_retiro and not _es_envio:
+                    # Una pregunta no es una elección (spec §5, caso MO 6/10):
+                    # "¿en qué sucursal puede ser?" matcheaba "sucursal" como
+                    # retiro y salía el link sin contestar. "¿Me lo podés
+                    # enviar?" sigue siendo elección (ver es_pregunta_entrega).
+                    _cfg_ent = await deps["config"].get_all()
+                    _pregunta = es_pregunta_entrega(texto_lower)
+                    _es_retiro = match_retiro(texto_lower) and not _pregunta
+                    _es_envio = (match_envio(texto_lower) or afirma_envio(texto_lower)) and not _pregunta
+                    _info_ret = (responder_pregunta_retiro(_cfg_ent)
+                                 if _pregunta and pregunta_por_retiro(texto_lower) else "")
+                    if _info_ret:
+                        # Pregunta por el retiro y el comercio cargó su sucursal:
+                        # el dato sale de la config, nunca lo redacta el modelo.
+                        _intencion = "consulta_retiro"
+                        respuesta = (_info_ret + "\n\n" +
+                                     pregunta_entrega(_cfg_ent, saludo=False, phone=phone,
+                                                      socio_svc=deps["socios"]))
+                    elif not _es_retiro and not _es_envio:
                         # No eligió entrega: está preguntando otra cosa (precio,
                         # demora, si llega a tal zona). Se responde la consulta y
                         # se vuelve a ofrecer la elección, en lugar de repetir la
                         # pregunta ignorando lo que preguntó.
                         _intencion = "consulta_en_entrega"
-                        _cfg_ent = await deps["config"].get_all()
                         _costo_e = costo_envio_de(_cfg_ent)
+                        _suc_e = (_cfg_ent.get("retiro_sucursal") or "").strip() or "sucursal"
                         respuesta = await _responder_consulta_en_flujo(
                             deps, phone, session, texto, _ctx_socio,
                             "El cliente ya confirmó este pedido y está eligiendo cómo recibirlo. "
                             "Respondé su consulta con los datos del pedido y terminá preguntándole "
-                            "si prefiere *retiro en sucursal* o *envío a domicilio*"
+                            f"si prefiere *retiro en {_suc_e}* o *envío a domicilio*"
                             + (f" (el envío cuesta ${_costo_e:,.0f} y se suma al total)"
                                if _costo_e else "") +
-                            ". No generes links de pago ni cambies el producto.",
+                            ". No generes links de pago ni cambies el producto. "
+                            "Nunca inventes direcciones, sucursales ni horarios.",
                             pregunta_entrega(_cfg_ent, saludo=False, phone=phone,
                                              socio_svc=deps["socios"]),
                         )

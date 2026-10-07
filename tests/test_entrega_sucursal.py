@@ -194,3 +194,66 @@ async def test_link_de_retiro_nombra_la_sucursal(monkeypatch):
     resp, link = await chh.crear_link_y_responder(_Pago(), ss, PHONE, await ss.get(PHONE), "retiro", None)
     assert link == "https://pago/abc"
     assert "🏪 Lo retirás en *Sucursal Piloto* (te enviamos el código al confirmar el pago)." in resp
+
+
+# ── Webhook ──────────────────────────────────────────────────────────────────────
+async def test_a_pregunta_por_la_sucursal_al_elegir_entrega_se_responde(entorno, monkeypatch):
+    deps, links = await _armar(entorno, monkeypatch, "esperando_entrega", _SUC)
+    await wh.procesar_mensajes([_msg("en que sucursal puede ser?")])
+    assert deps["wa"].enviados[-1] == f"{_INFO}\n\n{_REPREGUNTA}"
+    assert links == [] and deps["intent"].llamadas == []
+    assert await _estado(deps) == "esperando_entrega"
+    # La elección que sigue funciona como siempre.
+    await wh.procesar_mensajes([_msg("retiro")])
+    assert links == [("retiro", None)]
+
+
+async def test_b_sin_sucursal_cargada_responde_el_modelo_sin_inventar(entorno, monkeypatch):
+    deps, links = await _armar(entorno, monkeypatch, "esperando_entrega")
+    await wh.procesar_mensajes([_msg("en que sucursal puede ser?")])
+    assert links == []
+    assert await _estado(deps) == "esperando_entrega"
+    proc = deps["intent"].vio("procesar")
+    assert [c[1] for c in proc] == ["en que sucursal puede ser?"]
+    situacion = proc[0][2]["situacion"]
+    assert "Nunca inventes direcciones" in situacion and "*retiro en sucursal*" in situacion
+    assert deps["wa"].enviados[-1] == "Te cuento 🙂"
+
+
+async def test_c_cuanto_sale_el_envio_lo_responde_el_modelo(entorno, monkeypatch):
+    deps, links = await _armar(entorno, monkeypatch, "esperando_entrega", _SUC)
+    await wh.procesar_mensajes([_msg("cuánto sale el envío?")])
+    assert links == []
+    assert await _estado(deps) == "esperando_entrega"
+    proc = deps["intent"].vio("procesar")
+    assert [c[1] for c in proc] == ["cuánto sale el envío?"]
+    assert "*retiro en Sucursal Piloto*" in proc[0][2]["situacion"]
+
+
+@pytest.mark.parametrize("txt,estado,link", [
+    ("¿me lo podés enviar?", "esperando_direccion", []),
+    ("lo puedo retirar hoy?", "esperando_pago", [("retiro", None)]),
+])
+async def test_d_pedido_con_forma_de_pregunta_sigue_eligiendo(entorno, monkeypatch, txt, estado, link):
+    deps, links = await _armar(entorno, monkeypatch, "esperando_entrega", _SUC)
+    await wh.procesar_mensajes([_msg(txt)])
+    assert await _estado(deps) == estado
+    assert links == link
+
+
+async def test_f_horario_al_elegir_entrega_vuelve_a_ofrecer_la_eleccion(entorno, monkeypatch):
+    deps, links = await _armar(entorno, monkeypatch, "esperando_entrega", _SUC)
+    await wh.procesar_mensajes([_msg("hasta qué hora puedo retirar?")])
+    r = deps["wa"].enviados[-1]
+    assert r == f"Atendemos {_HORARIO} 🕐 {_REPREGUNTA}"
+    assert "¿Te ayudo con algo más?" not in r
+    assert links == []
+    assert await _estado(deps) == "esperando_entrega"
+
+
+async def test_f_horario_fuera_de_la_entrega_igual_que_hoy(entorno):
+    deps = entorno()
+    deps["config"] = _CfgEnt(_SUC)
+    deps["intent"] = _IntentEnt()
+    await wh.procesar_mensajes([_msg("hasta qué hora puedo retirar?")])
+    assert deps["wa"].enviados[-1] == f"Atendemos {_HORARIO} 🕐 ¿Te ayudo con algo más?"
