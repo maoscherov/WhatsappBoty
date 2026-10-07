@@ -112,8 +112,12 @@ titulo_producto, descripcion_producto, meta_title, meta_descripcion, meta_keywor
   `Retry-After` en segundos o fecha HTTP), 5xx, red o un 2xx sin
   `id_comprobante` → `pendiente` con backoff por pedido (300 s × 2^(n-1),
   tope 6 h). Un `pendiente` con más de `MERCURIO_PEDIDOS_MAX_DIAS` (6; la
-  clave dura 7) pasa a `vencido`. Estado de la cola: bloque `pedidos` de
-  `GET /bo/mercurio/estado` y campos `erp_*` de `/orders/api`.
+  clave dura 7) pasa a `vencido`. Un renglón con un SKU sintético (`MANUAL`,
+  `LIBREn`, `TEST`: no es un artículo del ERP) deja el pedido `rechazado` de
+  entrada, sin POST. Estado de la cola: bloque `pedidos` de
+  `GET /bo/mercurio/estado`, campos `erp_*` de `/orders/api`, el log (ERROR por
+  cada `rechazado` o `vencido`) y un evento de métricas que hoy ningún tablero
+  lee: ninguna pantalla del repo lo muestra (pendiente del portal).
 
 ### Antes de prender MERCURIO_PEDIDOS_ENABLED
 1. Confirmar con el proveedor `state` (pregunta 6; el default `"complete"`
@@ -128,6 +132,11 @@ titulo_producto, descripcion_producto, meta_title, meta_descripcion, meta_keywor
    y que un `id` mayor a 2^31-1 no da error.
 4. Mirar `GET /bo/mercurio/estado` después de la primera venta real: bloque
    `pedidos` con `customer_id_default: true`, 0 rechazados y 0 vencidos.
+5. Pendiente del portal: mostrar `erp_estado` en la lista de pedidos y alertar
+   con `/bo/mercurio/estado`; mientras tanto, revisarlo a diario. Antes de
+   cargar a mano un `rechazado` o un `vencido`, buscarlo en el ERP por
+   `number` = `order_id` (pudo haber entrado: timeout, 2xx sin
+   `id_comprobante`, 409). Detalle en §7.7 del spec del vertical petshop.
 - Un deploy = una sucursal activa: Mascotas del Oeste corre en su propio
   servicio de Railway con su Postgres. Si conviviera con farmacia-mutual en la
   misma base, haría falta `DEFAULT_BRANCH_ID`.

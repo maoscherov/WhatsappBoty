@@ -66,8 +66,10 @@ def erp_estado_inicial(order: dict) -> Optional[str]:
 async def _registrar_evento(db, tipo: str, *, order_id: str, phone=None, total=None,
                             motivo: str = "") -> None:
     """Evento de métricas de un pedido que pasa a 'rechazado' o 'vencido'
-    (tabla eventos, ref = order_id): queda contado y a la vista del tablero.
-    Best-effort: nunca lanza."""
+    (tabla eventos, ref = order_id): queda registrado junto al ERROR del log.
+    Hoy ningún tablero lo lee: el estado se ve en /bo/mercurio/estado y en los
+    campos erp_* de la API de pedidos (mostrarlo y alertar queda pendiente
+    del portal). Best-effort: nunca lanza."""
     try:
         from app.services.metrics_store import get_metrics_store
         try:

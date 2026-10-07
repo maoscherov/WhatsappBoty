@@ -816,6 +816,34 @@ correcciones sin capacidad, para todos los perfiles:
   Costo (ruling): un volumen escrito como "1234 4 l" se toma como domicilio,
   y "Calle 15 L" sigue sin reconocerse.
 
+**Ajuste de la ronda de arreglo 2 (7/10).** También sin capacidad, para todos
+los perfiles (**cambio que también afecta a la farmacia**):
+
+- **Atajo de confirmación con palabra de entrega (residuo del hallazgo 2).**
+  En `esperando_confirmacion`, "sí, la de 3, la paso a buscar", "si la de 3 la
+  retiro" o "dale la de 3, mandamela" confirmaban la bolsa de 15 por el atajo
+  (`match_retiro` / `match_envio`). `numero_contradice_pendiente(texto,
+  pendiente)` (`checkout_helper.py`) da `True` si el mensaje trae una
+  presentación con unidad que el pendiente no tiene, o un número que elige
+  otra ("la de 3", "el de 400", "x 30") y no está en el nombre del pendiente
+  (o del carrito): el atajo no corre y el mensaje va al modelo. Si el modelo
+  igual confirma el pendiente, la entrega elegida en el mismo mensaje se pasa
+  a `confirmar_pedido`. Siguen por el atajo "sí, lo retiro", "mandámelo",
+  "si, envío", "sí, la de 15, la retiro" y los números que no eligen producto
+  ("lo retiro en 2 horas", "a las 5", "mandámelo a Corrientes 1234").
+- **Hallazgo 16 (resto).** La L de depto después de una altura de calle de 3 a
+  5 cifras seguida solo de un separador ("," o "-"), "piso", "p", "dto",
+  "dpto" o "depto" y el número no es litros: "Corrientes 1234 piso 3 L",
+  "1234 dto 4 L", "1234 p 4 L", "1234 - 4 L" y "1234,4 L" vuelven a ser
+  domicilio, como en develop (`_menciona_litros`, que sale de `_NO_DIR`). "el
+  bidón de 1000 l" y "pagué 1500 por la de 15 l" siguen siendo volumen.
+- **Derivación prometida.** `_DERIV_PROMETIDA` toma "ya te paso" / "ya te
+  derivo" como promesa de una persona solo si sigue "con ...", "a(l)
+  <persona>" (alguien, una persona, el equipo, las chicas) o el fin de la
+  oración. "Elegí y ya te paso el link de pago." ya no deriva; "Ya te paso.",
+  "ya te paso con alguien del equipo" y el texto de consulta de salud siguen
+  derivando.
+
 ## 6. Pruebas
 
 TDD: cada test nuevo se escribe antes que el código y se ve fallar. Los dos
@@ -1178,8 +1206,8 @@ Antes de mergear:
   sin setear. Hoy "Mutual" con mayúscula se coacciona a farmacia, y con la
   normalización pasaría a mutual.
 - Confirmar que su `PUBLIC_BASE_URL` es un host bajo `remedia.ar` (§4.3).
-- Suite completa en verde y aviso al equipo de la farmacia por la corrección
-  de §5.
+- Suite completa en verde y aviso al equipo de la farmacia con la lista de
+  "Aviso del merge" (abajo): §5 y todo lo demás que también la afecta.
 - La rama al día con `develop` (ya trae 07e3aa2, operadores), `alembic heads`
   con una sola cabeza (`0019`) y la suite completa corrida sobre el resultado
   del merge.
@@ -1203,6 +1231,15 @@ merge):
 - Las tablas `orders` y `operadores` existen: en la consola de Postgres del
   servicio, `SELECT to_regclass('orders'), to_regclass('operadores');` no
   devuelve ningún NULL.
+- El índice único de pagos existe: `SELECT to_regclass('ux_orders_payment');`
+  no devuelve NULL. Si da NULL, la base ya tenía pagos repetidos y la `0019`
+  no lo creó (su NOTICE no llega a ningún log; el arranque deja un WARNING "La
+  tabla orders NO tiene el índice único ux_orders_payment"). Buscar los
+  duplicados con `SELECT payment_id, count(*) FROM orders WHERE payment_id IS
+  NOT NULL GROUP BY payment_id HAVING count(*) > 1`, dejar una sola orden por
+  pago (a mano, mirando cuál se confirmó) y crear el índice: `CREATE UNIQUE
+  INDEX ux_orders_payment ON orders (payment_id) WHERE payment_id IS NOT
+  NULL; DROP INDEX IF EXISTS ix_orders_payment;`.
 
 Pedidos copiados a Postgres en todos los perfiles (ruling del 7/10, hallazgo
 15). El write-through de pedidos a la tabla `orders` (`OrderService.create` y
@@ -1212,7 +1249,11 @@ cobrados ante una pérdida de Redis (TTL de 7 días, reinicio o evicción). Es u
 cambio explícito para la farmacia. La tabla guarda el JSON completo del pedido
 (teléfono y dirección incluidos) y **la política de retención queda
 pendiente**. El aviso del merge al equipo de la farmacia tiene que decir: "los
-pedidos se copian a Postgres (tabla orders)".
+pedidos se copian a Postgres (tabla orders)". No es solo una copia: desde el
+hallazgo 11 también decide si la orden se crea. `create` escribe en Postgres
+antes que en Redis, y un pago que ya tiene orden en la tabla corta la creación
+(`PedidoDuplicado`): el cierre responde "duplicado" sin crear otra orden ni
+confirmar de nuevo.
 
 Consola de pedidos (revisión final, hallazgo 9). `/orders/api/list` y
 `/orders/api/{id}` traen, en todos los perfiles, cinco campos más del alta en
@@ -1220,6 +1261,58 @@ el ERP (`erp_estado`, `erp_ultimo_error`, `erp_intentos`, `erp_numero`,
 `erp_id_comprobante`), leídos de `orders` con una consulta por llamada (tope
 de 3 s). En la farmacia van en null (y `erp_intentos` en 0). Es aditivo:
 ningún campo existente cambia. También va en el aviso del merge.
+
+**Aviso del merge al equipo de la farmacia.** Todo lo que la rama cambia
+también en la farmacia (y la mutual), con su commit (`git log --grep
+FARMACIA`):
+1. Entrega (§5): una pregunta en `esperando_entrega` o `esperando_confirmacion`
+   ("¿en qué sucursal puede ser?") se contesta y no elige ni confirma; "¿cuánto
+   sale el envío?" eligiendo la entrega lo contesta el modelo; "¿hasta qué
+   hora puedo retirar?" eligiendo la entrega contesta el horario y vuelve a
+   ofrecer la elección; la sucursal de retiro cargada aparece en la pregunta,
+   el link y el horario.
+2. Pesos y presentaciones (§5): un peso o un envase no es un domicilio ("la
+   bolsa de 15 kg"; "la de 20": 3f65551); `entidad_contradice_pendiente`
+   compara presentaciones con unidad ("el de 3 kg" sobre "15KG", dosis bajo 1
+   mg). La L de depto o lote sigue siendo domicilio ("Mz 5 L 12", "Corrientes
+   1234 4 L": 19a2d03; "Corrientes 1234 piso 3 L", "1234 - 4 L", "1234,4 L":
+   ronda 2).
+3. Un número nunca es aceptación pura (52a832b): "sí, la de 3" va al modelo en
+   lugar de confirmar el pendiente por el atajo. La regla es de
+   `_es_afirmacion_pura`, así que también alcanza a la respuesta a "¿querés que
+   lo consulte con el equipo?" (`acepta_consulta_ofrecida`): "si, 2", "sí, 1" o
+   "si, 600" ya no derivan como `sin_stock` y van al modelo como charla nueva;
+   a la oferta del oficial de préstamos de la mutual ("si, 12" ya no deriva);
+   y al "sí" con adicionales u opciones mostradas. "sí", "dale" y "si dale"
+   siguen igual.
+4. Atajo de confirmación con palabra de entrega (ronda 2): un número que no es
+   del pendiente ("si, el de 400, lo retiro" con Ibuprofeno 600, "si, el x 30,
+   lo retiro" con Curflex x 60) manda el mensaje al modelo en lugar de
+   confirmar el pendiente.
+5. Derivación prometida: en `esperando_entrega` y `esperando_direccion`, "te
+   paso con alguien del equipo" del modelo ahora deriva de verdad (pasa a
+   operador sin soltar el pedido, 4014d90); y en todos los caminos, "ya te
+   paso el link" o "ya te paso los datos" ya no cuenta como derivación (ronda
+   2).
+6. Pedidos en Postgres (b97104b, d8d4412): los pedidos se copian a la tabla
+   `orders`, y un mismo pago crea una sola orden aunque Redis se pierda: índice
+   único `ux_orders_payment` (0019), `find_by_payment` consulta `orders` cuando
+   Redis no tiene el pago (o falla), y una renotificación de MP o un cobro
+   repetido de Payway responde "duplicado" sin crear otra orden ni mandar otra
+   confirmación. Payway guarda el id de pago vacío (no "None") si el cobro no
+   trae id. El arranque avisa (WARNING) si falta el índice único (ronda 2).
+7. Renglones del pedido (c28cb00): la preferencia de MP lleva `metadata` con
+   los renglones, el pago pendiente de Payway guarda `items` y `costo_envio`, y
+   las órdenes cobradas online guardan `items` y `costo_envio` en su JSON
+   (visibles en la API de pedidos). El cobro, el link y los montos no cambian.
+8. Cotización de un producto x N desde el panel (`/bo/paylink`, modo
+   "cotizar", ronda 2): la cotización sigue diciendo el total, pero al
+   confirmar el link dice "<producto> xN ($total)" y la preferencia de MP sale
+   N x unitario (antes 1 x total).
+9. Consola de pedidos (f7ffd85): `/orders/api` trae los cinco campos `erp_*`
+   (null en la farmacia) y `/bo/mercurio/estado` el bloque `pedidos`. La tabla
+   `orders` suma las columnas `erp_proximo_intento` y `erp_actualizado_at`
+   (null en la farmacia).
 
 ### 7.7 Alta de pedidos en Mercurio (F5): antes de prender `MERCURIO_PEDIDOS_ENABLED`
 
@@ -1240,6 +1333,10 @@ ERP (`POST /pedidos`) queda detrás de `MERCURIO_PEDIDOS_ENABLED` y sale apagada
      no van), y cómo se informa el envío (asumimos `shipping_total`; si el ERP
      lo ignora o lo rechaza, los pedidos con envío quedan `rechazado`).
    - Qué depósito descuenta el stock del pedido (1, 4 o 27).
+   - Qué significa un 409 en `POST /pedidos` (el contrato no lo documenta). Hoy
+     se trata como rechazo definitivo, pero puede ser la respuesta a una
+     `Idempotency-Key` "en proceso" después de un timeout: ver "cargar a mano"
+     abajo.
 2. Cargar `MERCURIO_CUSTOMER_ID_DEFAULT` con el valor que indique el
    proveedor. Sin él no se manda ningún pedido: quedan `pendiente` con
    "customer_id sin configurar" hasta vencer. También `MERCURIO_API_KEY` (la
@@ -1254,7 +1351,13 @@ ERP (`POST /pedidos`) queda detrás de `MERCURIO_PEDIDOS_ENABLED` y sale apagada
 5. Después de la primera venta real, mirar `GET /bo/mercurio/estado`: el
    bloque `pedidos` tiene que mostrar `habilitado: true`,
    `customer_id_default: true`, 0 rechazados y 0 vencidos, y el pedido con
-   `erp_estado: "enviado"` en la consola (`/orders/api/{id}`).
+   `erp_estado: "enviado"` en la API de pedidos (`/orders/api/{id}`).
+6. Decidir quién se entera de un `rechazado` o un `vencido`. Ninguna pantalla
+   del repo los muestra ni avisa (ver "Dónde se ven" abajo). **Pendiente del
+   portal** (panel de Lovable, fuera de este repo): mostrar `erp_estado` en la
+   lista de pedidos (lo trae `/orders/api/list`) y alertar cuando suben
+   `rechazados`, `vencidos` o `pendientes_mas_1h` en `/bo/mercurio/estado`.
+   Mientras no esté, alguien revisa `GET /bo/mercurio/estado` todos los días.
 
 **Cómo funciona** (detalle en los docstrings de `mercurio_pedidos.py` y
 `order_store.py`):
@@ -1263,7 +1366,9 @@ ERP (`POST /pedidos`) queda detrás de `MERCURIO_PEDIDOS_ENABLED` y sale apagada
   (`programar_alta_erp`): ninguno espera al ERP. Si el proceso se reinicia en
   el medio, el job de reintentos (cada `MERCURIO_PEDIDOS_RETRY_SECS`, 300 s)
   la retoma con la misma `Idempotency-Key` (la `order_id`). El job saltea los
-  pedidos que el hook está mandando en ese proceso.
+  pedidos que el hook está mandando en ese proceso, y el hook no vuelve a
+  mandar (ni reabre) un pedido que el job ya dejó `enviado`, `rechazado` o
+  `vencido` (solo encola uno sin estado o `pendiente`).
 - Respuestas del ERP: 422, 400, 404, 409 y 413 → `rechazado` (no se
   reintenta). 401 y 403 → error de credencial: el job corta la pasada sin
   gastar intentos y deja un ERROR. 429, 5xx, red, o un 2xx sin
@@ -1273,15 +1378,26 @@ ERP (`POST /pedidos`) queda detrás de `MERCURIO_PEDIDOS_ENABLED` y sale apagada
   no se reintenta más: la `Idempotency-Key` dura 7 días y un reintento
   posterior podría duplicar el pedido.
 - Estados (`erp_estado`): NULL (no aplica), `pendiente`, `enviado`,
-  `rechazado`, `vencido`. Se ven en la consola de pedidos (`erp_estado`,
-  `erp_ultimo_error`, `erp_intentos`, `erp_numero`, `erp_id_comprobante`) y
-  en los contadores de `/bo/mercurio/estado`. Cada `rechazado` o `vencido`
-  deja un ERROR en el log y un evento `erp_pedido_rechazado` /
-  `erp_pedido_vencido` (tabla `eventos`, `ref` = order_id). Un `rechazado` o
-  un `vencido` lo carga a mano un humano en el ERP: no hay reintento manual.
-- Los links por monto libre del panel (`MANUAL`, ítems `LIBRE1`...) no tienen
-  código de Mercurio: quedan `pendiente` con "sin código Mercurio" y vencen a
-  los 6 días (pendiente de decisión: rechazarlos de entrada).
+  `rechazado`, `vencido`. **Dónde se ven**: en el log (cada `rechazado` o
+  `vencido` deja un ERROR), en un evento de métricas `erp_pedido_rechazado` /
+  `erp_pedido_vencido` (tabla `eventos`, `ref` = order_id; hoy ningún tablero
+  lo lee), en `/bo/mercurio/estado` (contadores y el último error, ordenado
+  por `erp_actualizado_at`, la fecha del último cambio del alta) y en los
+  campos `erp_estado`, `erp_ultimo_error`, `erp_intentos`, `erp_numero` y
+  `erp_id_comprobante` de la API de pedidos (`/orders/api/list` y
+  `/orders/api/{id}`). Ninguna pantalla del repo (ni `orders.html` ni el
+  tablero) los muestra: es el pendiente del portal del paso 6.
+- Un `rechazado` o un `vencido` lo carga a mano un humano en el ERP: no hay
+  reintento manual. **Antes de cargarlo, buscarlo en el ERP por `number` =
+  `order_id`**: pudo haber entrado igual (un timeout, un 2xx sin
+  `id_comprobante` o un 409 de una `Idempotency-Key` en proceso), y cargarlo
+  otra vez lo duplicaría (doble descuento de stock y doble comprobante).
+- Un pedido con un ítem que no es un artículo del ERP (SKU sintéticos:
+  `MANUAL` de un link o una cotización por monto libre del panel, ítems libres
+  `LIBRE1`, `LIBRE2`... del panel y `TEST` de `/payway/test`) queda
+  `rechazado` de entrada, sin POST, con "ítem sin artículo del ERP (<sku>):
+  cargar a mano" (ronda de arreglo 2; antes quedaba `pendiente` 6 días y
+  vencía). En un carrito mixto se carga a mano el pedido entero.
 
 ## 8. Fuera de alcance
 

@@ -50,7 +50,9 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Lo que la consola de pedidos muestra del alta en el ERP (estado_erp).
+# Lo que la API de pedidos (/orders/api) devuelve del alta en el ERP
+# (estado_erp). Ninguna pantalla del repo lo muestra todavía (pendiente del
+# portal).
 CAMPOS_ERP = ("erp_estado", "erp_ultimo_error", "erp_intentos", "erp_numero",
               "erp_id_comprobante")
 
@@ -309,7 +311,7 @@ class OrderStore:
     async def estado_erp(self, order_ids: list[str]) -> dict[str, dict]:
         """{order_id: {erp_estado, erp_ultimo_error, erp_intentos, erp_numero,
         erp_id_comprobante}} de esos pedidos (los que tienen fila). Es lo que
-        muestra la consola de pedidos: en Redis no está."""
+        devuelve la API de pedidos (/orders/api): en Redis no está."""
         ids = [str(i) for i in order_ids if i]
         if not ids:
             return {}
