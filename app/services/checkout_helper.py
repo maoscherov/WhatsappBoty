@@ -130,12 +130,14 @@ _CAMBIO_DIR = [r"otra direcci[oó]n", r"cambiar.{0,12}direcci[oó]n", r"distinta
 # 608", "16 de enero 9279"). Antes bastaba "palabra + número" y se tomaban como
 # domicilio "te pedi 1 blister", "sertal 10 comprimidos" u "optiser de 20 mg":
 # el link salía "a domicilio a *Esta perfecto, pero solo te pedi 1 blister*"
-# (casos reales 6/8, 26/8, 1/10).
+# (casos reales 6/8, 26/8, 1/10). Pesos y envases tampoco son domicilio: "la
+# bolsa de 15 kg" devolvía "bolsa de 15" (spec petshop §5). No va "kilo\w*":
+# "Ruta 8 kilómetro 52" es una dirección.
 _NO_DIR = re.compile(
-    r"\?|\d\s*(mg|ml|gr?s?|cc|mcg|ui|%)\b|\bx\s*\d+|"
+    r"\?|\d\s*(mg|ml|gr?s?|kgs?|lts?|cc|mcg|ui|%)\b|\bx\s*\d+|"
     r"\b(comprimid\w*|comp|c[aá]psul\w*|bl[ií]ster\w*|caja\w*|tiras?|unidad\w*|frasco\w*|"
     r"ped[ií]\w*|quiero|quer[ií]a|precio\w*|link|cu[aá]nto|stock|ten[eé]s|tendr[aá]s|"
-    r"receta\w*|veces|producto\w*)\b",
+    r"receta\w*|veces|producto\w*|kilos?|kilogram\w*|litros?|bolsa\w*|lata\w*)\b",
     re.IGNORECASE)
 # Palabras que cortan la calle hacia atrás: "por favor me lo envías san javier
 # 837" → "san javier 837".
