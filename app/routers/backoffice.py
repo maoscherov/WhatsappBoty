@@ -593,13 +593,15 @@ async def bo_tablero(mes: str = Query(None, pattern=r"^\d{4}-\d{2}$"),
     """
     Tablero CERCA: todas las secciones del tablero de indicadores por vertical
     (diseño "Tableros CERCA"), con comparativa vs. mes anterior y badge por
-    métrica (medido / propuesto / sin_dato). El vertical sale del entorno
-    (VERTICAL=farmacia|mutual): cada backoffice sirve el suyo.
+    métrica (medido / propuesto / sin_dato). El vertical es la clave del
+    perfil de rubro (VERTICAL=farmacia|mutual|petshop, normalizada): cada
+    backoffice sirve el suyo; petshop recibe el tablero de venta.
     """
     from datetime import datetime as _dt
+    from app.services.perfil import get_perfil
     settings = get_settings()
     mes = mes or _dt.now().strftime("%Y-%m")
-    vertical = (getattr(settings, "vertical", "") or "farmacia").lower()
+    vertical = get_perfil().clave
     metrics = get_metrics_store(get_db(settings.database_url))
     return await metrics.tablero(vertical, mes)
 

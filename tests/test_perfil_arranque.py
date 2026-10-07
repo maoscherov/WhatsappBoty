@@ -198,3 +198,36 @@ async def test_aplicar_fuente_csv_en_petshop_deja_el_catalogo_vacio(usar_perfil,
     est = await cs.aplicar_fuente()
     assert est["fuente"] == "csv"
     assert est["total_productos"] == 0
+
+
+# ── Tablero ─────────────────────────────────────────────────────────────────────
+def test_tablero_usa_la_clave_del_perfil(usar_perfil, monkeypatch):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.config import get_settings
+    usar_perfil(" Petshop ")                       # se normaliza: strip + lower
+    monkeypatch.setattr(get_settings(), "bo_key", "")   # sin clave del panel
+    r = TestClient(app).get("/bo/tablero?mes=2026-09")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["vertical"] == "petshop"
+    assert "producto" in body                      # tablero de venta
+
+
+# ── Desvío sin venta: se pregunta por la capacidad, no por el nombre ────────────
+@pytest.mark.parametrize("vertical,llamadas", [
+    ("farmacia", 0), ("petshop", 0), ("mutual", 1), ("Mutual", 1)])
+async def test_flujo_mutual_solo_sin_venta(entorno, usar_perfil, monkeypatch, vertical, llamadas):
+    usar_perfil(vertical)
+    vistos = []
+
+    async def _flujo(deps, phone, session, texto, *a, **k):
+        vistos.append(texto)
+        return "respuesta de la mutual", "mutual_info"
+
+    monkeypatch.setattr(wh, "_flujo_mutual", _flujo)
+    deps = entorno()
+    await wh.procesar_mensajes([_msg("hola")])
+    assert vistos == ["hola"] * llamadas
+    if llamadas:
+        assert deps["wa"].enviados[-1] == "respuesta de la mutual"

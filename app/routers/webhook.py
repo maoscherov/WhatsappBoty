@@ -1230,8 +1230,8 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 await deps["session"].add_message(phone, "assistant", respuesta)
                 continue
 
-            # ── Vertical "mutual": información + derivación, sin venta ───────
-            if _s.vertical == "mutual":
+            # ── Perfil sin venta (mutual): información + derivación ──────────
+            if not get_perfil().venta:
                 respuesta, _intencion = await _flujo_mutual(
                     deps, phone, session, texto, _ctx_socio, _nombre_socio, _steps,
                 )
