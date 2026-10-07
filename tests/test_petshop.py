@@ -81,3 +81,35 @@ def test_fila_del_catalogo_farmacia_igual_que_hoy(usar_perfil, monkeypatch):
     monkeypatch.setattr(receta_referencia, "_MAPA", {})
     fila = _fila("farmacia-centro", _item_medicamento(), "observer-gestion")
     assert fila[17] == "ambiguo"
+
+
+def _catalogo_con_receta():
+    base = {"hash": "a" * 64, "troquel": None, "brand": "", "drug": None, "form": None,
+            "rubro": "PERROS", "subrubro": "", "therapeutic_actions": [], "stock": 5,
+            "visible": True, "active": True, "source": "mercurio"}
+    return SKUService.from_rows([
+        {**base, "external_id": "20", "name": "PIPETA FRONTLINE PLUS PERRO 10-20KG",
+         "price": 25000, "barcodes": ["7790000000020"],
+         "category": "Medicamentos Bajo Receta", "requiere_receta": "si"},
+        {**base, "external_id": "21", "name": "DRONTAL PLUS PERRO X 2", "price": 9000,
+         "barcodes": [], "category": "MEDICAMENTOS", "requiere_receta": "ambiguo"},
+    ])
+
+
+@pytest.mark.parametrize("modo", ["conservador", "estricto"])
+def test_necesita_receta_petshop_nunca(usar_perfil, modo):
+    from app.services.checkout_helper import necesita_receta
+    usar_perfil("petshop")
+    sku = _catalogo_con_receta()
+    assert necesita_receta(sku, "20", modo) is False
+    assert necesita_receta(sku, "21", modo) is False
+
+
+def test_necesita_receta_farmacia_igual_que_hoy(usar_perfil):
+    from app.services.checkout_helper import necesita_receta
+    usar_perfil("farmacia")
+    sku = _catalogo_con_receta()
+    assert necesita_receta(sku, "20", "conservador") is True
+    assert necesita_receta(sku, "20", "estricto") is True
+    assert necesita_receta(sku, "21", "conservador") is True
+    assert necesita_receta(sku, "21", "estricto") is False

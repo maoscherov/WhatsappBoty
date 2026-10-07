@@ -581,6 +581,12 @@ def contiene_link(t: str) -> bool:
 
 def necesita_receta(sku_svc, sku_id: str, modo: str) -> bool:
     """True si el producto pendiente requiere derivación por receta."""
+    # Llave única de la derivación por receta. Sin recetas (petshop) quedan
+    # apagados sin tocarlos: confirmar_pedido, derivar_si_receta,
+    # _sumar_productos_nuevos, referencia_ambigua_bloquea, "agregame" y
+    # simulate; y quitar_receta_inventada corre con todo producto ofrecido.
+    if not get_perfil().recetas:
+        return False
     if not sku_id:
         return False
     sku = sku_svc.get_by_id(sku_id)
