@@ -310,6 +310,7 @@ def perfil_por_clave(clave: str) -> Perfil:    # sin cache ni env; para tests
 | `config_service.py:407-430, 459-461` | `{**DEFAULTS, **guardado}` | `valores_base()` (§3.4) |
 | `webhook.py:1170-1180` | `if _s.vertical == "mutual"` | `if not perfil.venta` (§4.8) |
 | `backoffice.py:602` (`bo_tablero`) | `settings.vertical` | `get_perfil().clave` |
+| `backoffice.py` (nuevo, decisión del usuario del 7/10) | No hay forma de que el panel sepa el rubro | `GET /bo/perfil` con `{clave, comercio, emoji, capacidades}`: `venta`, `recetas`, `obras_sociales`, `socios`, `cuenta_corriente`, `links_como_receta` y `sintomas`. Sin `catalogo_csv_base` (flag de arranque, sin sección en el panel), sin prompt y sin textos. Lo usa el portal de MO (remix del panel de Remedia) para ocultar secciones. |
 
 ### 3.7 Campos agregados al diseño, y por qué
 
@@ -763,6 +764,13 @@ Casos (todos con el mismo nombre de producto, así `nombre_coincide` da True):
 | "ibuprofeno 600" | "IBUPROFENO 600 MG X 10" | confirma | confirma (la entidad no tiene unidad: regla de hoy) |
 | "royal canin" | "ROYAL CANIN MEDIUM ADULT 15KG" | confirma | confirma (sin presentación en la entidad) |
 
+**Ajuste al planificar (7/10):** `presentaciones_de` expande además las dosis
+combinadas ("50/1000 Mg" → dos pesos). Sin eso, la farmacia cambiaría en los 82
+productos de `catalogo_base.csv` con ese formato: "janumet 50 mg" frente a
+"Janumet 50/1000 Mg Comp.X 28" confirma hoy y pasaría a contradecir. Ese par se
+suma como 12º caso de la tabla (guarda de farmacia); §6.2 dice "los 12 pares"
+por eso: 11 de la tabla + 1 guarda.
+
 Verificado sobre `07a1d7a`: la columna "Hoy" con la función real (en los 11
 pares `nombre_coincide` da True) y la columna "Después" con un prototipo de
 `presentaciones_de`. Del bug 1, también con prototipo: "la bolsa de 15 kg",
@@ -802,6 +810,11 @@ tienen que pasar en verde con el código de hoy.
   `Settings` cacheado (`monkeypatch.setattr`) y limpia solo `get_perfil`. El
   código de arriba queda como ilustración de la interfaz; vale el del plan
   (`docs/superpowers/plans/2026-10-06-vertical-petshop.md`, Task 1).
+
+  **Corrección al planificar (7/10):** los fakes de `tests/test_webhook_secuencias.py`
+  (`_Intent`, `_Cfg`, `_Img`) **no** se modifican. Cada archivo de test nuevo trae
+  sus propios fakes (con `valores_base()`, `texto_horario` e items donde hacen
+  falta), así ningún test existente cambia (§6.3).
 - `tests/test_webhook_secuencias.py`: el `_Intent` falso guarda los kwargs
   además del mensaje. El `_Cfg` falso se arma con `config_service.valores_base()`
   (y no con `dict(DEFAULTS)`) y suma `texto_horario`. Hace falta una variante de
@@ -1126,7 +1139,7 @@ Lista aprobada:
   petshop (latas, bolsas, sobres), el borrado de "caja de" y "tiras de"
   (`sku_service.py:99-167`), y el caption de la foto que pisa `img["items"]`
   (`webhook.py:1014`; en el camino Meta ni se parsea).
-- Ocultar las pantallas de receta del panel (incluye `cotizar_receta` →
+- Ocultar las pantallas de receta del panel, en el código del panel (Lovable, fuera de este repo). El backend solo expone `GET /bo/perfil` (§3.6, decisión del 7/10) para que el panel decida (incluye `cotizar_receta` →
   "Sale por obra social $X", el OCR del panel y los textos `receta_cotizacion_*`).
 - Bugs de regex de retiro y envío que no sean el caso de la pregunta ("busco",
   "paso", "voy", "casa"; `_RETIRO`, `_ENVIO`, `afirma_envio`).
