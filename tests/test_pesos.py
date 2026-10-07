@@ -450,6 +450,43 @@ def test_lote_y_depto_l_son_domicilio(perfil, txt):
     assert ch.parece_direccion(txt) is True
 
 
+@pytest.mark.parametrize("txt,esperado", [
+    # develop 07e3aa2 los reconocía así (verificado con su checkout_helper)
+    ("Corrientes 1234 piso 3 L", "Corrientes 1234 piso 3"),
+    ("Corrientes 1234 dto 4 L", "Corrientes 1234 dto 4"),
+    ("Corrientes 1234 p 4 L", "Corrientes 1234"),
+    ("Corrientes 1234 - 4 L", "Corrientes 1234"),
+    ("Corrientes 1234,4 L", "Corrientes 1234"),
+    ("Rivadavia 5000 piso 1 L", "Rivadavia 5000 piso 1"),
+    ("Corrientes 1234 piso 4L", "Corrientes 1234 piso 4L"),
+    ("Corrientes 1234 dpto 4L", "Corrientes 1234 dpto 4L"),
+    ("Corrientes 1234 piso 3 Lt", "Corrientes 1234 piso 3"),
+    ("Av. Corrientes 1234 piso 4 L, CABA", "Av. Corrientes 1234 piso 4"),
+])
+def test_depto_l_despues_de_piso_o_separador_es_domicilio(perfil, txt, esperado):
+    """Ronda de arreglo 2 (resto del hallazgo 16): la L de depto después de
+    "piso N", "dto N", "p N", "1234 - N" o "1234,N" se leía como litros y el
+    bot pedía la dirección en loop. Una L después de una altura de calle (3 a
+    5 cifras) seguida solo de separador, piso o depto y el número no es un
+    volumen."""
+    assert ch.extraer_direccion_de(txt) == esperado
+    assert ch.parece_direccion(txt) is True
+
+
+@pytest.mark.parametrize("txt", ["Corrientes 1234 piso 3 L", "Corrientes 1234 - 4 L"])
+async def test_depto_l_en_esperando_direccion_genera_el_link(perfil, entorno, monkeypatch, txt):
+    """Por el webhook: antes el bot re-pedía la dirección en loop."""
+    deps, pago = _armar(entorno, monkeypatch, {})
+    await _pendiente_royal_15(deps, "esperando_direccion")
+
+    await wh.procesar_mensajes([_msg(txt)])
+
+    s = await deps["session"].get(PHONE)
+    assert s["estado"] == "esperando_pago"
+    assert s.get("tipo_entrega") == "envio" and s.get("direccion_envio")
+    assert pago.links == ["ROYAL CANIN MEDIUM ADULT 15KG"]
+
+
 @pytest.mark.parametrize("txt", [
     "la de 15 lts",
     "el bidon de 20 l por favor",
@@ -457,6 +494,11 @@ def test_lote_y_depto_l_son_domicilio(perfil, txt):
     "quiero el de 5 lt",
     "la de 15 l",
     "dame 2 de 1 l",
+    # Ronda de arreglo 2: una cifra de 3 a 5 que no es altura de calle
+    "el bidón de 1000 l",
+    "la de 500 l",
+    "pagué 1500 por la de 15 l",
+    "2 lts de agua",
 ])
 def test_volumen_en_litros_sigue_sin_ser_domicilio(perfil, txt):
     """Guarda: un volumen (l/lt/lts sin un número después) no es domicilio."""

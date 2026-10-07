@@ -140,11 +140,34 @@ _CAMBIO_DIR = [r"otra direcci[oó]n", r"cambiar.{0,12}direcci[oó]n", r"distinta
 # Revisión final, hallazgo 16.
 _NO_DIR = re.compile(
     r"\?|\d\s*(mg|ml|gr?s?|kgs?|cc|mcg|ui|%)\b|\bx\s*\d+|"
-    r"(?<![\d.,])(?<!\d\s)(?<!\d,\s)\d+(?:[.,]\d+)?\s*(lts?|l)\b(?![.\s]*\d)|"
     r"\b(comprimid\w*|comp|c[aá]psul\w*|bl[ií]ster\w*|caja\w*|tiras?|unidad\w*|frasco\w*|"
     r"ped[ií]\w*|quiero|quer[ií]a|precio\w*|link|cu[aá]nto|stock|ten[eé]s|tendr[aá]s|"
     r"receta\w*|veces|producto\w*|kilos?|kilogram\w*|gramos?|litros?|bolsa\w*|lata\w*)\b",
     re.IGNORECASE)
+# Volumen en litros (l, lt, lts) que descarta el domicilio. Tampoco es litros
+# (ronda de arreglo 2, resto del hallazgo 16; develop los reconocía) la L de
+# depto después de una altura de calle de 3 a 5 cifras seguida solo de un
+# separador, "piso"/"p"/"dto"/"dpto"/"depto" y el número: "Corrientes 1234 piso
+# 3 L", "1234 dto 4 L", "1234 p 4 L", "1234 - 4 L" y "1234,4 L" (que el número
+# leía como 1234,4 litros). "el bidón de 1000 l" o "pagué 1500 por la de 15 l"
+# siguen siendo volumen: la cifra no viene pegada a la L con un piso o depto.
+_LITROS_RE = re.compile(
+    r"(?<![\d.,])(?<!\d\s)(?<!\d,\s)(\d+(?:[.,]\d+)?)\s*(?:lts?|l)\b(?![.\s]*\d)",
+    re.IGNORECASE)
+_ALTURA_Y_PISO_RE = re.compile(
+    r"(?<![\d.,])\d{3,5}\s*[,\-]?\s*(?:(?:piso|p|dto|dpto|depto|departamento)\.?\s*)?$",
+    re.IGNORECASE)
+_ALTURA_COMA_PISO_RE = re.compile(r"\d{3,5}[.,]\d{1,2}")
+
+
+def _menciona_litros(t: str) -> bool:
+    for m in _LITROS_RE.finditer(t):
+        if _ALTURA_COMA_PISO_RE.fullmatch(m.group(1)) or _ALTURA_Y_PISO_RE.search(t[:m.start()]):
+            continue                    # la L del depto, no un volumen
+        return True
+    return False
+
+
 # Palabras que cortan la calle hacia atrás: "por favor me lo envías san javier
 # 837" → "san javier 837".
 _STOP_DIR = {
@@ -185,7 +208,7 @@ def extraer_direccion_de(t: str) -> Optional[str]:
     habla de productos, cantidades o precios: un texto cualquiera nunca se
     toma como domicilio de entrega.
     """
-    if not t or _NO_DIR.search(t):
+    if not t or _NO_DIR.search(t) or _menciona_litros(t):
         return None
     toks = re.findall(r"[\wáéíóúñÁÉÍÓÚÑ.°º]+", t)
     for i in range(len(toks) - 1, 0, -1):
