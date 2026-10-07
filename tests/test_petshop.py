@@ -910,3 +910,19 @@ async def test_payway_crear_pago_farmacia_igual_que_hoy(usar_perfil, monkeypatch
     assert pl["description"] == "Compra Remedia"
     assert pl["fraud_detection"]["bill_to"]["last_name"] == "Remedia"
     assert pl["device_unique_identifier"] == "remedia-web"
+
+
+# ── Review Focus: VERTICAL y COMERCIO_NOMBRE como los cargan en Railway ─────────
+async def test_payway_con_vertical_en_mayusculas_y_comercio_con_enie_y_tildes(usar_perfil,
+                                                                              monkeypatch):
+    from app.services import payway_service as pws
+    cap = _http_falso(monkeypatch, pws, 201, {"id": 1, "status": "approved"})
+    p = usar_perfil(" PETSHOP ", comercio="  Ñandú Mascotas Güemes  ")
+    assert (p.clave, p.comercio) == ("petshop", "Ñandú Mascotas Güemes")
+    await pws.PaywayService("pub", "priv", sandbox=True, cybersource=True).crear_pago(
+        token="tok", amount=9800.0, site_transaction_id="t1", payment_method_id=1, bin="450799")
+    pl = cap[-1]
+    assert pl["description"] == "Compra Ñandú Mascotas Güemes"
+    assert pl["fraud_detection"]["bill_to"]["last_name"] == "Ñandú Mascotas Güemes"
+    assert pl["device_unique_identifier"] == "nandu-mascotas-guemes-web"
+    assert pl["fraud_detection"]["device_unique_identifier"] == "nandu-mascotas-guemes-web"
