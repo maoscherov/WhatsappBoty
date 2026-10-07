@@ -20,6 +20,7 @@ from typing import Optional
 import anthropic
 import openai
 
+from app.services.perfil import get_perfil
 from app.services.prompts import VISION_PROMPT_FARMACIA
 
 logger = logging.getLogger(__name__)
@@ -116,7 +117,7 @@ class ImageService:
                 "role": "user",
                 "content": [
                     bloque_adjunto(b64, media_type),
-                    {"type": "text", "text": _PROMPT},
+                    {"type": "text", "text": get_perfil().vision.prompt},
                 ],
             }],
         )
@@ -132,7 +133,7 @@ class ImageService:
             messages=[{
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": _PROMPT},
+                    {"type": "text", "text": get_perfil().vision.prompt},
                     {"type": "image_url", "image_url": {"url": f"data:{media_type};base64,{b64}"}},
                 ],
             }],
@@ -140,7 +141,10 @@ class ImageService:
         return resp.choices[0].message.content or ""
 
     @staticmethod
-    def _parse(raw: str) -> Optional[dict]:
+    def _parse(raw: str, categorias: Optional[tuple] = None) -> Optional[dict]:
+        """JSON del modelo → {"tipo", "items"}. Un tipo fuera de las categorías
+        del perfil (o de `categorias`, si se pasan) pasa a "otro": en petshop,
+        receta, bono y credencial no existen."""
         match = re.search(r"\{.*\}", raw or "", re.DOTALL)
         if not match:
             return None
@@ -148,8 +152,10 @@ class ImageService:
             data = json.loads(match.group())
         except json.JSONDecodeError:
             return None
+        if categorias is None:
+            categorias = get_perfil().vision.categorias
         tipo = str(data.get("tipo", "otro")).lower().strip()
-        if tipo not in ("receta", "bono", "credencial", "comprobante", "producto", "otro"):
+        if tipo not in categorias:
             tipo = "otro"
         return {"tipo": tipo, "items": str(data.get("items", "")).strip()}
 

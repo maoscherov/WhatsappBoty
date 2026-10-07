@@ -548,3 +548,95 @@ def test_dashboard_cuenta_las_derivaciones_nuevas():
     conjunto = html[ini:html.index("]);", ini)]
     assert "'derivado_consulta_salud'" in conjunto
     assert "'imagen_indicacion_veterinaria'" in conjunto
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Visión (§4.6): prompt y categorías del clasificador salen del perfil
+# ══════════════════════════════════════════════════════════════════════════════
+from types import SimpleNamespace
+
+
+def _vision_con_clientes_falsos(provider, raw):
+    """ImageService con clientes Anthropic y OpenAI falsos: guardan lo que
+    reciben y devuelven `raw` como respuesta del modelo."""
+    from app.services.image_service import ImageService
+    llamadas = {"anthropic": [], "openai": []}
+
+    async def _create_anthropic(**k):
+        llamadas["anthropic"].append(k)
+        return SimpleNamespace(content=[SimpleNamespace(text=raw)])
+
+    async def _create_openai(**k):
+        llamadas["openai"].append(k)
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=raw))])
+
+    svc = ImageService.__new__(ImageService)
+    svc._provider = provider
+    svc._anthropic = SimpleNamespace(messages=SimpleNamespace(create=_create_anthropic))
+    svc._openai = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=_create_openai)))
+    return svc, llamadas
+
+
+def _texto_anthropic(k):
+    return k["messages"][0]["content"][1]["text"]
+
+
+def _texto_openai(k):
+    return k["messages"][0]["content"][0]["text"]
+
+
+def _json_vision(tipo, items=""):
+    import json
+    return json.dumps({"tipo": tipo, "items": items})
+
+
+def test_parse_petshop_apaga_receta_bono_y_credencial(usar_perfil):
+    from app.services.image_service import ImageService
+    usar_perfil("petshop")
+    for tipo in ("receta", "bono", "credencial"):
+        assert ImageService._parse(_json_vision(tipo))["tipo"] == "otro", tipo
+    assert ImageService._parse(_json_vision("indicacion_veterinaria"))["tipo"] == "indicacion_veterinaria"
+    r = ImageService._parse(_json_vision("producto", "Royal Canin Medium Adult 15kg"))
+    assert r == {"tipo": "producto", "items": "Royal Canin Medium Adult 15kg"}
+
+
+def test_parse_farmacia_igual_que_hoy(usar_perfil):
+    from app.services.image_service import ImageService
+    usar_perfil("farmacia")
+    for tipo in ("receta", "bono", "credencial", "comprobante", "producto", "otro"):
+        assert ImageService._parse(_json_vision(tipo))["tipo"] == tipo
+    assert ImageService._parse(_json_vision("indicacion_veterinaria"))["tipo"] == "otro"
+
+
+def test_parse_con_categorias_explicitas(usar_perfil):
+    from app.services.image_service import ImageService
+    usar_perfil("petshop")
+    assert ImageService._parse(_json_vision("receta"), categorias=("receta", "otro"))["tipo"] == "receta"
+    assert ImageService._parse("sin json") is None
+
+
+async def test_vision_petshop_manda_el_prompt_del_perfil(usar_perfil):
+    from app.services.perfil import VISION_PETSHOP
+    usar_perfil("petshop")
+    svc, llamadas = _vision_con_clientes_falsos("anthropic", _json_vision("receta"))
+    r = await svc.analizar(b"foto", "image/jpeg")
+    assert _texto_anthropic(llamadas["anthropic"][0]) == VISION_PETSHOP.prompt
+    assert r["tipo"] == "otro"                          # receta no existe en petshop
+    svc, llamadas = _vision_con_clientes_falsos("openai", _json_vision("producto", "Pipeta"))
+    r = await svc.analizar(b"foto", "image/jpeg")
+    assert _texto_openai(llamadas["openai"][0]) == VISION_PETSHOP.prompt
+    assert r == {"tipo": "producto", "items": "Pipeta"}
+
+
+async def test_vision_farmacia_manda_el_prompt_de_hoy(usar_perfil):
+    from app.services import image_service
+    from app.services.prompts import VISION_PROMPT_FARMACIA
+    usar_perfil("farmacia")
+    assert image_service._PROMPT is VISION_PROMPT_FARMACIA          # alias, mismo objeto
+    svc, llamadas = _vision_con_clientes_falsos("anthropic", _json_vision("receta"))
+    r = await svc.analizar(b"foto", "image/jpeg")
+    assert _texto_anthropic(llamadas["anthropic"][0]) == image_service._PROMPT
+    assert r["tipo"] == "receta"
+    svc, llamadas = _vision_con_clientes_falsos("openai", _json_vision("bono", "Cassará"))
+    await svc.analizar(b"foto", "image/jpeg")
+    assert _texto_openai(llamadas["openai"][0]) == image_service._PROMPT

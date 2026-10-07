@@ -959,7 +959,9 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 # Bono de laboratorio (feedback 61, 16/9): antes caía como
                 # receta y el bot cotizaba renglón por renglón. Se contesta si
                 # trabajamos ese laboratorio (lista del backoffice) y se deriva.
-                if img["tipo"] == "bono":
+                # Solo con obras sociales (defensa: el _parse de petshop ya lo
+                # pasa a "otro").
+                if img["tipo"] == "bono" and perfil.obras_sociales:
                     _intencion = "imagen_bono"
                     await deps["session"].set_estado(phone, "operador", motivo="bono_foto")
                     _socio_bn = deps["socios"].find_by_phone(phone)
@@ -976,9 +978,36 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     await deps["session"].add_message(phone, "assistant", respuesta)
                     continue
 
+                # Indicación escrita de un veterinario (petshop): no se busca ni
+                # se cotiza; la revisa una persona, igual que un síntoma. Solo
+                # existe donde el clasificador tiene esa categoría (su texto
+                # está solo en ese perfil).
+                if img["tipo"] == "indicacion_veterinaria" \
+                        and "indicacion_veterinaria" in perfil.vision.categorias:
+                    _intencion = "imagen_indicacion_veterinaria"
+                    await deps["session"].set_estado(phone, "operador", motivo=MOTIVO_CONSULTA_SALUD)
+                    _nombre_iv = (nombre_de_pila(deps["socios"].find_by_phone(phone))
+                                  if perfil.socios else "")
+                    _cfg_iv = await deps["config"].get_all()
+                    respuesta = personalizar_nombre(
+                        _cfg_iv.get("indicacion_veterinaria_message")
+                        or perfil.textos["indicacion_veterinaria_message"], _nombre_iv)
+                    _ts = _time.perf_counter()
+                    await deps["wa"].send_text(phone, respuesta)
+                    _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
+                    if not _img_ref:
+                        await deps["session"].add_message(phone, "user", "[imagen recibida]")
+                    await deps["session"].add_message(phone, "assistant", respuesta)
+                    continue
+
                 # Receta, credencial o comprobante → derivar a una persona
-                # (nunca vender automático; un pago solo lo confirma un humano)
-                if img["tipo"] in ("receta", "credencial", "comprobante"):
+                # (nunca vender automático; un pago solo lo confirma un humano).
+                # Receta solo con recetas y credencial solo con obras sociales:
+                # con la capacidad apagada siguen el camino de abajo (con items
+                # van a la búsqueda; sin items, a imagen_no_reconocida).
+                if img["tipo"] == "comprobante" \
+                        or (img["tipo"] == "receta" and perfil.recetas) \
+                        or (img["tipo"] == "credencial" and perfil.obras_sociales):
                     _intencion = f"imagen_{img['tipo']}"
                     _motivo_img = {"receta": "receta_foto", "credencial": "credencial",
                                    "comprobante": "comprobante"}[img["tipo"]]
@@ -988,7 +1017,7 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     # backoffice paciente, medicamento, candidato del catálogo
                     # y cruce con el padrón. Best-effort: si falla, la
                     # derivación sale igual. Estos datos NUNCA van al prompt.
-                    if img["tipo"] == "receta":
+                    if img["tipo"] == "receta" and perfil.recetas:
                         try:
                             _cfg_ocr = await deps["config"].get_all()
                             if str(_cfg_ocr.get("receta_ocr_enabled", "false")).lower() == "true":

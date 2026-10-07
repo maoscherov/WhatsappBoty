@@ -586,3 +586,125 @@ async def test_sintoma_en_farmacia_sigue_ofreciendo_el_farmaceutico(entorno, usa
     s = await deps["session"].get(PHONE)
     assert s.get("derivada_motivo") != "consulta_salud"
     assert "farmacéutico" in deps["wa"].enviados[-1]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Visión (§4.6): ramas de imagen del webhook con el perfil petshop
+# ══════════════════════════════════════════════════════════════════════════════
+class _ImgMO:
+    """Clasificador falso: devuelve el tipo y los items pedidos y cuenta el OCR."""
+    def __init__(self, tipo="otro", items=""):
+        self.tipo, self.items = tipo, items
+        self.mimes, self.ocr = [], 0
+
+    async def analizar(self, data, mime):
+        self.mimes.append(mime)
+        return {"tipo": self.tipo, "items": self.items}
+
+    async def leer_receta(self, *a, **k):
+        self.ocr += 1
+        return None
+
+
+def _foto_mo():
+    return _msg("", tipo="image", media_url="https://kapso/foto.jpg")
+
+
+async def test_foto_indicacion_veterinaria_deriva_por_salud(entorno, usar_perfil):
+    deps, p = _deps_mo_salud(entorno, usar_perfil)
+    deps["image"] = _ImgMO("indicacion_veterinaria", "Drontal Plus perro")
+    await wh.procesar_mensajes([_foto_mo()])
+    r = deps["wa"].enviados[-1]
+    assert r.startswith("Recibí la indicación del veterinario 🐾")
+    assert "{nombre}" not in r and "receta" not in r.lower()
+    s = await deps["session"].get(PHONE)
+    assert s["estado"] == "operador" and s["derivada_motivo"] == "consulta_salud"
+    assert _vistos(deps) == []                    # no se buscó ni se cotizó
+    assert "imagen_indicacion_veterinaria" in _intenciones_registradas(deps)
+    antes = len(deps["wa"].enviados)
+    await wh.procesar_mensajes([_msg("Hola")])
+    assert len(deps["wa"].enviados) == antes              # modo operador: el bot calla
+
+
+async def test_foto_comprobante_acusa_y_deriva(entorno, usar_perfil):
+    deps, _ = _deps_mo_salud(entorno, usar_perfil)
+    deps["image"] = _ImgMO("comprobante")
+    await wh.procesar_mensajes([_foto_mo()])
+    assert deps["wa"].enviados[-1].startswith("¡Listo! Recibimos tu comprobante 🙌")
+    s = await deps["session"].get(PHONE)
+    assert s["estado"] == "operador" and s["derivada_motivo"] == "comprobante"
+
+
+async def test_foto_comprobante_con_texto_vacio_en_config_usa_el_del_perfil(entorno, usar_perfil):
+    deps, p = _deps_mo_salud(entorno, usar_perfil, cfg={"comprobante_recibido_message": ""})
+    deps["image"] = _ImgMO("comprobante")
+    await wh.procesar_mensajes([_foto_mo()])
+    assert deps["wa"].enviados[-1] == p.textos["comprobante_recibido_message"]
+
+
+async def test_foto_de_producto_llega_al_modelo(entorno, usar_perfil):
+    deps, _ = _deps_mo_salud(entorno, usar_perfil)
+    deps["image"] = _ImgMO("producto", "Royal Canin Medium Adult 15kg")
+    await wh.procesar_mensajes([_foto_mo()])
+    assert ("rapido", "Royal Canin Medium Adult 15kg") in _vistos(deps)
+    assert (await deps["session"].get(PHONE)).get("estado") != "operador"
+
+
+async def test_foto_otro_deriva_como_no_reconocida(entorno, usar_perfil):
+    deps, _ = _deps_mo_salud(entorno, usar_perfil)
+    deps["image"] = _ImgMO("otro")
+    await wh.procesar_mensajes([_foto_mo()])
+    assert deps["wa"].enviados[-1].startswith("Recibí tu imagen 🙌")
+    s = await deps["session"].get(PHONE)
+    assert s["estado"] == "operador" and s["derivada_motivo"] == "imagen_no_reconocida"
+
+
+async def test_foto_receta_en_petshop_no_hace_ocr_ni_habla_de_receta(entorno, usar_perfil):
+    deps, _ = _deps_mo_salud(entorno, usar_perfil, cfg={"receta_ocr_enabled": "true"})
+    deps["image"] = _ImgMO("receta")
+    await wh.procesar_mensajes([_foto_mo()])
+    assert deps["image"].ocr == 0
+    assert not any("receta" in t.lower() for t in deps["wa"].enviados)
+    s = await deps["session"].get(PHONE)
+    assert s["derivada_motivo"] == "imagen_no_reconocida"
+
+
+async def test_foto_bono_en_petshop_no_deriva_como_bono(entorno, usar_perfil):
+    deps, _ = _deps_mo_salud(entorno, usar_perfil)
+    deps["image"] = _ImgMO("bono", "Cassará")
+    await wh.procesar_mensajes([_foto_mo()])
+    s = await deps["session"].get(PHONE)
+    assert s.get("derivada_motivo") != "bono_foto"
+    assert ("rapido", "Cassará") in _vistos(deps)   # con items sigue el camino normal
+    assert not any("bono" in t.lower() for t in deps["wa"].enviados)
+
+
+async def test_foto_credencial_en_petshop_no_deriva_como_credencial(entorno, usar_perfil):
+    deps, _ = _deps_mo_salud(entorno, usar_perfil)
+    deps["image"] = _ImgMO("credencial")
+    await wh.procesar_mensajes([_foto_mo()])
+    s = await deps["session"].get(PHONE)
+    assert s["derivada_motivo"] == "imagen_no_reconocida"
+    assert not any("credencial" in t.lower() for t in deps["wa"].enviados)
+
+
+async def test_farmacia_receta_con_ocr_igual_que_hoy(entorno, usar_perfil):
+    """Par de farmacia: la receta deriva con OCR y su texto de siempre."""
+    usar_perfil("farmacia")
+    deps = entorno(cfg={"receta_ocr_enabled": "true"})
+    deps["image"] = _ImgMO("receta")
+    await wh.procesar_mensajes([_foto_mo()])
+    assert deps["image"].ocr == 1
+    assert "receta" in deps["wa"].enviados[-1].lower()
+    assert (await deps["session"].get(PHONE))["derivada_motivo"] == "receta_foto"
+
+
+async def test_farmacia_indicacion_veterinaria_no_tiene_rama(entorno, usar_perfil):
+    """Par de farmacia: ese tipo no existe ahí. Si llegara, no lee un texto que
+    el perfil de farmacia no tiene (sin KeyError) y cae a no reconocida."""
+    usar_perfil("farmacia")
+    deps = entorno()
+    deps["image"] = _ImgMO("indicacion_veterinaria")
+    await wh.procesar_mensajes([_foto_mo()])
+    s = await deps["session"].get(PHONE)
+    assert s["estado"] == "operador" and s["derivada_motivo"] == "imagen_no_reconocida"
