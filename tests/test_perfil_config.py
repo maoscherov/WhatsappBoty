@@ -306,3 +306,34 @@ async def test_fallback_descuentos_leen_el_perfil(entorno, perfil_con_textos):
     deps = entorno(cfg={"socio_discount_pct": "10", "socio_discount_info_message": ""})
     await wh.procesar_mensajes([_msg("tienen descuento?")])
     assert deps["wa"].enviados[-1] == "INFO 10% DEL PERFIL"
+
+
+# ── Review Focus: config guardada de MO y singleton de ConfigService ────────────
+@pytest.mark.parametrize("origen", ["redis", "postgres"])
+async def test_config_guardada_de_mo_vaciada_cae_al_perfil_y_con_pildora_gana(usar_perfil, origen):
+    """Lo guardado gana (spec 3.4): un texto vaciado desde el panel ("") cae al
+    del perfil recién al usarlo; un texto viejo con 💊 sigue saliendo, por eso
+    el despliegue borra esas claves (spec 7.3, paso 7; Task 17, Step 10)."""
+    from app.routers.orders_api import armar_mensaje_pedido_listo
+    from app.services.config_service import DEFAULTS
+    usar_perfil("petshop")
+    guardado = {"pedido_listo_retiro_message": "",
+                "efectivo_retiro_message": DEFAULTS["efectivo_retiro_message"]}
+    svc = _config(redis_data=guardado) if origen == "redis" else _config(db_filas=guardado)
+    cfg = await svc.get_all()
+    assert cfg["pedido_listo_retiro_message"] == ""
+    msg = armar_mensaje_pedido_listo(_ORDER, cfg)
+    assert msg.endswith("¡Te esperamos! 🐾") and "💊" not in msg
+    assert cfg["efectivo_retiro_message"] == DEFAULTS["efectivo_retiro_message"]
+    assert "💊" in cfg["efectivo_retiro_message"]
+
+
+async def test_config_service_no_fija_el_perfil_en_la_instancia(usar_perfil):
+    svc = _config(redis_data={"send_images": "on_request"})
+    usar_perfil("farmacia")
+    assert (await svc.get_all())["pedido_listo_retiro_message"].endswith("💊")
+    usar_perfil("petshop")                         # misma instancia, otro perfil
+    cfg = await svc.get_all()
+    assert cfg["pedido_listo_retiro_message"].endswith("🐾")
+    assert cfg["send_images"] == "on_request"
+    assert await svc.get("pedido_listo_envio_message") == cfg["pedido_listo_envio_message"]
