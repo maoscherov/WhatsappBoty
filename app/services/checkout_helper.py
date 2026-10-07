@@ -1734,6 +1734,52 @@ def acepta_farmaceutico(t: str) -> bool:
     return bool(re.search(r"\bfarmac[eé]utic[oa]s?\b", t or "", re.IGNORECASE))
 
 
+# ── Presentaciones con unidad: peso, volumen y talle ──────────────────────────
+# numeros_de (sku_service) ignora a propósito los números de una cifra y los
+# decimales ("dame 2" es una cantidad), así que "el de 3 kg" no contradecía a
+# "ROYAL CANIN MEDIUM ADULT 15KG" y se cobraba la bolsa de 15 (spec petshop §5).
+_UNIDADES_PRES = r"kgs?|kilos?|kilogram\w*|grs?|g|gramos?|mg|ml|cc|lts?|l|litros?"
+_PRESENTACION_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(" + _UNIDADES_PRES + r")\b", re.IGNORECASE)
+# Talle: "nº 4", "n° 4", "n 4" (así lo escribe el modelo), "numero 4", "talle 4".
+_TALLE_RE = re.compile(r"\b(?:n[º°o]?|numero|número|talle)\.?\s*(\d{1,2})\b", re.IGNORECASE)
+# Dosis combinadas de farmacia ("Janumet 50/1000 Mg"): la unidad vale para los
+# dos números. Sin esto, "janumet 50 mg" contradecía al pendiente.
+_COMBO_PRES_RE = re.compile(
+    r"(\d+(?:[.,]\d+)?)\s*/\s*(?=\d+(?:[.,]\d+)?\s*(" + _UNIDADES_PRES + r")\b)", re.IGNORECASE)
+
+
+def _unidad_pres(unidad: str) -> tuple[str, float]:
+    """(tipo, factor) de una unidad: peso en gramos, volumen en ml."""
+    u = unidad.lower()
+    if u.startswith("k"):                   # kg, kgs, kilo(s), kilogramo(s)
+        return "g", 1000.0
+    if u == "mg":
+        return "g", 0.001
+    if u.startswith("g"):                   # g, gr, grs, gramo(s)
+        return "g", 1.0
+    if u in ("ml", "cc"):
+        return "ml", 1.0
+    return "ml", 1000.0                     # l, lt, lts, litro(s)
+
+
+def presentaciones_de(t: str) -> set[tuple[str, float]]:
+    """
+    Presentaciones con unidad de un texto, normalizadas para comparar:
+    ("g", gramos), ("ml", mililitros) o ("n", talle). "royal canin 7,5 kg" →
+    {("g", 7500.0)}; "1L" → {("ml", 1000.0)}; "Nº 4" → {("n", 4.0)}. Acepta
+    una cifra y decimales con punto o coma; redondea a 3 decimales. Un número
+    sin unidad ("ibuprofeno 600") no es una presentación.
+    """
+    s = _COMBO_PRES_RE.sub(lambda m: f"{m.group(1)} {m.group(2)} / ", t or "")
+    out: set[tuple[str, float]] = set()
+    for num, unidad in _PRESENTACION_RE.findall(s):
+        tipo, factor = _unidad_pres(unidad)
+        out.add((tipo, round(float(num.replace(",", ".")) * factor, 3)))
+    for num in _TALLE_RE.findall(s):
+        out.add(("n", float(num)))
+    return out
+
+
 # ── 47: confirmar con un producto distinto en el mensaje no confirma ──────────
 def entidad_contradice_pendiente(entidad: Optional[str], pending_nombre: Optional[str]) -> bool:
     """
@@ -1746,6 +1792,12 @@ def entidad_contradice_pendiente(entidad: Optional[str], pending_nombre: Optiona
     from app.services.sku_service import nombre_coincide, numeros_de
     if not nombre_coincide(entidad, pending_nombre):
         return True
+    # Misma unidad y ningún valor en común: "el de 3 kg" sobre "... 15KG",
+    # "2 litros" sobre "1L", "nº 3" sobre "Nº 4".
+    p_ent, p_pend = presentaciones_de(entidad), presentaciones_de(pending_nombre)
+    for tipo in {t for t, _ in p_ent} & {t for t, _ in p_pend}:
+        if not ({v for t, v in p_ent if t == tipo} & {v for t, v in p_pend if t == tipo}):
+            return True
     # Mismo nombre pero distinta presentación numérica ("x 30" vs "x 60").
     n_ent, n_pend = set(numeros_de(entidad)), set(numeros_de(pending_nombre))
     return bool(n_ent and n_pend and not (n_ent & n_pend))

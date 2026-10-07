@@ -103,3 +103,70 @@ async def test_bolsa_de_15_kg_en_entrega_no_genera_envio(perfil, entorno, monkey
     assert s["estado"] == "esperando_entrega"                 # sigue eligiendo la entrega
     assert s.get("tipo_entrega") != "envio" and not s.get("direccion_envio")
     assert deps["wa"].enviados and "bolsa de 15*" not in deps["wa"].enviados[-1]
+
+
+# ── Bug 2: presentaciones con unidad ─────────────────────────────────────────────
+@pytest.mark.parametrize("txt,esperado", [
+    ("royal canin 7,5 kg", {("g", 7500.0)}),
+    ("400GRS", {("g", 400.0)}),
+    ("1L", {("ml", 1000.0)}),
+    ("pretal kipper n 4", {("n", 4.0)}),
+    ("Nº 4", {("n", 4.0)}),
+    ("ibuprofeno 600", set()),
+    # Dosis combinada de farmacia: la unidad vale para los dos números
+    ("Janumet 50/1000 Mg Comp.X 28", {("g", 0.05), ("g", 1.0)}),
+])
+def test_presentaciones_de(perfil, txt, esperado):
+    assert ch.presentaciones_de(txt) == esperado
+
+
+@pytest.mark.parametrize("entidad,pendiente,contradice", [
+    ("royal canin 3 kg", "ROYAL CANIN MEDIUM ADULT 15KG", True),        # hoy confirma (bug)
+    ("royal canin 15 kg", "ROYAL CANIN MEDIUM ADULT 15KG", False),
+    ("royal canin 7.5 kg", "ROYAL CANIN MINI ADULT 7,5 KG", False),     # 7500 g = 7500 g
+    ("royal urinary 400 gr", "ROYAL URINARY CAT LATA 400GRS", False),
+    ("royal urinary 1.5 kg", "ROYAL URINARY CAT LATA 400GRS", True),    # hoy confirma (bug)
+    ("shampoo 2 litros", "SHAMPOO OSSPRET PERRO 1L", True),            # hoy confirma (bug)
+    ("pretal kipper nº 3", "PRETAL KIPPER Nº 4", True),                # hoy confirma (bug)
+    ("pretal kipper n 3", "PRETAL KIPPER Nº 4", True),                 # hoy confirma (bug)
+    ("curflex x 30", "CURFLEX PLUS X 60", True),                        # regla de hoy
+    ("ibuprofeno 600", "IBUPROFENO 600 MG X 10", False),                # sin unidad: regla de hoy
+    ("royal canin", "ROYAL CANIN MEDIUM ADULT 15KG", False),            # sin presentación
+    ("janumet 50 mg", "Janumet 50/1000 Mg Comp.X 28", False),           # guarda farmacia (dosis combinada)
+])
+def test_entidad_contradice_pendiente_por_presentacion(perfil, entidad, pendiente, contradice):
+    assert nombre_coincide(entidad, pendiente)      # mismo producto: decide la presentación
+    assert ch.entidad_contradice_pendiente(entidad, pendiente) is contradice
+
+
+async def test_si_pero_el_de_3_kg_no_confirma_la_de_15(perfil, entorno, monkeypatch):
+    txt = "sí, pero el de 3 kg"
+    deps, pago = _armar(entorno, monkeypatch, {txt: {
+        "intencion": "pedido", "confirmacion": True,
+        "entidad_producto": "royal canin 3 kg",
+        "respuesta": "Tengo la Royal Canin Medium Adult de 3 kg. ¿Te sirve?"}})
+    await _pendiente_royal_15(deps, "esperando_confirmacion")
+
+    await wh.procesar_mensajes([_msg(txt)])
+
+    s = await deps["session"].get(PHONE)
+    assert s["estado"] == "esperando_confirmacion"            # no pasó a la entrega
+    assert "preferís" not in deps["wa"].enviados[-1].lower()  # no preguntó retiro/envío
+    assert pago.links == []
+    # Va como otro pedido: se buscó el de 3 kg y quedó entre las opciones
+    assert "RC3" in [o["sku_id"] for o in s.get("pending_opciones") or []]
+
+
+async def test_si_la_de_15_kg_confirma(perfil, entorno, monkeypatch):
+    txt = "sí, la de 15 kg"
+    deps, pago = _armar(entorno, monkeypatch, {txt: {
+        "intencion": "pedido", "confirmacion": True,
+        "entidad_producto": "royal canin 15 kg",
+        "respuesta": "¡Perfecto!"}})
+    await _pendiente_royal_15(deps, "esperando_confirmacion")
+
+    await wh.procesar_mensajes([_msg(txt)])
+
+    s = await deps["session"].get(PHONE)
+    assert s["estado"] == "esperando_entrega"                 # confirmó: elige la entrega
+    assert s["pending_sku_id"] == "RC15"
