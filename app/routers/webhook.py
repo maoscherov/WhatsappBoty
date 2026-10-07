@@ -58,7 +58,7 @@ from app.services.checkout_helper import (
     pide_cancelar_pedido, pregunta_obra_social, responder_obra_social, parsear_lista,
     pregunta_bono, responder_bono, agregar_oferta_farmaceutico, acepta_farmaceutico,
     entidad_contradice_pendiente, debe_derivar_desconocido,
-    quiere_cambiar_direccion, extraer_direccion_de, contiene_link, pide_pago_manual,
+    quiere_cambiar_direccion, extraer_direccion_de, contiene_link, dominio_propio, pide_pago_manual,
     necesita_receta, pide_foto, quitar_frases_de_espera, pide_receta_nube,
     pregunta_descuento, aplicar_descuento_socio, pide_todos, texto_deictico,
     quitar_confirmaciones_fantasma, pregunta_entrega, costo_envio_de,
@@ -1149,7 +1149,7 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 continue
 
             # ── Receta/bono enviado como LINK → derivar (igual que la foto) ──
-            if contiene_link(texto):
+            if contiene_link(texto, dominio_propio(get_settings().public_base_url)):
                 _intencion = "receta_link"
                 await deps["session"].set_estado(phone, "operador", motivo="receta_link")
                 respuesta = (

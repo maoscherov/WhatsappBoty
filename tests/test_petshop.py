@@ -153,3 +153,37 @@ def test_contiene_link_regresion_farmacia(texto, esperado):
     y sigue pasando después (sin dominio propio)."""
     from app.services.checkout_helper import contiene_link
     assert contiene_link(texto) is esperado
+
+
+@pytest.mark.parametrize("base_url,esperado", [
+    ("https://cerca.remedia.ar", "remedia.ar"),
+    ("https://farmacia.remedia.ar/", "remedia.ar"),
+    ("HTTPS://Cerca.Remedia.AR:8443/bo", "remedia.ar"),
+    ("https://www.cerca.remedia.ar", "remedia.ar"),
+    ("https://bot.mascotasdeloeste.com.ar", "bot.mascotasdeloeste.com.ar"),
+    ("https://mascotasdeloeste.com.ar", "mascotasdeloeste.com.ar"),
+    ("http://localhost:8000", "localhost"),
+    ("http://127.0.0.1:8000", "127.0.0.1"),
+    ("https://[mal", ""),
+    ("", ""),
+])
+def test_dominio_propio(base_url, esperado):
+    from app.services.checkout_helper import dominio_propio
+    assert dominio_propio(base_url) == esperado
+
+
+@pytest.mark.parametrize("texto,dominio,esperado", [
+    ("mirá https://cerca.remedia.ar/promos", "remedia.ar", False),
+    ("pagá acá https://cerca.remedia.ar/pay/abc", "remedia.ar", False),
+    ("te mando la receta https://drive.google.com/file/d/abc", "remedia.ar", True),
+    ("receta.jpg", "remedia.ar", True),
+    ("https://bot.mascotasdeloeste.com.ar/pay/xyz", "bot.mascotasdeloeste.com.ar", False),
+    ("https://bot.mascotasdeloeste.com.ar/status", "bot.mascotasdeloeste.com.ar", False),
+    ("https://otra.com.ar/x", "bot.mascotasdeloeste.com.ar", True),
+    # Sin dominio propio: /pay/ se excluye igual y remedia.ar deja de ser especial.
+    ("https://pagos.ejemplo.com/pay/abc", "", False),
+    ("https://remedia.ar/x", "", True),
+])
+def test_contiene_link_con_dominio_propio(texto, dominio, esperado):
+    from app.services.checkout_helper import contiene_link
+    assert contiene_link(texto, dominio) is esperado

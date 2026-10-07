@@ -9,6 +9,7 @@ duplicar la lógica de negocio.
 import logging
 import re
 from typing import Optional
+from urllib.parse import urlsplit
 
 from app.services.perfil import get_perfil
 from app.services.sku_service import requiere_derivacion
@@ -566,17 +567,48 @@ def pregunta_descuento(t: str) -> bool:
 _LINK_RE = re.compile(r"(https?://\S+|www\.\S+|\S+\.(?:pdf|jpg|jpeg|png)\b)", re.IGNORECASE)
 
 
-def contiene_link(t: str) -> bool:
+# Sufijos genéricos de segundo nivel: en "bot.mascotasdeloeste.com.ar" el
+# dominio propio es el host entero, nunca "com.ar".
+_SLD_GENERICOS = {"com", "net", "org", "gob", "gov", "edu", "co"}
+
+
+def dominio_propio(base_url: str) -> str:
+    """
+    Dominio de los links propios, a partir de PUBLIC_BASE_URL: el host en
+    minúsculas; con 3 o más etiquetas que no terminan en un sufijo genérico
+    de segundo nivel (com.ar, gob.ar, co.uk...), las dos últimas
+    ("cerca.remedia.ar" → "remedia.ar"). Sin URL, "".
+    """
+    s = (base_url or "").strip()
+    if not s:
+        return ""
+    try:
+        host = (urlsplit(s if "://" in s else "//" + s).hostname or "").lower().rstrip(".")
+    except ValueError:                       # URL mal cargada: sin dominio propio
+        return ""
+    if not host or host.replace(".", "").isdigit():      # IP de desarrollo: tal cual
+        return host
+    partes = host.split(".")
+    if len(partes) >= 3 and not (partes[-2] in _SLD_GENERICOS and len(partes[-1]) == 2):
+        return ".".join(partes[-2:])
+    return host
+
+
+def contiene_link(t: str, dominio_propio: str = "") -> bool:
     """
     True si el mensaje trae una URL o referencia a un archivo (receta/bono
     enviado como link en vez de foto) → se deriva a una persona, igual que
-    una imagen de receta. Excluye los links de pago propios (pay/...).
+    una imagen de receta. Excluye los links de pago (/pay/) y, si viene, los
+    del dominio propio del deploy (ver `dominio_propio`).
     """
     m = _LINK_RE.search(t or "")
     if not m:
         return False
     link = m.group(0).lower()
-    return "remedia.ar" not in link and "/pay/" not in link
+    if "/pay/" in link:
+        return False
+    dominio = (dominio_propio or "").strip().lower()
+    return not (dominio and dominio in link)
 
 
 def necesita_receta(sku_svc, sku_id: str, modo: str) -> bool:
