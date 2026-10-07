@@ -274,3 +274,28 @@ async def test_e_sin_sucursal_la_pregunta_al_confirmar_va_al_modelo(entorno, mon
     assert [c[1] for c in deps["intent"].vio("procesar")] == ["en que sucursal puede ser?"]
     assert links == []
     assert await _estado(deps) == "esperando_confirmacion"
+
+
+async def test_g_donde_queda_la_sucursal_sin_pedido_le_llega_al_modelo(entorno):
+    txt = "¿dónde queda la sucursal?"
+    deps = entorno()
+    deps["config"] = _CfgEnt(_SUC)
+    deps["intent"] = _IntentEnt({txt: {"intencion": "desconocido", "entidad_producto": None,
+                                       "respuesta": "Queda en Calle Falsa 123 🙂"}})
+    await wh.procesar_mensajes([_msg(txt)])
+    proc = deps["intent"].vio("procesar")
+    assert len(proc) == 1 and _INFO in proc[0][2]["contexto_kb"]
+    assert (await deps["session"].get(PHONE)).get("estado") != "operador"
+    assert deps["wa"].enviados[-1] == "Queda en Calle Falsa 123 🙂"
+
+
+async def test_g_sin_sucursal_cargada_igual_que_hoy(entorno):
+    txt = "¿dónde queda la sucursal?"
+    deps = entorno()
+    deps["config"] = _CfgEnt()
+    deps["intent"] = _IntentEnt({txt: {"intencion": "desconocido", "entidad_producto": None,
+                                       "respuesta": "Queda en Calle Falsa 123 🙂"}})
+    await wh.procesar_mensajes([_msg(txt)])
+    assert deps["intent"].vio("procesar") == []          # sin KB ni sucursal: no hay con qué
+    s = await deps["session"].get(PHONE)
+    assert s["estado"] == "operador" and s["derivada_motivo"] == "no_entendido"

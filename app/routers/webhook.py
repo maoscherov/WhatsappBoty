@@ -2143,11 +2143,21 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
             # responder con la info de la farmacia si hay algo relevante.
             _general = intencion == "desconocido" or (intencion == "consulta_abierta" and not entidad)
             _tuvo_kb = False
-            if _general and deps["rag"].enabled():
-                _kb = await deps["rag"].kb_search(texto, n=3)
-                if _kb:
+            # "¿Dónde queda la sucursal?": el dato de la sucursal cargada en el
+            # panel va junto con la KB (spec §5). Sin sucursal, igual que hoy.
+            _cfg_kb = await deps["config"].get_all()
+            _info_ret = (responder_pregunta_retiro(_cfg_kb)
+                         if _general and pregunta_por_retiro(texto) else "")
+            if _general and (deps["rag"].enabled() or _info_ret):
+                _docs = []
+                if deps["rag"].enabled():
+                    _kb = await deps["rag"].kb_search(texto, n=3)
+                    _docs = [f"{d['titulo']}: {d['contenido']}".strip(": ") for d in (_kb or [])]
+                if _info_ret:
+                    _docs.append(_info_ret)
+                if _docs:
                     _tuvo_kb = True
-                    _kb_txt = "\n\n".join(f"{d['titulo']}: {d['contenido']}".strip(": ") for d in _kb)
+                    _kb_txt = "\n\n".join(_docs)
                     _ir_kb = await deps["intent"].procesar(
                         mensaje=texto,
                         history=session.get("history", []),
