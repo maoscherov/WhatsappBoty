@@ -6,6 +6,7 @@ cliente de Remedia (spec §6.2, S7). En este tramo, Redis no se usa todavía.
 
 Para levantar un staging en Railway paso a paso está el asistente
 `scripts/radar_staging_railway.sh`; ver [radar-staging-railway.md](radar-staging-railway.md).
+Para producción: `scripts/radar_produccion_railway.sh` y [radar-produccion-railway.md](radar-produccion-railway.md).
 Este documento explica cada variable y cada pieza.
 
 ## Variables

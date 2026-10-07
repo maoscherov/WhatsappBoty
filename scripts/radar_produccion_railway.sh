@@ -184,24 +184,26 @@ finish() {
 # Replace the example below. Set TOTAL_STAGES to match the stages you write.
 # ──────────────────────────────────────────────────────────────────────────
 
-# Radar en Railway (staging). Se corre desde la raíz del worktree de Radar, en
-# Git Bash, con la CLI de Railway logueada:
+# Radar en Railway (producción). En Git Bash, desde la raíz de un checkout del
+# repo, con la CLI de Railway logueada:
 #
-#   bash scripts/radar_staging_railway.sh
+#   bash scripts/radar_produccion_railway.sh
 #
-# Guarda lo que generás o pegás en ~/.radar-staging.env (permisos 600, fuera
-# del repo), así un re-run retoma donde quedó y no regenera las claves.
+# A diferencia de staging: proyecto de Railway propio, WAHA sin dominio público
+# (Radar y WAHA se hablan por la red privada), dominio propio, imagen de WAHA
+# con versión fija y backups de las bases y del volumen de claves. Despliega la
+# rama develop: el PR de Radar tiene que estar mergeado.
+#
+# Guarda lo que generás o pegás en ~/.radar-produccion.env (fuera del repo).
 
 TOTAL_STAGES=13
 umask 077
-ENV_FILE="${RADAR_WIZARD_ENV:-$HOME/.radar-staging.env}"
+ENV_FILE="${RADAR_WIZARD_ENV:-$HOME/.radar-produccion.env}"
 REPO_SLUG="maoscherov/WhatsappBoty"
-RAMA="feature/radar-tramo2"
+RAMA="develop"
 
-# Valor guardado, o el default si no hay ninguno.
 _o_default() { local v; v=$(_existing "$1" || true); printf '%s' "${v:-$2}"; }
 
-# Genera un secreto aleatorio una sola vez; en re-runs reusa el guardado.
 _secreto() {
   local key="$1" largo="$2" valor
   valor=$(_existing "$key" || true)
@@ -214,77 +216,58 @@ _secreto() {
   printf -v "$key" '%s' "$valor"
 }
 
-banner "Radar en Railway (staging)"
+banner "Radar en Railway (producción)"
 
 # ── 1 ─────────────────────────────────────────────────────────────────────
 stage "Antes de empezar"
-say "Este asistente despliega Radar en Railway desde la rama $RAMA."
+say "Este asistente monta Radar de producción en un proyecto de Railway propio, desde la rama $RAMA."
 say "Lo que generes o pegues queda en $ENV_FILE (solo lo puede leer tu usuario)."
 if [[ ! -f app/radar/app.py || ! -f railway.json ]]; then
-  warn "Corrélo desde la raíz del worktree de Radar (D:\\Dev\\WhatsappBOTy-radar-tramo2)."
+  warn "Corrélo desde la raíz de un checkout del repo que tenga Radar (app/radar)."
   exit 1
 fi
 if [[ "$ENV_FILE" == /root/* ]]; then
-  warn "Estás en WSL. Corrélo en Git Bash: \"C:\Program Files\Git\bin\bash.exe\" scripts/radar_staging_railway.sh"
+  warn "Estás en WSL. Corrélo en Git Bash: \"C:\\Program Files\\Git\\bin\\bash.exe\" scripts/radar_produccion_railway.sh"
   exit 1
 fi
-rama_actual=$(git rev-parse --abbrev-ref HEAD)
-if [[ "$rama_actual" != "$RAMA" ]]; then
-  warn "Estás en la rama $rama_actual; pasate a $RAMA y volvé a correrlo."
-  exit 1
-fi
-if [[ -n "$(git status --porcelain)" ]]; then
-  warn "Hay cambios sin commitear. Railway despliega lo que está en GitHub, no esta carpeta."
-fi
-for cmd in railway curl python git; do
+for cmd in railway curl python git openssl sha512sum; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
     warn "Falta $cmd en el PATH."
     exit 1
   fi
 done
+git fetch -q origin "$RAMA" || true
+if ! git cat-file -e "origin/$RAMA:app/radar/app.py" 2>/dev/null; then
+  warn "origin/$RAMA todavía no tiene Radar: mergeá primero el PR de feature/radar-tramo2."
+  exit 1
+fi
 if ! railway whoami >/dev/null 2>&1; then
   step "Iniciá sesión en Railway (se abre el navegador):"
   railway login
 fi
-say "✓ Todo en orden."
+say "✓ Todo en orden: origin/$RAMA ya tiene Radar."
 pause "Enter para seguir"
 
 # ── 2 ─────────────────────────────────────────────────────────────────────
-stage "Subir la rama a GitHub"
-sha_local=$(git rev-parse HEAD)
-sha_remoto=$(git ls-remote origin "refs/heads/$RAMA" 2>/dev/null | cut -f1 || true)
-if [[ "$sha_remoto" == "$sha_local" ]]; then
-  say "✓ GitHub ya tiene $RAMA en ${sha_local:0:7}."
+stage "Proyecto de Railway propio"
+say "Radar de producción va en un proyecto aparte: no comparte red, bases ni WAHA con el bot ni con tu línea personal."
+if confirm "¿Creo un proyecto nuevo llamado «Radar»? (No = elegir uno que ya exista)"; then
+  railway init --name Radar
 else
-  say "Railway despliega desde GitHub: la rama tiene que estar en origin."
-  note "Se sube solo $RAMA. No se toca develop ni master, y no se abre ningún PR."
-  if confirm "¿Subo $RAMA (${sha_local:0:7}) a origin?"; then
-    git push -u origin "$RAMA"
-  else
-    SKIPPED+=("git push -u origin $RAMA")
-    warn "Sin la rama en GitHub, Railway no la puede desplegar."
-  fi
+  step "Elegí el proyecto de Radar con las flechas y Enter."
+  railway link || warn "railway link no terminó bien; si ya vinculaste la carpeta, seguí."
 fi
-pause "Enter para seguir"
-
-# ── 3 ─────────────────────────────────────────────────────────────────────
-stage "Elegir el proyecto de Railway"
-say "Usá el mismo proyecto donde está el WAHA GOWS de staging."
-step "Elegí el proyecto y el entorno con las flechas y Enter."
-note "Si la terminal no muestra el menú, corré «railway link» en PowerShell en esta misma carpeta y volvé."
-railway link || warn "railway link no terminó bien; si ya vinculaste la carpeta, seguí."
 railway status || true
 pause "Enter para seguir"
 
-# ── 4 ─────────────────────────────────────────────────────────────────────
-stage "Las dos bases de Postgres"
-say "Radar usa dos Postgres propios: resultados y fuente. Nunca la base del bot."
+# ── 3 ─────────────────────────────────────────────────────────────────────
+stage "Las dos bases de Postgres, con backups"
 railway open >/dev/null 2>&1 || warn "No se pudo abrir el proyecto: abrilo en railway.com."
-step "En el proyecto: «+ Create» (o «New») → Database → PostgreSQL. Repetilo: tienen que ser dos."
-step "Renombrá cada uno (clic en el servicio → Settings → nombre del servicio):"
+step "En el proyecto: «+ Create» → Database → PostgreSQL. Repetilo: tienen que ser dos."
+step "Renombralas (clic en el servicio → Settings → nombre del servicio):"
 say "      RadarResultados   y   RadarFuente"
-note "Los nombres importan: las variables de Radar los referencian por nombre."
-pause "Enter cuando estén las dos creadas y renombradas"
+step "En cada una: pestaña Backups → activá los backups programados."
+pause "Enter cuando estén las dos creadas, renombradas y con backups"
 ask RESULTADOS_SVC "Nombre de la base de resultados [$(_o_default RESULTADOS_SVC RadarResultados)]:"
 RESULTADOS_SVC=${RESULTADOS_SVC:-RadarResultados}
 ask FUENTE_SVC "Nombre de la base de fuente [$(_o_default FUENTE_SVC RadarFuente)]:"
@@ -300,13 +283,89 @@ write_env RESULTADOS_SVC "$RESULTADOS_SVC"
 write_env FUENTE_SVC "$FUENTE_SVC"
 pause "Enter para seguir"
 
+# ── 4 ─────────────────────────────────────────────────────────────────────
+stage "WAHA de producción"
+say "Un WAHA nuevo, solo para las líneas de los clientes: sin dominio público y con versión fija."
+ask WAHA_TAG "Imagen (tag de devlikeapro/waha) [$(_o_default WAHA_TAG gows-2026.9.2)]:"
+WAHA_TAG=${WAHA_TAG:-gows-2026.9.2}
+ask WAHA_SVC "Nombre del servicio [$(_o_default WAHA_SVC waha-radar)]:"
+WAHA_SVC=${WAHA_SVC:-waha-radar}
+write_env WAHA_TAG "$WAHA_TAG"
+write_env WAHA_SVC "$WAHA_SVC"
+WAHA_ADMIN_KEY=$(_existing WAHA_ADMIN_KEY || true)
+if [[ -z "$WAHA_ADMIN_KEY" ]]; then
+  WAHA_ADMIN_KEY=$(openssl rand -hex 32)
+  write_env WAHA_ADMIN_KEY "$WAHA_ADMIN_KEY"
+fi
+WAHA_KEY_HASH=$(printf '%s' "$WAHA_ADMIN_KEY" | sha512sum | cut -d' ' -f1)
+_secreto WAHA_PANEL_PASSWORD 24
+note "La clave admin en claro queda en $ENV_FILE: copiala también a tu gestor de contraseñas."
+waha_vars=(
+  "WHATSAPP_DEFAULT_ENGINE=GOWS"
+  "WHATSAPP_API_PORT=3000"
+  "PORT=3000"
+  "TZ=America/Argentina/Buenos_Aires"
+  "WAHA_API_KEY=sha512:${WAHA_KEY_HASH}"
+  "WAHA_DASHBOARD_ENABLED=false"
+  "WAHA_DASHBOARD_USERNAME=radar"
+  "WAHA_DASHBOARD_PASSWORD=${WAHA_PANEL_PASSWORD}"
+  "WHATSAPP_SWAGGER_ENABLED=false"
+  "WHATSAPP_SWAGGER_USERNAME=radar"
+  "WHATSAPP_SWAGGER_PASSWORD=${WAHA_PANEL_PASSWORD}"
+  "WAHA_APPS_ENABLED=false"
+  "WAHA_PRINT_QR=False"
+  "WAHA_WORKER_ID=radar-prod-1"
+  "WAHA_WORKER_RESTART_SESSIONS=True"
+  "WHATSAPP_RESTART_ALL_SESSIONS=False"
+  "WAHA_LOCAL_STORE_BASE_DIR=/app/.sessions"
+  "WAHA_NAMESPACE=all"
+  "WAHA_PRESENCE_AUTO_ONLINE=False"
+  "WAHA_SESSION_CONFIG_IGNORE_STATUS=true"
+  "WAHA_SESSION_CONFIG_IGNORE_GROUPS=true"
+  "WAHA_SESSION_CONFIG_IGNORE_CHANNELS=true"
+  "WAHA_SESSION_CONFIG_IGNORE_BROADCAST=true"
+  "WAHA_EVENTS_DOWNLOAD_MEDIA=false"
+  "WAHA_API_DOWNLOAD_MEDIA=false"
+  "WAHA_MEDIA_STORAGE=LOCAL"
+  "WHATSAPP_FILES_LIFETIME=180"
+  "WAHA_LOG_LEVEL=info"
+  "WAHA_LOG_FORMAT=JSON"
+  "WAHA_HTTP_LOG_LEVEL=info"
+  "WAHA_GOWS_DEVICE_REQUIRE_FULL_SYNC=false"
+  "WAHA_GOWS_DEVICE_HISTORY_SYNC_FULL_SYNC_DAYS_LIMIT=90"
+  "WAHA_GOWS_DEVICE_HISTORY_SYNC_RECENT_SYNC_DAYS_LIMIT=90"
+  "WAHA_GOWS_DEVICE_HISTORY_SYNC_INITIAL_SYNC_MAX_MESSAGES_PER_CHAT=5000"
+)
+note "Historial: 90 días y 5000 mensajes por chat, como el staging, hasta que el spike fije los valores."
+if railway variables --service "$WAHA_SVC" --kv >/dev/null 2>&1; then
+  say "✓ El servicio $WAHA_SVC ya existe."
+  if confirm "¿Le vuelvo a cargar las variables (sin cambiar la clave guardada)?"; then
+    args=(); for v in "${waha_vars[@]}"; do args+=(--set "$v"); done
+    railway variables --service "$WAHA_SVC" "${args[@]}" >/dev/null && say "✓ Variables cargadas."
+  fi
+elif confirm "¿Creo el servicio $WAHA_SVC con devlikeapro/waha:$WAHA_TAG?"; then
+  args=(); for v in "${waha_vars[@]}"; do args+=(--variables "$v"); done
+  railway add --service "$WAHA_SVC" --image "devlikeapro/waha:$WAHA_TAG" "${args[@]}" >/dev/null \
+    && say "✓ Servicio creado." || { warn "railway add falló."; exit 1; }
+else
+  SKIPPED+=("crear el servicio de WAHA (paso 4)")
+fi
+railway service "$WAHA_SVC" >/dev/null 2>&1 || true
+volumenes=$(railway volume list 2>/dev/null || true)
+if grep -q "/app/.sessions" <<<"$volumenes"; then
+  say "✓ Ya hay un volumen en /app/.sessions."
+elif confirm "¿Le creo el volumen en /app/.sessions?"; then
+  railway volume add --mount-path /app/.sessions
+fi
+warn "A este servicio NO le generes dominio y NO le actives backups del volumen (es la copia de los chats de los clientes)."
+pause "Enter para seguir"
+
 # ── 5 ─────────────────────────────────────────────────────────────────────
 stage "El servicio de Radar"
-step "En el mismo proyecto: «+ Create» → GitHub Repo → $REPO_SLUG."
+step "En el proyecto: «+ Create» → GitHub Repo → $REPO_SLUG."
 step "Renombralo a «radar» (Settings → nombre del servicio)."
-step "Settings → Source → Branch: elegí $RAMA."
+step "Settings → Source → Branch: $RAMA."
 note "Si arranca un deploy antes de que cargues las variables y falla, es normal."
-note "No le generes dominio a mano: lo hace el paso 7."
 pause "Enter cuando el servicio exista y apunte a $RAMA"
 ask RADAR_SVC "Nombre del servicio de Radar [$(_o_default RADAR_SVC radar)]:"
 RADAR_SVC=${RADAR_SVC:-radar}
@@ -315,37 +374,28 @@ railway service "$RADAR_SVC" || warn "No pude vincular el servicio $RADAR_SVC; r
 pause "Enter para seguir"
 
 # ── 6 ─────────────────────────────────────────────────────────────────────
-stage "Volumen para los secretos"
-say "Las claves de los clientes y la clave admin de WAHA viven en un volumen, fuera de Postgres."
+stage "Volumen de claves, con backups"
+say "Acá viven la clave de cada cliente y la clave admin de WAHA. Si se pierde el volumen, no hay vuelta atrás."
 volumenes=$(railway volume list 2>/dev/null || true)
-if grep -q "/data" <<<"$volumenes"; then
+if grep -q " /data" <<<"$volumenes" || grep -q "^/data" <<<"$volumenes"; then
   say "✓ Ya hay un volumen montado en /data."
-elif confirm "¿Creo un volumen montado en /data para $RADAR_SVC?"; then
+elif confirm "¿Creo el volumen en /data para $RADAR_SVC?"; then
   railway volume add --mount-path /data
-  railway volume list || true
-else
-  step "Hacelo a mano: clic derecho en el servicio → Attach volume → mount path /data."
-  pause "Enter cuando esté"
 fi
-note "Si activás backups de este volumen, tené en cuenta que guardan esas claves."
-pause "Enter para seguir"
+step "En el volumen de $RADAR_SVC: pestaña Backups → activá los backups programados."
+pause "Enter cuando estén activos"
 
 # ── 7 ─────────────────────────────────────────────────────────────────────
-stage "Dominio público"
-RADAR_DOMINIO=$(_existing RADAR_DOMINIO || true)
-if [[ -n "$RADAR_DOMINIO" ]]; then
-  say "✓ Dominio guardado: $RADAR_DOMINIO"
-else
-  salida=$(railway domain --service "$RADAR_SVC" --port 8000 2>&1 || true)
-  RADAR_DOMINIO=$(printf '%s' "$salida" | grep -oE '[a-z0-9.-]+\.up\.railway\.app' | head -n1 || true)
-  if [[ -z "$RADAR_DOMINIO" ]]; then
-    step "Settings → Networking → Generate Domain, con el puerto 8000."
-    ask RADAR_DOMINIO "Pegá el dominio (sin https://):"
-  fi
-  write_env RADAR_DOMINIO "$RADAR_DOMINIO"
+stage "Dominio propio"
+ask RADAR_DOMINIO "Dominio de Radar [$(_o_default RADAR_DOMINIO radar.keepitsimple.com.ar)]:"
+RADAR_DOMINIO=${RADAR_DOMINIO:-radar.keepitsimple.com.ar}
+write_env RADAR_DOMINIO "$RADAR_DOMINIO"
+if confirm "¿Agrego $RADAR_DOMINIO al servicio $RADAR_SVC?"; then
+  railway domain "$RADAR_DOMINIO" --service "$RADAR_SVC" --port 8000 || warn "Si ya estaba agregado, seguí."
 fi
-say "Radar va a quedar en https://$RADAR_DOMINIO"
-pause "Enter para seguir"
+step "En tu proveedor de DNS, cargá el registro que muestra Railway (un CNAME, y a veces un TXT de verificación)."
+note "Railway emite el certificado solo cuando el DNS resuelve; puede tardar desde minutos hasta horas."
+pause "Enter cuando lo hayas cargado"
 
 # ── 8 ─────────────────────────────────────────────────────────────────────
 stage "Correo saliente (SMTP)"
@@ -356,30 +406,20 @@ if confirm "¿Los mandás desde una cuenta de Google Workspace?"; then
   step "La cuenta necesita la verificación en dos pasos activa."
   open_url "https://myaccount.google.com/apppasswords"
   step "Creá una contraseña de aplicación llamada «Radar» y copiá los 16 caracteres."
-  note "Si la página dice que no está disponible: falta la verificación en dos pasos, o el admin de Workspace bloqueó las contraseñas de aplicación."
   ask SMTP_USUARIO "Email de esa cuenta:"
   ask_secret SMTP_PASSWORD "Contraseña de aplicación (no se muestra):"
   ask RADAR_REMITENTE "Remitente (Enter = la misma cuenta; otra dirección tiene que ser un alias suyo):"
   if [[ -z "$RADAR_REMITENTE" ]]; then RADAR_REMITENTE=$SMTP_USUARIO; fi
-elif confirm "¿Tenés otro servidor SMTP (Resend, Brevo, SES…)?"; then
+else
   ask SMTP_HOST "Host SMTP:"
   ask SMTP_PORT "Puerto [587]:"
   SMTP_PORT=${SMTP_PORT:-587}
-  ask SMTP_SEGURIDAD "Seguridad: starttls, ssl o ninguna [starttls]:"
+  ask SMTP_SEGURIDAD "Seguridad: starttls o ssl [starttls]:"
   SMTP_SEGURIDAD=${SMTP_SEGURIDAD:-starttls}
   ask SMTP_USUARIO "Usuario SMTP:"
   ask_secret SMTP_PASSWORD "Contraseña SMTP (no se muestra):"
   ask RADAR_REMITENTE "Remitente (una dirección verificada en ese proveedor):"
-  if [[ "$SMTP_SEGURIDAD" == "ninguna" && -n "$SMTP_USUARIO" ]]; then
-    warn "Radar no manda usuario y contraseña sin cifrar: uso starttls."
-    SMTP_SEGURIDAD=starttls
-  fi
-else
-  RADAR_MAILER=log
-  SMTP_HOST=""; SMTP_PORT=587; SMTP_SEGURIDAD=starttls; SMTP_USUARIO=""; SMTP_PASSWORD=""; RADAR_REMITENTE=""
-  warn "Sin SMTP no sale ningún email. Para entrar vas a generar el link con «railway ssh» (paso 11)."
 fi
-write_env RADAR_MAILER "$RADAR_MAILER"
 write_env SMTP_HOST "$SMTP_HOST"
 write_env SMTP_PORT "$SMTP_PORT"
 write_env SMTP_SEGURIDAD "$SMTP_SEGURIDAD"
@@ -400,6 +440,7 @@ F=$FUENTE_SVC
 variables=(
   "APP_MODE=radar"
   "PORT=8000"
+  "UVICORN_HOST=::"
   "RADAR_BOOTSTRAP_ROLES=true"
   "RADAR_MIGRATOR_DATABASE_URL=\${{${R}.DATABASE_URL}}"
   "RADAR_DATABASE_URL=postgresql://radar_app:${RADAR_APP_DB_PASSWORD}@\${{${R}.PGHOST}}:\${{${R}.PGPORT}}/\${{${R}.PGDATABASE}}"
@@ -416,7 +457,7 @@ variables=(
   "RADAR_SMTP_USUARIO=${SMTP_USUARIO}"
   "RADAR_SMTP_PASSWORD=${SMTP_PASSWORD}"
   "RADAR_REMITENTE=${RADAR_REMITENTE}"
-  "RADAR_WAHA_WEBHOOK_URL=https://${RADAR_DOMINIO}/webhook/waha"
+  "RADAR_WAHA_WEBHOOK_URL=http://\${{${RADAR_SVC}.RAILWAY_PRIVATE_DOMAIN}}:8000/webhook/waha"
   "RADAR_WAHA_WEBHOOK_HMAC_KEY=${RADAR_WAHA_WEBHOOK_HMAC_KEY}"
 )
 say "Se van a cargar en el servicio $RADAR_SVC (los secretos no se muestran):"
@@ -429,6 +470,7 @@ for v in "${variables[@]}"; do
     *) note "  $v" ;;
   esac
 done
+note "UVICORN_HOST=:: hace que Radar escuche también en IPv6: WAHA le avisa por la red privada."
 note "Cargarlas dispara un deploy de $RADAR_SVC."
 if confirm "¿Las cargo?"; then
   args=()
@@ -448,11 +490,10 @@ pause "Enter para seguir"
 
 # ── 10 ────────────────────────────────────────────────────────────────────
 stage "Desplegar y esperar que arranque"
-say "El primer deploy tarda unos minutos: build de la imagen, roles de Postgres y migraciones."
-note "Si el deploy no arrancó solo, en el servicio: Deployments → Deploy."
+say "El primer deploy tarda unos minutos: build, roles de Postgres y migraciones. Y el certificado del dominio, lo que diga el DNS."
 cuerpo=$(mktemp)
 listo=0
-for _ in $(seq 1 60); do
+for _ in $(seq 1 90); do
   codigo=$(curl -s -o "$cuerpo" -w '%{http_code}' "https://$RADAR_DOMINIO/health" || true)
   if [[ "$codigo" == "200" ]] && grep -q '"modo":"radar"' "$cuerpo" && grep -q '"status":"ok"' "$cuerpo"; then
     listo=1
@@ -466,64 +507,62 @@ rm -f "$cuerpo"
 if (( listo )); then
   say "✓ Radar está arriba: https://$RADAR_DOMINIO/health responde ok."
 else
-  warn "Radar no respondió ok en 10 minutos."
-  step "Mirá los logs del deploy: railway logs --service $RADAR_SVC --deployment"
-  note "Errores típicos: un nombre de base mal escrito en las referencias, o el volumen sin montar."
-  SKIPPED+=("Radar no llegó a /health ok: revisar logs")
+  warn "No respondió ok en 15 minutos."
+  step "Si el DNS todavía no resuelve, es eso: esperá y re-corré el asistente (retoma solo)."
+  step "Si no, mirá los logs: railway logs --service $RADAR_SVC --deployment"
+  SKIPPED+=("Radar no llegó a /health ok: revisar DNS o logs")
 fi
+step "En los logs del deploy buscá «RADAR_BOOTSTRAP_ROLES» y «RADAR_ADMINS_INICIALES»: confirman roles y admins."
 pause "Enter para seguir"
 
 # ── 11 ────────────────────────────────────────────────────────────────────
 stage "Entrar a Radar"
-plan_b=1
-if [[ "$RADAR_MAILER" == "smtp" ]]; then
-  plan_b=0
-  open_url "https://$RADAR_DOMINIO/radar/login"
-  step "Poné tu email (uno de los admins iniciales) y tocá Entrar."
-  step "Abrí el link del mail y, en la página, tocá «Entrar a Radar». Te lleva a la Consola."
-  note "Si el mail no llega en 2 minutos: mirá spam, y en los logs buscá «link no enviado»."
-  if ! confirm "¿Entraste a la Consola?"; then
-    warn "Plan B: generar el link en el servidor con railway ssh."
-    plan_b=1
-  fi
-fi
-if (( plan_b )); then
+open_url "https://$RADAR_DOMINIO/radar/login"
+step "Poné tu email (uno de los admins iniciales) y tocá «Recibir el link»."
+step "Abrí el link del mail y tocá «Entrar a Radar». Te lleva a la Consola."
+note "Si el mail no llega: mirá spam, y en los logs buscá «link no enviado»."
+if ! confirm "¿Entraste a la Consola?"; then
   ask ADMIN_EMAIL "Tu email de admin:"
   if confirm "¿Genero un link de invitación con railway ssh? (se muestra solo en esta terminal)"; then
     railway ssh --service "$RADAR_SVC" -- sh -c "cd /app && python scripts/radar_admin.py crear-admin --email '$ADMIN_EMAIL'" \
-      || warn "railway ssh falló: probá desde PowerShell con el mismo comando."
-    step "Abrí ese link en el navegador y tocá «Entrar a Radar». No lo pegues en ningún chat."
+      || warn "railway ssh falló."
+    step "Abrí ese link en el navegador. No lo pegues en ningún chat."
   fi
 fi
 pause "Enter cuando estés en la Consola"
 
 # ── 12 ────────────────────────────────────────────────────────────────────
-stage "Cargar el servidor WAHA"
-ask WAHA_URL "URL del WAHA GOWS de staging (https://…):"
-write_env WAHA_URL "$WAHA_URL"
+stage "Cargar el WAHA de producción en la Consola"
+waha_privado=$(railway variables --service "$WAHA_SVC" --kv 2>/dev/null | grep '^RAILWAY_PRIVATE_DOMAIN=' | cut -d= -f2- || true)
+if [[ -z "$waha_privado" ]]; then
+  waha_privado="$WAHA_SVC.railway.internal"
+  note "No pude leer el dominio privado de $WAHA_SVC: uso $waha_privado."
+fi
 open_url "https://$RADAR_DOMINIO/radar/consola"
-step "En la Consola, sección «Servidores WAHA», cargá:"
-say "      Nombre: gows-staging · URL: $WAHA_URL · Motor: GOWS · Sesiones: 5 · Disco: 5"
-say "      Clave admin: la clave EN CLARO de tu gestor de contraseñas (no el hash sha512)."
-step "Guardar. Tiene que aparecer en la tabla con «clave cargada: sí»."
-note "«WAHA rechazó la clave» = la clave; «no se pudo conectar» = la URL; «otro motor» = el servidor no es GOWS."
+step "Consola → «Servidores WAHA» → Registrar un servidor:"
+say "      Nombre: waha-prod-1 · URL: http://$waha_privado:3000 · Motor: GOWS"
+say "      Máximo de sesiones: 50 · Disco total: el del volumen de $WAHA_SVC, en GB"
+if confirm "¿Muestro la clave admin para pegarla en el formulario?"; then
+  say "      Clave: $WAHA_ADMIN_KEY"
+  note "Copiala, pegala y limpiá la pantalla. No la pegues en ningún chat."
+fi
+step "Tiene que aparecer en la tabla con «Clave cargada: sí»."
+note "«No se pudo conectar» = puerto o red privada: avisá antes de seguir. «WAHA rechazó la clave» = la clave."
 pause "Enter cuando el servidor aparezca en la tabla"
 
 # ── 13 ────────────────────────────────────────────────────────────────────
-stage "Cliente de prueba y QR"
-step "Consola → «Alta»: cliente «Prueba», rubro «otros», línea «Línea de prueba»."
-step "Dueño: un email tuyo distinto del de admin (sirve tu+dueno@tudominio)."
-step "Se abre el panel de la línea: registrá el consentimiento y tocá «Generar QR»."
-say ""
-step "Chequeo crítico: el webhook de WAHA tiene que entrar con 200."
+stage "Validar con la línea de prueba"
+warn "Usá SOLO la línea de prueba. Ningún cliente hasta tener la ingesta (tramo 3) y lo legal resuelto."
+step "Consola → «Alta»: cliente «KIS prueba», rubro «otros», línea «Línea de prueba», dueño un email tuyo distinto del de admin."
+step "En el panel de la línea: consentimiento y «Generar QR»."
+step "Chequeo crítico: el webhook de WAHA tiene que entrar con 200 por la red privada."
 if confirm "¿Busco «POST /webhook/waha» en los logs ahora (20 segundos)?"; then
   timeout 20 railway logs --service "$RADAR_SVC" 2>/dev/null | grep -E "POST /webhook/waha" | tail -n 5 || true
 fi
-warn "Si ves 401 en lugar de 200: no escanees y avisá (el formato del HMAC de WAHA no coincide)."
-step "Con 200: escaneá el QR con la LÍNEA DE PRUEBA (nunca tu línea personal) y seguí"
-say "      docs/radar-waha-runbook-tramo2.md, secciones 2 a 8."
+warn "Si ves 401: no escanees y avisá (formato del HMAC). Si no aparece nada: WAHA no llega a Radar por la red privada."
+step "Con 200: escaneá con la línea de prueba y seguí docs/radar-waha-runbook-tramo2.md, secciones 2 a 8."
+step "Al terminar: «Desconectar y borrar todo» en la línea de prueba."
 pause "Enter para terminar"
 
 finish
-note "Valores guardados en $ENV_FILE (para re-correr el asistente sin regenerar claves)."
-note "Para cambiar algo: editá la variable en Railway, o borrá la línea de ese archivo y re-corré."
+note "Valores guardados en $ENV_FILE (incluye la clave admin de WAHA: copiala a tu gestor de contraseñas)."
