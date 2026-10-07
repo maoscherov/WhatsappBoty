@@ -95,12 +95,15 @@ class TestPedidoDesdeOrden:
 
 def _transport_pedidos(respuestas: list, capturados: list) -> httpx.MockTransport:
     """Cada elemento de `respuestas` es (status, body, headers) y se consume
-    en orden; los requests quedan en `capturados` para inspección."""
+    en orden; los requests quedan en `capturados` para inspección. Un `body`
+    de tipo bytes va crudo (cuerpo que no es JSON)."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path.endswith("/pedidos") and request.method == "POST"
         capturados.append(request)
         st, body, headers = respuestas.pop(0)
+        if isinstance(body, bytes):
+            return httpx.Response(st, content=body, headers=headers or {})
         return httpx.Response(st, json=body, headers=headers or {})
 
     return httpx.MockTransport(handler)
@@ -165,6 +168,106 @@ class TestCrearPedido:
         c = _cliente_pedidos([(500, {"error": True, "message": "x"}, None)] * 3, reqs)
         with pytest.raises(MercurioError):
             await c.crear_pedido({"number": "ORD-1"}, idempotency_key="ORD-1")
+
+
+# ── Clasificación de las respuestas del POST /pedidos (hallazgo 8) ───────────
+
+@pytest.fixture
+def esperas(monkeypatch):
+    """asyncio.sleep sin esperar: devuelve la lista de segundos pedidos."""
+    import app.services.mercurio_service as m
+    pedidas: list = []
+
+    async def _sleep(s):
+        pedidas.append(s)
+
+    monkeypatch.setattr(m.asyncio, "sleep", _sleep)
+    return pedidas
+
+
+class TestClasificacionDeRespuestas:
+    """422, 400, 404, 409 y 413: rechazo definitivo (sin reintento). 401 y
+    403: credencial. 429, 5xx, red y un 2xx sin id_comprobante: reintento."""
+
+    @pytest.mark.parametrize("status", [400, 404, 409, 413, 422])
+    async def test_rechazo_definitivo_sin_reintento(self, status, esperas):
+        reqs: list = []
+        c = _cliente_pedidos([(status, {"error": True, "message": "no va"}, None)] * 3, reqs)
+        with pytest.raises(MercurioPedidoRechazado, match="no va"):
+            await c.crear_pedido({"number": "ORD-1"}, idempotency_key="ORD-1")
+        assert len(reqs) == 1
+
+    @pytest.mark.parametrize("status", [401, 403])
+    async def test_401_y_403_son_error_de_credencial(self, status, esperas):
+        from app.services.mercurio_service import MercurioCredencialError
+        reqs: list = []
+        c = _cliente_pedidos([(status, {"error": True, "message": "clave"}, None)] * 3, reqs)
+        with pytest.raises(MercurioCredencialError, match=str(status)):
+            await c.crear_pedido({"number": "ORD-1"}, idempotency_key="ORD-1")
+        assert len(reqs) == 1
+
+    @pytest.mark.parametrize("cuerpo", [["lista", "no objeto"], "texto JSON", b"<html>boom</html>",
+                                        b""])
+    async def test_422_con_cuerpo_que_no_es_un_objeto_json(self, cuerpo, esperas):
+        reqs: list = []
+        c = _cliente_pedidos([(422, cuerpo, None)], reqs)
+        with pytest.raises(MercurioPedidoRechazado, match="ORD-1"):
+            await c.crear_pedido({"number": "ORD-1"}, idempotency_key="ORD-1")
+
+    @pytest.mark.parametrize("respuesta", [
+        (201, {"ok": True, "numero": "1"}, None),
+        (200, {"ok": False}, None),
+        (201, {"ok": True, "id_comprobante": "", "numero": "1"}, None),
+        (201, ["FC-1"], None),
+        (201, b"no es json", None),
+    ])
+    async def test_2xx_sin_id_comprobante_es_reintentable(self, respuesta, esperas):
+        reqs: list = []
+        c = _cliente_pedidos([respuesta], reqs)
+        with pytest.raises(MercurioError) as e:
+            await c.crear_pedido({"number": "ORD-1"}, idempotency_key="ORD-1")
+        assert not isinstance(e.value, MercurioPedidoRechazado)
+
+    @pytest.mark.parametrize("retry_after, espera", [
+        ("5", 5),
+        ("Wed, 21 Oct 2015 07:28:00 GMT", 0),     # fecha HTTP ya pasada
+        ("pasado manana", 60),                     # no se entiende: el default
+        ("", 60),
+        ("-3", 0),
+        ("999", 120),                             # tope
+    ])
+    async def test_retry_after_tolerante(self, retry_after, espera, esperas):
+        reqs: list = []
+        c = _cliente_pedidos([(429, {"error": True, "message": "rate"},
+                               {"Retry-After": retry_after}), OK_201], reqs)
+        r = await c.crear_pedido({"number": "ORD-1"}, idempotency_key="ORD-1")
+        assert r["id_comprobante"] == "FC-0001-00012345"
+        assert esperas == [espera]
+
+    async def test_retry_after_con_fecha_futura(self, esperas):
+        from datetime import datetime, timedelta, timezone
+        from email.utils import format_datetime
+        futura = format_datetime(datetime.now(timezone.utc) + timedelta(seconds=30), usegmt=True)
+        reqs: list = []
+        c = _cliente_pedidos([(429, {}, {"Retry-After": futura}), OK_201], reqs)
+        await c.crear_pedido({"number": "ORD-1"}, idempotency_key="ORD-1")
+        assert len(esperas) == 1 and 25 <= esperas[0] <= 30
+
+    async def test_retry_after_con_fecha_en_el_get_del_sync(self, esperas):
+        respuestas = [httpx.Response(429, json={}, headers={"Retry-After": "Wed, 21 Oct 2015 "
+                                                                         "07:28:00 GMT"}),
+                      httpx.Response(200, json={"ok": True})]
+        c = MercurioClient("mrc_test", "https://api.mercurio.test/v1", timeout=5,
+                           transport=httpx.MockTransport(lambda req: respuestas.pop(0)))
+        assert await c.estado() == {"ok": True}
+        assert esperas == [0]
+
+    async def test_429_agotado_dice_429(self, esperas):
+        reqs: list = []
+        c = _cliente_pedidos([(429, {}, {"Retry-After": "1"})] * 3, reqs)
+        with pytest.raises(MercurioError, match="429"):
+            await c.crear_pedido({"number": "ORD-1"}, idempotency_key="ORD-1")
+        assert len(reqs) == 3
 
 
 # ── Postgres embebido ─────────────────────────────────────────────────────────
@@ -777,3 +880,169 @@ class TestPagoDuplicado:
         assert r is None and reqs == []
         rows = await db.fetch("SELECT order_id FROM orders")
         assert [x["order_id"] for x in rows] == ["ORD-A"]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Reintentos del alta (hallazgo 8, fix-C2): clasificación de respuestas,
+# enviar_pedido_erp nunca lanza y el job atrapa por pedido.
+# ══════════════════════════════════════════════════════════════════════════════
+
+@pytest.fixture
+def alta(monkeypatch):
+    """Alta habilitada para la sucursal de MO, con customer_id por default."""
+    s = get_settings()
+    monkeypatch.setattr(s, "mercurio_pedidos_enabled", True)
+    monkeypatch.setattr(s, "mercurio_branch_id", "mascotas-oeste")
+    monkeypatch.setattr(s, "mercurio_customer_id_default", "20111111112")
+    monkeypatch.setattr(s, "mercurio_pedidos_retry_secs", 300)
+
+
+async def _fila_erp(db, order_id="ORD-20261005-120000-AB12C"):
+    row = await db.fetchrow(
+        "SELECT erp_estado, erp_ultimo_error, erp_intentos, erp_proximo_intento "
+        "FROM orders WHERE order_id = $1", order_id)
+    return dict(row) if row else None
+
+
+async def _encolar(db, *ordenes):
+    from app.services.order_store import get_order_store
+    await _preparar_codigos(db)
+    for o in ordenes:
+        await get_order_store(db).upsert(o, erp_estado="pendiente")
+
+
+class _ClienteQueRevienta:
+    """Un cliente que lanza algo que no es MercurioError (un bug, una
+    respuesta inesperada): enviar_pedido_erp igual no lanza."""
+
+    def __init__(self):
+        self.llamadas = 0
+
+    async def crear_pedido(self, pedido, idempotency_key):
+        self.llamadas += 1
+        raise RuntimeError("explotó algo inesperado")
+
+
+class TestEnviarClasifica:
+    @pytest.mark.parametrize("status", [400, 404, 409, 413])
+    async def test_4xx_definitivo_queda_rechazado(self, db, alta, esperas, status):
+        await _encolar(db, _orden())
+        reqs: list = []
+        c = _cliente_pedidos([(status, {"error": True, "message": "malo"}, None)] * 3, reqs)
+        assert await enviar_pedido_erp(_orden(), client=c, db=db) is None
+        assert len(reqs) == 1
+        fila = await _fila_erp(db)
+        assert fila["erp_estado"] == "rechazado"
+        assert "malo" in fila["erp_ultimo_error"]
+
+    @pytest.mark.parametrize("status", [401, 403])
+    async def test_credencial_no_consume_intentos(self, db, alta, esperas, caplog, status):
+        await _encolar(db, _orden())
+        reqs: list = []
+        c = _cliente_pedidos([(status, {"error": True, "message": "clave"}, None)], reqs)
+        assert await enviar_pedido_erp(_orden(), client=c, db=db) is None
+        fila = await _fila_erp(db)
+        assert fila["erp_estado"] == "pendiente"
+        assert fila["erp_intentos"] == 0
+        assert str(status) in fila["erp_ultimo_error"]
+        assert any(r.levelname == "ERROR" and "credencial" in r.getMessage().lower()
+                   for r in caplog.records)
+
+    async def test_2xx_sin_id_comprobante_queda_pendiente(self, db, alta, esperas):
+        await _encolar(db, _orden())
+        reqs: list = []
+        c = _cliente_pedidos([(200, {"ok": False}, None)], reqs)
+        assert await enviar_pedido_erp(_orden(), client=c, db=db) is None
+        fila = await _fila_erp(db)
+        assert (fila["erp_estado"], fila["erp_intentos"]) == ("pendiente", 1)
+        assert "id_comprobante" in fila["erp_ultimo_error"]
+
+    async def test_422_con_cuerpo_no_json_queda_rechazado(self, db, alta, esperas):
+        await _encolar(db, _orden())
+        reqs: list = []
+        c = _cliente_pedidos([(422, ["no", "objeto"], None)], reqs)
+        assert await enviar_pedido_erp(_orden(), client=c, db=db) is None
+        assert (await _fila_erp(db))["erp_estado"] == "rechazado"
+
+    async def test_retry_after_con_fecha_no_rompe_el_alta(self, db, alta, esperas):
+        await _encolar(db, _orden())
+        reqs: list = []
+        c = _cliente_pedidos([(429, {}, {"Retry-After": "Wed, 21 Oct 2015 07:28:00 GMT"}),
+                              OK_201], reqs)
+        assert (await enviar_pedido_erp(_orden(), client=c, db=db))["numero"] == "12345"
+        assert (await _fila_erp(db))["erp_estado"] == "enviado"
+
+
+class TestEnviarNuncaLanza:
+    async def test_excepcion_inesperada_del_cliente(self, db, alta, caplog):
+        await _encolar(db, _orden())
+        c = _ClienteQueRevienta()
+        assert await enviar_pedido_erp(_orden(), client=c, db=db) is None
+        fila = await _fila_erp(db)
+        assert fila["erp_estado"] == "pendiente"
+        assert "explotó algo inesperado" in fila["erp_ultimo_error"]
+        assert any(r.levelname == "ERROR" and "ORD-20261005-120000-AB12C" in r.getMessage()
+                   for r in caplog.records)
+
+    async def test_orden_rota(self, db, alta):
+        """Un renglón con una cantidad que no es número (dato roto): no se
+        arregla reintentando, queda rechazado con el motivo a la vista."""
+        rota = _orden(sku_id="MULTI", items=[{"sku_id": "7508", "cantidad": "dos",
+                                              "precio_unitario": 1000.0}])
+        await _encolar(db, rota)
+        reqs: list = []
+        assert await enviar_pedido_erp(rota, client=_cliente_pedidos([OK_201], reqs),
+                                       db=db) is None
+        assert reqs == []
+        fila = await _fila_erp(db)
+        assert fila["erp_estado"] == "rechazado"
+        assert "renglones ilegibles" in fila["erp_ultimo_error"]
+
+
+class TestJobPorPedido:
+    async def test_un_pedido_roto_no_corta_la_pasada(self, db, alta):
+        from app.services.mercurio_pedidos import reintentar_pedidos_pendientes
+        rota = _orden(order_id="ORD-A-ROTA", mp_payment_id="mp-a", sku_id="MULTI",
+                      items=[{"sku_id": "7508", "cantidad": "dos", "precio_unitario": 1.0}])
+        buena = _orden(order_id="ORD-B-BUENA", mp_payment_id="mp-b")
+        await _encolar(db, rota, buena)
+        reqs: list = []
+        n = await reintentar_pedidos_pendientes(client=_cliente_pedidos([OK_201], reqs), db=db)
+        assert n == 1
+        assert (await _fila_erp(db, "ORD-B-BUENA"))["erp_estado"] == "enviado"
+
+    async def test_si_enviar_lanza_igual_sigue_con_el_proximo(self, db, alta, monkeypatch):
+        """Defensa en profundidad: aunque el alta de un pedido lance, el job
+        atrapa por pedido y sigue."""
+        import app.services.mercurio_pedidos as mp
+        from app.services.mercurio_pedidos import reintentar_pedidos_pendientes
+        original = mp._intentar_alta
+
+        async def _falla_la_primera(order, **kw):
+            if order["order_id"] == "ORD-A":
+                raise RuntimeError("boom")
+            return await original(order, **kw)
+
+        monkeypatch.setattr(mp, "_intentar_alta", _falla_la_primera)
+        await _encolar(db, _orden(order_id="ORD-A", mp_payment_id="mp-a"),
+                       _orden(order_id="ORD-B", mp_payment_id="mp-b"))
+        reqs: list = []
+        n = await reintentar_pedidos_pendientes(client=_cliente_pedidos([OK_201], reqs), db=db)
+        assert n == 1
+        assert (await _fila_erp(db, "ORD-B"))["erp_estado"] == "enviado"
+
+    async def test_credencial_corta_la_pasada_sin_consumir_intentos(self, db, alta, esperas,
+                                                                    caplog):
+        from app.services.mercurio_pedidos import reintentar_pedidos_pendientes
+        await _encolar(db, _orden(order_id="ORD-A", mp_payment_id="mp-a"),
+                       _orden(order_id="ORD-B", mp_payment_id="mp-b"))
+        reqs: list = []
+        c = _cliente_pedidos([(401, {"error": True, "message": "clave inválida"}, None)] * 2,
+                             reqs)
+        assert await reintentar_pedidos_pendientes(client=c, db=db) == 0
+        assert len(reqs) == 1                                  # cortó la pasada
+        for oid in ("ORD-A", "ORD-B"):
+            fila = await _fila_erp(db, oid)
+            assert (fila["erp_estado"], fila["erp_intentos"]) == ("pendiente", 0)
+        assert any(r.levelname == "ERROR" and "credencial" in r.getMessage().lower()
+                   for r in caplog.records)

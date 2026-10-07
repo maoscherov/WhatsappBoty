@@ -68,22 +68,30 @@ def _items_de_la_orden(order: dict) -> list[dict]:
       total de la orden (como hasta ahora).
     - Orden vieja de carrito ("MULTI") o sin SKU: PedidoInconsistente.
     """
-    if order.get("items"):
-        out = []
-        for it in order["items"]:
-            cant = max(1, int(it.get("cantidad") or 1))
-            pu = round(float(it.get("precio_unitario") or 0), 2)
-            out.append({"sku_id": str(it.get("sku_id") or ""), "cantidad": cant,
-                        "total": round(pu * cant, 2)})
-        return out
-    sku = str(order.get("sku_id") or "")
-    if not sku or sku == "MULTI":
-        raise PedidoInconsistente("pedido sin renglones (orden sin items y sin un SKU único)")
-    return [{
-        "sku_id": sku,
-        "cantidad": int(order.get("cantidad") or 1),
-        "total": round(float(order.get("total") or 0), 2),
-    }]
+    try:
+        if order.get("items"):
+            out = []
+            for it in order["items"]:
+                cant = max(1, int(it.get("cantidad") or 1))
+                pu = round(float(it.get("precio_unitario") or 0), 2)
+                out.append({"sku_id": str(it.get("sku_id") or ""), "cantidad": cant,
+                            "total": round(pu * cant, 2)})
+            return out
+        sku = str(order.get("sku_id") or "")
+        if not sku or sku == "MULTI":
+            raise PedidoInconsistente(
+                "pedido sin renglones (orden sin items y sin un SKU único)")
+        return [{
+            "sku_id": sku,
+            "cantidad": int(order.get("cantidad") or 1),
+            "total": round(float(order.get("total") or 0), 2),
+        }]
+    except PedidoInconsistente:
+        raise
+    except (TypeError, ValueError, AttributeError) as e:
+        # Un dato roto en la orden guardada (cantidad "dos", items que no son
+        # una lista de objetos) no se arregla reintentando: rechazado, visible.
+        raise PedidoInconsistente(f"renglones ilegibles en la orden: {e}") from e
 
 
 def _costo_envio(order: dict) -> float:
@@ -166,15 +174,43 @@ async def enviar_pedido_erp(order: dict, *, client=None, db=None) -> Optional[di
     """
     Intenta el alta de la orden en Mercurio. Devuelve el resultado del ERP
     ({id_comprobante, numero, replay}) o None (deshabilitado, rechazado o
-    pendiente de reintento). Nunca lanza: el cobro ya ocurrió y la
-    confirmación al cliente no depende del ERP.
+    pendiente de reintento). NUNCA lanza: el cobro ya ocurrió y la
+    confirmación al cliente no depende del ERP. Un error de credencial
+    (401/403) queda en el log como ERROR; cualquier otra falla inesperada,
+    también, y el pedido queda 'pendiente' con el motivo.
+    """
+    from app.services.mercurio_service import MercurioCredencialError
+    order_id = str((order or {}).get("order_id"))
+    try:
+        return await _intentar_alta(order, client=client, db=db)
+    except MercurioCredencialError as e:
+        logger.error(f"Pedido {order_id}: Mercurio rechazó la credencial, queda "
+                     f"pendiente (revisar MERCURIO_API_KEY): {e}")
+    except Exception as e:
+        logger.error(f"Pedido {order_id}: falla inesperada en el alta del ERP: {e}")
+    return None
+
+
+async def _intentar_alta(order: dict, *, client=None, db=None) -> Optional[dict]:
+    """
+    El alta propiamente dicha (ver enviar_pedido_erp). Solo propaga
+    MercurioCredencialError (401/403), para que el job corte la pasada: el
+    pedido queda 'pendiente' con el error y SIN consumir un intento.
+
+    Estados según el resultado:
+    - renglones ilegibles o que no cuadran, rechazo definitivo del ERP (422,
+      400, 404, 409, 413) -> 'rechazado' (no se reintenta);
+    - sin código de variante, sin poder leer los códigos, 429, 5xx, red, un
+      2xx sin id_comprobante o una falla inesperada -> 'pendiente' (se
+      reintenta), sumando un intento;
+    - 2xx con id_comprobante -> 'enviado'.
     """
     from app.config import get_settings
     from app.services.mercurio_service import (
-        MercurioError, MercurioPedidoRechazado, get_mercurio_client,
-        mercurio_configurado,
+        MercurioCredencialError, MercurioError, MercurioPedidoRechazado,
+        get_mercurio_client, mercurio_configurado,
     )
-    from app.services.order_store import get_order_store
+    from app.services.order_store import PedidoDuplicado, get_order_store
 
     s = get_settings()
     if not s.mercurio_pedidos_enabled:
@@ -190,61 +226,71 @@ async def enviar_pedido_erp(order: dict, *, client=None, db=None) -> Optional[di
     order_id = str(order.get("order_id"))
     store = get_order_store(db)
 
-    from app.services.order_store import PedidoDuplicado
-
-    async def _marcar(estado: str, error: str) -> None:
+    async def _marcar(estado: str, error: str, *, consumir: bool = True) -> None:
         try:
             await store.marcar_erp(order_id, estado, error=error[:500],
-                                   incrementar_intento=True, order=order)
+                                   incrementar_intento=consumir, order=order)
         except PedidoDuplicado as e2:
             logger.warning(f"Pedido {order_id}: no se marca {estado}: {e2}")
         except Exception as e2:
             logger.error(f"Pedido {order_id}: no se pudo marcar {estado}: {e2}")
 
-    # Renglones: sin renglones confiables, o si no cuadran con lo cobrado, no
-    # se manda nada (registraría otra cosa que lo vendido) y queda rechazado.
     try:
-        renglones = _items_de_la_orden(order)
-        _validar_total(order, renglones)
-    except PedidoInconsistente as e:
-        logger.error(f"Pedido {order_id} NO se manda al ERP: {e}")
-        await _marcar("rechazado", str(e))
-        return None
+        # Renglones: sin renglones confiables, o si no cuadran con lo cobrado,
+        # no se manda nada (registraría otra cosa que lo vendido): rechazado.
+        try:
+            renglones = _items_de_la_orden(order)
+            _validar_total(order, renglones)
+        except PedidoInconsistente as e:
+            logger.error(f"Pedido {order_id} NO se manda al ERP: {e}")
+            await _marcar("rechazado", str(e))
+            return None
 
-    # Códigos de variante. Un error de Postgres se propaga (raise_errors): no
-    # se confunde con "no hay códigos" ni se manda nada a ciegas.
-    try:
-        codigos: dict[str, dict] = {}
-        skus = [r["sku_id"] for r in renglones]
-        rows = await db.fetch(
-            "SELECT external_id, codigo, codigo_padre FROM mercurio_codigos "
-            "WHERE branch_id = $1 AND external_id = ANY($2::text[])",
-            s.mercurio_branch_id, [x for x in skus if x], raise_errors=True)
-        for r in rows:
-            codigos[r["external_id"]] = {"codigo": r["codigo"],
-                                         "codigo_padre": r["codigo_padre"]}
+        # Códigos de variante. Un error de Postgres se propaga (raise_errors):
+        # no se confunde con "no hay códigos" ni se manda nada a ciegas.
+        try:
+            codigos: dict[str, dict] = {}
+            skus = [r["sku_id"] for r in renglones]
+            rows = await db.fetch(
+                "SELECT external_id, codigo, codigo_padre FROM mercurio_codigos "
+                "WHERE branch_id = $1 AND external_id = ANY($2::text[])",
+                s.mercurio_branch_id, [x for x in skus if x], raise_errors=True)
+            for r in rows:
+                codigos[r["external_id"]] = {"codigo": r["codigo"],
+                                             "codigo_padre": r["codigo_padre"]}
+        except Exception as e:
+            motivo = f"no se pudieron leer los códigos Mercurio ({e}); se reintenta"
+            logger.warning(f"Pedido {order_id}: {motivo}")
+            await _marcar("pendiente", motivo)
+            return None
+
+        try:
+            pedido = pedido_desde_orden(order, codigos, state=s.mercurio_pedido_state,
+                                        customer_id_default=s.mercurio_customer_id_default)
+        except CodigoMercurioFaltante as e:
+            logger.warning(f"Pedido {order_id}: {e}")
+            await _marcar("pendiente", str(e))
+            return None
+        try:
+            resultado = await client.crear_pedido(pedido, idempotency_key=order_id)
+        except MercurioPedidoRechazado as e:
+            logger.error(f"Pedido {order_id} RECHAZADO por Mercurio: {e}")
+            await _marcar("rechazado", str(e))
+            return None
+        except MercurioCredencialError as e:
+            # Configuración, no el pedido: queda pendiente sin gastar un intento.
+            await _marcar("pendiente", str(e), consumir=False)
+            raise
+        except MercurioError as e:
+            logger.warning(f"Pedido {order_id}: ERP inalcanzable, queda pendiente: {e}")
+            await _marcar("pendiente", str(e))
+            return None
+    except MercurioCredencialError:
+        raise
     except Exception as e:
-        motivo = f"no se pudieron leer los códigos Mercurio ({e}); se reintenta"
-        logger.warning(f"Pedido {order_id}: {motivo}")
-        await _marcar("pendiente", motivo)
-        return None
-
-    try:
-        pedido = pedido_desde_orden(order, codigos, state=s.mercurio_pedido_state,
-                                    customer_id_default=s.mercurio_customer_id_default)
-    except CodigoMercurioFaltante as e:
-        logger.warning(f"Pedido {order_id}: {e}")
-        await _marcar("pendiente", str(e))
-        return None
-    try:
-        resultado = await client.crear_pedido(pedido, idempotency_key=order_id)
-    except MercurioPedidoRechazado as e:
-        logger.error(f"Pedido {order_id} RECHAZADO por Mercurio: {e}")
-        await _marcar("rechazado", str(e))
-        return None
-    except MercurioError as e:
-        logger.warning(f"Pedido {order_id}: ERP inalcanzable, queda pendiente: {e}")
-        await _marcar("pendiente", str(e))
+        logger.error(f"Pedido {order_id}: falla inesperada en el alta del ERP, queda "
+                     f"pendiente: {e}")
+        await _marcar("pendiente", f"falla inesperada: {e}")
         return None
 
     try:
@@ -298,8 +344,13 @@ async def reintentar_pedidos_pendientes(*, client=None, db=None, limit: int = 20
     Una pasada del job de fondo: reintenta el alta de los pedidos que quedaron
     'pendiente' (ERP caído o proceso reiniciado en el momento del cobro).
     Devuelve cuántos se registraron. Idempotente: la clave es la order_id.
+
+    Atrapa por pedido: un pedido roto no corta la pasada. Un error de
+    credencial (401/403) sí la corta (los demás darían lo mismo) sin consumir
+    intentos, con un ERROR en el log.
     """
     from app.config import get_settings
+    from app.services.mercurio_service import MercurioCredencialError
     from app.services.order_store import get_order_store
 
     s = get_settings()
@@ -315,8 +366,17 @@ async def reintentar_pedidos_pendientes(*, client=None, db=None, limit: int = 20
         return 0
     enviados = 0
     for order in pendientes:
-        if await enviar_pedido_erp(order, client=client, db=db) is not None:
-            enviados += 1
+        order_id = str(order.get("order_id"))
+        try:
+            if await _intentar_alta(order, client=client, db=db) is not None:
+                enviados += 1
+        except MercurioCredencialError as e:
+            logger.error(f"Reintento de pedidos ERP CORTADO: Mercurio rechazó la "
+                         f"credencial (revisar MERCURIO_API_KEY): {e}")
+            break
+        except Exception as e:
+            logger.error(f"Reintento de pedidos: el pedido {order_id} falló, sigo con "
+                         f"el próximo: {e}")
     if pendientes:
         logger.info(f"Reintento de pedidos ERP: {enviados}/{len(pendientes)} registrados")
     return enviados

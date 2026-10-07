@@ -55,9 +55,68 @@ class MercurioConvivenciaError(MercurioError):
 
 
 class MercurioPedidoRechazado(MercurioError):
-    """422 del POST /pedidos: el ERP NO registró el pedido y reintentar con el
-    mismo cuerpo va a fallar igual (validación). Se marca rechazado y lo mira
-    un humano; distinto de un 5xx/red, que queda pendiente y se reintenta."""
+    """Rechazo DEFINITIVO del POST /pedidos (422, 400, 404, 409, 413): el ERP
+    NO registró el pedido y reintentar con el mismo cuerpo va a fallar igual.
+    Se marca rechazado y lo mira un humano; distinto de un 5xx/red/429, que
+    queda pendiente y se reintenta."""
+
+
+class MercurioCredencialError(MercurioError):
+    """401/403: la clave (MERCURIO_API_KEY) es inválida o está desactivada.
+    Es configuración, no culpa del pedido: el job corta la pasada sin
+    consumir intentos de los pedidos y deja un ERROR en el log."""
+
+
+# Clasificación de las respuestas del POST /pedidos (revisión final, hallazgo 8).
+# El resto de los 4xx (y 429, 5xx, red, un 2xx sin id_comprobante) se reintenta.
+RECHAZO_DEFINITIVO = frozenset({400, 404, 409, 413, 422})
+ERROR_DE_CREDENCIAL = frozenset({401, 403})
+RETRY_AFTER_DEFAULT = 60
+RETRY_AFTER_TOPE = 120
+
+
+def segundos_retry_after(valor: Optional[str]) -> int:
+    """
+    Retry-After tolerante (RFC 9110: segundos o fecha HTTP). Una fecha ya
+    pasada o un número negativo es 0; lo que no se entiende, el default
+    (60 s, lo que documenta Mercurio). Nunca más de RETRY_AFTER_TOPE.
+    """
+    from datetime import datetime, timezone
+    from email.utils import parsedate_to_datetime
+
+    texto = str(valor or "").strip()
+    if not texto:
+        return RETRY_AFTER_DEFAULT
+    try:
+        segundos = int(float(texto))
+    except (ValueError, OverflowError):
+        try:
+            fecha = parsedate_to_datetime(texto)
+        except (TypeError, ValueError, IndexError):
+            return RETRY_AFTER_DEFAULT
+        if fecha is None:
+            return RETRY_AFTER_DEFAULT
+        if fecha.tzinfo is None:
+            fecha = fecha.replace(tzinfo=timezone.utc)
+        segundos = int((fecha - datetime.now(timezone.utc)).total_seconds())
+    return min(max(segundos, 0), RETRY_AFTER_TOPE)
+
+
+def _detalle(r: httpx.Response) -> str:
+    """El `message` de un error de Mercurio, o el texto crudo: un cuerpo que
+    no es un objeto JSON (lista, string, HTML, vacío) nunca rompe nada."""
+    try:
+        body = r.json()
+    except Exception:
+        body = None
+    if isinstance(body, dict):
+        msg = body.get("message") or body.get("error")
+        if isinstance(msg, str) and msg.strip():
+            return msg.strip()[:200]
+    try:
+        return (r.text or "").strip()[:200]
+    except Exception:
+        return ""
 
 
 # ── Parseo de campos (todo llega como string) ─────────────────────────────────
@@ -185,9 +244,10 @@ class MercurioClient:
                 await asyncio.sleep(2 ** intento)
                 continue
             if r.status_code == 429:
-                espera = int(r.headers.get("Retry-After") or 60)
+                espera = segundos_retry_after(r.headers.get("Retry-After"))
                 logger.warning(f"Mercurio 429 en {path}: espero {espera}s")
-                await asyncio.sleep(min(espera, 120))
+                ultimo = MercurioError(f"{path}: HTTP 429 (límite de requests)")
+                await asyncio.sleep(espera)
                 continue
             if r.status_code >= 500:
                 ultimo = MercurioError(f"{path}: HTTP {r.status_code}")
@@ -216,9 +276,10 @@ class MercurioClient:
                 await asyncio.sleep(2 ** intento)
                 continue
             if r.status_code == 429:
-                espera = int(r.headers.get("Retry-After") or 60)
+                espera = segundos_retry_after(r.headers.get("Retry-After"))
                 logger.warning(f"Mercurio 429 en {path}: espero {espera}s")
-                await asyncio.sleep(min(espera, 120))
+                ultimo = MercurioError(f"{path}: HTTP 429 (límite de requests)")
+                await asyncio.sleep(espera)
                 continue
             if r.status_code >= 500:
                 ultimo = MercurioError(f"{path}: HTTP {r.status_code}")
@@ -229,25 +290,38 @@ class MercurioClient:
 
     async def crear_pedido(self, pedido: dict, idempotency_key: str) -> dict:
         """
-        POST /pedidos (spec 14/9). 201 → {id_comprobante, numero, replay};
-        422 → MercurioPedidoRechazado (el ERP no lo registró; no reintentar).
-        La Idempotency-Key (única por pedido, 7 días) es nuestra order_id.
+        POST /pedidos (spec 14/9). La Idempotency-Key (única por pedido, 7
+        días) es nuestra order_id. Clasificación de la respuesta:
+
+        - 2xx con `id_comprobante` → {id_comprobante, numero, replay}. Un 2xx
+          SIN id_comprobante (o con un cuerpo que no es un objeto JSON) no es
+          un alta: MercurioError reintentable (la clave evita el duplicado).
+        - 422, 400, 404, 409, 413 → MercurioPedidoRechazado (no se registró y
+          reintentar va a dar lo mismo).
+        - 401, 403 → MercurioCredencialError (la clave; no es el pedido).
+        - 429, 5xx, red (agotados los reintentos de _post) y cualquier otro
+          4xx → MercurioError reintentable.
         """
         r = await self._post("/pedidos", pedido, {"Idempotency-Key": idempotency_key})
-        if r.status_code == 422:
-            try:
-                detalle = r.json().get("message") or r.text[:200]
-            except ValueError:
-                detalle = r.text[:200]
-            raise MercurioPedidoRechazado(f"pedido {idempotency_key}: {detalle}")
-        if r.status_code >= 400:
-            raise MercurioError(f"/pedidos: HTTP {r.status_code} {r.text[:200]}")
+        st = r.status_code
+        if st in RECHAZO_DEFINITIVO:
+            raise MercurioPedidoRechazado(
+                f"pedido {idempotency_key}: HTTP {st}: {_detalle(r) or 'sin detalle'}")
+        if st in ERROR_DE_CREDENCIAL:
+            raise MercurioCredencialError(
+                f"/pedidos: HTTP {st}: credencial rechazada (MERCURIO_API_KEY): "
+                f"{_detalle(r) or 'sin detalle'}")
+        if st >= 400:
+            raise MercurioError(f"/pedidos: HTTP {st} {_detalle(r)}")
         try:
             body = r.json()
         except ValueError as e:
-            raise MercurioError(f"/pedidos: respuesta no JSON ({e})")
+            raise MercurioError(f"/pedidos: HTTP {st}, respuesta no JSON ({e})")
+        comprobante = _texto(body.get("id_comprobante")) if isinstance(body, dict) else ""
+        if not comprobante:
+            raise MercurioError(f"/pedidos: HTTP {st} sin id_comprobante: {_detalle(r)}")
         return {
-            "id_comprobante": _texto(body.get("id_comprobante")),
+            "id_comprobante": comprobante,
             "numero": _texto(body.get("numero")),
             "replay": (r.headers.get("Idempotent-Replay") or "").lower() == "true",
         }
