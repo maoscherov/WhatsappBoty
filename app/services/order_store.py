@@ -219,6 +219,39 @@ class OrderStore:
             base,
         )
 
+    async def encolar_erp(self, order: dict) -> str:
+        """
+        Deja la orden en la cola del ERP para el hook post-cobro y devuelve el
+        `erp_estado` con el que queda. Solo pasa de NULL a 'pendiente' (o deja
+        'pendiente' como está): si el job ya la procesó en la ventana entre el
+        create y el hook ('enviado', 'rechazado' o 'vencido'), la deja así y
+        devuelve ese estado; el que llama no hace el POST (ronda de arreglo 2).
+        Sin fila (falló el write-through), inserta la orden completa en
+        'pendiente'. Si el pago ya tiene OTRA orden, PedidoDuplicado.
+        """
+        cols = _columnas(order)
+        try:
+            row = await self._db.fetchrow(
+                """
+                INSERT INTO orders (order_id, phone, estado, total, pago, payment_id, data,
+                                    erp_estado)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, 'pendiente')
+                ON CONFLICT (order_id) DO UPDATE SET
+                    erp_estado = COALESCE(orders.erp_estado, 'pendiente')
+                RETURNING erp_estado, (xmax = 0) AS insertada
+                """,
+                *cols, raise_errors=True)
+        except Exception as e:
+            if not _es_pago_repetido(e):
+                raise
+            logger.warning(f"Pedido {cols[0]}: el pago {cols[5]} ya tiene otra orden "
+                           "(índice único de payment_id) — se trata como duplicado")
+            raise PedidoDuplicado(cols[5], cols[0]) from e
+        if row["insertada"]:
+            logger.warning(f"Pedido {cols[0]}: no estaba en orders (falló el write-through); "
+                           "se inserta completo con erp_estado='pendiente'")
+        return row["erp_estado"]
+
     async def pendientes_erp(self, limit: int = 20) -> list[dict]:
         """Pedidos esperando el alta en el ERP cuyo próximo intento ya llegó
         (`erp_proximo_intento` NULL o pasado), por COALESCE(próximo intento,

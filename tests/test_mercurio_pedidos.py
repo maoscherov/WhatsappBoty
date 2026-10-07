@@ -1409,6 +1409,60 @@ class TestAltaEnSegundoPlano:
         assert (await _fila_erp(db))["erp_estado"] == "pendiente"
 
 
+# ── Ronda de arreglo 2: el hook no pisa un estado posterior ──────────────────
+# La orden nace 'pendiente' y el job puede mandarla en la ventana entre el
+# create y el hook (que corre después del WhatsApp). El hook la volvía a marcar
+# 'pendiente' sin mirar y hacía un segundo POST (o reabría un rechazado).
+
+class TestHookNoPisaUnEstadoPosterior:
+    async def test_el_job_la_mando_antes_que_el_hook(self, db, alta, sin_altas_colgadas):
+        import app.services.mercurio_pedidos as mp
+        await _encolar(db, _orden())
+        reqs: list = []
+        assert await mp.reintentar_pedidos_pendientes(
+            client=_cliente_pedidos([OK_201], reqs), db=db) == 1
+        assert (await _fila_erp(db))["erp_estado"] == "enviado"
+
+        assert mp.programar_alta_erp(_orden(), client=_cliente_pedidos([OK_201], reqs),
+                                     db=db) is not None
+        await mp.esperar_altas_en_curso()
+        assert len(reqs) == 1                                   # un solo POST
+        row = await db.fetchrow("SELECT erp_estado, erp_id_comprobante, erp_intentos "
+                                "FROM orders WHERE order_id = $1", "ORD-20261005-120000-AB12C")
+        assert dict(row) == {"erp_estado": "enviado", "erp_id_comprobante": "FC-0001-00012345",
+                             "erp_intentos": 0}
+
+    @pytest.mark.parametrize("estado", ["enviado", "rechazado", "vencido"])
+    async def test_despachar_no_reabre_ni_manda(self, db, alta, eventos, estado):
+        from app.services.mercurio_pedidos import despachar_alta_erp
+        from app.services.order_store import get_order_store
+        await db.execute("DELETE FROM eventos WHERE tipo LIKE 'erp_pedido_%'")
+        await _encolar(db, _orden())
+        await get_order_store(db).marcar_erp("ORD-20261005-120000-AB12C", estado,
+                                             error="del job", incrementar_intento=True)
+        reqs: list = []
+        assert await despachar_alta_erp(_orden(), client=_cliente_pedidos([OK_201], reqs),
+                                        db=db) is None
+        assert reqs == []
+        fila = await _fila_erp(db)
+        assert (fila["erp_estado"], fila["erp_ultimo_error"], fila["erp_intentos"]) == \
+            (estado, "del job", 1)
+        assert await eventos() == []                            # sin un segundo evento
+
+    async def test_despachar_encola_una_fila_sin_estado(self, db, alta):
+        """NULL -> pendiente -> POST, como hasta ahora (una fila sin estado del
+        ERP, por ejemplo escrita por un _save antes del create)."""
+        from app.services.mercurio_pedidos import despachar_alta_erp
+        from app.services.order_store import get_order_store
+        await _preparar_codigos(db)
+        await get_order_store(db).upsert(_orden())
+        assert (await _fila_erp(db))["erp_estado"] is None
+        reqs: list = []
+        assert await despachar_alta_erp(_orden(), client=_cliente_pedidos([OK_201], reqs),
+                                        db=db) is not None
+        assert len(reqs) == 1 and (await _fila_erp(db))["erp_estado"] == "enviado"
+
+
 # ── Visibilidad (hallazgo 9, fix-C2) ─────────────────────────────────────────
 
 class _RedisPedidos:

@@ -423,9 +423,12 @@ async def despachar_alta_erp(order: dict, *, client=None, db=None) -> Optional[d
     orden ya nació 'pendiente' en la fila durable (OrderService.create,
     erp_estado_inicial): si el post-cobro se corta antes de llegar acá, o el
     proceso muere en el medio, el job de reintentos la retoma con la misma
-    Idempotency-Key. Igual la vuelve a marcar 'pendiente' antes del POST, e
-    inserta la orden si el write-through había fallado. Con el flag apagado
-    no hace nada (farmacia).
+    Idempotency-Key. Antes del POST la encola (OrderStore.encolar_erp): de
+    NULL pasa a 'pendiente' e inserta la orden si el write-through había
+    fallado. Si el job ya la procesó en la ventana entre el create y el hook
+    ('enviado', 'rechazado' o 'vencido'), no la toca ni hace el POST (ronda de
+    arreglo 2: antes la reabría y la mandaba de nuevo). Con el flag apagado no
+    hace nada (farmacia).
     """
     from app.config import get_settings
     from app.services.order_store import get_order_store
@@ -438,8 +441,11 @@ async def despachar_alta_erp(order: dict, *, client=None, db=None) -> Optional[d
         db = get_db(s.database_url)
     from app.services.order_store import PedidoDuplicado
     try:
-        await get_order_store(db).marcar_erp(str(order.get("order_id")), "pendiente",
-                                             order=order)
+        estado = await get_order_store(db).encolar_erp(order)
+        if estado != "pendiente":
+            logger.info(f"Pedido {order.get('order_id')}: el alta en el ERP ya quedó "
+                        f"'{estado}' (la procesó el job); el hook no la manda de nuevo")
+            return None
     except PedidoDuplicado as e:
         # El pago ya tiene OTRA orden en la tabla (esa es la que va al ERP):
         # mandar esta duplicaría el pedido con otra Idempotency-Key.
