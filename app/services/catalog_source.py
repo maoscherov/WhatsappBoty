@@ -10,6 +10,7 @@ variable queda como override para cuando haya más de una. La config
 
 import logging
 import time
+from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -22,6 +23,26 @@ _CACHE_SECS = 60.0
 estado_recarga: dict = {"fuente": "csv", "branch_id": None, "at": None, "total": 0}
 # Sucursales en conflicto (más de una con catálogo y sin override).
 _conflicto: list[str] = []
+
+# Catálogo de la farmacia (17.192 filas). Un perfil sin catalogo_csv_base
+# (petshop) NUNCA lo carga: su catálogo sale del ERP (spec 4.8).
+CSV_FARMACIA = Path(__file__).resolve().parents[2] / "data" / "catalogo_base.csv"
+
+
+def csv_de_arranque(ruta: str) -> str:
+    """
+    La ruta de CSV que el perfil puede cargar. "" (catálogo vacío hasta el
+    primer sync del ERP) si es el CSV de la farmacia y el perfil no tiene
+    catalogo_csv_base; si no, la ruta tal cual.
+    """
+    from app.services.perfil import get_perfil
+    perfil = get_perfil()
+    if ruta and not perfil.catalogo_csv_base \
+            and Path(ruta).resolve() == CSV_FARMACIA.resolve():
+        logger.error(f"SKU_CSV_PATH={ruta} es el catálogo de la farmacia: el perfil "
+                     f"{perfil.clave} no lo carga; el catálogo sale del ERP")
+        return ""
+    return ruta
 
 
 def invalidar_cache():

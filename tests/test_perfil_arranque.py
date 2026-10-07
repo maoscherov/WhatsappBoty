@@ -125,3 +125,76 @@ async def test_avisa_si_el_horario_es_el_de_defecto(caplog):
     with caplog.at_level(logging.WARNING, logger="app.main"):
         assert await _avisar_horario_por_defecto(_CfgHoras(cargado)) is False
     assert "DEFAULT_HOURS" not in caplog.text
+
+
+# ── Catálogo: el CSV de la farmacia nunca entra en petshop ──────────────────────
+@pytest.fixture
+def sku_singleton(monkeypatch):
+    """reload_sku_service pisa el singleton: se restaura al terminar el test."""
+    from app.services import sku_service as sk
+    monkeypatch.setattr(sk, "_instance", None)
+    return sk
+
+
+def test_csv_de_arranque_petshop_rechaza_el_csv_de_la_farmacia(usar_perfil, caplog):
+    from app.services.catalog_source import CSV_FARMACIA, csv_de_arranque
+    usar_perfil("petshop")
+    with caplog.at_level(logging.ERROR, logger="app.services.catalog_source"):
+        assert csv_de_arranque("data/catalogo_base.csv") == ""
+    assert any(r.levelno == logging.ERROR and "catálogo de la farmacia" in r.getMessage()
+               for r in caplog.records)
+    assert csv_de_arranque(str(CSV_FARMACIA)) == ""
+    assert csv_de_arranque("") == ""
+    assert csv_de_arranque("data/catalogo_mo.csv") == "data/catalogo_mo.csv"
+
+
+def test_csv_de_arranque_farmacia_y_mutual_igual_que_hoy(usar_perfil):
+    from app.services.catalog_source import csv_de_arranque
+    for clave in ("farmacia", "mutual"):
+        usar_perfil(clave)
+        assert csv_de_arranque("data/catalogo_base.csv") == "data/catalogo_base.csv"
+
+
+def test_reload_petshop_no_carga_el_csv_de_la_farmacia(usar_perfil, sku_singleton, tmp_path):
+    usar_perfil("petshop")
+    assert sku_singleton.reload_sku_service("data/catalogo_base.csv").total == 0
+
+    mo = tmp_path / "catalogo_mo.csv"
+    mo.write_text(
+        "SKU,Nombre,Precio,Marca,Laboratorio,Codigo_Barras_1,Categoria,Es_Medicamento\n"
+        "1,Royal Canin Medium Adult 15 kg,98000,ROYAL CANIN,,7790187000011,ALIMENTOS,false\n"
+        "2,Piedras Sanicat 4 kg,6200,SANICAT,,7798043000022,PIEDRAS SANITARIAS,false\n",
+        encoding="utf-8")
+    assert sku_singleton.reload_sku_service(str(mo)).total == 2
+
+
+def test_get_sku_service_petshop_arranca_vacio(usar_perfil, sku_singleton):
+    usar_perfil("petshop")
+    assert sku_singleton.get_sku_service().total == 0       # default: el CSV de la farmacia
+
+
+def test_farmacia_carga_el_csv_como_hoy(usar_perfil, sku_singleton):
+    usar_perfil("farmacia")
+    svc = sku_singleton.reload_sku_service("data/catalogo_base.csv")
+    assert svc.total == 17192
+    assert svc.buscar("ibuprofeno")
+
+
+async def test_aplicar_fuente_csv_en_petshop_deja_el_catalogo_vacio(usar_perfil, sku_singleton,
+                                                                    monkeypatch):
+    from app.config import get_settings
+    from app.services import catalog_source as cs
+    usar_perfil("petshop")
+    # usar_perfil no recrea Settings: un delenv no llegaría. Se pisan los atributos.
+    monkeypatch.setattr(get_settings(), "default_branch_id", "")
+    monkeypatch.setattr(get_settings(), "sku_csv_path", "data/catalogo_base.csv")
+
+    async def _fuente_csv():
+        return "csv"
+
+    monkeypatch.setattr(cs, "fuente_configurada", _fuente_csv)
+    monkeypatch.setattr(cs, "_cache", {"branch_id": None, "at": 0.0})
+    monkeypatch.setattr(cs, "estado_recarga", dict(cs.estado_recarga))
+    est = await cs.aplicar_fuente()
+    assert est["fuente"] == "csv"
+    assert est["total_productos"] == 0

@@ -685,17 +685,25 @@ class SKUService:
 _instance: Optional[SKUService] = None
 
 
+def _csv_permitido(csv_path: str) -> str:
+    """El CSV que el perfil puede cargar (spec 4.8): petshop nunca carga el
+    de la farmacia, venga del arranque, de aplicar_fuente, del backoffice o
+    del default sin argumento. Import diferido: catalog_source → perfil."""
+    from app.services.catalog_source import csv_de_arranque
+    return csv_de_arranque(csv_path)
+
+
 def get_sku_service(csv_path: str = "data/catalogo_base.csv") -> SKUService:
     global _instance
     if _instance is None:
-        _instance = SKUService(csv_path)
+        _instance = SKUService(_csv_permitido(csv_path))
     return _instance
 
 
 def reload_sku_service(csv_path: str) -> SKUService:
     """Recarga el catálogo desde disco sin reiniciar el servidor."""
     global _instance
-    _instance = SKUService(csv_path)
+    _instance = SKUService(_csv_permitido(csv_path))
     logger.info(f"Catálogo recargado: {_instance.total} SKUs")
     return _instance
 
