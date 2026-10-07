@@ -13,7 +13,8 @@ from app.routers import backoffice
 CLAVE = "clave-de-test"
 CAMPOS = {"clave", "comercio", "emoji", "capacidades"}
 CAPACIDADES = {"venta", "recetas", "obras_sociales", "socios",
-               "cuenta_corriente", "links_como_receta", "sintomas"}
+               "cuenta_corriente", "links_como_receta", "sintomas",
+               "catalogo_csv_base"}
 
 
 def _get(monkeypatch, headers=None):
@@ -35,6 +36,7 @@ def test_bo_perfil_petshop(usar_perfil, monkeypatch):
     assert body["capacidades"] == {
         "venta": True, "recetas": False, "obras_sociales": False, "socios": False,
         "cuenta_corriente": False, "links_como_receta": False, "sintomas": "derivar",
+        "catalogo_csv_base": False,       # el portal esconde la importación de CSV
     }
 
 
@@ -49,6 +51,7 @@ def test_bo_perfil_farmacia(usar_perfil, monkeypatch):
     assert body["capacidades"] == {
         "venta": True, "recetas": True, "obras_sociales": True, "socios": True,
         "cuenta_corriente": True, "links_como_receta": True, "sintomas": "farmaceutico",
+        "catalogo_csv_base": True,
     }
 
 
@@ -60,6 +63,7 @@ def test_bo_perfil_mutual_no_vende(usar_perfil, monkeypatch):
     assert body["clave"] == "mutual"
     assert body["capacidades"]["venta"] is False
     assert body["capacidades"]["recetas"] is True        # igual que hoy (spec §3.3)
+    assert body["capacidades"]["catalogo_csv_base"] is True
 
 
 def test_bo_perfil_con_comercio_nombre(usar_perfil, monkeypatch):

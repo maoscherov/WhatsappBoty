@@ -404,9 +404,23 @@ async def bo_sku_check(_=Depends(_auth), q: str = Query(...)):
     }
 
 
+_CATALOGO_DEL_ERP = "Este comercio toma el catálogo del ERP"
+
+
+def _exigir_catalogo_csv():
+    """Un perfil sin catalogo_csv_base (petshop) toma el catálogo del ERP:
+    importar un CSV o un PDF reemplazaría el catálogo en memoria por uno
+    vacío. Se corta antes de escribir el archivo, recargar o guardar el blob
+    (revisión final de petshop, hallazgo 17)."""
+    from app.services.perfil import get_perfil
+    if not get_perfil().catalogo_csv_base:
+        raise HTTPException(status_code=409, detail=_CATALOGO_DEL_ERP)
+
+
 @router.post("/sku/import")
 async def bo_sku_import(file: UploadFile = File(...), _=Depends(_auth)):
     """Reemplaza el catálogo con el CSV subido y recarga el servicio en memoria."""
+    _exigir_catalogo_csv()
     settings = get_settings()
     csv_path = Path(settings.sku_csv_path)
     csv_path.parent.mkdir(parents=True, exist_ok=True)
@@ -437,6 +451,7 @@ async def bo_sku_import_pdf(files: list[UploadFile] = File(...), _=Depends(_auth
     """
     from app.services.catalogo_pdf import fusionar_con_catalogo
 
+    _exigir_catalogo_csv()
     settings = get_settings()
     pdfs = []
     for f in files:
@@ -1021,6 +1036,13 @@ async def bo_config_update(body: ConfigUpdate, _=Depends(_auth)):
     updates = {k: v for k, v in body.model_dump().items() if v is not None}
     if not updates:
         raise HTTPException(status_code=400, detail="Sin campos para actualizar")
+    # El botón de pánico "csv" vaciaría el catálogo de un perfil del ERP y
+    # bloquearía la recarga del sync (hallazgo 17): se rechaza sin guardar nada.
+    if str(updates.get("catalogo_fuente") or "").strip().lower() == "csv":
+        from app.services.perfil import get_perfil
+        if not get_perfil().catalogo_csv_base:
+            raise HTTPException(status_code=422,
+                                detail=f"{_CATALOGO_DEL_ERP}: catalogo_fuente no puede ser csv")
     await cfg_svc.set_many(updates)
     # Cambiar la fuente del catálogo aplica al toque (sin esperar un sync ni
     # un redeploy): "csv" recarga el CSV, "erp" recarga desde Postgres.
@@ -1530,7 +1552,8 @@ async def bo_perfil(_=Depends(_auth)):
     """
     Rubro de esta instancia para el portal: identidad y capacidades. El panel
     oculta las secciones de las capacidades apagadas (recetas, socios, cuenta
-    corriente, obras sociales). No expone el prompt ni los textos del perfil.
+    corriente, obras sociales; sin catalogo_csv_base, la importación de CSV/PDF
+    y la fuente "csv" del catálogo). No expone el prompt ni los textos del perfil.
     """
     from app.services.perfil import get_perfil
     p = get_perfil()
@@ -1546,6 +1569,7 @@ async def bo_perfil(_=Depends(_auth)):
             "cuenta_corriente": p.cuenta_corriente,
             "links_como_receta": p.links_como_receta,
             "sintomas": p.sintomas,
+            "catalogo_csv_base": p.catalogo_csv_base,
         },
     }
 

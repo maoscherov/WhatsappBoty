@@ -310,7 +310,7 @@ def perfil_por_clave(clave: str) -> Perfil:    # sin cache ni env; para tests
 | `config_service.py:407-430, 459-461` | `{**DEFAULTS, **guardado}` | `valores_base()` (§3.4) |
 | `webhook.py:1170-1180` | `if _s.vertical == "mutual"` | `if not perfil.venta` (§4.8) |
 | `backoffice.py:602` (`bo_tablero`) | `settings.vertical` | `get_perfil().clave` |
-| `backoffice.py` (nuevo, decisión del usuario del 7/10) | No hay forma de que el panel sepa el rubro | `GET /bo/perfil` con `{clave, comercio, emoji, capacidades}`: `venta`, `recetas`, `obras_sociales`, `socios`, `cuenta_corriente`, `links_como_receta` y `sintomas`. Sin `catalogo_csv_base` (flag de arranque, sin sección en el panel), sin prompt y sin textos. Lo usa el portal de MO (remix del panel de Remedia) para ocultar secciones. |
+| `backoffice.py` (nuevo, decisión del usuario del 7/10) | No hay forma de que el panel sepa el rubro | `GET /bo/perfil` con `{clave, comercio, emoji, capacidades}`: `venta`, `recetas`, `obras_sociales`, `socios`, `cuenta_corriente`, `links_como_receta`, `sintomas` y `catalogo_csv_base` (ruling de la revisión final, hallazgo 17: con `false` el portal esconde la importación de catálogo CSV/PDF y el botón de fuente "csv", que el servidor igual rechaza; ver §4.8). Sin prompt y sin textos. Lo usa el portal de MO (remix del panel de Remedia) para ocultar secciones. |
 
 ### 3.7 Campos agregados al diseño, y por qué
 
@@ -611,6 +611,7 @@ logo "M", wordmark "Mascotas del Oeste" y pie "Pago seguro procesado por Payway
 | `main.py` (lifespan, después de cargar la config) | Sin horario guardado, `get_hours` usa `DEFAULT_HOURS` en silencio | `logger.warning("Horario no cargado: se usa DEFAULT_HOURS")` si no hay `hours` en Redis ni en Postgres. Es solo un log; la farmacia ya tiene horario. | — |
 | `catalog_source.py` (después de 24, nuevo) | Si no hay sucursal ERP, `aplicar_fuente` (134) recarga `data/catalogo_base.csv`, que tiene 17.192 filas de farmacia | `CSV_FARMACIA = Path(__file__).resolve().parents[2] / "data" / "catalogo_base.csv"` y `csv_de_arranque(ruta) -> str`. Si la ruta no está vacía, el perfil no tiene `catalogo_csv_base` y `Path(ruta).resolve() == CSV_FARMACIA.resolve()`, loguea `ERROR` ("SKU_CSV_PATH=… es el catálogo de la farmacia: el perfil petshop no lo carga; el catálogo sale del ERP") y devuelve `""`. Si no, devuelve la ruta tal cual. | `catalogo_csv_base` |
 | `sku_service.py:687-699` (`get_sku_service`, `reload_sku_service`) | Construyen `SKUService(csv_path)` con lo que reciban (arranque, fallback de `aplicar_fuente`, default sin argumento de `receta_marcas.py:93`, backoffice) | `SKUService(_csv_permitido(csv_path))`, con import diferido de `csv_de_arranque`. Petshop arranca con catálogo vacío (`SKUService("")`) hasta que el primer sync de Mercurio hace `set_sku_service` (`mercurio_service.py:390-397`). | `catalogo_csv_base` |
+| `backoffice.py` (`bo_sku_import`, `bo_sku_import_pdf`, `bo_config_update`; revisión final, hallazgo 17) | En petshop, importar un CSV o un PDF desde el panel reemplaza el catálogo del ERP en memoria (con `SKU_CSV_PATH` vacío, por uno vacío) y `catalogo_fuente="csv"` lo vacía y bloquea la recarga del sync | Sin `catalogo_csv_base`: las dos importaciones responden 409 `{"detail": "Este comercio toma el catálogo del ERP"}` antes de escribir el archivo, recargar o guardar el blob, y `PATCH /bo/config` con `catalogo_fuente="csv"` responde 422 sin guardar nada. `aplicar_fuente` con la fuente `"csv"` ya guardada no recarga: loguea `ERROR` y deja el catálogo como está. | `catalogo_csv_base` |
 | `webhook.py:1170-1180` | `if _s.vertical == "mutual":` es el único desvío por nombre | `if not get_perfil().venta:`. El orden no cambia. | `venta` |
 | `backoffice.py:602` | `vertical` sale de settings | `get_perfil().clave`. `metrics_store` no se toca: petshop recibe el tablero de venta. | `clave` |
 
@@ -901,8 +902,11 @@ tienen que pasar en verde con el código de hoy.
 - Catálogo: en petshop, `csv_de_arranque("data/catalogo_base.csv") == ""` con
   un `ERROR` en `caplog`; `reload_sku_service("data/catalogo_base.csv").total == 0`;
   un CSV temporal con 2 filas de MO da `total == 2`; `aplicar_fuente()` con
-  `catalogo_fuente="csv"` da `total_productos == 0`. En farmacia, el mismo
-  total que hoy, y `buscar("ibuprofeno")` devuelve resultados.
+  `catalogo_fuente="csv"` no toca el catálogo del ERP en memoria y loguea
+  `ERROR` (revisión final, hallazgo 17; antes daba `total_productos == 0`).
+  Importar CSV o PDF desde el panel da 409 y `catalogo_fuente="csv"` da 422,
+  sin escribir nada. En farmacia, el mismo total que hoy, `buscar("ibuprofeno")`
+  devuelve resultados y la importación y el botón de pánico andan igual.
 - Tablero: en petshop, `GET /bo/tablero?mes=2026-09` → 200, `vertical == "petshop"`
   y viene `producto`.
 
@@ -1118,8 +1122,10 @@ La farmacia y la mutual siguen en `develop` hasta §7.6.
 7. Revisar la tabla `config` y el hash `bot:config` de MO, y **borrar** las
    claves de texto guardadas con 💊 (`pedido_listo_*`, `efectivo_*` u otras de
    §3.4). Lo guardado gana sobre el perfil.
-8. No cargar padrón, empleados ni KB de la mutual. No usar
-   `catalogo_fuente="csv"`: en petshop deja el catálogo vacío.
+8. No cargar padrón, empleados ni KB de la mutual. El panel rechaza
+   `catalogo_fuente="csv"` y la importación de CSV/PDF en petshop (§4.8); si
+   la config de MO ya tenía guardado `catalogo_fuente="csv"`, volverlo a
+   `erp`: `aplicar_fuente` no lo aplica, pero bloquea la recarga del sync.
 9. Opcional, para que el panel no muestre "requiere receta" en filas viejas:
    `UPDATE catalog_items SET requiere_receta='no' WHERE branch_id='mascotas-oeste'`.
 

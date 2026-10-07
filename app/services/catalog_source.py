@@ -141,8 +141,19 @@ async def aplicar_fuente() -> dict:
     Recarga el catálogo en memoria según la fuente vigente: ERP si hay
     sucursal resuelta, si no el CSV. Se llama al cambiar `catalogo_fuente`
     desde el backoffice y desde POST /bo/catalogo/recargar.
+
+    Un perfil sin catalogo_csv_base (petshop) no aplica la fuente "csv": el
+    panel ya la rechaza, pero un valor guardado antes vaciaría el catálogo del
+    ERP en memoria. Se loguea ERROR y el catálogo queda como está (revisión
+    final de petshop, hallazgo 17).
     """
     from app.config import get_settings
+    from app.services.perfil import get_perfil
+    perfil = get_perfil()
+    if not perfil.catalogo_csv_base and await fuente_configurada() == "csv":
+        logger.error(f"catalogo_fuente=csv no aplica al perfil {perfil.clave}: su catálogo "
+                     "sale del ERP. No se recarga; volvé la fuente a erp desde el panel")
+        return await estado()
     invalidar_cache()
     branch = await resolver_branch_default(forzar=True)
     if branch:
