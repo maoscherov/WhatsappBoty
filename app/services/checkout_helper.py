@@ -223,24 +223,40 @@ def producto_respaldado(respuesta: str, resultados: list[dict]) -> Optional[dict
     return matches[0] if len(matches) == 1 else None
 
 
+# Medios que se pueden sacar de la lista (vertical petshop, §4.4): sin
+# cuenta corriente en el rubro, o con un comercio que cobra con Mercado Pago.
+_PM_CUENTA_CORRIENTE = r"\bcuenta\s+corriente\b"
+_PM_MERCADO_PAGO = r"\bmercado\s*pago\b"
+
 _PAGO_MANUAL = [
     r"\btransferencia\b", r"\btransferir\b", r"\btransfiero\b", r"\btransferis\b",
-    r"\befectivo\b", r"\bcbu\b", r"\balias\b", r"\bmercado\s*pago\b",
+    r"\befectivo\b", r"\bcbu\b", r"\balias\b", _PM_MERCADO_PAGO,
     # Casos 29 y 31: "lo pago en la sucursal cuando retiro" y "cuenta corriente"
     # recibían link de pago igual. Son medios que coordina una persona.
-    r"\bcuenta\s+corriente\b",
+    _PM_CUENTA_CORRIENTE,
     r"\bpag\w+\b.{0,30}\b(sucursal|local|farmacia|caja|retir\w+|ah[ií]|all[aá])\b",
     r"\b(retir\w+|sucursal)\b.{0,30}\bpag\w+",
 ]
 
 
-def pide_pago_manual(t: str) -> bool:
+def pide_pago_manual(t: str, incluir_cuenta_corriente: bool = True,
+                     incluir_mercado_pago: bool = True) -> bool:
     """
     True si el cliente pide pagar por transferencia o efectivo. Regla de negocio
     (minuta 2026-07-31): esos medios se derivan SIEMPRE a una persona — la
     transferencia requiere validar comprobante, el efectivo no se ofrece por el bot.
+
+    incluir_cuenta_corriente=False: el rubro no tiene cuenta corriente
+    (perfil.cuenta_corriente) y "¿puedo pagar con cuenta corriente?" va al modelo.
+    incluir_mercado_pago=False: el comercio cobra con Mercado Pago (config
+    pago_mp_manual=false) y pedir pagar con MP no saca al cliente de la venta.
     """
-    return any(re.search(p, t, re.IGNORECASE) for p in _PAGO_MANUAL)
+    excluidos = set()
+    if not incluir_cuenta_corriente:
+        excluidos.add(_PM_CUENTA_CORRIENTE)
+    if not incluir_mercado_pago:
+        excluidos.add(_PM_MERCADO_PAGO)
+    return any(re.search(p, t, re.IGNORECASE) for p in _PAGO_MANUAL if p not in excluidos)
 
 
 _CUENTA_CORRIENTE = [
@@ -346,7 +362,12 @@ async def habilitado_cc(phone: str, cfg: dict, socio_svc, monto: float = 0.0) ->
     Empleados (5/10): tienen cuenta corriente como los socios, con el mismo
     tope y excepciones. Antes solo valía el padrón de socios y una empleada
     que no era socia no podía anotar ("lo anoto en la cuenta" se perdía).
+
+    Un rubro sin cuenta corriente (perfil.cuenta_corriente=False) nunca la
+    habilita, aunque el teléfono esté en un padrón o en el listado de empleados.
     """
+    if not get_perfil().cuenta_corriente:
+        return None
     if str(cfg.get("cc_enabled", "true")).lower() != "true":
         return None
     try:
@@ -718,7 +739,12 @@ def descuento_para(phone: str, cfg: dict, socio_svc=None) -> tuple[float, str]:
     un empleado que además es socio tiene el de empleado (decisión 25/9).
     Único lugar que decide el descuento: catálogo, texto al modelo, respuesta
     a "¿tengo descuento?", link de pago y cotización de recetas.
+
+    Un rubro sin socios (perfil.socios=False) no tiene ningún descuento: se
+    apaga también el de empleado, que es una regla de la farmacia (§4.4).
     """
+    if not get_perfil().socios:
+        return 0.0, ""
     try:
         from app.services.empleado_service import get_empleado_service
         if get_empleado_service().find_by_phone(phone):

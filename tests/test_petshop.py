@@ -187,3 +187,187 @@ def test_dominio_propio(base_url, esperado):
 def test_contiene_link_con_dominio_propio(texto, dominio, esperado):
     from app.services.checkout_helper import contiene_link
     assert contiene_link(texto, dominio) is esperado
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Beneficios (§4.4): socios, empleados, cuenta corriente y pago manual
+# ══════════════════════════════════════════════════════════════════════════════
+class _SociosBen:
+    def __init__(self, socios):
+        self.s = socios
+
+    def find_by_phone(self, phone):
+        return self.s.get(phone)
+
+    def contexto_para_prompt(self, phone):
+        return "Nombre de pila (para saludar): Ana" if phone in self.s else None
+
+
+_CFG_BEN = {"socio_discount_pct": "15", "empleado_discount_pct": "20",
+            "socio_discount_en_catalogo": "true", "receta_mode": "conservador",
+            "cc_enabled": "true"}
+
+
+@pytest.fixture
+def empleados_ben(monkeypatch):
+    """Listado de empleados falso (mismo patrón que test_descuento_entrega.py)."""
+    import sys
+    import types
+    padron = {}
+    mod = types.ModuleType("app.services.empleado_service")
+
+    class _Svc:
+        def find_by_phone(self, phone):
+            return padron.get(phone)
+    svc = _Svc()
+    mod.get_empleado_service = lambda *a, **k: svc
+    monkeypatch.setitem(sys.modules, "app.services.empleado_service", mod)
+    return padron
+
+
+def test_beneficios_descuento_para_petshop_apaga_socio_y_empleado(usar_perfil, empleados_ben):
+    from app.services import checkout_helper as ch
+    usar_perfil("petshop")
+    empleados_ben["549E"] = {"nombre_pila": "Ema"}
+    socios = _SociosBen({"549E": {"nombre": "Ema"}, "549S": {"nombre": "Sol"}})
+    assert ch.descuento_para("549E", _CFG_BEN, socios) == (0.0, "")
+    assert ch.descuento_para("549S", _CFG_BEN, socios) == (0.0, "")
+
+
+def test_beneficios_descuento_para_farmacia_igual_que_hoy(usar_perfil, empleados_ben):
+    from app.services import checkout_helper as ch
+    usar_perfil("farmacia")
+    empleados_ben["549E"] = {"nombre_pila": "Ema"}
+    socios = _SociosBen({"549E": {"nombre": "Ema"}, "549S": {"nombre": "Sol"}})
+    assert ch.descuento_para("549E", _CFG_BEN, socios) == (20.0, "empleado")
+    assert ch.descuento_para("549S", _CFG_BEN, socios) == (15.0, "socio")
+
+
+def _res_ben():
+    return [{"sku_id": "P1", "nombre": "DOG CHOW ADULTO 15KG", "precio": 10000.0,
+             "requiere_receta": "no", "vendible": True}]
+
+
+def test_beneficios_aplicar_descuento_petshop_no_toca_precios(usar_perfil, empleados_ben):
+    from app.services import checkout_helper as ch
+    usar_perfil("petshop")
+    empleados_ben["549E"] = {"nombre_pila": "Ema"}
+    out, pct = ch.aplicar_descuento_socio(_res_ben(), "549E", _CFG_BEN,
+                                          _SociosBen({"549E": {"nombre": "Ema"}}))
+    assert pct == 0.0
+    assert out[0]["precio"] == 10000.0 and "precio_lista" not in out[0]
+
+
+def test_beneficios_aplicar_descuento_farmacia_igual_que_hoy(usar_perfil, empleados_ben):
+    from app.services import checkout_helper as ch
+    usar_perfil("farmacia")
+    empleados_ben["549E"] = {"nombre_pila": "Ema"}
+    out, pct = ch.aplicar_descuento_socio(_res_ben(), "549E", _CFG_BEN,
+                                          _SociosBen({"549E": {"nombre": "Ema"}}))
+    assert pct == 20.0
+    assert out[0]["precio"] == pytest.approx(8000.0) and out[0]["precio_lista"] == 10000.0
+
+
+async def _link_de_empleado(monkeypatch, empleados_ben):
+    """Link de un empleado con el precio pendiente ya bonificado ($8.000 de $10.000)."""
+    from app.services import checkout_helper as ch
+    from app.services import config_service as cs
+    from app.services.session_service import SessionService
+    empleados_ben["549E"] = {"nombre_pila": "Ema"}
+
+    class _CfgBen:
+        async def get_all(self):
+            return dict(_CFG_BEN)
+
+        async def get_hours(self):
+            return {}
+
+        def is_open_now(self, hours):
+            return True
+    monkeypatch.setattr(cs, "get_config_service", lambda *a, **k: _CfgBen())
+
+    async def _sin_freno(*a, **k):
+        return None, None
+    monkeypatch.setattr(ch, "_chequear_stock_vivo", _sin_freno)
+    # Precio de lista mayor al cobrado: con descuento vigente sale la línea "🎉".
+    monkeypatch.setattr(ch, "precio_sin_descuento", lambda items, pct, sku_svc=None: 10000.0)
+
+    class _Pago:
+        async def crear_link(self, **k):
+            return "https://pago/ben", None
+
+    ss = SessionService("redis://127.0.0.1:1")
+    await ss.set_pending("549E", sku_id="P1", sku_nombre="DOG CHOW ADULTO 15KG",
+                         precio=8000.0, cantidad=1, opciones=[])
+    return await ch.crear_link_y_responder(_Pago(), ss, "549E", await ss.get("549E"),
+                                           "retiro", None)
+
+
+async def test_beneficios_link_petshop_sin_linea_de_empleado(usar_perfil, empleados_ben,
+                                                             monkeypatch):
+    usar_perfil("petshop")
+    resp, link = await _link_de_empleado(monkeypatch, empleados_ben)
+    assert link == "https://pago/ben"
+    assert "Como empleado" not in resp and "🎉" not in resp
+    assert "$8,000.00" in resp
+
+
+async def test_beneficios_link_farmacia_con_linea_de_empleado_igual_que_hoy(
+        usar_perfil, empleados_ben, monkeypatch):
+    usar_perfil("farmacia")
+    resp, link = await _link_de_empleado(monkeypatch, empleados_ben)
+    assert link == "https://pago/ben"
+    assert "🎉 Como empleado te aplicamos un 20% de descuento (precio de lista: $10,000.00)." in resp
+
+
+class _SinExcepcionesCC:
+    async def es_excepcion(self, socio):
+        return False
+
+
+async def test_beneficios_habilitado_cc_petshop_none(usar_perfil, empleados_ben, monkeypatch):
+    from app.services import checkout_helper as ch
+    import app.services.cc_service as ccmod
+    monkeypatch.setattr(ccmod, "_instance", _SinExcepcionesCC())
+    usar_perfil("petshop")
+    empleados_ben["549E"] = {"nombre_pila": "Ema"}
+    socios = _SociosBen({"549S": {"nombre": "Sol", "dni": "1"}})
+    assert await ch.habilitado_cc("549S", _CFG_BEN, socios, 1000) is None
+    assert await ch.habilitado_cc("549E", _CFG_BEN, socios, 1000) is None
+
+
+async def test_beneficios_habilitado_cc_farmacia_igual_que_hoy(usar_perfil, empleados_ben,
+                                                               monkeypatch):
+    from app.services import checkout_helper as ch
+    import app.services.cc_service as ccmod
+    monkeypatch.setattr(ccmod, "_instance", _SinExcepcionesCC())
+    usar_perfil("farmacia")
+    empleados_ben["549E"] = {"nombre_pila": "Ema"}
+    socios = _SociosBen({"549S": {"nombre": "Sol", "dni": "1"}})
+    assert (await ch.habilitado_cc("549S", _CFG_BEN, socios, 1000))["nombre"] == "Sol"
+    assert (await ch.habilitado_cc("549E", _CFG_BEN, socios, 1000))["empleado"] is True
+
+
+def test_beneficios_pide_pago_manual_sin_cc_ni_mp():
+    from app.services.checkout_helper import pide_pago_manual
+    assert pide_pago_manual("me lo anotás en cuenta corriente?", incluir_cuenta_corriente=False) is False
+    assert pide_pago_manual("lo pago con mercado pago", incluir_mercado_pago=False) is False
+    # Los demás medios manuales siguen contando con los dos apagados.
+    assert pide_pago_manual("te pago por transferencia", incluir_cuenta_corriente=False,
+                            incluir_mercado_pago=False) is True
+    assert pide_pago_manual("lo pago en la sucursal cuando retiro", incluir_cuenta_corriente=False,
+                            incluir_mercado_pago=False) is True
+
+
+def test_beneficios_pide_pago_manual_farmacia_igual_que_hoy():
+    from app.services.checkout_helper import pide_pago_manual
+    assert pide_pago_manual("me lo anotás en cuenta corriente?") is True
+    assert pide_pago_manual("lo pago con mercado pago") is True
+    assert pide_pago_manual("tenés ibuprofeno?") is False
+
+
+def test_beneficios_pago_mp_manual_default_y_editable():
+    from app.routers.backoffice import ConfigUpdate
+    from app.services.config_service import DEFAULTS
+    assert DEFAULTS["pago_mp_manual"] == "true"          # default: todo igual que hoy
+    assert ConfigUpdate(pago_mp_manual="false").model_dump()["pago_mp_manual"] == "false"
