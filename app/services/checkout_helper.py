@@ -1847,10 +1847,11 @@ def entidad_contradice_pendiente(entidad: Optional[str], pending_nombre: Optiona
 
 
 # Un número que elige otra presentación en el mensaje del cliente: "la de 3",
-# "el de 400", "los del 20" (artículo + de/del + número) o "x 30".
+# "el de 400", "los del 20" (artículo + de/del + número) o "x 30". "x2" con
+# una cifra es una cantidad, como "dame 2" en numeros_de: no cuenta.
 _NUM_ELEGIDO_RE = re.compile(
     r"\b(?:el|la|los|las|uno|una|unos|unas)\s+del?\s+(\d+(?:[.,]\d+)?)\b"
-    r"|\bx\s*(\d{1,4})\b", re.IGNORECASE)
+    r"|\bx\s*(\d{2,4})\b", re.IGNORECASE)
 _NUM_RE = re.compile(r"\d+(?:[.,]\d+)?")
 
 

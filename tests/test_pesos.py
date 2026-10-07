@@ -385,6 +385,9 @@ async def test_si_el_modelo_confirma_se_conserva_la_entrega(perfil, entorno, mon
     ("si, mandamelo a corrientes 1234", "ROYAL CANIN MEDIUM ADULT 15KG", False),
     ("dale, envio a san martin 456 rosario", "ROYAL CANIN MEDIUM ADULT 15KG", False),
     ("sí, lo retiro", "ROYAL CANIN MEDIUM ADULT 15KG", False),
+    # "x2" es una cantidad (como "dame 2" en numeros_de): no elige presentación
+    ("si, x2, lo retiro", "IBUPROFENO 600 MG X 10", False),
+    ("dale x 3, mandamelo", "IBUPROFENO 600 MG X 10", False),
 ])
 def test_numero_contradice_pendiente(perfil, txt, pendiente, contradice):
     assert ch.numero_contradice_pendiente(txt, pendiente) is contradice
