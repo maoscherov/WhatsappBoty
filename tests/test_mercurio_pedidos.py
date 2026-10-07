@@ -649,3 +649,84 @@ class TestCodigosMercurio:
         assert row["erp_estado"] == "pendiente"
         assert "códigos Mercurio" in row["erp_ultimo_error"]
         assert "conexion reseteada" in row["erp_ultimo_error"]
+
+
+# ── Renglones del pedido: carrito y envío (hallazgo 5) ────────────────────────
+
+CODIGOS_2 = {**CODIGOS, "15181": {"codigo": "10955", "codigo_padre": "PET1304801"}}
+
+
+def _orden_con_items(costo_envio=0.0, total=None, **extra):
+    items = [
+        {"sku_id": "7508", "nombre": "Royal 400 g", "cantidad": 2,
+         "precio_unitario": 1000.0, "total": 2000.0},
+        {"sku_id": "15181", "nombre": "Collar rosa", "cantidad": 1,
+         "precio_unitario": 500.0, "total": 500.0},
+    ]
+    return _orden(sku_id="MULTI", sku_nombre="2 productos", cantidad=1,
+                  total=2500.0 + costo_envio if total is None else total,
+                  items=items, costo_envio=costo_envio, **extra)
+
+
+class TestRenglones:
+    def test_un_line_item_por_renglon_y_el_envio_en_shipping_total(self):
+        p = pedido_desde_orden(_orden_con_items(costo_envio=2000.0), CODIGOS_2,
+                               state="complete", customer_id_default="x")
+        assert [(li["variant_id"], li["product_id"], li["quantity"], li["subtotal"],
+                 li["total"]) for li in p["line_items"]] == [
+            ("2209004", "ROY1051701", 2, 2000.0, 2000.0),
+            ("10955", "PET1304801", 1, 500.0, 500.0)]
+        assert p["shipping_total"] == 2000.0
+        assert p["total"] == 4500.0
+
+    def test_sin_envio_no_manda_shipping_total(self):
+        p = pedido_desde_orden(_orden_con_items(), CODIGOS_2, state="complete",
+                               customer_id_default="x")
+        assert "shipping_total" not in p
+        assert p["total"] == 2500.0
+
+    def test_el_renglon_sale_de_precio_unitario_por_cantidad(self):
+        o = _orden_con_items()
+        o["items"][0]["total"] = 1.0              # el total guardado no manda
+        p = pedido_desde_orden(o, CODIGOS_2, state="complete", customer_id_default="x")
+        assert p["line_items"][0]["subtotal"] == 2000.0
+
+    def test_un_centavo_de_diferencia_se_tolera(self):
+        p = pedido_desde_orden(_orden_con_items(total=2500.01), CODIGOS_2,
+                               state="complete", customer_id_default="x")
+        assert p["total"] == 2500.01
+
+    def test_renglones_que_no_cuadran_no_arman_el_pedido(self):
+        from app.services.mercurio_pedidos import PedidoInconsistente
+        with pytest.raises(PedidoInconsistente, match="renglones no cuadran con el total"):
+            pedido_desde_orden(_orden_con_items(total=3000.0), CODIGOS_2, state="complete",
+                               customer_id_default="x")
+
+    def test_orden_vieja_de_carrito_sin_renglones(self):
+        from app.services.mercurio_pedidos import PedidoInconsistente
+        with pytest.raises(PedidoInconsistente, match="pedido sin renglones"):
+            pedido_desde_orden(_orden(sku_id="MULTI", cantidad=1), CODIGOS_2,
+                               state="complete", customer_id_default="x")
+
+    @pytest.fixture
+    def _flag(self, monkeypatch):
+        s = get_settings()
+        monkeypatch.setattr(s, "mercurio_pedidos_enabled", True)
+        monkeypatch.setattr(s, "mercurio_branch_id", "mascotas-oeste")
+
+    @pytest.mark.parametrize("orden, motivo", [
+        (_orden_con_items(total=3000.0), "renglones no cuadran con el total"),
+        (_orden(sku_id="MULTI", cantidad=1), "pedido sin renglones"),
+    ])
+    async def test_sin_cuadrar_no_hay_post_y_queda_rechazado(self, db, _flag, orden, motivo):
+        from app.services.order_store import get_order_store
+        await _preparar_codigos(db)
+        await get_order_store(db).upsert(orden, erp_estado="pendiente")
+        reqs: list = []
+        assert await enviar_pedido_erp(orden, client=_cliente_pedidos([OK_201], reqs),
+                                       db=db) is None
+        assert reqs == []
+        row = await db.fetchrow("SELECT erp_estado, erp_ultimo_error FROM orders "
+                                "WHERE order_id = $1", orden["order_id"])
+        assert row["erp_estado"] == "rechazado"
+        assert motivo in row["erp_ultimo_error"]

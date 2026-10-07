@@ -1226,10 +1226,15 @@ async def _paylink_items(body: "PaylinkIn") -> dict:
                 "modo": "cotizar", "delegado": body.delegar}
 
     from app.routers.webhook import payment_svc_para
+    from app.services.checkout_snapshot import armar_snapshot
     payment_svc = payment_svc_para(cfg, settings)
     link, err = await payment_svc.crear_link(
         sku_id="MULTI" if len(lineas) > 1 else lineas[0]["sku_id"],
-        nombre=resumen, precio=total, phone=body.phone, cantidad=1)
+        nombre=resumen, precio=total, phone=body.phone, cantidad=1,
+        # Renglones del pedido (alta en el ERP): viajan con el link.
+        snapshot=armar_snapshot([{"sku_id": l["sku_id"], "nombre": l["nombre"],
+                                  "cantidad": l["cantidad"], "precio": l["precio_final"]}
+                                 for l in lineas], 0.0, total))
     if not link:
         return {"ok": False, "error": err or "no se pudo generar el link"}
     mensaje = body.mensaje or (f"¡Buenas noticias! Tenemos stock de:\n{detalle}\n\n"
@@ -1342,9 +1347,13 @@ async def bo_paylink(body: PaylinkIn, _=Depends(_auth)):
 
     # Generar el link con el proveedor activo (el mismo que usa el bot)
     from app.routers.webhook import payment_svc_para
+    from app.services.checkout_snapshot import armar_snapshot
     payment_svc = payment_svc_para(_cfg, settings)
     link, err = await payment_svc.crear_link(
         sku_id=sku_id, nombre=nombre, precio=precio, phone=body.phone, cantidad=cantidad,
+        # Renglones del pedido (alta en el ERP): viajan con el link.
+        snapshot=armar_snapshot([{"sku_id": sku_id, "nombre": nombre, "cantidad": cantidad,
+                                  "precio": precio}], 0.0, total),
     )
     if not link:
         return {"ok": False, "error": err or "no se pudo generar el link"}

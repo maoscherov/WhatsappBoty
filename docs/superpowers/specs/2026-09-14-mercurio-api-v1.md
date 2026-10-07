@@ -82,6 +82,12 @@ titulo_producto, descripcion_producto, meta_title, meta_descripcion, meta_keywor
 6. Valores de `state` y `payment_method` (tarjeta online, cuenta corriente, retiro).
 7. Cambios incrementales / webhooks; `GET` de pedido por `id_comprobante`.
 8. Pase a producción (clave productiva). Turnos: sin API todavía.
+9. Envío a domicilio en `POST /pedidos`: la doc no dice cómo informar el
+   costo. **Asumimos `shipping_total`** en el cuerpo (como el ecommerce), con
+   `line_items` solo de productos y `total` = productos + envío; antes del POST
+   validamos que cuadre. Si el ERP lo ignora o lo rechaza, los pedidos con
+   envío quedan `rechazado` (visibles) hasta ajustar el campo (o mandarlo como
+   renglón con el SKU de envío que indique el proveedor).
 
 ## Implementación (servidor)
 - `app/services/mercurio_service.py`: `MercurioClient` (httpx, Bearer,
@@ -96,6 +102,9 @@ titulo_producto, descripcion_producto, meta_title, meta_descripcion, meta_keywor
 - Stock en vivo: `catalog_live.lookup_vivo` despacha al agente (WS) o a
   `GET /articulos/{id}/stock` según la sucursal; lo usan la oferta y el cobro.
 - Alta de pedidos: pendiente, detrás de `MERCURIO_PEDIDOS_ENABLED` (false).
+  Un `line_item` por renglón del checkout (snapshot guardado con el link: en
+  la `metadata` de la preferencia de MP o en el pago pendiente de Payway), el
+  envío en `shipping_total` (pregunta 9) e `Idempotency-Key` = `order_id`.
 - Un deploy = una sucursal activa: Mascotas del Oeste corre en su propio
   servicio de Railway con su Postgres. Si conviviera con farmacia-mutual en la
   misma base, haría falta `DEFAULT_BRANCH_ID`.

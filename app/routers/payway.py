@@ -257,12 +257,26 @@ async def payway_charge(body: ChargeIn):
             tipo_entrega = session.get("tipo_entrega") or "retiro"
             direccion_envio = session.get("direccion_envio")
 
+            # Renglones del pedido (alta en el ERP, F5): los que se guardaron
+            # en el pendiente al crear el link; si no están (link de antes),
+            # el pedido de la sesión si todavía es el de este cobro.
+            from app.services.checkout_snapshot import (
+                costo_envio_vigente, extra_de_la_orden, snapshot_del_cobro, snapshot_valido)
+            snap = snapshot_valido(pending)
+            if snap is None:
+                snap = snapshot_del_cobro(
+                    None, session, pending["sku_id"],
+                    await costo_envio_vigente(get_config_service(settings.redis_url),
+                                              tipo_entrega),
+                    float(pending["total"]))
+
             order_svc = get_order_service(settings.redis_url)
             order = await order_svc.create(
                 phone=phone, sku_id=pending["sku_id"],
                 sku_nombre=nombre_producto, cantidad=int(pending["cantidad"]),
                 total=float(pending["total"]), mp_payment_id=str(data.get("id")),
                 tipo_entrega=tipo_entrega, direccion_envio=direccion_envio,
+                extra=extra_de_la_orden(snap),
             )
             logger.info(f"Pedido registrado (Payway): {order['order_id']} entrega={tipo_entrega}")
 

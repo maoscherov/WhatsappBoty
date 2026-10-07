@@ -46,11 +46,17 @@ class PaymentService:
         precio: float,
         phone: str,
         cantidad: int = 1,
+        snapshot: Optional[dict] = None,
     ) -> tuple[Optional[str], Optional[str]]:
         """
         Crea una preferencia de pago.
         Retorna (init_point, error_detail).
         Si falla: (None, "descripción del error")
+
+        `snapshot`: renglones del checkout (app/services/checkout_snapshot.py).
+        Va en `metadata` de la preferencia y MP lo devuelve en
+        payment["metadata"] al consultar el pago: así el cierre de la venta
+        sabe qué se vendió aunque el link sea "MULTI" x1 con el envío sumado.
         """
         expiration = (datetime.now(timezone.utc) + timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%S.000-00:00")
 
@@ -66,6 +72,8 @@ class PaymentService:
             "external_reference": f"{phone}_{sku_id}",
             "statement_descriptor": statement_descriptor(),
         }
+        if snapshot:
+            payload["metadata"] = snapshot
 
         if self._notification_url:
             payload["notification_url"] = self._notification_url

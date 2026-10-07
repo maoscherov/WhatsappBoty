@@ -70,7 +70,7 @@ class _Pago:
     def __init__(self):
         self.links = []
 
-    async def crear_link(self, sku_id, nombre, precio, phone, cantidad=1):
+    async def crear_link(self, sku_id, nombre, precio, phone, cantidad=1, snapshot=None):
         self.links.append(nombre)
         return f"https://pago.test/{len(self.links)}", None
 

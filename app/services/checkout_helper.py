@@ -1357,12 +1357,17 @@ async def crear_link_y_responder(
             link_previo=session.get("estado") == "esperando_pago")
         return await nota_envio_fuera_horario(respuesta_cc, tipo_entrega), None
 
+    # Renglones tal como se cobran (carrito, cantidad y envío aparte): viajan
+    # con el link (metadata de MP / pending de Payway) para que el pedido
+    # llegue completo al ERP aunque la sesión cambie antes del pago.
+    from app.services.checkout_snapshot import snapshot_de_sesion
     link, err = await payment_svc.crear_link(
         sku_id=sku_link,
         nombre=nombre_link,
         precio=precio_unitario,
         phone=phone,
         cantidad=cantidad,
+        snapshot=snapshot_de_sesion(session, _costo_envio, total),
     )
 
     if not link:

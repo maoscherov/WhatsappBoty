@@ -52,16 +52,53 @@ def _id_estable(order_id: str) -> int:
     return int(hashlib.sha256(order_id.encode()).hexdigest()[:8], 16)
 
 
+class PedidoInconsistente(ValueError):
+    """La orden no tiene renglones confiables (carrito viejo sin `items`) o
+    sus renglones no cuadran con el total cobrado: NO se manda y queda
+    'rechazado' con el motivo (mandarlo registraría otra cosa que lo vendido)."""
+
+
 def _items_de_la_orden(order: dict) -> list[dict]:
-    """Hoy la orden es de un solo SKU (sku_id/cantidad/total); si mañana trae
-    `items` (carrito multi-producto), se respetan."""
+    """
+    Renglones de la orden: [{sku_id, cantidad, total}].
+
+    - Con `items` (el snapshot del checkout guardado al crear el link): uno
+      por producto, total = precio_unitario * cantidad redondeado.
+    - Orden vieja sin `items` de un solo SKU: un renglón con su cantidad y el
+      total de la orden (como hasta ahora).
+    - Orden vieja de carrito ("MULTI") o sin SKU: PedidoInconsistente.
+    """
     if order.get("items"):
-        return list(order["items"])
+        out = []
+        for it in order["items"]:
+            cant = max(1, int(it.get("cantidad") or 1))
+            pu = round(float(it.get("precio_unitario") or 0), 2)
+            out.append({"sku_id": str(it.get("sku_id") or ""), "cantidad": cant,
+                        "total": round(pu * cant, 2)})
+        return out
+    sku = str(order.get("sku_id") or "")
+    if not sku or sku == "MULTI":
+        raise PedidoInconsistente("pedido sin renglones (orden sin items y sin un SKU único)")
     return [{
-        "sku_id": str(order.get("sku_id") or ""),
+        "sku_id": sku,
         "cantidad": int(order.get("cantidad") or 1),
         "total": round(float(order.get("total") or 0), 2),
     }]
+
+
+def _costo_envio(order: dict) -> float:
+    return round(float(order.get("costo_envio") or 0), 2) if order.get("items") else 0.0
+
+
+def _validar_total(order: dict, renglones: list[dict]) -> None:
+    """suma(renglones) + envío == total cobrado (tolerancia de un centavo)."""
+    suma = round(sum(r["total"] for r in renglones), 2)
+    envio = _costo_envio(order)
+    total = round(float(order.get("total") or 0), 2)
+    if round(abs(suma + envio - total), 2) > 0.01:
+        raise PedidoInconsistente(
+            f"renglones no cuadran con el total: {suma:.2f} + envío {envio:.2f} "
+            f"!= {total:.2f}")
 
 
 class CodigoMercurioFaltante(LookupError):
@@ -75,6 +112,12 @@ def pedido_desde_orden(order: dict, codigos: dict[str, dict], *,
     """
     Arma el JSON del POST /pedidos (campos obligatorios del contrato).
 
+    Un line_item por renglón de la orden (quantity = cantidad, subtotal =
+    total = precio_unitario * cantidad). El envío va aparte, en
+    `shipping_total` (solo si es > 0), y `total` es lo cobrado. Antes valida
+    que suma(line_items) + envío == total: si no cuadra, o la orden es un
+    carrito viejo sin renglones, PedidoInconsistente y no hay pedido.
+
     Cada renglón necesita su `codigo` de variante (de mercurio_codigos). Nunca
     se cae al external_id: es el id_articulo_mercurio, comparte el espacio
     numérico con los códigos y podría registrar OTRO artículo. Si falta alguno,
@@ -82,6 +125,7 @@ def pedido_desde_orden(order: dict, codigos: dict[str, dict], *,
     """
     order_id = str(order.get("order_id"))
     renglones = _items_de_la_orden(order)
+    _validar_total(order, renglones)
     faltan = []
     for it in renglones:
         sku = str(it.get("sku_id") or "")
@@ -102,7 +146,7 @@ def pedido_desde_orden(order: dict, codigos: dict[str, dict], *,
             "subtotal": total_item,
             "total": total_item,
         })
-    return {
+    pedido = {
         "id": _id_estable(order_id),
         "number": order_id,
         "state": state,
@@ -110,6 +154,12 @@ def pedido_desde_orden(order: dict, codigos: dict[str, dict], *,
         "total": round(float(order.get("total") or 0), 2),
         "line_items": line_items,
     }
+    # El contrato no documenta el envío: va en `shipping_total` (pregunta
+    # abierta al proveedor, docs/superpowers/specs/2026-09-14-mercurio-api-v1.md).
+    envio = _costo_envio(order)
+    if envio > 0:
+        pedido["shipping_total"] = envio
+    return pedido
 
 
 async def enviar_pedido_erp(order: dict, *, client=None, db=None) -> Optional[dict]:
@@ -147,11 +197,21 @@ async def enviar_pedido_erp(order: dict, *, client=None, db=None) -> Optional[di
         except Exception as e2:
             logger.error(f"Pedido {order_id}: no se pudo marcar {estado}: {e2}")
 
+    # Renglones: sin renglones confiables, o si no cuadran con lo cobrado, no
+    # se manda nada (registraría otra cosa que lo vendido) y queda rechazado.
+    try:
+        renglones = _items_de_la_orden(order)
+        _validar_total(order, renglones)
+    except PedidoInconsistente as e:
+        logger.error(f"Pedido {order_id} NO se manda al ERP: {e}")
+        await _marcar("rechazado", str(e))
+        return None
+
     # Códigos de variante. Un error de Postgres se propaga (raise_errors): no
     # se confunde con "no hay códigos" ni se manda nada a ciegas.
     try:
         codigos: dict[str, dict] = {}
-        skus = [str(i.get("sku_id") or "") for i in _items_de_la_orden(order)]
+        skus = [r["sku_id"] for r in renglones]
         rows = await db.fetch(
             "SELECT external_id, codigo, codigo_padre FROM mercurio_codigos "
             "WHERE branch_id = $1 AND external_id = ANY($2::text[])",

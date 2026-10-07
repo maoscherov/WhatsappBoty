@@ -178,6 +178,18 @@ async def _cerrar_venta(settings, payment: dict, payment_id: str, external_ref: 
     tipo_entrega = session.get("tipo_entrega") or "retiro"
     direccion_envio = session.get("direccion_envio")
 
+    # Renglones del pedido (alta en el ERP, F5): los que viajaron con el link
+    # en la metadata de la preferencia; sin metadata (link de antes), el
+    # pedido de la sesión si todavía es el de este cobro.
+    from app.services.checkout_snapshot import (
+        costo_envio_vigente, extra_de_la_orden, snapshot_del_cobro, snapshot_valido)
+    snap = snapshot_valido(payment.get("metadata"))
+    if snap is None:
+        snap = snapshot_del_cobro(
+            None, session, sku_id,
+            await costo_envio_vigente(get_config_service(settings.redis_url), tipo_entrega),
+            total)
+
     # Métrica de embudo (MP no notifica rechazos por webhook: solo aprobados)
     try:
         from app.services.db import get_db
@@ -204,6 +216,7 @@ async def _cerrar_venta(settings, payment: dict, payment_id: str, external_ref: 
         mp_payment_id=payment_id,
         tipo_entrega=tipo_entrega,
         direccion_envio=direccion_envio,
+        extra=extra_de_la_orden(snap),
     )
     logger.info(f"Pedido registrado: {order['order_id']} entrega={tipo_entrega}")
 

@@ -28,8 +28,12 @@ def _redis():
 
 
 async def crear_pago_pendiente(phone: str, sku_id: str, sku_nombre: str,
-                               cantidad: int, total: float) -> str:
-    """Guarda un pago pendiente y devuelve la URL de la página de pago."""
+                               cantidad: int, total: float,
+                               snapshot: Optional[dict] = None) -> str:
+    """Guarda un pago pendiente y devuelve la URL de la página de pago.
+
+    `snapshot` (app/services/checkout_snapshot.py): los renglones del checkout
+    (`items`, `costo_envio`) quedan en el mismo pendiente que lee el cobro."""
     settings = get_settings()
     pid = uuid.uuid4().hex[:16]
     data = {
@@ -37,6 +41,9 @@ async def crear_pago_pendiente(phone: str, sku_id: str, sku_nombre: str,
         "cantidad": cantidad, "total": total, "estado": "pendiente",
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
+    if snapshot:
+        data["items"] = snapshot.get("items") or []
+        data["costo_envio"] = snapshot.get("costo_envio") or 0.0
     try:
         await _redis().setex(f"payway:pending:{pid}", PENDING_TTL, json.dumps(data))
     except Exception as e:
@@ -55,6 +62,7 @@ class PaywayLinkService:
         precio: float,
         phone: str,
         cantidad: int = 1,
+        snapshot: Optional[dict] = None,
     ) -> tuple[Optional[str], Optional[str]]:
         settings = get_settings()
         if not settings.public_base_url:
@@ -62,7 +70,8 @@ class PaywayLinkService:
         total = round(precio * max(1, int(cantidad)), 2)
         try:
             url = await crear_pago_pendiente(phone=phone, sku_id=sku_id,
-                                             sku_nombre=nombre, cantidad=cantidad, total=total)
+                                             sku_nombre=nombre, cantidad=cantidad, total=total,
+                                             snapshot=snapshot)
             return url, None
         except Exception as e:
             return None, str(e)

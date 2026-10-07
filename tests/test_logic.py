@@ -657,7 +657,7 @@ async def test_link_de_pago_suma_el_carrito():
 
     capturado = {}
     class _FakePago:
-        async def crear_link(self, sku_id, nombre, precio, phone, cantidad=1):
+        async def crear_link(self, sku_id, nombre, precio, phone, cantidad=1, snapshot=None):
             capturado.update(sku_id=sku_id, nombre=nombre, precio=precio, cantidad=cantidad)
             return "https://pago/x", None
 
@@ -720,7 +720,7 @@ class TestExtrasElegibles:
         capturado = {}
 
         class _FakePago:
-            async def crear_link(self, sku_id, nombre, precio, phone, cantidad=1):
+            async def crear_link(self, sku_id, nombre, precio, phone, cantidad=1, snapshot=None):
                 capturado["precio"] = precio
                 return "https://pago/x", None
 
@@ -995,7 +995,7 @@ class TestCotizacionSinLink:
 
         class _FakePago:
             def __init__(self): self.capturado = {}
-            async def crear_link(self, sku_id, nombre, precio, phone, cantidad=1):
+            async def crear_link(self, sku_id, nombre, precio, phone, cantidad=1, snapshot=None):
                 self.capturado.update(precio=precio, cantidad=cantidad)
                 return "https://pago/x", None
 
@@ -1125,7 +1125,7 @@ class TestCostoEnvio:
 
     class _FakePago:
         def __init__(self): self.capturado = {}
-        async def crear_link(self, sku_id, nombre, precio, phone, cantidad=1):
+        async def crear_link(self, sku_id, nombre, precio, phone, cantidad=1, snapshot=None):
             self.capturado.update(nombre=nombre, precio=precio, cantidad=cantidad)
             return "https://pago/x", None
 
@@ -1228,7 +1228,7 @@ class TestCotizacionReceta:
         from app.main import app
 
         class _FakePago:
-            async def crear_link(self, sku_id, nombre, precio, phone, cantidad=1):
+            async def crear_link(self, sku_id, nombre, precio, phone, cantidad=1, snapshot=None):
                 return "https://pago/FRESCO", None
 
         monkeypatch.setattr(wh, "payment_svc_para", lambda cfg, s: _FakePago())
@@ -2214,7 +2214,7 @@ class TestDescuentoSocioEnCatalogo:
         capturado = {}
 
         class _FakePago:
-            async def crear_link(self, sku_id, nombre, precio, phone, cantidad=1):
+            async def crear_link(self, sku_id, nombre, precio, phone, cantidad=1, snapshot=None):
                 capturado["precio"] = precio
                 return "https://pago/x", None
 

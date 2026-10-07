@@ -179,29 +179,38 @@ def _montar_mp(monkeypatch, ent: _Entorno, payment: dict):
     return mp_webhook
 
 
-def _montar_payway(monkeypatch, ent: _Entorno, pending: dict, payway_id: str):
+class _RedisKV:
+    """Redis mínimo de Payway (get/setex sobre un dict compartido)."""
+
+    def __init__(self, kv: dict):
+        self.kv = kv
+
+    async def get(self, k):
+        return self.kv.get(k)
+
+    async def setex(self, k, ttl, v):
+        self.kv[k] = v
+
+
+def _kv_con(pending: dict) -> dict:
+    return {f"payway:pending:{pending['id']}": json.dumps(pending)}
+
+
+def _montar_payway(monkeypatch, ent: _Entorno, kv: dict, payway_id: str):
     import app.routers.payway as pw
     import app.services.config_service as cs
-    kv = {f"payway:pending:{pending['id']}": json.dumps(pending)}
-
-    class _R:
-        async def get(self, k):
-            return kv.get(k)
-
-        async def setex(self, k, ttl, v):
-            kv[k] = v
 
     class _Pw:
         async def crear_pago(self, **k):
             return {"id": payway_id, "status": "approved", "card_brand": "Visa"}, None
 
     _montar_sesion(monkeypatch, ent)
-    monkeypatch.setattr(pw, "_redis", lambda: _R())
+    monkeypatch.setattr(pw, "_redis", lambda: _RedisKV(kv))
     monkeypatch.setattr(pw, "get_payway_service", lambda *a, **k: _Pw())
     monkeypatch.setattr(pw, "get_order_service", lambda *a: _order_service(ent.redis))
     monkeypatch.setattr(pw, "get_whatsapp_service", lambda *a: ent.wa)
     monkeypatch.setattr(cs, "get_config_service", lambda *a, **k: _Cfg(ent.cfg))
-    return pw, kv
+    return pw
 
 
 def _pago_mp(sku="7508", total=1000.0, titulo="Royal 400 g", cantidad=1, metadata=None):
@@ -247,7 +256,7 @@ async def test_mp_corte_despues_de_crear_la_orden_queda_pendiente(erp, db, monke
 async def test_payway_corte_despues_de_crear_la_orden_queda_pendiente(erp, db, monkeypatch):
     from app.services.mercurio_pedidos import reintentar_pedidos_pendientes
     ent = _Entorno(wa=_WA(falla=True))
-    pw, _kv = _montar_payway(monkeypatch, ent, _pending_payway("PID-CORTE"), "PW-CORTE-1")
+    pw = _montar_payway(monkeypatch, ent, _kv_con(_pending_payway("PID-CORTE")), "PW-CORTE-1")
 
     r = await pw.payway_charge(pw.ChargeIn(pid="PID-CORTE", token="tok", bin="450799"))
     assert r["status"] == "approved"                    # el cobro ya ocurrió
@@ -268,3 +277,269 @@ async def test_mp_con_el_flag_apagado_no_encola(erp, db, monkeypatch):
     [fila] = await _filas(db)
     assert fila["erp_estado"] is None
     assert erp.reqs == []
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Hallazgo 5: el pedido llega con sus renglones (carrito y envío)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class _PagoQueCaptura:
+    """Proveedor de cobro falso: guarda el link pedido y su snapshot."""
+
+    def __init__(self):
+        self.links: list[dict] = []
+
+    async def crear_link(self, sku_id, nombre, precio, phone, cantidad=1, snapshot=None):
+        self.links.append({"sku_id": sku_id, "nombre": nombre, "precio": precio,
+                           "cantidad": cantidad, "snapshot": snapshot})
+        return f"https://pago.test/{len(self.links)}", None
+
+
+async def _link(monkeypatch, ent: _Entorno, tipo="retiro", direccion=None, pago=None):
+    """El link de pago que arma el bot (crear_link_y_responder)."""
+    import time
+
+    import app.services.config_service as cs
+    from app.services import checkout_helper as ch
+    monkeypatch.setattr(cs, "get_config_service", lambda *a, **k: _Cfg(ent.cfg))
+    s = await ent.ss.get(PHONE)
+    s["_stock_ok_at"] = time.time()                 # sin chequeo de stock en vivo
+    s["_stock_ok_para"] = ch._clave_stock(s)
+    await ent.ss.save(PHONE, s)
+    pago = pago or _PagoQueCaptura()
+    _resp, url = await ch.crear_link_y_responder(pago, ent.ss, PHONE, await ent.ss.get(PHONE),
+                                                 tipo, direccion)
+    assert url, _resp
+    return pago.links[-1] if isinstance(pago, _PagoQueCaptura) else url
+
+
+def _pago_mp_del_link(link: dict, con_metadata: bool = True) -> dict:
+    """Lo que devuelve MP al consultar el pago de ese link."""
+    return _pago_mp(sku=link["sku_id"], total=round(link["precio"] * link["cantidad"], 2),
+                    titulo=link["nombre"], cantidad=link["cantidad"],
+                    metadata=link["snapshot"] if con_metadata else None)
+
+
+async def _carrito(ss):
+    await ss.set_pending(PHONE, sku_id="7508", sku_nombre="Royal 400 g", precio=1000.0,
+                         cantidad=1)
+    await ss.agregar_item(PHONE, "15181", "Collar rosa", 500.0, 2)
+
+
+SNAP_CARRITO = {
+    "items": [
+        {"sku_id": "7508", "nombre": "Royal 400 g", "cantidad": 1,
+         "precio_unitario": 1000.0, "total": 1000.0},
+        {"sku_id": "15181", "nombre": "Collar rosa", "cantidad": 2,
+         "precio_unitario": 500.0, "total": 1000.0},
+    ],
+    "costo_envio": 0.0,
+    "total": 2000.0,
+}
+
+
+def _renglones(body):
+    return [(li["variant_id"], li["product_id"], li["quantity"], li["subtotal"], li["total"])
+            for li in body["line_items"]]
+
+
+async def test_link_de_carrito_guarda_los_renglones(monkeypatch):
+    ent = _Entorno()
+    await _carrito(ent.ss)
+    link = await _link(monkeypatch, ent)
+    assert (link["sku_id"], link["precio"], link["cantidad"]) == ("MULTI", 2000.0, 1)  # igual que hoy
+    assert link["snapshot"] == SNAP_CARRITO
+
+
+async def test_link_con_envio_guarda_la_cantidad_y_el_envio_aparte(monkeypatch):
+    ent = _Entorno(cfg={"envio_costo": "2000"})
+    await ent.ss.set_pending(PHONE, sku_id="7508", sku_nombre="Royal 400 g", precio=1000.0,
+                             cantidad=3)
+    link = await _link(monkeypatch, ent, "envio", "San Martín 123")
+    assert (link["precio"], link["cantidad"]) == (5000.0, 1)       # el link, igual que hoy
+    assert link["snapshot"] == {
+        "items": [{"sku_id": "7508", "nombre": "Royal 400 g", "cantidad": 3,
+                   "precio_unitario": 1000.0, "total": 3000.0}],
+        "costo_envio": 2000.0, "total": 5000.0}
+
+
+def _http_falso(monkeypatch, modulo, status, data):
+    """Reemplaza httpx.AsyncClient del módulo y devuelve los payloads posteados."""
+    capturados = []
+
+    class _Resp:
+        status_code = status
+        text = json.dumps(data)
+
+        def json(self):
+            return data
+
+    class _Cliente:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, headers=None, json=None, timeout=None):
+            capturados.append(json)
+            return _Resp()
+
+    monkeypatch.setattr(modulo.httpx, "AsyncClient", _Cliente)
+    return capturados
+
+
+async def test_mp_la_preferencia_lleva_el_snapshot_en_metadata(monkeypatch):
+    from app.services import payment_service as ps
+    cap = _http_falso(monkeypatch, ps, 201, {"init_point": "https://mp.test/x"})
+    svc = ps.PaymentService("TEST-TOKEN", "https://bot.test/mp/notification")
+    link, err = await svc.crear_link(sku_id="MULTI", nombre="2 productos", precio=2000.0,
+                                     phone="549", cantidad=1, snapshot=SNAP_CARRITO)
+    assert (link, err) == ("https://mp.test/x", None)
+    assert cap[-1]["metadata"] == SNAP_CARRITO
+    assert cap[-1]["items"][0]["unit_price"] == 2000.0               # el cobro no cambia
+    await svc.crear_link(sku_id="S1", nombre="X", precio=1.0, phone="549")
+    assert "metadata" not in cap[-1]
+
+
+async def test_payway_el_pago_pendiente_lleva_el_snapshot(monkeypatch):
+    import app.services.payway_link as pl
+    kv: dict = {}
+    monkeypatch.setattr(pl, "_redis", lambda: _RedisKV(kv))
+    monkeypatch.setattr(get_settings(), "public_base_url", "https://bot.test")
+    url, err = await pl.PaywayLinkService().crear_link(
+        sku_id="MULTI", nombre="2 productos", precio=2000.0, phone=PHONE, cantidad=1,
+        snapshot=SNAP_CARRITO)
+    assert err is None
+    pend = json.loads(kv[f"payway:pending:{url.rsplit('/', 1)[-1]}"])
+    assert pend["items"] == SNAP_CARRITO["items"]
+    assert pend["costo_envio"] == 0.0 and pend["total"] == 2000.0
+    assert (pend["sku_id"], pend["cantidad"]) == ("MULTI", 1)        # igual que hoy
+
+
+async def test_mp_carrito_llega_al_erp_con_sus_renglones(erp, db, monkeypatch):
+    ent = _Entorno()
+    await _carrito(ent.ss)
+    link = await _link(monkeypatch, ent)
+    # El cliente sigue chateando antes de pagar: la sesión cambia.
+    await ent.ss.set_pending(PHONE, sku_id="9999", sku_nombre="Otra cosa", precio=50.0)
+    mpw = _montar_mp(monkeypatch, ent, _pago_mp_del_link(link))
+
+    r = await mpw.procesar_pago("mp-carrito-1")
+    assert r["status"] == "ok"
+    [body] = erp.reqs
+    assert _renglones(body) == [("2209004", "ROY1051701", 1, 1000.0, 1000.0),
+                                ("10955", "PET1304801", 2, 1000.0, 1000.0)]
+    assert body["total"] == 2000.0 and "shipping_total" not in body
+    [fila] = await _filas(db)
+    assert fila["erp_estado"] == "enviado"
+    data = json.loads((await db.fetchrow("SELECT data FROM orders"))["data"])
+    assert data["items"] == SNAP_CARRITO["items"] and data["costo_envio"] == 0.0
+
+
+async def test_mp_envio_llega_con_la_cantidad_y_shipping_total(erp, db, monkeypatch):
+    ent = _Entorno(cfg={"envio_costo": "2000"})
+    await ent.ss.set_pending(PHONE, sku_id="7508", sku_nombre="Royal 400 g", precio=1000.0,
+                             cantidad=3)
+    link = await _link(monkeypatch, ent, "envio", "San Martín 123")
+    mpw = _montar_mp(monkeypatch, ent, _pago_mp_del_link(link))
+
+    assert (await mpw.procesar_pago("mp-envio-1"))["status"] == "ok"
+    [body] = erp.reqs
+    assert _renglones(body) == [("2209004", "ROY1051701", 3, 3000.0, 3000.0)]
+    assert body["shipping_total"] == 2000.0 and body["total"] == 5000.0
+    assert (await _filas(db))[0]["erp_estado"] == "enviado"
+
+
+async def test_payway_carrito_llega_al_erp_con_sus_renglones(erp, db, monkeypatch):
+    import app.services.payway_link as pl
+    ent = _Entorno(cfg={"envio_costo": "2000"})
+    await _carrito(ent.ss)
+    kv: dict = {}
+    monkeypatch.setattr(pl, "_redis", lambda: _RedisKV(kv))
+    monkeypatch.setattr(get_settings(), "public_base_url", "https://bot.test")
+    url = await _link(monkeypatch, ent, "envio", "San Martín 123", pago=pl.PaywayLinkService())
+    pid = url.rsplit("/", 1)[-1]
+    await ent.ss.set_pending(PHONE, sku_id="9999", sku_nombre="Otra cosa", precio=50.0)
+    pw = _montar_payway(monkeypatch, ent, kv, "PW-CARRITO-1")
+
+    r = await pw.payway_charge(pw.ChargeIn(pid=pid, token="tok", bin="450799"))
+    assert r == {"status": "approved"}
+    [body] = erp.reqs
+    assert _renglones(body) == [("2209004", "ROY1051701", 1, 1000.0, 1000.0),
+                                ("10955", "PET1304801", 2, 1000.0, 1000.0)]
+    assert body["shipping_total"] == 2000.0 and body["total"] == 4000.0
+    assert (await _filas(db))[0]["erp_estado"] == "enviado"
+
+
+async def test_mp_sin_metadata_usa_el_carrito_de_la_sesion(erp, db, monkeypatch):
+    """Link creado antes de este cambio (sin metadata): los renglones salen
+    del carrito de la sesión, como hoy, si todavía es el del cobro."""
+    ent = _Entorno()
+    await _carrito(ent.ss)
+    link = await _link(monkeypatch, ent)
+    mpw = _montar_mp(monkeypatch, ent, _pago_mp_del_link(link, con_metadata=False))
+
+    assert (await mpw.procesar_pago("mp-sin-meta-1"))["status"] == "ok"
+    [body] = erp.reqs
+    assert _renglones(body) == [("2209004", "ROY1051701", 1, 1000.0, 1000.0),
+                                ("10955", "PET1304801", 2, 1000.0, 1000.0)]
+    assert (await _filas(db))[0]["erp_estado"] == "enviado"
+
+
+async def test_mp_sin_metadata_y_otra_sesion_no_inventa_renglones(erp, db, monkeypatch):
+    """Sin metadata y con la sesión en otro producto: la orden queda con su
+    único SKU cobrado (no se toma el producto nuevo de la sesión)."""
+    ent = _Entorno()
+    await ent.ss.set_pending(PHONE, sku_id="7508", sku_nombre="Royal 400 g", precio=1000.0,
+                             cantidad=2)
+    link = await _link(monkeypatch, ent)
+    await ent.ss.set_pending(PHONE, sku_id="15181", sku_nombre="Collar rosa", precio=1000.0,
+                             cantidad=2)
+    mpw = _montar_mp(monkeypatch, ent, _pago_mp_del_link(link, con_metadata=False))
+
+    assert (await mpw.procesar_pago("mp-sin-meta-2"))["status"] == "ok"
+    [body] = erp.reqs
+    assert _renglones(body) == [("2209004", "ROY1051701", 2, 2000.0, 2000.0)]
+    data = json.loads((await db.fetchrow("SELECT data FROM orders"))["data"])
+    assert "items" not in data
+
+
+async def test_mp_carrito_sin_metadata_ni_sesion_queda_rechazado(erp, db, monkeypatch):
+    ent = _Entorno()
+    await _carrito(ent.ss)
+    link = await _link(monkeypatch, ent)
+    await ent.ss.clear_pending(PHONE)
+    mpw = _montar_mp(monkeypatch, ent, _pago_mp_del_link(link, con_metadata=False))
+
+    assert (await mpw.procesar_pago("mp-sin-meta-3"))["status"] == "ok"
+    assert erp.reqs == []
+    [fila] = await _filas(db)
+    assert fila["erp_estado"] == "rechazado"
+    assert "pedido sin renglones" in fila["erp_ultimo_error"]
+
+
+@pytest.mark.parametrize("body, items, total", [
+    ({"detalle": "Bolsa 15 kg", "monto": 1000, "cantidad": 3},
+     [("MANUAL", "Bolsa 15 kg", 3, 1000.0, 3000.0)], 3000.0),
+    ({"items": [{"detalle": "A", "monto": 1000}, {"detalle": "B", "monto": 500, "cantidad": 3}]},
+     [("LIBRE1", "A", 1, 1000.0, 1000.0), ("LIBRE2", "B", 3, 500.0, 1500.0)], 2500.0),
+])
+def test_link_del_backoffice_guarda_los_renglones(monkeypatch, body, items, total):
+    from fastapi.testclient import TestClient
+
+    import app.routers.webhook as wh
+    from app.main import app
+    pago = _PagoQueCaptura()
+    monkeypatch.setattr(wh, "payment_svc_para", lambda *a, **k: pago)
+    monkeypatch.setattr(get_settings(), "bo_key", "")
+    r = TestClient(app).post("/bo/paylink", json={"phone": "5490000000444", "enviar": False,
+                                                  **body})
+    assert r.status_code == 200, r.text
+    snap = pago.links[-1]["snapshot"]
+    assert [(i["sku_id"], i["nombre"], i["cantidad"], i["precio_unitario"], i["total"])
+            for i in snap["items"]] == items
+    assert (snap["costo_envio"], snap["total"]) == (0.0, total)

@@ -152,6 +152,24 @@ async def test_link_con_descuento_de_socio(cli, entorno):
     assert "Córdoba 1000" in j["mensaje"]                  # domicilio del socio
 
 
+async def test_link_guarda_los_renglones_del_pedido(cli, entorno, monkeypatch):
+    """Hallazgo 5 (fix-C1): el link del pedido armado por el operador lleva
+    los renglones tal como se cobran (envío aparte) para el alta en el ERP."""
+    import app.services.config_service as cs
+    # El link lee la config del servicio global (en producción, la misma).
+    monkeypatch.setattr(cs, "get_config_service", lambda *a, **k: entorno["config"])
+    r = await cli.post("/bo/pedido", json={
+        "phone": PHONE, "items": [{"sku_id": "1", "cantidad": 2}, {"detalle": "Pañales x30", "monto": 3000}],
+        "entrega": "envio", "direccion": "San Javier 837", "pago": "link"})
+    assert r.status_code == 200, r.text
+    assert entorno["payment"].ultimo["snapshot"] == {
+        "items": [{"sku_id": "1", "nombre": "COLGATE ULTRA BLANCO x 90", "cantidad": 2,
+                   "precio_unitario": 1000.0, "total": 2000.0},
+                  {"sku_id": "LIBRE2", "nombre": "Pañales x30", "cantidad": 1,
+                   "precio_unitario": 3000.0, "total": 3000.0}],
+        "costo_envio": 2000.0, "total": 7000.0}
+
+
 async def test_validaciones(cli):
     from app.services import checkout_helper as _ch
     _ch._ULTIMA_DIRECCION.clear()        # sin dirección recordada de otros tests
