@@ -145,7 +145,10 @@ async def aplicar_fuente() -> dict:
     Un perfil sin catalogo_csv_base (petshop) no aplica la fuente "csv": el
     panel ya la rechaza, pero un valor guardado antes vaciaría el catálogo del
     ERP en memoria. Se loguea ERROR y el catálogo queda como está (revisión
-    final de petshop, hallazgo 17).
+    final de petshop, hallazgo 17). Lo mismo con la fuente "erp" y sin
+    sucursal resuelta (Postgres caído o sin catalog_items): en ese perfil no
+    hay CSV al que caer, así que no se recarga nada (ronda de arreglo 2). La
+    farmacia cae al CSV como siempre.
     """
     from app.config import get_settings
     from app.services.perfil import get_perfil
@@ -161,6 +164,14 @@ async def aplicar_fuente() -> dict:
         refresher = get_catalog_refresher()
         refresher._branch_id = branch
         await refresher.recargar()
+    elif not perfil.catalogo_csv_base:
+        # Sin sucursal resuelta (Postgres caído o sin catalog_items) en un
+        # perfil sin CSV base: caer al CSV dejaba el catálogo VACÍO en memoria
+        # y el bot contestaba "No lo encuentro" a todo. Se conserva el que hay
+        # (ronda de arreglo 2, residuo del hallazgo 17).
+        logger.error(f"Recarga del catálogo sin sucursal ERP resuelta (Postgres caído o "
+                     f"sin catalog_items): el perfil {perfil.clave} no tiene CSV base. No "
+                     "se recarga; el bot sigue con el catálogo que tenía en memoria")
     else:
         from app.services.sku_service import reload_sku_service
         svc = reload_sku_service(get_settings().sku_csv_path)

@@ -218,6 +218,66 @@ async def test_aplicar_fuente_csv_en_petshop_no_toca_el_catalogo(usar_perfil, sk
                for r in caplog.records)
 
 
+def _fuente_erp_sin_sucursal(monkeypatch, cs):
+    """catalogo_fuente=erp y resolver_branch_default sin sucursal (Postgres
+    caído o sin catalog_items)."""
+    async def _fuente_erp():
+        return "erp"
+
+    async def _sin_sucursal(forzar=False):
+        return None
+
+    monkeypatch.setattr(cs, "fuente_configurada", _fuente_erp)
+    monkeypatch.setattr(cs, "resolver_branch_default", _sin_sucursal)
+    monkeypatch.setattr(cs, "_cache", {"branch_id": None, "at": 0.0})
+    monkeypatch.setattr(cs, "estado_recarga", dict(cs.estado_recarga))
+
+
+async def test_aplicar_fuente_erp_sin_sucursal_en_petshop_conserva_el_catalogo(
+        usar_perfil, sku_singleton, monkeypatch, caplog):
+    """Ronda de arreglo 2 (residuo del hallazgo 17): con la fuente erp y sin
+    sucursal resuelta, aplicar_fuente caía a reload_sku_service(sku_csv_path)
+    y en petshop dejaba el catálogo vacío. Ahora no recarga nada, conserva el
+    catálogo del ERP en memoria y loguea ERROR."""
+    from app.config import get_settings
+    from app.services import catalog_source as cs
+    usar_perfil("petshop")
+    monkeypatch.setattr(get_settings(), "default_branch_id", "")
+    monkeypatch.setattr(get_settings(), "sku_csv_path", "")
+    erp = sku_singleton.set_sku_service(_catalogo_erp_mo())
+    _fuente_erp_sin_sucursal(monkeypatch, cs)
+    with caplog.at_level(logging.ERROR, logger="app.services.catalog_source"):
+        est = await cs.aplicar_fuente()
+    assert sku_singleton.get_sku_service() is erp                 # el catálogo del ERP sigue
+    assert est["total_productos"] == 1
+    assert any(r.levelno == logging.ERROR and "sin sucursal" in r.getMessage()
+               for r in caplog.records)
+
+
+async def test_aplicar_fuente_erp_sin_sucursal_en_farmacia_recarga_el_csv(
+        usar_perfil, sku_singleton, monkeypatch, tmp_path):
+    """Guarda: la farmacia (catalogo_csv_base) cae al CSV como hoy."""
+    from app.config import get_settings
+    from app.services import catalog_source as cs
+    usar_perfil("farmacia")
+    csv = tmp_path / "catalogo.csv"
+    csv.write_bytes(_CSV_CHICO_FARMACIA)
+    monkeypatch.setattr(get_settings(), "default_branch_id", "")
+    monkeypatch.setattr(get_settings(), "sku_csv_path", str(csv))
+    erp = sku_singleton.set_sku_service(_catalogo_erp_mo())
+    _fuente_erp_sin_sucursal(monkeypatch, cs)
+    est = await cs.aplicar_fuente()
+    assert sku_singleton.get_sku_service() is not erp
+    assert est["total_productos"] == 2 and est["fuente"] == "csv"
+
+
+_CSV_CHICO_FARMACIA = (
+    "SKU,Nombre,Precio,Marca,Laboratorio,Codigo_Barras_1,Categoria,Es_Medicamento\n"
+    "1,Ibuprofeno 600 mg x 10,3500,IBUPIRAC,PFIZER,7790000000011,ANALGESICOS,true\n"
+    "2,Shampoo Dove 400 ml,4200,DOVE,UNILEVER,7790000000022,PERFUMERIA,false\n"
+).encode("utf-8")
+
+
 # ── Revisión final, hallazgo 17: el panel no importa CSV en un perfil del ERP ───
 class _BlobGuardado:
     def __init__(self):
