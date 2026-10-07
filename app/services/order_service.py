@@ -101,6 +101,20 @@ class OrderService:
         # para conciliar la caja.
         if extra:
             order.update({k: v for k, v in extra.items() if k not in order})
+        # Quién lo atendió (6/10): el operador que cotizó la receta o tenía
+        # tomada la conversación, aunque el cierre lo haya hecho el bot.
+        if not order.get("atendido_por"):
+            try:
+                from app.config import get_settings as _gs
+                from app.services.session_service import get_session_service as _gss
+                _s = await _gss(_gs().redis_url).get(phone)
+                order["atendido_por"] = _s.get("_cotizado_por") or _s.get("agente") or None
+            except Exception:
+                order["atendido_por"] = None
+        from app.services.operadores_service import canonico
+        for _k in ("armado_por", "atendido_por", "agente"):
+            if order.get(_k):
+                order[_k] = canonico(order[_k])
         ts = datetime.now(timezone.utc).timestamp()
         try:
             await self._redis.setex(self._key(order_id), ORDER_TTL, json.dumps(order))

@@ -11,14 +11,14 @@ de la variante y `product_id` = codigo_padre (spec 14/9), pero catalog_items
 solo guarda external_id (id_articulo_mercurio). El sync llena esta tabla
 satélite sin tocar el contrato compartido con el agente de la farmacia.
 
-Revision ID: 0018
-Revises: 0017
+Revision ID: 0019
+Revises: 0018
 Create Date: 2026-10-05
 """
 from alembic import op
 
-revision = "0018"
-down_revision = "0017"
+revision = "0019"
+down_revision = "0018"
 branch_labels = None
 depends_on = None
 

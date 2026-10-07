@@ -1191,7 +1191,7 @@ async def _paylink_items(body: "PaylinkIn") -> dict:
         if body.enviar:
             await session_svc.armar_cotizacion(
                 body.phone, sku_id=lineas[0]["sku_id"], sku_nombre=lineas[0]["nombre"],
-                precio=lineas[0]["precio_final"], delegar=body.delegar,
+                precio=lineas[0]["precio_final"], delegar=body.delegar, agente=body.agente,
                 items=[{"sku_id": l["sku_id"], "nombre": l["nombre"], "precio": l["precio_final"],
                         "cantidad": l["cantidad"]} for l in lineas])
             enviado = await wa.send_text(body.phone, mensaje)
@@ -1305,7 +1305,7 @@ async def bo_paylink(body: PaylinkIn, _=Depends(_auth)):
             session_svc = get_session_service(settings.redis_url)
             await session_svc.armar_cotizacion(body.phone, sku_id=sku_id,
                                                sku_nombre=nombre, precio=total,
-                                               delegar=body.delegar)
+                                               delegar=body.delegar, agente=body.agente)
             wa = get_whatsapp_service(settings.whatsapp_token, settings.whatsapp_phone_number_id)
             enviado = await wa.send_text(body.phone, mensaje)
             if enviado:
@@ -1380,7 +1380,8 @@ async def bo_take(phone: str, agente: str = Query(...), _=Depends(_auth)):
     if not ya_derivada:
         await session_svc.set_estado(phone, "operador", motivo="tomada_por_operador")
         session = await session_svc.get(phone)
-    session["agente"] = agente.strip()
+    from app.services.operadores_service import canonico
+    session["agente"] = canonico(agente)
     # SLA de atención: cuánto tardó una persona en tomar la derivación (el
     # tablero mide "derivaciones dentro del SLA de 15 min"). Tomar una charla
     # que no estaba derivada no cuenta para el SLA.

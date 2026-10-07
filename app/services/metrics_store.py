@@ -32,6 +32,10 @@ class MetricsStore:
         Registra un evento de negocio (embudo, pagos, búsquedas, envíos).
         Best-effort: sin Postgres es no-op y nunca interrumpe el flujo del bot.
         """
+        if tipo in ("conversacion_tomada", "derivacion_atendida", "pedido_operador",
+                    "conversacion_devuelta"):
+            from app.services.operadores_service import canonico
+            ref = canonico(ref)
         try:
             await self._db.execute(
                 "INSERT INTO eventos (tipo, phone, dato, monto, ref, extra) "

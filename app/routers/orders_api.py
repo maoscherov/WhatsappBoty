@@ -59,6 +59,32 @@ class TakeoverIn(BaseModel):
     force: bool = False
 
 
+def _con_personas(o: dict) -> dict:
+    """
+    Pedido + quién es el cliente (nombre, socio/empleado/no socio, N° de
+    socio) y quién lo hizo / atendió (6/10: en Pedidos solo se veía el
+    teléfono). Los nombres de operador salen unificados con la lista.
+    """
+    from app.routers.backoffice import _datos_cliente
+    from app.services.operadores_service import canonico
+    d = dict(o)
+    cli = _datos_cliente(o.get("phone") or "")
+    nro = None
+    if cli.get("tipo_cliente") == "socio":
+        try:
+            from app.services.socio_service import get_socio_service
+            nro = (get_socio_service(get_settings().socios_path).find_by_phone(o["phone"]) or {}).get("nro_socio")
+        except Exception:
+            nro = None
+    d["cliente"] = {"nombre": cli.get("nombre"), "tipo": cli.get("tipo_cliente"), "nro_socio": nro}
+    d["hecho_por"] = canonico(o.get("armado_por")) if o.get("origen") == "operador" else "Bot"
+    d["atendido_por"] = canonico(o.get("atendido_por") or o.get("armado_por")) or None
+    for k in ("agente", "preparado_por", "retirado_por", "cobrado_por", "cc_cargado_por"):
+        if d.get(k):
+            d[k] = canonico(d[k])
+    return d
+
+
 @router.get("/list")
 async def list_orders(_=Depends(_auth), estado: str = Query(None)):
     settings = get_settings()
@@ -66,7 +92,7 @@ async def list_orders(_=Depends(_auth), estado: str = Query(None)):
     orders = await svc.list_all()
     if estado:
         orders = [o for o in orders if o.get("estado") == estado]
-    return orders
+    return [_con_personas(o) for o in orders]
 
 
 @router.get("/export.csv")
@@ -90,13 +116,17 @@ async def export_orders(_=Depends(_auth), pago: str = Query(None),
 
     buf = io.StringIO()
     w = _csv.writer(buf, lineterminator="\n")
-    w.writerow(["fecha", "pedido", "telefono", "producto", "cantidad", "total",
+    orders = [_con_personas(o) for o in orders]
+    w.writerow(["fecha", "pedido", "telefono", "cliente", "tipo_cliente", "nro_socio",
+                "hecho_por", "atendido_por", "producto", "cantidad", "total",
                 "pago", "entrega", "direccion", "estado", "codigo",
                 "cc_cargado", "cc_cargado_por", "cobrado", "cobrado_por", "agente",
                 "origen", "armado_por", "cobra", "repartidor"])
     for o in orders:
         w.writerow([
             o.get("created_at", ""), o.get("order_id", ""), o.get("phone", ""),
+            o["cliente"]["nombre"] or "", o["cliente"]["tipo"] or "", o["cliente"]["nro_socio"] or "",
+            o["hecho_por"] or "", o["atendido_por"] or "",
             o.get("sku_nombre", ""), o.get("cantidad", 1), o.get("total", 0),
             o.get("pago") or "online", o.get("tipo_entrega", ""),
             o.get("direccion_envio") or "", o.get("estado", ""),
@@ -121,7 +151,7 @@ async def get_order(order_id: str, _=Depends(_auth)):
     order = await svc.get(order_id)
     if not order:
         raise HTTPException(status_code=404, detail="Pedido no encontrado")
-    return order
+    return _con_personas(order)
 
 
 @router.post("/{order_id}/takeover")

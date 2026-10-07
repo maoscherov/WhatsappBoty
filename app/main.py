@@ -11,7 +11,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
 from app.routers import (webhook, simulate, backoffice, mp_webhook, orders_api,
                          media, payway, sync_api, agent_ws, backoffice_branches,
-                         backoffice_receta, backoffice_pedidos, backoffice_diccionario)
+                         backoffice_receta, backoffice_pedidos, backoffice_diccionario,
+                         backoffice_operadores)
 from app.services.sku_service import get_sku_service
 from app.services.session_service import get_session_service
 from app.services.blob_store import get_blob_store
@@ -117,6 +118,14 @@ async def lifespan(app: FastAPI):
             await _init_referencia_receta(get_db(settings.database_url))
         except Exception as e:
             logger.error(f"No se pudo inicializar la referencia de receta: {e}")
+
+        # Operadores del backoffice (6/10): nombres y alias unificados.
+        try:
+            from app.services.operadores_service import cargar as _cargar_ops
+            _n_ops = await asyncio.wait_for(_cargar_ops(get_db(settings.database_url)), timeout=20.0)
+            logger.info(f"Operadores cargados: {_n_ops}")
+        except Exception as e:
+            logger.warning(f"No se pudieron cargar los operadores: {e}")
 
         # Últimas direcciones de envío (domicilio precargado, 5/10).
         try:
@@ -497,6 +506,7 @@ app.include_router(backoffice_branches.router)
 app.include_router(backoffice_receta.router)
 app.include_router(backoffice_pedidos.router)
 app.include_router(backoffice_diccionario.router)
+app.include_router(backoffice_operadores.router)
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 

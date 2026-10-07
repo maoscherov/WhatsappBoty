@@ -152,6 +152,8 @@ async def guardar_historico(phone: str, role: str, content: str, autor: Optional
         from app.services.db import get_db
         db = get_db(get_settings().database_url)
         if db.available():
+            from app.services.operadores_service import canonico
+            autor = canonico(autor)
             await get_message_store(db).save(phone, role, content, autor, origen=origen,
                                              media=media, media_nombre=media_nombre)
     except Exception as e:
