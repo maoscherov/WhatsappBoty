@@ -198,8 +198,12 @@ def _es_afirmacion_pura(t: str) -> bool:
     y no una afirmación que además pide otra cosa ("dale, mandame un Dove").
     Se quitan las palabras de aceptación y cortesía: si no queda nada sustancial,
     era una aceptación pura.
+
+    Un número nunca es aceptación pura: "sí, la de 3" elige otra presentación
+    (la bolsa de 3 kg con la de 15 pendiente) y lo tiene que ver el modelo y
+    entidad_contradice_pendiente (revisión final de petshop, hallazgo 2).
     """
-    if not _match_si(t) or _match_no(t):
+    if not _match_si(t) or _match_no(t) or _re.search(r"\d", t or ""):
         return False
     resto = _re.sub(_AFIRMACION, " ", t.lower())
     resto = _re.sub(r"[^\wáéíóúñ]+", " ", resto)

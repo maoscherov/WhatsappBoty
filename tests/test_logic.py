@@ -287,6 +287,19 @@ def test_no_es_afirmacion_pura(txt):
     assert _es_afirmacion_pura(txt) is False
 
 
+@pytest.mark.parametrize("txt", [
+    "sí, la de 3", "si la de 7", "si la de 8", "dale, esa de 3", "ok la de 3",
+    "si, la 3", "sí la 2",
+])
+def test_afirmacion_con_un_numero_no_es_pura(txt):
+    """Revisión final, hallazgo 2: "sí, la de 3" elige otra presentación (la
+    bolsa de 3 kg), no acepta la pendiente. Con un número el mensaje va al
+    modelo y a entidad_contradice_pendiente. CAMBIO QUE TAMBIÉN AFECTA A LA
+    FARMACIA."""
+    from app.routers.webhook import _es_afirmacion_pura
+    assert _es_afirmacion_pura(txt) is False
+
+
 # ── Webhooks de pago con comercio en la ruta (preparación multi-cliente) ────────
 def test_rutas_webhook_con_comercio():
     """

@@ -259,3 +259,42 @@ async def test_si_la_de_15_kg_confirma(perfil, entorno, monkeypatch):
     s = await deps["session"].get(PHONE)
     assert s["estado"] == "esperando_entrega"                 # confirmó: elige la entrega
     assert s["pending_sku_id"] == "RC15"
+
+
+# ── Revisión final, hallazgo 2: "sí, la de 3" no es una aceptación pura ─────────
+def _llego_al_modelo(deps, texto):
+    return any(v[1] == texto for v in deps["intent"].vistos)
+
+
+async def test_si_la_de_3_no_confirma_la_de_15(perfil, entorno, monkeypatch):
+    """Una cifra sola y sin unidad, como habla el cliente de un petshop: antes
+    _es_afirmacion_pura lo tomaba como "sí" y confirmaba la de 15 sin pasar por
+    el modelo ni por entidad_contradice_pendiente."""
+    txt = "sí, la de 3"
+    deps, pago = _armar(entorno, monkeypatch, {txt: {
+        "intencion": "pedido", "confirmacion": True,
+        "entidad_producto": "royal canin 3 kg",
+        "respuesta": "Tengo la Royal Canin Medium Adult de 3 kg. ¿Te sirve?"}})
+    await _pendiente_royal_15(deps, "esperando_confirmacion")
+
+    await wh.procesar_mensajes([_msg(txt)])
+
+    s = await deps["session"].get(PHONE)
+    assert _llego_al_modelo(deps, txt)                        # lo decide el modelo
+    assert s["estado"] == "esperando_confirmacion"            # no pasó a la entrega con la de 15
+    assert pago.links == []
+    assert "preferís" not in deps["wa"].enviados[-1].lower()  # no preguntó retiro/envío
+
+
+@pytest.mark.parametrize("txt", ["sí", "dale", "si dale"])
+async def test_si_pelado_sigue_confirmando(perfil, entorno, monkeypatch, txt):
+    """Guarda: la aceptación sin números confirma como siempre, sin el modelo."""
+    deps, pago = _armar(entorno, monkeypatch, {})
+    await _pendiente_royal_15(deps, "esperando_confirmacion")
+
+    await wh.procesar_mensajes([_msg(txt)])
+
+    s = await deps["session"].get(PHONE)
+    assert s["estado"] == "esperando_entrega"
+    assert s["pending_sku_id"] == "RC15"
+    assert not _llego_al_modelo(deps, txt)
