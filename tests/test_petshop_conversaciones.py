@@ -627,6 +627,30 @@ async def test_consulta_en_medio_del_flujo_sin_promesa_no_deriva(entorno, usar_p
     ("te paso con una persona", True),
     ("¿querés que te pase con alguien?", False),
     ("Si querés ya te paso con alguien del equipo.", False),
+    # Re-revisión de la ronda 2: una lista cerrada de personas dejaba de
+    # reconocer promesas que develop (la farmacia en producción) cumplía.
+    ("Ya te paso enseguida con alguien del equipo.", True),
+    ("Ya te paso ahora con el equipo.", True),
+    ("ya te derivo enseguida con el equipo", True),
+    ("Ya te derivo ahora.", True),
+    ("Ya te paso a la farmacéutica.", True),
+    ("Ya te paso al farmacéutico.", True),
+    ("Ya te derivo al farmacéutico", True),
+    ("Ya te paso a un asesor", True),
+    ("ya te paso a un humano", True),
+    ("Ya te paso a atención al cliente", True),
+    ("Ya te paso a la veterinaria.", True),
+    ("Ya te paso directamente con la farmacéutica.", True),
+    ("Ya te paso y en un ratito te escriben.", True),
+    # Objetos que no son una persona.
+    ("ya te paso el precio", False),
+    ("Ya te paso el resumen del pedido.", False),
+    ("ya te paso el CBU y el alias", False),
+    ("ya te paso 2 opciones", False),
+    ("Ya te paso las opciones que tengo", False),
+    ("ya te paso la info", False),
+    ("Ya te paso: bolsa de 15 kg y pipeta.", False),
+    ("Ya te paso al pago", False),
 ])
 def test_derivacion_prometida_ya_te_paso(txt, esperado):
     from app.services.checkout_helper import derivacion_prometida

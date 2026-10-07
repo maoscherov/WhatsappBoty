@@ -2129,15 +2129,21 @@ def referencia_ambigua_bloquea(texto: str, session: dict, pendiente_con_receta: 
     return bool(adj) and float(adj) >= float(pend)
 
 
-# "Ya te paso" / "ya te derivo" promete una persona solo si sigue "con ...",
-# "a(l) <persona>" o el fin de la oración ("Ya te paso.", "ya te paso 🙌").
-# "Elegí y ya te paso el link de pago" habla del link, no de una persona: se
-# tomaba como derivación y, desde que el chequeo corre también en el flujo de
-# entrega y dirección, pasaba la charla a operador (ronda de arreglo 2).
+# "Ya te paso" / "ya te derivo" promete una persona salvo que lo siga un
+# OBJETO: "Elegí y ya te paso el link de pago" habla del link, no de una
+# persona. Se tomaba como derivación y, desde que el chequeo corre también en el
+# flujo de entrega y dirección, pasaba la charla a operador (ronda de arreglo 2).
+# Es una lista de objetos y no de personas: con una lista de personas dejaban de
+# contar "Ya te paso enseguida con...", "Ya te paso a la farmacéutica" o
+# "Ya te derivo ahora", que la farmacia en producción cumplía.
 _DERIV_PROMETIDA = re.compile(
     r"\b(te\s+(paso|derivo|comunico|conecto)\s+con|"
-    r"ya\s+te\s+(paso|derivo)(?=\s*(?:con\b|$|[^\w\s:$])|\s+al?\s+(?:alguien|una\s+persona|"
-    r"(?:el\s+)?equipo|las\s+chicas|una\s+de\s+las\s+chicas)\b)|"
+    r"ya\s+te\s+(paso|derivo)(?!\s*[:$]|\s+\d|"
+    r"\s+(?:el|la|los|las|tu|tus|un|una|unos|unas|mi|mis)?\s*(?:links?|enlaces?|total|precios?|"
+    r"costos?|montos?|datos?|direcci\w*|resumen|detalles?|pedidos?|comprobantes?|cbu|alias|pagos?|"
+    r"n[uú]meros?|info\w*|opci\w*|fotos?|im[aá]gen\w*|listas?|horarios?|ubicaci\w*|mapas?|"
+    r"c[oó]digos?|presupuestos?|cotizaci\w*|facturas?|tickets?|stock)\b|"
+    r"\s+(?:al?\s+)?(?:pago|confirmar|checkout)\b)|"
     r"te\s+va\s+a\s+(atender|contactar|escribir)\s+(alguien|una\s+persona|el\s+equipo|una\s+de\s+las\s+chicas))",
     re.IGNORECASE,
 )
