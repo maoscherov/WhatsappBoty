@@ -640,3 +640,184 @@ async def test_vision_farmacia_manda_el_prompt_de_hoy(usar_perfil):
     svc, llamadas = _vision_con_clientes_falsos("openai", _json_vision("bono", "Cassará"))
     await svc.analizar(b"foto", "image/jpeg")
     assert _texto_openai(llamadas["openai"][0]) == image_service._PROMPT
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Pagos y avisos (§4.7): confirmación de pago, descriptor de la tarjeta, Payway
+# y las páginas /pay con la marca del perfil.
+# ══════════════════════════════════════════════════════════════════════════════
+import hashlib
+import json
+from types import SimpleNamespace
+
+import pytest
+
+_CONF_RETIRO_FARMACIA = (
+    "✅ *¡Pago confirmado!*\n\n"
+    "Recibimos tu pago de *Ibuprofeno 600*. 🙌\n"
+    "🔑 *Tu código de retiro es: 123456*\nRetiralo desde las 10:00\n\n"
+    "Guardalo para presentarlo al retirar. ¡Muchas gracias! 💊")
+_CONF_ENVIO_FARMACIA = (
+    "✅ *¡Pago confirmado!*\n\n"
+    "Recibimos tu pago de *Ibuprofeno 600*. 🙌\n"
+    "🚚 Te lo enviamos a domicilio a *San Martín 123*. Nos comunicamos para coordinar la entrega.\n"
+    "📋 Código de pedido: *123456*\n\n"
+    "¡Muchas gracias! 💊")
+_CONF_MP_FARMACIA = (
+    "✅ *¡Pago confirmado!*\n\n"
+    "Recibimos tu pago de *Royal Canin 15KG*. 🙌\n"
+    "🔑 *Tu código de retiro es: 654321*\n\n"
+    "Guardalo para presentarlo al retirar. ¡Muchas gracias! 💊")
+
+
+def test_mensaje_pago_confirmado_farmacia_igual_que_hoy(usar_perfil):
+    from app.services.checkout_helper import mensaje_pago_confirmado
+    p = usar_perfil("farmacia")
+    assert mensaje_pago_confirmado("Ibuprofeno 600", "retiro", None, "123456",
+                                   "Retiralo desde las 10:00", p.emoji) == _CONF_RETIRO_FARMACIA
+    assert mensaje_pago_confirmado("Ibuprofeno 600", "envio", "San Martín 123", "123456",
+                                   "Retiralo desde las 10:00", p.emoji) == _CONF_ENVIO_FARMACIA
+    # Sin texto de horario no queda una línea vacía de más
+    assert "123456*\n\nGuardalo" in mensaje_pago_confirmado("X", "retiro", None, "123456", "", p.emoji)
+
+
+def test_mensaje_pago_confirmado_petshop(usar_perfil):
+    from app.services.checkout_helper import mensaje_pago_confirmado
+    p = usar_perfil("petshop")
+    for tipo, direccion in (("retiro", None), ("envio", "San Martín 123")):
+        m = mensaje_pago_confirmado("Royal Canin 15KG", tipo, direccion, "654321", "", p.emoji)
+        assert m.endswith("¡Muchas gracias! 🐾"), tipo
+        assert "💊" not in m, tipo
+
+
+def test_mensaje_pago_confirmado_con_sucursal(usar_perfil):
+    from app.services.checkout_helper import mensaje_pago_confirmado
+    p = usar_perfil("petshop")
+    m = mensaje_pago_confirmado("Royal Canin 15KG", "retiro", None, "654321", "", p.emoji,
+                                sucursal="Sucursal Piloto")
+    assert m.endswith("Guardalo para presentarlo al retirar en *Sucursal Piloto*. ¡Muchas gracias! 🐾")
+    # Vacía o con espacios: el texto de hoy
+    assert "al retirar. ¡Muchas gracias! 🐾" in mensaje_pago_confirmado(
+        "X", "retiro", None, "1", "", p.emoji, sucursal="  ")
+    # El envío no nombra la sucursal
+    assert "Sucursal Piloto" not in mensaje_pago_confirmado(
+        "X", "envio", "Mitre 100", "1", "", p.emoji, sucursal="Sucursal Piloto")
+
+
+class _CfgPago:
+    """Config falsa para la confirmación de pago (MP y Payway)."""
+    def __init__(self, extra=None):
+        self.v = {"pickup_minutes": "30", **(extra or {})}
+
+    async def get_all(self):
+        return dict(self.v)
+
+    async def get_hours(self):
+        return {}
+
+    def get_pickup_text(self, hours, minutes):
+        return ""
+
+
+def _mp_aprobado(monkeypatch, ref, cfg_extra=None):
+    import app.routers.mp_webhook as mpw
+    enviados = []
+
+    class _Pay:
+        async def get_payment_info(self, pid):
+            return {"status": "approved", "external_reference": ref,
+                    "transaction_amount": 9800.0, "payment_method_id": "visa",
+                    "additional_info": {"items": [{"title": "Royal Canin 15KG", "quantity": 1}]}}
+
+    class _Orders:
+        async def find_by_payment(self, pid):
+            return None
+
+        async def create(self, **kw):
+            return {"order_id": "ORD-MP", "pickup_code": "654321"}
+
+    class _Wa:
+        async def send_text(self, phone, msg):
+            enviados.append(msg)
+            return True
+
+    monkeypatch.setattr(mpw, "get_payment_service", lambda *a, **k: _Pay())
+    monkeypatch.setattr(mpw, "get_order_service", lambda *a: _Orders())
+    monkeypatch.setattr(mpw, "get_whatsapp_service", lambda *a: _Wa())
+    monkeypatch.setattr(mpw, "get_config_service", lambda *a: _CfgPago(cfg_extra))
+    return mpw, enviados
+
+
+async def test_mp_confirmacion_petshop_con_sucursal(usar_perfil, monkeypatch):
+    usar_perfil("petshop")
+    mpw, enviados = _mp_aprobado(monkeypatch, "5491100000101_S1", {"retiro_sucursal": "Sucursal Piloto"})
+    r = await mpw.procesar_pago("PAGO-PET-MP-1")
+    assert r["status"] == "ok"
+    assert enviados[0].endswith("al retirar en *Sucursal Piloto*. ¡Muchas gracias! 🐾")
+    assert "💊" not in enviados[0]
+
+
+async def test_mp_confirmacion_farmacia_igual_que_hoy(usar_perfil, monkeypatch):
+    usar_perfil("farmacia")
+    mpw, enviados = _mp_aprobado(monkeypatch, "5491100000102_S1")
+    r = await mpw.procesar_pago("PAGO-FARM-MP-1")
+    assert r["status"] == "ok"
+    assert enviados[0] == _CONF_MP_FARMACIA
+
+
+def _payway_aprobado(monkeypatch, pid, payway_id, phone, cfg_extra=None):
+    import app.routers.payway as pw
+    import app.services.config_service as cs
+    kv = {f"payway:pending:{pid}": json.dumps({
+        "id": pid, "phone": phone, "sku_id": "S1", "sku_nombre": "Royal Canin 15KG",
+        "cantidad": 1, "total": 9800.0})}
+    enviados = []
+
+    class _Redis:
+        async def get(self, k):
+            return kv.get(k)
+
+        async def setex(self, k, ttl, v):
+            kv[k] = v
+
+    class _Pw:
+        async def crear_pago(self, **k):
+            return {"id": payway_id, "status": "approved", "card_brand": "Visa"}, None
+
+    class _Orders:
+        async def find_by_payment(self, pid):
+            return None
+
+        async def create(self, **kw):
+            return {"order_id": "ORD-PW", "pickup_code": "654321"}
+
+    class _Wa:
+        async def send_text(self, phone, msg):
+            enviados.append(msg)
+            return True
+
+    # payway.py:216 hace _redis().setex fuera de un try: sin este fake, revienta sin Redis
+    monkeypatch.setattr(pw, "_redis", lambda: _Redis())
+    monkeypatch.setattr(pw, "get_payway_service", lambda *a, **k: _Pw())
+    monkeypatch.setattr(pw, "get_order_service", lambda *a: _Orders())
+    monkeypatch.setattr(pw, "get_whatsapp_service", lambda *a: _Wa())
+    monkeypatch.setattr(cs, "get_config_service", lambda *a, **k: _CfgPago(cfg_extra))
+    return pw, enviados
+
+
+async def test_payway_confirmacion_petshop_con_sucursal(usar_perfil, monkeypatch):
+    usar_perfil("petshop")
+    pw, enviados = _payway_aprobado(monkeypatch, "PID-PET-1", "PW-PET-1", "5491100000201",
+                                    {"retiro_sucursal": "Sucursal Piloto"})
+    r = await pw.payway_charge(pw.ChargeIn(pid="PID-PET-1", token="tok", bin="450799"))
+    assert r == {"status": "approved"}
+    assert enviados[0].endswith("al retirar en *Sucursal Piloto*. ¡Muchas gracias! 🐾")
+    assert "💊" not in enviados[0]
+
+
+async def test_payway_confirmacion_farmacia_igual_que_hoy(usar_perfil, monkeypatch):
+    usar_perfil("farmacia")
+    pw, enviados = _payway_aprobado(monkeypatch, "PID-FARM-1", "PW-FARM-1", "5491100000202")
+    r = await pw.payway_charge(pw.ChargeIn(pid="PID-FARM-1", token="tok", bin="450799"))
+    assert r == {"status": "approved"}
+    assert enviados[0] == _CONF_MP_FARMACIA

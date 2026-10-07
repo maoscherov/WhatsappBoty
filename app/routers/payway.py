@@ -22,6 +22,8 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from app.config import get_settings
+from app.services.checkout_helper import mensaje_pago_confirmado
+from app.services.perfil import get_perfil
 from app.services.payway_service import get_payway_service
 from app.services.payway_link import crear_pago_pendiente, PENDING_TTL as _PENDING_TTL
 from app.services.order_service import get_order_service
@@ -258,24 +260,10 @@ async def payway_charge(body: ChargeIn):
             pickup_minutes = int(cfg.get("pickup_minutes") or settings.pickup_minutes)
             pickup_text = cfg_svc.get_pickup_text(hours, pickup_minutes)
             pickup_code = order.get("pickup_code", "")
-            pickup_line = f"\n{pickup_text}" if pickup_text else ""
-
-            if tipo_entrega == "envio":
-                dir_txt = f" a *{direccion_envio}*" if direccion_envio else ""
-                mensaje = (
-                    f"✅ *¡Pago confirmado!*\n\n"
-                    f"Recibimos tu pago de *{nombre_producto}*. 🙌\n"
-                    f"🚚 Te lo enviamos a domicilio{dir_txt}. Nos comunicamos para coordinar la entrega.\n"
-                    f"📋 Código de pedido: *{pickup_code}*\n\n"
-                    f"¡Muchas gracias! 💊"
-                )
-            else:
-                mensaje = (
-                    f"✅ *¡Pago confirmado!*\n\n"
-                    f"Recibimos tu pago de *{nombre_producto}*. 🙌\n"
-                    f"🔑 *Tu código de retiro es: {pickup_code}*{pickup_line}\n\n"
-                    f"Guardalo para presentarlo al retirar. ¡Muchas gracias! 💊"
-                )
+            mensaje = mensaje_pago_confirmado(
+                nombre_producto, tipo_entrega, direccion_envio, pickup_code, pickup_text,
+                get_perfil().emoji, sucursal=cfg.get("retiro_sucursal") or "",
+            )
 
             wa = get_whatsapp_service(settings.whatsapp_token, settings.whatsapp_phone_number_id)
             await wa.send_text(phone, mensaje)

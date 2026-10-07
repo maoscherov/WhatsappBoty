@@ -904,6 +904,35 @@ def texto_entrega(tipo: str, direccion: Optional[str], costo_envio: float = 0) -
     return "🏪 Lo retirás en la sucursal (te enviamos el código al confirmar el pago)."
 
 
+def mensaje_pago_confirmado(nombre_producto: str, tipo_entrega: str,
+                            direccion_envio: str | None, pickup_code: str,
+                            pickup_text: str, emoji: str, sucursal: str = "") -> str:
+    """
+    Confirmación de pago aprobado. Mercado Pago (mp_webhook) y Payway (payway)
+    mandan este mismo texto. `emoji` es el del perfil de rubro (💊 farmacia,
+    🐾 petshop). `sucursal` es retiro_sucursal de la config: si viene, la línea
+    de retiro dice dónde; vacía, el texto es el de siempre.
+    """
+    if tipo_entrega == "envio":
+        dir_txt = f" a *{direccion_envio}*" if direccion_envio else ""
+        return (
+            f"✅ *¡Pago confirmado!*\n\n"
+            f"Recibimos tu pago de *{nombre_producto}*. 🙌\n"
+            f"🚚 Te lo enviamos a domicilio{dir_txt}. Nos comunicamos para coordinar la entrega.\n"
+            f"📋 Código de pedido: *{pickup_code}*\n\n"
+            f"¡Muchas gracias! {emoji}"
+        )
+    pickup_line = f"\n{pickup_text}" if pickup_text else ""
+    suc = (sucursal or "").strip()
+    donde = f" en *{suc}*" if suc else ""
+    return (
+        f"✅ *¡Pago confirmado!*\n\n"
+        f"Recibimos tu pago de *{nombre_producto}*. 🙌\n"
+        f"🔑 *Tu código de retiro es: {pickup_code}*{pickup_line}\n\n"
+        f"Guardalo para presentarlo al retirar{donde}. ¡Muchas gracias! {emoji}"
+    )
+
+
 async def _chequear_stock_vivo(session: dict, phone: str, session_svc,
                                cfg: dict) -> tuple[Optional[str], Optional[float]]:
     """

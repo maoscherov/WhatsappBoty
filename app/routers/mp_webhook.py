@@ -21,6 +21,8 @@ from app.services.whatsapp_service import get_whatsapp_service
 from app.services.session_service import get_session_service
 from app.services.order_service import get_order_service
 from app.services.config_service import get_config_service
+from app.services.checkout_helper import mensaje_pago_confirmado
+from app.services.perfil import get_perfil
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -214,24 +216,10 @@ async def _cerrar_venta(settings, payment: dict, payment_id: str, external_ref: 
     pickup_text = cfg_svc.get_pickup_text(hours, pickup_minutes)
 
     pickup_code = order.get("pickup_code", "")
-    pickup_line = f"\n{pickup_text}" if pickup_text else ""
-
-    if tipo_entrega == "envio":
-        dir_txt = f" a *{direccion_envio}*" if direccion_envio else ""
-        mensaje = (
-            f"✅ *¡Pago confirmado!*\n\n"
-            f"Recibimos tu pago de *{nombre_producto}*. 🙌\n"
-            f"🚚 Te lo enviamos a domicilio{dir_txt}. Nos comunicamos para coordinar la entrega.\n"
-            f"📋 Código de pedido: *{pickup_code}*\n\n"
-            f"¡Muchas gracias! 💊"
-        )
-    else:
-        mensaje = (
-            f"✅ *¡Pago confirmado!*\n\n"
-            f"Recibimos tu pago de *{nombre_producto}*. 🙌\n"
-            f"🔑 *Tu código de retiro es: {pickup_code}*{pickup_line}\n\n"
-            f"Guardalo para presentarlo al retirar. ¡Muchas gracias! 💊"
-        )
+    mensaje = mensaje_pago_confirmado(
+        nombre_producto, tipo_entrega, direccion_envio, pickup_code, pickup_text,
+        get_perfil().emoji, sucursal=cfg.get("retiro_sucursal") or "",
+    )
 
     sent = await wa_svc.send_text(phone, mensaje)
     logger.info(f"Confirmación enviada a {phone}: {sent}")
