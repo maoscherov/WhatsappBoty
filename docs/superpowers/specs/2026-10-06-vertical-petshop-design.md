@@ -838,11 +838,14 @@ los perfiles (**cambio que también afecta a la farmacia**):
   domicilio, como en develop (`_menciona_litros`, que sale de `_NO_DIR`). "el
   bidón de 1000 l" y "pagué 1500 por la de 15 l" siguen siendo volumen.
 - **Derivación prometida.** `_DERIV_PROMETIDA` toma "ya te paso" / "ya te
-  derivo" como promesa de una persona solo si sigue "con ...", "a(l)
-  <persona>" (alguien, una persona, el equipo, las chicas) o el fin de la
-  oración. "Elegí y ya te paso el link de pago." ya no deriva; "Ya te paso.",
-  "ya te paso con alguien del equipo" y el texto de consulta de salud siguen
-  derivando.
+  derivo" como promesa de una persona salvo que lo siga un objeto (el link,
+  el total, los datos, la dirección, el CBU, opciones, la info, un número, dos
+  puntos, "al pago"...). "Elegí y ya te paso el link de pago." ya no deriva;
+  "Ya te paso.", "ya te paso con alguien del equipo", "Ya te paso enseguida
+  con...", "Ya te paso a la farmacéutica", "Ya te derivo ahora" y el texto de
+  consulta de salud siguen derivando, como en develop. (Una primera versión
+  con una lista cerrada de personas dejaba de reconocer esas promesas; la
+  re-revisión de la ronda 2 lo marcó y se pasó a una lista de objetos.)
 
 ## 6. Pruebas
 
@@ -1293,7 +1296,9 @@ FARMACIA`):
    paso con alguien del equipo" del modelo ahora deriva de verdad (pasa a
    operador sin soltar el pedido, 4014d90); y en todos los caminos, "ya te
    paso el link" o "ya te paso los datos" ya no cuenta como derivación (ronda
-   2).
+   2). Las promesas de una persona que develop reconocía ("Ya te paso
+   enseguida con...", "Ya te paso a la farmacéutica", "Ya te derivo ahora")
+   siguen derivando.
 6. Pedidos en Postgres (b97104b, d8d4412): los pedidos se copian a la tabla
    `orders`, y un mismo pago crea una sola orden aunque Redis se pierda: índice
    único `ux_orders_payment` (0019), `find_by_payment` consulta `orders` cuando
@@ -1308,7 +1313,9 @@ FARMACIA`):
 8. Cotización de un producto x N desde el panel (`/bo/paylink`, modo
    "cotizar", ronda 2): la cotización sigue diciendo el total, pero al
    confirmar el link dice "<producto> xN ($total)" y la preferencia de MP sale
-   N x unitario (antes 1 x total).
+   N x unitario (antes 1 x total). El total de la cotización es el que se
+   cobra: unitario redondeado x cantidad (con precios de más de 2 decimales,
+   a lo sumo unos centavos distinto del texto anterior).
 9. Consola de pedidos (f7ffd85): `/orders/api` trae los cinco campos `erp_*`
    (null en la farmacia) y `/bo/mercurio/estado` el bloque `pedidos`. La tabla
    `orders` suma las columnas `erp_proximo_intento` y `erp_actualizado_at`
@@ -1368,7 +1375,14 @@ ERP (`POST /pedidos`) queda detrás de `MERCURIO_PEDIDOS_ENABLED` y sale apagada
   la retoma con la misma `Idempotency-Key` (la `order_id`). El job saltea los
   pedidos que el hook está mandando en ese proceso, y el hook no vuelve a
   mandar (ni reabre) un pedido que el job ya dejó `enviado`, `rechazado` o
-  `vencido` (solo encola uno sin estado o `pendiente`).
+  `vencido` (solo encola uno sin estado o `pendiente`). Queda abierto el caso
+  inverso: el job trabaja con la lista que leyó al empezar la pasada y puede
+  volver a mandar un pedido que el hook registró en el medio. Lo cubre la
+  `Idempotency-Key` (el ERP responde `Idempotent-Replay`), siempre que su
+  idempotencia sea atómica; si no lo fuera, el arreglo es reclamar la fila con
+  `UPDATE ... WHERE erp_estado = 'pendiente' RETURNING` justo antes del POST.
+  Con más de una réplica hace falta lo mismo (el set de pedidos en vuelo es por
+  proceso; MO corre en una sola instancia).
 - Respuestas del ERP: 422, 400, 404, 409 y 413 → `rechazado` (no se
   reintenta). 401 y 403 → error de credencial: el job corta la pasada sin
   gastar intentos y deja un ERROR. 429, 5xx, red, o un 2xx sin

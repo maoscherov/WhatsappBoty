@@ -1313,6 +1313,10 @@ async def bo_paylink(body: PaylinkIn, _=Depends(_auth)):
         if body.sku_id is None:
             # Sin SKU el "sí" posterior no tiene producto que confirmar.
             sku_id = "MANUAL"
+        # El total que se muestra es el que se va a cobrar: la sesión arma el
+        # link con el unitario redondeado x cantidad (los precios de Mercurio
+        # traen más de 2 decimales).
+        total = round(round(precio, 2) * cantidad, 2)
         cierre = (_cfg.get("receta_cotizacion_cierre") or
                   "¿Querés que avancemos? Decime *sí* y te mando el link de pago 🙂")
         if body.mensaje:

@@ -62,3 +62,16 @@ def test_un_solo_producto_sigue_igual_y_trae_el_descuento(empleado):
     b = r.json()
     assert b["ok"] and "800" in b["mensaje"]
     assert b["descuento"]["tipo"] == "empleado" and "tipo_cliente" in b
+
+
+def test_cotizar_un_sku_x_n_muestra_el_total_que_se_cobra():
+    """Re-revisión de la ronda 2: la sesión (y el link, el snapshot y el ERP)
+    usan el unitario redondeado x cantidad; el mensaje de la cotización tiene
+    que mostrar ese mismo total, no el del unitario sin redondear (los precios
+    de Mercurio traen más de 2 decimales). CAMBIO QUE TAMBIÉN AFECTA A LA
+    FARMACIA: a lo sumo unos centavos en el texto de la cotización."""
+    r = _post(detalle="Bolsa", monto=1000.005, cantidad=3, modo="cotizar", enviar=False)
+    assert r.status_code == 200, r.text
+    b = r.json()
+    assert b["total"] == round(round(1000.005, 2) * 3, 2)
+    assert f"${b['total']:,.2f}" in b["mensaje"]
