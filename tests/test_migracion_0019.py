@@ -276,3 +276,29 @@ def test_mo_con_pagos_repetidos_migra_igual_sin_indice_unico(base_aparte):
     assert _columna(dsn, "orders", "erp_proximo_intento") == [
         ("timestamp with time zone", "YES")]
     assert _consulta(dsn, "SELECT count(*) FROM orders") == [(2,)]
+
+
+# ── Ronda de arreglo 2 (i): erp_actualizado_at ───────────────────────────────
+# El "último error" de /bo/mercurio/estado se ordenaba por updated_at, que
+# también se mueve con las acciones del operador (preparado, retirado). La
+# fecha del último cambio del alta en el ERP va en su propia columna, también
+# en la orders que ya existe en MO.
+
+def test_base_recien_migrada_tiene_erp_actualizado_at(pg_dsn):
+    assert _columna(pg_dsn, "orders", "erp_actualizado_at") == [
+        ("timestamp with time zone", "YES")]
+
+
+def test_mo_recibe_erp_actualizado_at(base_aparte):
+    dsn = base_aparte
+    _base_de_mo(
+        dsn,
+        "INSERT INTO orders (order_id, phone, total, pago, payment_id, data, erp_estado) "
+        "VALUES ('MO-0001', '549', 15000, 'online', 'pay-1', '{}', 'pendiente')")
+
+    _alembic(dsn, "upgrade", "head")
+
+    assert _columna(dsn, "orders", "erp_actualizado_at") == [
+        ("timestamp with time zone", "YES")]
+    assert _consulta(dsn, "SELECT order_id, erp_actualizado_at FROM orders") == [
+        ("MO-0001", None)]

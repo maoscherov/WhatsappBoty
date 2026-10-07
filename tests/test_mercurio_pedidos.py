@@ -1677,6 +1677,48 @@ class TestEstadoMercurio:
         assert (p["pendientes"], p["rechazados"], p["vencidos"]) == (0, 0, 0)
         assert p["ultimo_error"] is None
 
+    async def test_ultimo_error_se_ordena_por_la_fecha_del_erp(self, db, alta):
+        """Ronda de arreglo 2 (i): un rechazo viejo que el operador marca
+        retirado (upsert, updated_at = now()) no tapa un error reciente del ERP."""
+        from app.services.order_store import get_order_store
+        store = get_order_store(db)
+        await store.upsert(_orden(order_id="ORD-RECH-VIEJO", mp_payment_id="mp-1"),
+                           erp_estado="pendiente")
+        await store.upsert(_orden(order_id="ORD-503", mp_payment_id="mp-2"),
+                           erp_estado="pendiente")
+        await store.marcar_erp("ORD-RECH-VIEJO", "rechazado", error="HTTP 400: viejo")
+        await store.marcar_erp("ORD-503", "pendiente", error="HTTP 503 recien",
+                               incrementar_intento=True)
+        await db.execute("UPDATE orders SET erp_actualizado_at = now() - interval '3 days', "
+                         "updated_at = now() - interval '3 days' "
+                         "WHERE order_id = 'ORD-RECH-VIEJO'")
+        await db.execute("UPDATE orders SET erp_actualizado_at = now() - interval '5 minutes', "
+                         "updated_at = now() - interval '5 minutes' WHERE order_id = 'ORD-503'")
+        # El operador marca retirado el rechazado: el write-through mueve updated_at.
+        await store.upsert(_orden(order_id="ORD-RECH-VIEJO", mp_payment_id="mp-1",
+                                  estado="retirado"))
+
+        r = await store.resumen_erp()
+        assert r["ultimo_error"]["order_id"] == "ORD-503"
+        assert r["ultimo_error"]["error"] == "HTTP 503 recien"
+        fila = await db.fetchrow("SELECT erp_actualizado_at, now() - erp_actualizado_at AS hace "
+                                 "FROM orders WHERE order_id = 'ORD-503'")
+        assert r["ultimo_error"]["at"] == fila["erp_actualizado_at"].isoformat()
+
+    async def test_marcar_erp_escribe_la_fecha_del_erp(self, db):
+        from app.services.order_store import get_order_store
+        store = get_order_store(db)
+        await store.upsert(_orden(), erp_estado="pendiente")
+        assert (await db.fetchrow("SELECT erp_actualizado_at FROM orders"))[0] is None
+        await store.marcar_erp("ORD-20261005-120000-AB12C", "pendiente", error="HTTP 503")
+        assert (await db.fetchrow("SELECT erp_actualizado_at FROM orders"))[0] is not None
+        await db.execute("UPDATE orders SET erp_actualizado_at = now() - interval '7 days', "
+                         "created_at = now() - interval '7 days'")
+        await store.vencer_pendientes(6)
+        row = await db.fetchrow("SELECT erp_estado, now() - erp_actualizado_at < "
+                                "interval '1 minute' AS reciente FROM orders")
+        assert (row["erp_estado"], row["reciente"]) == ("vencido", True)
+
     async def test_bloque_pedidos_con_postgres_caido(self, db, alta, monkeypatch):
         monkeypatch.setattr(get_settings(), "mercurio_api_key", "")
         monkeypatch.setattr(dbmod, "_instance", Database(""))

@@ -23,6 +23,10 @@ la cola de reintentos del alta en el ERP (F5, Mercurio):
                           reintento posterior podría duplicar el pedido. Lo
                           mira un humano (el motivo conserva el último error)
 
+`erp_actualizado_at`: último cambio del alta en el ERP (marcar_erp y
+vencer_pendientes); el "último error" de /bo/mercurio/estado se ordena por
+ella.
+
 Backoff por pedido: cada falla reintentable suma un intento (`erp_intentos`)
 y deja `erp_proximo_intento = now() + min(base * 2^(intentos-1), 6 h)`, con
 base = MERCURIO_PEDIDOS_RETRY_SECS (300 s: 5, 10, 20, 40 min... hasta 6 h).
@@ -185,6 +189,7 @@ class OrderStore:
                         THEN {_sql_proximo_intento("$7", "erp_intentos + $6")}
                     WHEN $2 <> 'pendiente' THEN NULL
                     ELSE erp_proximo_intento END,
+                erp_actualizado_at = now(),
                 updated_at = now()
             WHERE order_id = $1
             """,
@@ -202,10 +207,11 @@ class OrderStore:
             f"""
             INSERT INTO orders (order_id, phone, estado, total, pago, payment_id, data,
                                 erp_estado, erp_id_comprobante, erp_numero,
-                                erp_ultimo_error, erp_intentos, erp_proximo_intento)
+                                erp_ultimo_error, erp_intentos, erp_proximo_intento,
+                                erp_actualizado_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
                     CASE WHEN $13::float8 IS NULL THEN NULL
-                         ELSE {_sql_proximo_intento("$13", "$12")} END)
+                         ELSE {_sql_proximo_intento("$13", "$12")} END, now())
             ON CONFLICT (order_id) DO UPDATE SET
                 erp_estado = EXCLUDED.erp_estado,
                 erp_id_comprobante = COALESCE(EXCLUDED.erp_id_comprobante,
@@ -214,6 +220,7 @@ class OrderStore:
                 erp_ultimo_error = EXCLUDED.erp_ultimo_error,
                 erp_intentos = orders.erp_intentos + EXCLUDED.erp_intentos,
                 erp_proximo_intento = EXCLUDED.erp_proximo_intento,
+                erp_actualizado_at = now(),
                 updated_at = now()
             """,
             {**order, "order_id": order_id}, estado, id_comprobante, numero, error, intento,
@@ -289,6 +296,7 @@ class OrderStore:
                     || 'Idempotency-Key dura 7: reintentarlo podría duplicar el pedido)'
                     || COALESCE('; último error: ' || erp_ultimo_error, ''), 500),
                 erp_proximo_intento = NULL,
+                erp_actualizado_at = now(),
                 updated_at = now()
             WHERE erp_estado = 'pendiente'
               AND created_at < now() - make_interval(days => $1::int)
@@ -314,7 +322,11 @@ class OrderStore:
     async def resumen_erp(self) -> dict:
         """Contadores de la cola del ERP para /bo/mercurio/estado: pendientes,
         pendientes creados hace más de 1 hora, rechazados, vencidos y el
-        último error (pedido pendiente, rechazado o vencido con motivo)."""
+        último error (pedido pendiente, rechazado o vencido con motivo). El
+        último error se ordena por `erp_actualizado_at` (último cambio del
+        alta, que escriben marcar_erp y vencer_pendientes) y no por
+        updated_at, que también mueven las acciones del operador (ronda de
+        arreglo 2)."""
         row = await self._db.fetchrow(
             """
             SELECT
@@ -326,16 +338,18 @@ class OrderStore:
             FROM orders WHERE erp_estado IS NOT NULL
             """, raise_errors=True)
         ultimo = await self._db.fetchrow(
-            "SELECT order_id, erp_estado, erp_ultimo_error, updated_at FROM orders "
+            "SELECT order_id, erp_estado, erp_ultimo_error, erp_actualizado_at FROM orders "
             "WHERE erp_ultimo_error IS NOT NULL "
             "  AND erp_estado IN ('pendiente', 'rechazado', 'vencido') "
-            "ORDER BY updated_at DESC LIMIT 1", raise_errors=True)
+            "ORDER BY erp_actualizado_at DESC NULLS LAST, updated_at DESC LIMIT 1",
+            raise_errors=True)
         out = {k: int(row[k] or 0) for k in ("pendientes", "pendientes_mas_1h",
                                               "rechazados", "vencidos")}
         out["ultimo_error"] = None if not ultimo else {
             "order_id": ultimo["order_id"], "erp_estado": ultimo["erp_estado"],
             "error": ultimo["erp_ultimo_error"],
-            "at": ultimo["updated_at"].isoformat() if ultimo["updated_at"] else None,
+            "at": (ultimo["erp_actualizado_at"].isoformat()
+                   if ultimo["erp_actualizado_at"] else None),
         }
         return out
 

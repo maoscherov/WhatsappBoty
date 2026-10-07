@@ -28,6 +28,10 @@ la orders que ya existe en MO:
   índice común `ix_orders_payment`. Si la base ya tiene pagos repetidos, la
   migración no falla: avisa (NOTICE) y deja el índice común.
 - `erp_proximo_intento`: cuándo reintentar el alta en el ERP (backoff).
+- `erp_actualizado_at` (ronda de arreglo 2): cuándo cambió por última vez el
+  alta en el ERP (lo escriben marcar_erp y vencer_pendientes). El "último
+  error" de /bo/mercurio/estado se ordena por ella: updated_at también se
+  mueve con las acciones del operador (preparado, retirado).
 
 Revision ID: 0019
 Revises: 0018
@@ -122,6 +126,8 @@ def _orders() -> None:
 
     # Backoff de los reintentos del alta en el ERP (lo usa el job).
     op.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS erp_proximo_intento TIMESTAMPTZ NULL")
+    # Último cambio del alta en el ERP (el "último error" de /bo/mercurio/estado).
+    op.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS erp_actualizado_at TIMESTAMPTZ NULL")
 
     # Un pago, una orden. Sin pagos repetidos: índice único parcial y se va el
     # común (ix_orders_payment, que creó la vieja 0018 en MO). Con repetidos
