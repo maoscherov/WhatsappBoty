@@ -52,6 +52,33 @@ def erp_estado_inicial(order: dict) -> Optional[str]:
     return "pendiente"
 
 
+def problemas_de_configuracion() -> list[str]:
+    """
+    Lo que falta para que el alta funcione con MERCURIO_PEDIDOS_ENABLED
+    prendido (el lifespan lo loguea como ERROR al arrancar). Con el flag
+    apagado, nada.
+    """
+    from app.config import get_settings
+    s = get_settings()
+    if not s.mercurio_pedidos_enabled:
+        return []
+    out = []
+    if not (s.mercurio_api_key or "").strip():
+        out.append("MERCURIO_PEDIDOS_ENABLED=true sin MERCURIO_API_KEY: los pedidos "
+                   "cobrados quedan 'pendiente' sin mandarse al ERP y el job de "
+                   "reintentos no arranca")
+    if not (s.mercurio_customer_id_default or "").strip():
+        out.append("MERCURIO_PEDIDOS_ENABLED=true sin MERCURIO_CUSTOMER_ID_DEFAULT: "
+                   "ningún pedido se manda al ERP (quedan 'pendiente' con 'customer_id "
+                   "sin configurar' hasta vencer); cargar el customer_id que indique el "
+                   "proveedor")
+    if int(s.mercurio_pedidos_max_dias or 0) >= 7:
+        out.append(f"MERCURIO_PEDIDOS_MAX_DIAS={s.mercurio_pedidos_max_dias} alcanza los 7 "
+                   "días de la Idempotency-Key: un reintento tardío podría duplicar el "
+                   "pedido en el ERP (usar 6 o menos)")
+    return out
+
+
 def _id_estable(order_id: str) -> int:
     """`id` del contrato del ecommerce: entero estable por pedido, derivado
     de la order_id para que el reintento mande exactamente el mismo cuerpo."""
@@ -164,7 +191,7 @@ def pedido_desde_orden(order: dict, codigos: dict[str, dict], *,
         "id": _id_estable(order_id),
         "number": order_id,
         "state": state,
-        "customer_id": str(order.get("customer_id") or customer_id_default),
+        "customer_id": str(order.get("customer_id") or customer_id_default or "").strip(),
         "total": round(float(order.get("total") or 0), 2),
         "line_items": line_items,
     }
@@ -255,6 +282,16 @@ async def _intentar_alta(order: dict, *, client=None, db=None) -> Optional[dict]
         except PedidoInconsistente as e:
             logger.error(f"Pedido {order_id} NO se manda al ERP: {e}")
             await _marcar("rechazado", str(e))
+            return None
+
+        # customer_id (obligatorio en el contrato): sin uno en la orden ni por
+        # default no hay POST (cada pedido daría 422 y quedaría rechazado).
+        # Queda 'pendiente' con el motivo: se ve en /bo/mercurio/estado y,
+        # si nadie lo carga, vence por el tope de antigüedad.
+        if not str(order.get("customer_id") or s.mercurio_customer_id_default or "").strip():
+            logger.error(f"Pedido {order_id}: NO se manda al ERP, falta "
+                         "MERCURIO_CUSTOMER_ID_DEFAULT (customer_id sin configurar)")
+            await _marcar("pendiente", "customer_id sin configurar")
             return None
 
         # Códigos de variante. Un error de Postgres se propaga (raise_errors):

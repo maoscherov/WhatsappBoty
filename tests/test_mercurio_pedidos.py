@@ -47,6 +47,13 @@ def _orden(**extra) -> dict:
 CODIGOS = {"7508": {"codigo": "2209004", "codigo_padre": "ROY1051701"}}
 
 
+@pytest.fixture(autouse=True)
+def _customer_id_por_default(monkeypatch):
+    """fix-C2 (hallazgo 10): sin customer_id no hay POST. Los tests del alta
+    corren con uno por default; los que prueban su falta lo vacían."""
+    monkeypatch.setattr(get_settings(), "mercurio_customer_id_default", "20111111112")
+
+
 # ── Armado del pedido ─────────────────────────────────────────────────────────
 
 class TestPedidoDesdeOrden:
@@ -1205,3 +1212,88 @@ class TestVencido:
         rows = await db.fetch("SELECT order_id, erp_estado FROM orders ORDER BY order_id")
         assert [(r["order_id"], r["erp_estado"]) for r in rows] == [
             ("ORD-E", "enviado"), ("ORD-N", None), ("ORD-R", "rechazado")]
+
+
+# ── customer_id (hallazgo 10, fix-C2) ────────────────────────────────────────
+
+class TestCustomerId:
+    async def test_sin_customer_id_no_hay_post_y_queda_pendiente(self, db, alta, monkeypatch):
+        monkeypatch.setattr(get_settings(), "mercurio_customer_id_default", "  ")
+        await _encolar(db, _orden())
+        reqs: list = []
+        assert await enviar_pedido_erp(_orden(), client=_cliente_pedidos([OK_201], reqs),
+                                       db=db) is None
+        assert reqs == []
+        fila = await _fila_erp(db)
+        assert fila["erp_estado"] == "pendiente"
+        assert fila["erp_ultimo_error"] == "customer_id sin configurar"
+        assert fila["erp_intentos"] == 1 and fila["erp_proximo_intento"] is not None
+
+    async def test_con_customer_id_en_la_orden_alcanza(self, db, alta, monkeypatch):
+        monkeypatch.setattr(get_settings(), "mercurio_customer_id_default", "")
+        orden = _orden(customer_id="20304050")
+        await _encolar(db, orden)
+        reqs: list = []
+        assert await enviar_pedido_erp(orden, client=_cliente_pedidos([OK_201], reqs),
+                                       db=db) is not None
+        assert json.loads(reqs[0].content)["customer_id"] == "20304050"
+
+
+class TestConfiguracionAlArrancar:
+    def _settings(self, monkeypatch, **valores):
+        s = get_settings()
+        base = {"mercurio_pedidos_enabled": True, "mercurio_api_key": "mrc_x",
+                "mercurio_customer_id_default": "20111111112", "mercurio_pedidos_max_dias": 6}
+        for k, v in {**base, **valores}.items():
+            monkeypatch.setattr(s, k, v)
+
+    def test_flag_apagado_no_hay_problemas(self, monkeypatch):
+        from app.services.mercurio_pedidos import problemas_de_configuracion
+        self._settings(monkeypatch, mercurio_pedidos_enabled=False, mercurio_api_key="",
+                       mercurio_customer_id_default="")
+        assert problemas_de_configuracion() == []
+
+    def test_completo_no_hay_problemas(self, monkeypatch):
+        from app.services.mercurio_pedidos import problemas_de_configuracion
+        self._settings(monkeypatch)
+        assert problemas_de_configuracion() == []
+
+    def test_sin_customer_id_ni_clave(self, monkeypatch):
+        from app.services.mercurio_pedidos import problemas_de_configuracion
+        self._settings(monkeypatch, mercurio_api_key="", mercurio_customer_id_default=" ")
+        problemas = problemas_de_configuracion()
+        assert len(problemas) == 2
+        assert any("MERCURIO_CUSTOMER_ID_DEFAULT" in p for p in problemas)
+        assert any("MERCURIO_API_KEY" in p for p in problemas)
+
+    def test_tope_de_dias_que_alcanza_a_la_clave(self, monkeypatch):
+        from app.services.mercurio_pedidos import problemas_de_configuracion
+        self._settings(monkeypatch, mercurio_pedidos_max_dias=7)
+        [p] = problemas_de_configuracion()
+        assert "MERCURIO_PEDIDOS_MAX_DIAS" in p
+
+    def test_el_arranque_lo_loguea_como_error(self, monkeypatch, usar_perfil, caplog):
+        """Antes de tocar Redis (mismo corte que tests/test_perfil.py)."""
+        import logging
+
+        from fastapi.testclient import TestClient
+
+        import app.main as main
+
+        class _Corte(BaseException):
+            pass
+
+        def _cortar(*a, **k):
+            raise _Corte()
+
+        monkeypatch.setattr(main, "get_blob_store", _cortar)
+        usar_perfil("petshop")
+        self._settings(monkeypatch, mercurio_api_key="", mercurio_customer_id_default="")
+        with caplog.at_level(logging.INFO, logger="app.main"):
+            with pytest.raises(_Corte):
+                with TestClient(main.app):
+                    pass
+        errores = [r.getMessage() for r in caplog.records
+                   if r.levelname == "ERROR" and r.name == "app.main"]
+        assert any("MERCURIO_CUSTOMER_ID_DEFAULT" in m for m in errores)
+        assert any("MERCURIO_API_KEY" in m for m in errores)

@@ -34,6 +34,17 @@ async def lifespan(app: FastAPI):
     perfil = get_perfil()
     logger.info(f"Perfil de rubro: {perfil.clave} ({perfil.comercio})")
 
+    # Alta de pedidos en el ERP (F5): con MERCURIO_PEDIDOS_ENABLED prendido y
+    # la configuración incompleta (sin clave o sin customer_id), un ERROR
+    # claro al arrancar (revisión final, hallazgo 10). Con el flag apagado,
+    # nada (farmacia).
+    try:
+        from app.services.mercurio_pedidos import problemas_de_configuracion
+        for _problema in problemas_de_configuracion():
+            logger.error(f"Alta de pedidos en el ERP: {_problema}")
+    except Exception as e:
+        logger.warning(f"No se pudo revisar la configuración del alta de pedidos: {e}")
+
     # Restaurar archivos subidos (catálogo/padrón) desde Redis — el filesystem
     # de Railway es efímero y se borra en cada deploy.
     try:
