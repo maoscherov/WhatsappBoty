@@ -21,6 +21,8 @@ from typing import Optional
 import anthropic
 import openai
 
+from app.services.perfil import get_perfil
+
 # El prompt de farmacia vive en prompts.py, armado por bloques. Se re-exporta
 # acá: tests/test_logic.py y otros lo importan de este módulo.
 from app.services.prompts import SYSTEM_PROMPT  # noqa: F401
@@ -42,21 +44,17 @@ _SYSTEM_CACHED = SYSTEM_PROMPT
 
 
 class IntentService:
-    def __init__(self, anthropic_key: str, openai_key: str = "", provider: str = "anthropic",
-                 vertical: str = "farmacia"):
+    def __init__(self, anthropic_key: str, openai_key: str = "", provider: str = "anthropic"):
         self._provider = provider if provider in ("anthropic", "openai") else "anthropic"
-        self._vertical = vertical if vertical in ("farmacia", "mutual") else "farmacia"
         self._anthropic = anthropic.AsyncAnthropic(api_key=anthropic_key) if anthropic_key else None
         self._openai = openai.AsyncOpenAI(api_key=openai_key) if openai_key else None
-        logger.info(f"IntentService: vertical '{self._vertical}', proveedor primario '{self._provider}' "
+        logger.info(f"IntentService: perfil '{get_perfil().clave}', proveedor primario '{self._provider}' "
                     f"(anthropic={'ok' if self._anthropic else 'no'}, openai={'ok' if self._openai else 'no'})")
 
     def _system_prompt(self) -> str:
-        """Prompt según el vertical: farmacia (catálogo y venta) o mutual (información)."""
-        if self._vertical == "mutual":
-            from app.services.mutual_helper import SYSTEM_PROMPT_MUTUAL
-            return SYSTEM_PROMPT_MUTUAL
-        return SYSTEM_PROMPT
+        """Prompt del perfil de rubro activo. Se lee en cada llamada (nunca se
+        guarda en la instancia): el singleton no queda con un perfil viejo."""
+        return get_perfil().system_prompt
 
     # ── Helpers internos ──────────────────────────────────────────────────────
 
@@ -199,12 +197,14 @@ class IntentService:
     @staticmethod
     def _con_contexto(user_content: str, contexto_cliente: Optional[str],
                       contexto_kb: Optional[str] = None) -> str:
-        """Anexa bloques de contexto (datos del socio, base de conocimiento)."""
-        if contexto_cliente:
+        """Anexa bloques de contexto (datos del socio, base de conocimiento).
+        El de socio solo con la capacidad `socios`; la KB va con el rótulo del perfil."""
+        p = get_perfil()
+        if contexto_cliente and p.socios:
             user_content += f"\n\n[DATOS DEL SOCIO]\n{contexto_cliente}"
         if contexto_kb:
             user_content += (
-                f"\n\n[INFORMACIÓN DE LA FARMACIA]\n{contexto_kb}\n"
+                f"\n\n[{p.rotulo_kb}]\n{contexto_kb}\n"
                 "Usá esta información para responder si aplica. Si no alcanza, "
                 "ofrecé pasar con una persona del equipo. No inventes datos."
             )
@@ -213,6 +213,7 @@ class IntentService:
     def _formatear_productos(self, productos: list[dict]) -> str:
         if not productos:
             return "Sin resultados en el catálogo."
+        recetas = get_perfil().recetas
         lines = []
         for i, p in enumerate(productos, start=1):
             if p.get("sin_stock"):
@@ -224,7 +225,7 @@ class IntentService:
             extras = []
             if p.get("urgente"):
                 extras.append("STOCK BAJO - ofrecer con urgencia")
-            if p.get("requiere_receta") in ("si", "ambiguo"):
+            if recetas and p.get("requiere_receta") in ("si", "ambiguo"):
                 extras.append("REQUIERE RECETA")
             extra_txt = f" | {' | '.join(extras)}" if extras else ""
             # Precio viejo del ERP: no se informa (lo confirma el equipo).
@@ -252,9 +253,9 @@ class IntentService:
 _instance: Optional[IntentService] = None
 
 
-def get_intent_service(anthropic_key: str, openai_key: str = "", provider: str = "anthropic",
-                       vertical: str = "farmacia") -> IntentService:
+def get_intent_service(anthropic_key: str, openai_key: str = "",
+                       provider: str = "anthropic") -> IntentService:
     global _instance
     if _instance is None:
-        _instance = IntentService(anthropic_key, openai_key, provider, vertical)
+        _instance = IntentService(anthropic_key, openai_key, provider)
     return _instance

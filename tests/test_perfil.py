@@ -405,3 +405,87 @@ def test_prompt_petshop_resuelve_comercio_nombre_y_farmacia_conserva_el_hash(usa
     assert "Mascotas del Oeste" not in p.system_prompt
     f = usar_perfil("farmacia", comercio="MO Prueba")
     assert _hashlib.sha256(f.system_prompt.encode("utf-8")).hexdigest() == _SHA_PROMPT_FARMACIA
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Task 4 — IntentService lee el perfil en cada llamada (spec §3.6 y §6.2)
+# ══════════════════════════════════════════════════════════════════════════════
+import inspect as _inspect
+import logging as _logging
+
+import pytest
+
+_KB_INSTRUCCION = ("Usá esta información para responder si aplica. Si no alcanza, ofrecé pasar "
+                   "con una persona del equipo. No inventes datos.")
+
+
+def test_system_prompt_sale_del_perfil_en_los_tres_rubros(usar_perfil):
+    from app.services.intent_service import IntentService, SYSTEM_PROMPT
+    from app.services.mutual_helper import SYSTEM_PROMPT_MUTUAL
+    usar_perfil("farmacia")
+    assert IntentService("")._system_prompt() is SYSTEM_PROMPT
+    usar_perfil("petshop")
+    assert "Mascotas del Oeste" in IntentService("")._system_prompt()
+    usar_perfil("mutual")
+    assert IntentService("")._system_prompt() is SYSTEM_PROMPT_MUTUAL
+
+
+def test_singleton_de_intent_sigue_al_perfil(usar_perfil, monkeypatch):
+    from app.services import intent_service as isvc
+    monkeypatch.setattr(isvc, "_instance", None)
+    usar_perfil("farmacia")
+    svc = isvc.get_intent_service("", "", "anthropic")
+    assert svc._system_prompt() == isvc.SYSTEM_PROMPT
+    usar_perfil("petshop")
+    assert isvc.get_intent_service("", "", "anthropic") is svc        # misma instancia
+    assert "Mascotas del Oeste" in svc._system_prompt()                # perfil nuevo
+
+
+def test_get_intent_service_como_lo_llama_simulate(usar_perfil, monkeypatch):
+    """simulate.py:90 arma el bot sin vertical: igual tiene que salir el perfil activo."""
+    from app.services import intent_service as isvc
+    monkeypatch.setattr(isvc, "_instance", None)
+    usar_perfil("petshop")
+    assert "Mascotas del Oeste" in isvc.get_intent_service("", "", "anthropic")._system_prompt()
+
+
+def test_intent_service_sin_parametro_vertical_y_loguea_el_perfil(usar_perfil, caplog):
+    from app.services.intent_service import IntentService, get_intent_service
+    assert "vertical" not in _inspect.signature(IntentService.__init__).parameters
+    assert "vertical" not in _inspect.signature(get_intent_service).parameters
+    usar_perfil("petshop")
+    with caplog.at_level(_logging.INFO, logger="app.services.intent_service"):
+        IntentService("")
+    assert "perfil 'petshop'" in caplog.text
+
+
+def test_deps_del_webhook_arma_el_intent_con_el_perfil(usar_perfil, monkeypatch):
+    from app.routers import webhook as wh
+    from app.services import intent_service as isvc
+    for nombre in ("get_whatsapp_service", "get_sku_service", "get_session_service",
+                   "get_payway_link_service", "get_payment_service", "get_audio_service",
+                   "get_image_service", "get_perf_service", "get_config_service",
+                   "get_socio_service", "get_message_store", "get_db", "get_metrics_store",
+                   "get_rag_service", "get_embedding_service"):
+        monkeypatch.setattr(wh, nombre, lambda *a, **k: None)
+    monkeypatch.setattr(isvc, "_instance", None)
+    usar_perfil("petshop")
+    deps = wh._deps()
+    assert "Mascotas del Oeste" in deps["intent"]._system_prompt()
+
+
+def test_con_contexto_petshop_sin_socio_y_con_rotulo_del_comercio(usar_perfil):
+    from app.services.intent_service import IntentService
+    usar_perfil("petshop")
+    out = IntentService._con_contexto("m", "Nombre de pila (para saludar): Ana", "Horario: 9 a 18")
+    assert out == "m\n\n[INFORMACIÓN DEL COMERCIO]\nHorario: 9 a 18\n" + _KB_INSTRUCCION
+    assert IntentService._con_contexto("m", "Nombre de pila (para saludar): Ana") == "m"
+
+
+@pytest.mark.parametrize("clave", ["farmacia", "mutual"])
+def test_con_contexto_farmacia_y_mutual_igual_que_hoy(usar_perfil, clave):
+    from app.services.intent_service import IntentService
+    usar_perfil(clave)
+    out = IntentService._con_contexto("m", "Nombre de pila (para saludar): Ana", "Horario: 9 a 18")
+    assert out == ("m\n\n[DATOS DEL SOCIO]\nNombre de pila (para saludar): Ana"
+                   "\n\n[INFORMACIÓN DE LA FARMACIA]\nHorario: 9 a 18\n" + _KB_INSTRUCCION)
