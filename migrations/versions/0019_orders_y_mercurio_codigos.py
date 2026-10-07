@@ -11,10 +11,23 @@ de la variante y `product_id` = codigo_padre (spec 14/9), pero catalog_items
 solo guarda external_id (id_articulo_mercurio). El sync llena esta tabla
 satélite sin tocar el contrato compartido con el agente de la farmacia.
 
+Numeración (7/10): esta migración fue la 0018 de feature/vertical-petshop,
+pero develop agregó su propia 0018 (operadores) y con dos heads el `upgrade
+head` del arranque fallaba. Pasó a 0019 sobre la 0018 de develop. La base de
+MO ya estaba estampada en "0018" con ESTA migración (orders y
+mercurio_codigos, sin operadores), así que se auto-repara: si falta la tabla
+operadores corre el upgrade() de la 0018 de develop y después crea lo suyo
+con IF NOT EXISTS. Farmacia, mutual (en 0017 o en 0018 = operadores) y MO
+llegan solas a 0019 al arrancar, sin `alembic stamp` a mano.
+
 Revision ID: 0019
 Revises: 0018
 Create Date: 2026-10-05
 """
+import importlib.util
+from pathlib import Path
+
+import sqlalchemy as sa
 from alembic import op
 
 revision = "0019"
@@ -24,6 +37,51 @@ depends_on = None
 
 
 def upgrade() -> None:
+    _reparar_operadores()
+    _orders()
+    _mercurio_codigos()
+
+
+def downgrade() -> None:
+    # Solo lo de esta migración. `operadores` es de la 0018 (develop): aunque en
+    # la base de MO la haya creado _reparar_operadores, bajar a 0018 la deja.
+    op.execute("DROP TABLE IF EXISTS mercurio_codigos")
+    op.execute("DROP INDEX IF EXISTS ix_orders_payment")
+    op.execute("DROP INDEX IF EXISTS ix_orders_erp_pendiente")
+    op.execute("DROP TABLE IF EXISTS orders")
+
+
+# ── Auto-reparación de la base de MO ─────────────────────────────────────────
+def _existe_tabla(nombre: str) -> bool:
+    # to_regclass resuelve con el search_path, igual que los CREATE TABLE sin
+    # esquema de las migraciones.
+    return op.get_bind().execute(
+        sa.text("SELECT to_regclass(:t)"), {"t": nombre}).scalar() is not None
+
+
+def _migracion_0018_operadores():
+    """La 0018 de develop cargada por ruta (el nombre del archivo empieza con
+    un dígito y no se puede importar). Su `op` es el mismo proxy de alembic,
+    así que corre en el contexto y la transacción de esta migración."""
+    ruta = Path(__file__).resolve().with_name("0018_operadores.py")
+    spec = importlib.util.spec_from_file_location("_migracion_0018_operadores", ruta)
+    modulo = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(modulo)
+    return modulo
+
+
+def _reparar_operadores() -> None:
+    # Solo si falta la tabla (base de MO). Si existe, la 0018 ya corrió y NO se
+    # vuelve a sembrar: la farmacia pudo renombrar o fusionar operadores ("02"
+    # -> "María") y la siembra volvería a dar de alta los nombres viejos.
+    if not _existe_tabla("operadores"):
+        _migracion_0018_operadores().upgrade()
+
+
+# ── Tablas de esta migración ─────────────────────────────────────────────────
+def _orders() -> None:
+    # En MO la tabla ya existe (la creó la vieja 0018 de la rama) y este CREATE
+    # TABLE IF NOT EXISTS no la toca: dejarlo igual al que corrió allá.
     op.execute("""
         CREATE TABLE IF NOT EXISTS orders (
             order_id            TEXT PRIMARY KEY,
@@ -45,6 +103,16 @@ def upgrade() -> None:
     op.execute("CREATE INDEX IF NOT EXISTS ix_orders_erp_pendiente ON orders (created_at) "
                "WHERE erp_estado = 'pendiente'")
     op.execute("CREATE INDEX IF NOT EXISTS ix_orders_payment ON orders (payment_id)")
+    # Columnas e índices nuevos de orders van ACÁ abajo, para que lleguen
+    # también a la tabla que ya existe en MO:
+    #   ALTER TABLE orders ADD COLUMN IF NOT EXISTS ...
+    #   CREATE [UNIQUE] INDEX IF NOT EXISTS <nombre nuevo> ...
+    # Un índice con un nombre que ya existe (ix_orders_payment) no se pisa con
+    # IF NOT EXISTS: para cambiarlo, nombre nuevo (o DROP INDEX IF EXISTS antes).
+    # Lo que se agregue acá se borra solo en downgrade() con el DROP TABLE.
+
+
+def _mercurio_codigos() -> None:
     op.execute("""
         CREATE TABLE IF NOT EXISTS mercurio_codigos (
             branch_id     TEXT NOT NULL,
@@ -54,10 +122,3 @@ def upgrade() -> None:
             PRIMARY KEY (branch_id, external_id)
         )
     """)
-
-
-def downgrade() -> None:
-    op.execute("DROP TABLE IF EXISTS mercurio_codigos")
-    op.execute("DROP INDEX IF EXISTS ix_orders_payment")
-    op.execute("DROP INDEX IF EXISTS ix_orders_erp_pendiente")
-    op.execute("DROP TABLE IF EXISTS orders")
