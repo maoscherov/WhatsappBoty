@@ -10,6 +10,7 @@ Flujo:
   4. GET /payway/test/{monto} → crea un pago de prueba y devuelve el link (sandbox).
 """
 
+import html
 import json
 import logging
 import uuid
@@ -59,14 +60,25 @@ async def _get_pending(pid: str) -> dict | None:
 
 # ── Página de pago ──────────────────────────────────────────────────────────────
 
+def _con_marca(pagina: str) -> str:
+    """Pone la marca del perfil de rubro en la página: logo, wordmark, título y
+    razón social del pie. Se resuelve en cada request (nunca al importar)."""
+    p = get_perfil()
+    return (pagina
+            .replace("{{LOGO}}", html.escape(p.comercio[:1].upper()))
+            .replace("{{WORDMARK}}", p.wordmark_html or html.escape(p.comercio))
+            .replace("{{COMERCIO}}", html.escape(p.comercio))
+            .replace("{{RAZON_SOCIAL}}", html.escape(p.razon_social or p.comercio)))
+
+
 def _status_page(variante: str, titulo: str, sub: str) -> str:
-    """Página de estado con la identidad Remedia. variante: ok | warn | err."""
+    """Página de estado con la identidad del comercio. variante: ok | warn | err."""
     iconos = {
         "ok": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>',
         "warn": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>',
         "err": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>',
     }
-    return (_STATUS_HTML
+    return (_con_marca(_STATUS_HTML)
             .replace("{{VARIANTE}}", variante)
             .replace("{{ICONO}}", iconos.get(variante, iconos["warn"]))
             .replace("{{TITULO}}", titulo)
@@ -90,7 +102,7 @@ async def pay_page(pid: str):
                             settings.payway_template_id, settings.payway_cybersource)
     total = float(pending["total"])
     nombre = pending["sku_nombre"]
-    return HTMLResponse(_PAY_HTML
+    return HTMLResponse(_con_marca(_PAY_HTML)
                         .replace("{{PID}}", pid)
                         .replace("{{NOMBRE}}", nombre)
                         .replace("{{TOTAL}}", f"{total:,.2f}")
@@ -517,7 +529,9 @@ async def payway_notification(payload: dict, comercio: str = ""):
     return {"status": "ok"}
 
 
-# ── Identidad visual Remedia (compartida por la página de pago y las de estado) ──
+# ── Identidad visual (compartida por la página de pago y las de estado) ────────
+# La paleta es fija; la marca ({{LOGO}}, {{WORDMARK}}, {{COMERCIO}},
+# {{RAZON_SOCIAL}}) sale del perfil de rubro en cada request (_con_marca).
 _BRAND_HEAD = """<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@600;700;800&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
@@ -556,16 +570,16 @@ _BRAND_HEAD = """<meta charset="utf-8"><meta name="viewport" content="width=devi
   @media (prefers-reduced-motion: reduce){*{animation:none!important;transition:none!important}}
 </style>"""
 
-_MARCA_HTML = """<div class="marca"><div class="logo">R</div><div class="wordmark">Remed<b>IA</b></div></div>"""
+_MARCA_HTML = """<div class="marca"><div class="logo">{{LOGO}}</div><div class="wordmark">{{WORDMARK}}</div></div>"""
 
 _PIE_HTML = """<div class="pie">
 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="10" width="16" height="11" rx="2.5"/><path d="M8 10V7a4 4 0 118 0v3"/></svg>
-Pago seguro procesado por Payway · Farmacia Mutual Independencia</div>"""
+Pago seguro procesado por Payway · {{RAZON_SOCIAL}}</div>"""
 
 
 # ── HTML de la página de pago (tokeniza en el navegador, cobra en el backend) ──────
 _PAY_HTML = """<!doctype html><html lang="es"><head>
-<title>Pagar · Remedia</title>
+<title>Pagar · {{COMERCIO}}</title>
 """ + _BRAND_HEAD + """
 <style>
   .prod{color:var(--gris);font-size:14px;margin-bottom:2px}
@@ -712,7 +726,7 @@ async function pagar(){
 
 # ── HTML de las páginas de estado (vencido / ya pagado / retorno) ─────────────────
 _STATUS_HTML = """<!doctype html><html lang="es"><head>
-<title>Remedia</title>
+<title>{{COMERCIO}}</title>
 """ + _BRAND_HEAD + """
 <style>
   .card{text-align:center;padding:34px 26px 30px}

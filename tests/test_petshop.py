@@ -926,3 +926,70 @@ async def test_payway_con_vertical_en_mayusculas_y_comercio_con_enie_y_tildes(us
     assert pl["fraud_detection"]["bill_to"]["last_name"] == "Ñandú Mascotas Güemes"
     assert pl["device_unique_identifier"] == "nandu-mascotas-guemes-web"
     assert pl["fraud_detection"]["device_unique_identifier"] == "nandu-mascotas-guemes-web"
+
+
+# ── /pay y páginas de estado ────────────────────────────────────────────────────
+# Mismo pendiente y mismos fakes que el snapshot de farmacia de la Task 1.
+_PENDIENTE_PAY = {"total": "4770.0", "sku_nombre": "IBUPROFENO 600 MG X 10", "estado": "pendiente"}
+_SNAPSHOT_FARMACIA = {
+    "pay": "85c4271036760ed8f4185d0d2c860bf6c7bfb926d2d36e4a882283a22f84ad52",
+    "vencido": "a23c99347472476c32a97742e46978de209ec2c2a8d4165ed33386df16f47283",
+    "ok": "0b8cb84ff34ec20836cd88e807afa23f41e8e0b2e9b3b5fdba629ac1d0e44eea",
+    "cancelado": "a975ad681e7c07c62cf5ef0c9260c8cd109c578870b0d820376e98fa31225994",
+}
+
+
+def _pay_falso(monkeypatch):
+    import app.routers.payway as pw
+
+    async def _pend(pid):
+        return dict(_PENDIENTE_PAY) if pid == "abc123" else None
+    monkeypatch.setattr(pw, "_get_pending", _pend)
+    monkeypatch.setattr(pw, "get_payway_service", lambda *a, **k: SimpleNamespace(
+        base_url="https://pw.test/api/v2", public_key="PUBKEY"))
+    monkeypatch.setattr(pw, "get_settings", lambda: SimpleNamespace(
+        payway_public_key="", payway_private_key="", payway_sandbox=True,
+        payway_site_id="", payway_template_id="", payway_cybersource=False,
+        payway_cs_org_id="ORG", payway_cs_merchant_id="MERCH"))
+    return pw
+
+
+async def _paginas(pw) -> dict:
+    return {"pay": (await pw.pay_page("abc123")).body,
+            "vencido": (await pw.pay_page("vencido")).body,
+            "ok": (await pw.payway_return("ok")).body,
+            "cancelado": (await pw.payway_return("")).body}
+
+
+@pytest.mark.parametrize("clave", ["farmacia", "mutual"])
+async def test_paginas_de_pago_farmacia_identicas_al_snapshot(usar_perfil, monkeypatch, clave):
+    usar_perfil(clave)
+    pw = _pay_falso(monkeypatch)
+    paginas = await _paginas(pw)
+    assert {k: hashlib.sha256(v).hexdigest() for k, v in paginas.items()} == _SNAPSHOT_FARMACIA
+
+
+async def test_paginas_de_pago_petshop(usar_perfil, monkeypatch):
+    usar_perfil("petshop")
+    pw = _pay_falso(monkeypatch)
+    paginas = {k: v.decode("utf-8") for k, v in (await _paginas(pw)).items()}
+    assert "<title>Pagar · Mascotas del Oeste</title>" in paginas["pay"]
+    assert "<title>Mascotas del Oeste</title>" in paginas["ok"]
+    for nombre, pagina in paginas.items():
+        assert '<div class="logo">M</div>' in pagina, nombre
+        assert '<div class="wordmark">Mascotas del Oeste</div>' in pagina, nombre
+        assert "Pago seguro procesado por Payway · Mascotas del Oeste" in pagina, nombre
+        assert "Remed" not in pagina and "Farmacia" not in pagina, nombre
+    # Lo demás de la página no cambia: producto, total y claves del formulario
+    assert "IBUPROFENO 600 MG X 10" in paginas["pay"] and "4,770.00" in paginas["pay"]
+    assert 'PUBLIC_KEY="PUBKEY"' in paginas["pay"]
+
+
+async def test_paginas_de_pago_escapan_el_nombre_del_comercio(usar_perfil, monkeypatch):
+    usar_perfil("petshop", comercio="Ñandú & Cía <MO>")
+    pw = _pay_falso(monkeypatch)
+    pagina = (await pw.pay_page("abc123")).body.decode("utf-8")
+    assert '<div class="logo">Ñ</div>' in pagina
+    assert '<div class="wordmark">Ñandú &amp; Cía &lt;MO&gt;</div>' in pagina
+    assert "<title>Pagar · Ñandú &amp; Cía &lt;MO&gt;</title>" in pagina
+    assert "<MO>" not in pagina
