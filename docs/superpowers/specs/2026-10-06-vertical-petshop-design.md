@@ -1125,6 +1125,8 @@ La farmacia y la mutual siguen en `develop` hasta §7.6.
 - `PUBLIC_BASE_URL` con el host de MO, `WHATSAPP_VERIFY_TOKEN` propio (el
   default es `farma_verify_token`) y las claves de Mercurio y del proveedor de
   pago de MO.
+- `MERCURIO_PEDIDOS_ENABLED=false` (el default) hasta completar la lista de
+  §7.7. Con el flag apagado no se manda ningún pedido al ERP.
 
 ### 7.3 Configuración desde el panel o la API (antes de abrir el número)
 
@@ -1211,6 +1213,75 @@ cambio explícito para la farmacia. La tabla guarda el JSON completo del pedido
 (teléfono y dirección incluidos) y **la política de retención queda
 pendiente**. El aviso del merge al equipo de la farmacia tiene que decir: "los
 pedidos se copian a Postgres (tabla orders)".
+
+Consola de pedidos (revisión final, hallazgo 9). `/orders/api/list` y
+`/orders/api/{id}` traen, en todos los perfiles, cinco campos más del alta en
+el ERP (`erp_estado`, `erp_ultimo_error`, `erp_intentos`, `erp_numero`,
+`erp_id_comprobante`), leídos de `orders` con una consulta por llamada (tope
+de 3 s). En la farmacia van en null (y `erp_intentos` en 0). Es aditivo:
+ningún campo existente cambia. También va en el aviso del merge.
+
+### 7.7 Alta de pedidos en Mercurio (F5): antes de prender `MERCURIO_PEDIDOS_ENABLED`
+
+Revisión final del 7/10 (hallazgos 5 a 12). El alta de un pedido cobrado en el
+ERP (`POST /pedidos`) queda detrás de `MERCURIO_PEDIDOS_ENABLED` y sale apagada.
+
+**Antes de prender MERCURIO_PEDIDOS_ENABLED**:
+1. Confirmar con el proveedor (mail del 14/9,
+   `docs/superpowers/specs/2026-09-14-mercurio-api-v1.md`):
+   - `state`: qué valor corresponde a un pedido cobrado y sin preparar. El
+     default de `MERCURIO_PEDIDO_STATE` es `"complete"` y podría darlo por
+     cerrado.
+   - `customer_id`: un cliente genérico para los compradores sin alta, o el
+     DNI del comprador (hoy el bot no lo pide).
+   - `payment_details` y el medio de pago (tarjeta online por Payway o MP):
+     hoy el POST no los lleva.
+   - Datos de entrega: dirección y teléfono del comprador en los envíos (hoy
+     no van), y cómo se informa el envío (asumimos `shipping_total`; si el ERP
+     lo ignora o lo rechaza, los pedidos con envío quedan `rechazado`).
+   - Qué depósito descuenta el stock del pedido (1, 4 o 27).
+2. Cargar `MERCURIO_CUSTOMER_ID_DEFAULT` con el valor que indique el
+   proveedor. Sin él no se manda ningún pedido: quedan `pendiente` con
+   "customer_id sin configurar" hasta vencer. También `MERCURIO_API_KEY` (la
+   productiva). `MERCURIO_PEDIDOS_MAX_DIAS` queda en 6 (nunca 7 o más).
+3. Al arrancar, el log no muestra ninguna línea "Alta de pedidos en el ERP:"
+   como ERROR (falta de clave, de customer_id o un tope de días que alcanza
+   los 7 de la Idempotency-Key).
+4. Probar en preproducción una venta con retiro y una con envío, y un carrito
+   de dos productos. Verificar el pedido en el ERP (renglones, cantidades,
+   envío, total) y que un `id` mayor a 2^31-1 no da error (el `id` sale de
+   32 bits del sha256 de la order_id).
+5. Después de la primera venta real, mirar `GET /bo/mercurio/estado`: el
+   bloque `pedidos` tiene que mostrar `habilitado: true`,
+   `customer_id_default: true`, 0 rechazados y 0 vencidos, y el pedido con
+   `erp_estado: "enviado"` en la consola (`/orders/api/{id}`).
+
+**Cómo funciona** (detalle en los docstrings de `mercurio_pedidos.py` y
+`order_store.py`):
+- La orden cobrada nace `pendiente` en la tabla `orders`. El webhook de MP y
+  `/payway/charge` confirman al cliente y programan el alta en segundo plano
+  (`programar_alta_erp`): ninguno espera al ERP. Si el proceso se reinicia en
+  el medio, el job de reintentos (cada `MERCURIO_PEDIDOS_RETRY_SECS`, 300 s)
+  la retoma con la misma `Idempotency-Key` (la `order_id`). El job saltea los
+  pedidos que el hook está mandando en ese proceso.
+- Respuestas del ERP: 422, 400, 404, 409 y 413 → `rechazado` (no se
+  reintenta). 401 y 403 → error de credencial: el job corta la pasada sin
+  gastar intentos y deja un ERROR. 429, 5xx, red, o un 2xx sin
+  `id_comprobante` → sigue `pendiente`, con backoff por pedido: el próximo
+  intento es `now() + min(300 s × 2^(intentos-1), 6 h)`.
+- Un `pendiente` con más de `MERCURIO_PEDIDOS_MAX_DIAS` (6) pasa a `vencido` y
+  no se reintenta más: la `Idempotency-Key` dura 7 días y un reintento
+  posterior podría duplicar el pedido.
+- Estados (`erp_estado`): NULL (no aplica), `pendiente`, `enviado`,
+  `rechazado`, `vencido`. Se ven en la consola de pedidos (`erp_estado`,
+  `erp_ultimo_error`, `erp_intentos`, `erp_numero`, `erp_id_comprobante`) y
+  en los contadores de `/bo/mercurio/estado`. Cada `rechazado` o `vencido`
+  deja un ERROR en el log y un evento `erp_pedido_rechazado` /
+  `erp_pedido_vencido` (tabla `eventos`, `ref` = order_id). Un `rechazado` o
+  un `vencido` lo carga a mano un humano en el ERP: no hay reintento manual.
+- Los links por monto libre del panel (`MANUAL`, ítems `LIBRE1`...) no tienen
+  código de Mercurio: quedan `pendiente` con "sin código Mercurio" y vencen a
+  los 6 días (pendiente de decisión: rechazarlos de entrada).
 
 ## 8. Fuera de alcance
 

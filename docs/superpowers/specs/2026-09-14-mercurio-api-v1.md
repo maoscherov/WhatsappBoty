@@ -105,6 +105,29 @@ titulo_producto, descripcion_producto, meta_title, meta_descripcion, meta_keywor
   Un `line_item` por renglón del checkout (snapshot guardado con el link: en
   la `metadata` de la preferencia de MP o en el pago pendiente de Payway), el
   envío en `shipping_total` (pregunta 9) e `Idempotency-Key` = `order_id`.
+  El alta corre en segundo plano (ni el webhook de MP ni `/payway/charge`
+  esperan al ERP) y la retoma un job (`MERCURIO_PEDIDOS_RETRY_SECS`).
+  Respuestas: 422, 400, 404, 409 y 413 → `rechazado`; 401/403 → error de
+  credencial (corta la pasada del job, sin gastar intentos); 429 (con
+  `Retry-After` en segundos o fecha HTTP), 5xx, red o un 2xx sin
+  `id_comprobante` → `pendiente` con backoff por pedido (300 s × 2^(n-1),
+  tope 6 h). Un `pendiente` con más de `MERCURIO_PEDIDOS_MAX_DIAS` (6; la
+  clave dura 7) pasa a `vencido`. Estado de la cola: bloque `pedidos` de
+  `GET /bo/mercurio/estado` y campos `erp_*` de `/orders/api`.
+
+### Antes de prender MERCURIO_PEDIDOS_ENABLED
+1. Confirmar con el proveedor `state` (pregunta 6; el default `"complete"`
+   podría dar el pedido por cerrado), `customer_id` (pregunta 5: genérico o
+   DNI), `payment_details` y el medio de pago (pregunta 6), los datos de
+   entrega (dirección y teléfono del comprador) y el envío (`shipping_total`,
+   pregunta 9), y qué depósito descuenta el stock (pregunta 2).
+2. Cargar `MERCURIO_CUSTOMER_ID_DEFAULT` (sin él no se manda ningún pedido:
+   quedan `pendiente` con "customer_id sin configurar") y la
+   `MERCURIO_API_KEY` productiva. El arranque loguea un ERROR si falta alguno.
+3. Probar en preproducción una venta con retiro, una con envío y un carrito,
+   y que un `id` mayor a 2^31-1 no da error.
+4. Mirar `GET /bo/mercurio/estado` después de la primera venta real: bloque
+   `pedidos` con `customer_id_default: true`, 0 rechazados y 0 vencidos.
 - Un deploy = una sucursal activa: Mascotas del Oeste corre en su propio
   servicio de Railway con su Postgres. Si conviviera con farmacia-mutual en la
   misma base, haría falta `DEFAULT_BRANCH_ID`.
