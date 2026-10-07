@@ -9,10 +9,26 @@ la cola de reintentos del alta en el ERP (F5, Mercurio):
   erp_estado: NULL      → no aplica (deploy sin alta de pedidos habilitada,
                           o una orden sin cobro online)
               pendiente → hay que (re)intentar el POST /pedidos (la orden
-                          cobrada nace así; también si falta un código)
+                          cobrada nace así; también si falta un código, el
+                          ERP no responde, contesta 429/5xx o un 2xx sin
+                          id_comprobante, o falta el customer_id)
               enviado   → registrado en el ERP (erp_id_comprobante / erp_numero)
-              rechazado → 422, o renglones que no cuadran con el total: lo
-                          mira un humano, no se reintenta
+              rechazado → rechazo definitivo del ERP (422, 400, 404, 409, 413),
+                          o renglones ilegibles o que no cuadran con el total:
+                          lo mira un humano, no se reintenta
+              vencido   → siguió 'pendiente' más de MERCURIO_PEDIDOS_MAX_DIAS
+                          (6) desde que se creó: no se reintenta más, porque
+                          la Idempotency-Key del ERP dura 7 días y un
+                          reintento posterior podría duplicar el pedido. Lo
+                          mira un humano (el motivo conserva el último error)
+
+Backoff por pedido: cada falla reintentable suma un intento (`erp_intentos`)
+y deja `erp_proximo_intento = now() + min(base * 2^(intentos-1), 6 h)`, con
+base = MERCURIO_PEDIDOS_RETRY_SECS (300 s: 5, 10, 20, 40 min... hasta 6 h).
+La cola (`pendientes_erp`) toma solo los vencidos (`erp_proximo_intento` NULL
+o ya pasado), ordenados por COALESCE(erp_proximo_intento, created_at): un
+pedido con un error persistente no tranca la cabeza de la cola. Un error de
+credencial (401/403) no suma intento ni aplaza el pedido.
 
 Un pago, una orden: índice único de payment_id (PedidoDuplicado).
 
@@ -28,6 +44,18 @@ import logging
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+# Tope del backoff por pedido (6 horas) y del exponente (2^30 ya lo supera
+# con cualquier base razonable; evita un overflow con erp_intentos enormes).
+BACKOFF_TOPE_SECS = 6 * 3600
+_BACKOFF_EXPONENTE_MAX = 30
+
+
+def _sql_proximo_intento(base: str, intentos: str) -> str:
+    """now() + min(base * 2^(intentos-1), 6 h), en SQL."""
+    return (f"now() + make_interval(secs => LEAST({base}::float8 * power(2::float8, "
+            f"LEAST(GREATEST(({intentos}) - 1, 0), {_BACKOFF_EXPONENTE_MAX})), "
+            f"{BACKOFF_TOPE_SECS}))")
 
 
 class PedidoDuplicado(Exception):
@@ -125,25 +153,38 @@ class OrderStore:
                          numero: Optional[str] = None,
                          error: Optional[str] = None,
                          incrementar_intento: bool = False,
+                         backoff_secs: Optional[float] = None,
                          order: Optional[dict] = None) -> None:
         """
         Estado del alta en el ERP. Si la fila no existe (el write-through falló
         al crear la orden) nunca actualiza 0 filas en silencio: con `order`
         inserta la orden completa con ese estado; sin `order`, LookupError.
+
+        `backoff_secs` (base del backoff, con una falla reintentable): deja
+        `erp_proximo_intento = now() + min(base * 2^(intentos-1), 6 h)`, con
+        los intentos ya incrementados. Sin backoff, un estado distinto de
+        'pendiente' limpia `erp_proximo_intento` y 'pendiente' lo conserva.
         """
         intento = 1 if incrementar_intento else 0
+        base = float(backoff_secs) if backoff_secs is not None else None
         r = await self._db.execute(
-            """
+            f"""
             UPDATE orders SET
                 erp_estado = $2,
                 erp_id_comprobante = COALESCE($3, erp_id_comprobante),
                 erp_numero = COALESCE($4, erp_numero),
                 erp_ultimo_error = $5,
                 erp_intentos = erp_intentos + $6,
+                erp_proximo_intento = CASE
+                    WHEN $7::float8 IS NOT NULL
+                        THEN {_sql_proximo_intento("$7", "erp_intentos + $6")}
+                    WHEN $2 <> 'pendiente' THEN NULL
+                    ELSE erp_proximo_intento END,
                 updated_at = now()
             WHERE order_id = $1
             """,
-            order_id, estado, id_comprobante, numero, error, intento, raise_errors=True,
+            order_id, estado, id_comprobante, numero, error, intento, base,
+            raise_errors=True,
         )
         if str(r).split()[-1:] != ["0"]:
             return
@@ -153,11 +194,13 @@ class OrderStore:
         logger.warning(f"Pedido {order_id}: no estaba en orders (falló el write-through); "
                        f"se inserta completo con erp_estado='{estado}'")
         await self._insertar(
-            """
+            f"""
             INSERT INTO orders (order_id, phone, estado, total, pago, payment_id, data,
                                 erp_estado, erp_id_comprobante, erp_numero,
-                                erp_ultimo_error, erp_intentos)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                                erp_ultimo_error, erp_intentos, erp_proximo_intento)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                    CASE WHEN $13::float8 IS NULL THEN NULL
+                         ELSE {_sql_proximo_intento("$13", "$12")} END)
             ON CONFLICT (order_id) DO UPDATE SET
                 erp_estado = EXCLUDED.erp_estado,
                 erp_id_comprobante = COALESCE(EXCLUDED.erp_id_comprobante,
@@ -165,17 +208,23 @@ class OrderStore:
                 erp_numero = COALESCE(EXCLUDED.erp_numero, orders.erp_numero),
                 erp_ultimo_error = EXCLUDED.erp_ultimo_error,
                 erp_intentos = orders.erp_intentos + EXCLUDED.erp_intentos,
+                erp_proximo_intento = EXCLUDED.erp_proximo_intento,
                 updated_at = now()
             """,
             {**order, "order_id": order_id}, estado, id_comprobante, numero, error, intento,
+            base,
         )
 
     async def pendientes_erp(self, limit: int = 20) -> list[dict]:
-        """Pedidos esperando el alta en el ERP, los más viejos primero."""
+        """Pedidos esperando el alta en el ERP cuyo próximo intento ya llegó
+        (`erp_proximo_intento` NULL o pasado), por COALESCE(próximo intento,
+        creación): un pedido que viene fallando no tranca la cabeza de la cola."""
         rows = await self._db.fetch(
             "SELECT order_id, data, erp_intentos FROM orders "
-            "WHERE erp_estado = 'pendiente' ORDER BY created_at LIMIT $1", limit,
-            raise_errors=True)
+            "WHERE erp_estado = 'pendiente' "
+            "  AND (erp_proximo_intento IS NULL OR erp_proximo_intento <= now()) "
+            "ORDER BY COALESCE(erp_proximo_intento, created_at), created_at LIMIT $1",
+            limit, raise_errors=True)
         out = []
         for r in rows:
             try:
@@ -185,6 +234,30 @@ class OrderStore:
             out.append({"order_id": r["order_id"], "erp_intentos": r["erp_intentos"],
                         **data})
         return out
+
+    async def vencer_pendientes(self, max_dias: int) -> list[dict]:
+        """
+        Pasa a 'vencido' los pedidos 'pendiente' creados hace más de
+        `max_dias` días (la Idempotency-Key del ERP dura 7: reintentarlos
+        podría duplicarlos). El motivo conserva el último error. Devuelve
+        [{order_id, phone, total, erp_ultimo_error}] de los que vencieron.
+        """
+        rows = await self._db.fetch(
+            """
+            UPDATE orders SET
+                erp_estado = 'vencido',
+                erp_ultimo_error = left(
+                    'vencido: más de ' || $1::int || ' días sin alta en el ERP (la '
+                    || 'Idempotency-Key dura 7: reintentarlo podría duplicar el pedido)'
+                    || COALESCE('; último error: ' || erp_ultimo_error, ''), 500),
+                erp_proximo_intento = NULL,
+                updated_at = now()
+            WHERE erp_estado = 'pendiente'
+              AND created_at < now() - make_interval(days => $1::int)
+            RETURNING order_id, phone, total, erp_ultimo_error
+            """,
+            int(max_dias), raise_errors=True)
+        return [dict(r) for r in rows]
 
 
 _instance: Optional[OrderStore] = None

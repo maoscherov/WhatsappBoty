@@ -694,6 +694,8 @@ class TestEncoladoTemprano:
         c = _cliente_pedidos([(500, {"error": True, "message": "x"}, None)] * 3, reqs)
         assert await despachar_alta_erp(_orden(), client=c, db=db) is None
         assert await _erp_estado(db, "ORD-20261005-120000-AB12C") == "pendiente"
+        # fix-C2 (backoff por pedido): la falla lo aplazó; pasa el tiempo.
+        await db.execute("UPDATE orders SET erp_proximo_intento = now() - interval '1 second'")
 
         n = await reintentar_pedidos_pendientes(client=_cliente_pedidos([OK_201], reqs), db=db)
         assert n == 1
@@ -1046,3 +1048,160 @@ class TestJobPorPedido:
             assert (fila["erp_estado"], fila["erp_intentos"]) == ("pendiente", 0)
         assert any(r.levelname == "ERROR" and "credencial" in r.getMessage().lower()
                    for r in caplog.records)
+
+
+# ── Backoff por pedido y cola de vencidos (hallazgo 8, fix-C2) ───────────────
+
+async def _segundos_hasta_el_proximo(db, order_id="ORD-20261005-120000-AB12C"):
+    row = await db.fetchrow(
+        "SELECT EXTRACT(EPOCH FROM erp_proximo_intento - now())::float8 AS s "
+        "FROM orders WHERE order_id = $1", order_id)
+    return row["s"]
+
+
+def _cliente_500(reqs):
+    return _cliente_pedidos([(500, {"error": True, "message": "caído"}, None)] * 3, reqs)
+
+
+class TestBackoff:
+    async def test_cada_falla_reintentable_duplica_la_espera(self, db, alta, esperas):
+        await _encolar(db, _orden())
+        reqs: list = []
+        assert await enviar_pedido_erp(_orden(), client=_cliente_500(reqs), db=db) is None
+        fila = await _fila_erp(db)
+        assert (fila["erp_estado"], fila["erp_intentos"]) == ("pendiente", 1)
+        assert 295 <= await _segundos_hasta_el_proximo(db) <= 300      # 300 * 2^0
+
+        assert await enviar_pedido_erp(_orden(), client=_cliente_500(reqs), db=db) is None
+        assert (await _fila_erp(db))["erp_intentos"] == 2
+        assert 595 <= await _segundos_hasta_el_proximo(db) <= 600      # 300 * 2^1
+
+    async def test_la_espera_no_pasa_de_6_horas(self, db, alta, esperas):
+        await _encolar(db, _orden())
+        await db.execute("UPDATE orders SET erp_intentos = 9")
+        reqs: list = []
+        await enviar_pedido_erp(_orden(), client=_cliente_500(reqs), db=db)
+        assert (await _fila_erp(db))["erp_intentos"] == 10
+        assert 21595 <= await _segundos_hasta_el_proximo(db) <= 21600
+
+    async def test_un_intento_enorme_no_rompe_el_calculo(self, db, alta, esperas):
+        await _encolar(db, _orden())
+        await db.execute("UPDATE orders SET erp_intentos = 5000")
+        reqs: list = []
+        await enviar_pedido_erp(_orden(), client=_cliente_500(reqs), db=db)
+        assert 21595 <= await _segundos_hasta_el_proximo(db) <= 21600
+
+    async def test_sin_codigo_tambien_espera(self, db, alta):
+        from app.services.order_store import get_order_store
+        await get_order_store(db).upsert(_orden(), erp_estado="pendiente")   # sin códigos
+        reqs: list = []
+        await enviar_pedido_erp(_orden(), client=_cliente_pedidos([OK_201], reqs), db=db)
+        assert reqs == []
+        assert 295 <= await _segundos_hasta_el_proximo(db) <= 300
+
+    async def test_la_credencial_no_aplaza_el_pedido(self, db, alta, esperas):
+        await _encolar(db, _orden())
+        reqs: list = []
+        c = _cliente_pedidos([(401, {"error": True, "message": "clave"}, None)], reqs)
+        await enviar_pedido_erp(_orden(), client=c, db=db)
+        assert (await _fila_erp(db))["erp_proximo_intento"] is None
+
+    async def test_la_cola_toma_solo_los_vencidos_en_orden(self, db):
+        from app.services.order_store import get_order_store
+        store = get_order_store(db)
+        for oid, pid in (("ORD-NULO", "mp-1"), ("ORD-FUTURO", "mp-2"), ("ORD-PASADO", "mp-3"),
+                         ("ORD-ENVIADO", "mp-4")):
+            await store.upsert(_orden(order_id=oid, mp_payment_id=pid), erp_estado="pendiente")
+        await db.execute("UPDATE orders SET created_at = now() - interval '2 hours' "
+                         "WHERE order_id = 'ORD-NULO'")
+        await db.execute("UPDATE orders SET erp_proximo_intento = now() + interval '1 hour' "
+                         "WHERE order_id = 'ORD-FUTURO'")
+        await db.execute("UPDATE orders SET erp_proximo_intento = now() - interval '3 hours' "
+                         "WHERE order_id = 'ORD-PASADO'")
+        await store.marcar_erp("ORD-ENVIADO", "enviado", id_comprobante="FC-9", numero="9")
+        assert [p["order_id"] for p in await store.pendientes_erp()] == ["ORD-PASADO",
+                                                                         "ORD-NULO"]
+
+    async def test_la_cabeza_de_la_cola_no_bloquea_al_resto(self, db, alta, esperas):
+        """El R6 de la revisión: con un error permanente reintentable en los
+        primeros de la cola, el de atrás igual se manda en la pasada siguiente."""
+        from app.services.mercurio_pedidos import reintentar_pedidos_pendientes
+        await _encolar(db, _orden(order_id="ORD-1-MALO", mp_payment_id="mp-1"),
+                       _orden(order_id="ORD-2-MALO", mp_payment_id="mp-2"),
+                       _orden(order_id="ORD-3-BUENO", mp_payment_id="mp-3"))
+        await db.execute("UPDATE orders SET created_at = now() - make_interval(mins => "
+                         "CASE order_id WHEN 'ORD-1-MALO' THEN 30 WHEN 'ORD-2-MALO' THEN 20 "
+                         "ELSE 10 END)")
+
+        def _handler(request):
+            if json.loads(request.content)["number"].endswith("MALO"):
+                return httpx.Response(500, json={"error": True, "message": "x"})
+            return httpx.Response(201, json=OK_201[1])
+
+        c = MercurioClient("mrc_test", "https://api.mercurio.test/v1", timeout=5,
+                           transport=httpx.MockTransport(_handler))
+        assert await reintentar_pedidos_pendientes(client=c, db=db, limit=2) == 0
+        assert await reintentar_pedidos_pendientes(client=c, db=db, limit=2) == 1
+        assert (await _fila_erp(db, "ORD-3-BUENO"))["erp_estado"] == "enviado"
+
+
+class TestVencido:
+    """Un pedido 'pendiente' con más de MERCURIO_PEDIDOS_MAX_DIAS (6; la
+    Idempotency-Key dura 7) pasa a 'vencido' y no se reintenta más:
+    reintentarlo después de 7 días podría duplicarlo en el ERP."""
+
+    def test_el_tope_por_defecto_es_6_dias(self):
+        from app.config import Settings
+        assert Settings.model_fields["mercurio_pedidos_max_dias"].default == 6
+
+    async def test_pendiente_viejo_pasa_a_vencido_sin_post(self, db, alta, caplog):
+        from app.services.mercurio_pedidos import reintentar_pedidos_pendientes
+        await _encolar(db, _orden(order_id="ORD-VIEJO", mp_payment_id="mp-v"),
+                       _orden(order_id="ORD-NUEVO", mp_payment_id="mp-n"))
+        await db.execute("UPDATE orders SET created_at = now() - interval '6 days 1 hour', "
+                         "erp_ultimo_error = '/pedidos: HTTP 503' WHERE order_id = 'ORD-VIEJO'")
+        await db.execute("UPDATE orders SET created_at = now() - interval '5 days 23 hours' "
+                         "WHERE order_id = 'ORD-NUEVO'")
+        reqs: list = []
+        n = await reintentar_pedidos_pendientes(
+            client=_cliente_pedidos([OK_201, OK_201], reqs), db=db)
+        assert n == 1
+        assert [json.loads(r.content)["number"] for r in reqs] == ["ORD-NUEVO"]
+        viejo = await _fila_erp(db, "ORD-VIEJO")
+        assert viejo["erp_estado"] == "vencido"
+        assert "6 días" in viejo["erp_ultimo_error"]
+        assert "HTTP 503" in viejo["erp_ultimo_error"]           # conserva el último error
+        assert any(r.levelname == "ERROR" and "ORD-VIEJO" in r.getMessage()
+                   for r in caplog.records)
+
+        # Y no se reintenta más
+        assert await reintentar_pedidos_pendientes(
+            client=_cliente_pedidos([OK_201], reqs), db=db) == 0
+        assert (await _fila_erp(db, "ORD-VIEJO"))["erp_estado"] == "vencido"
+
+    async def test_el_tope_sale_del_setting(self, db, alta, monkeypatch):
+        from app.services.mercurio_pedidos import reintentar_pedidos_pendientes
+        monkeypatch.setattr(get_settings(), "mercurio_pedidos_max_dias", 2)
+        await _encolar(db, _orden())
+        await db.execute("UPDATE orders SET created_at = now() - interval '3 days'")
+        reqs: list = []
+        assert await reintentar_pedidos_pendientes(
+            client=_cliente_pedidos([OK_201], reqs), db=db) == 0
+        assert reqs == []
+        fila = await _fila_erp(db)
+        assert fila["erp_estado"] == "vencido" and "2 días" in fila["erp_ultimo_error"]
+
+    async def test_solo_vencen_los_pendientes(self, db, alta):
+        from app.services.mercurio_pedidos import reintentar_pedidos_pendientes
+        from app.services.order_store import get_order_store
+        store = get_order_store(db)
+        await store.upsert(_orden(order_id="ORD-E", mp_payment_id="mp-e"), erp_estado="pendiente")
+        await store.marcar_erp("ORD-E", "enviado", id_comprobante="FC-1", numero="1")
+        await store.upsert(_orden(order_id="ORD-R", mp_payment_id="mp-r"), erp_estado="pendiente")
+        await store.marcar_erp("ORD-R", "rechazado", error="422")
+        await store.upsert(_orden(order_id="ORD-N", mp_payment_id="mp-x"))   # NULL: no aplica
+        await db.execute("UPDATE orders SET created_at = now() - interval '30 days'")
+        await reintentar_pedidos_pendientes(client=_cliente_pedidos([], []), db=db)
+        rows = await db.fetch("SELECT order_id, erp_estado FROM orders ORDER BY order_id")
+        assert [(r["order_id"], r["erp_estado"]) for r in rows] == [
+            ("ORD-E", "enviado"), ("ORD-N", None), ("ORD-R", "rechazado")]

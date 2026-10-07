@@ -14,9 +14,15 @@ reintenta después del próximo sync. Nunca se manda el external_id.
 
 `state` y `customer_id` siguen pendientes de confirmación del proveedor
 (mail 14/9): salen de Settings (mercurio_pedido_state /
-mercurio_customer_id_default) para ajustarlos sin tocar código. Un 422 marca
-el pedido `rechazado` (lo mira un humano); un error de red/5xx lo deja
-`pendiente` y lo retoma el job de reintentos.
+mercurio_customer_id_default) para ajustarlos sin tocar código.
+
+Respuestas del ERP (revisión final, hallazgo 8): 422, 400, 404, 409 y 413
+marcan el pedido `rechazado` (lo mira un humano); 429, 5xx, red o un 2xx sin
+id_comprobante lo dejan `pendiente` con backoff por pedido (5 min, 10, 20...
+hasta 6 h) y lo retoma el job; 401/403 (la clave) corta la pasada del job sin
+gastar intentos. Un `pendiente` con más de MERCURIO_PEDIDOS_MAX_DIAS (6) pasa
+a `vencido`: la Idempotency-Key dura 7 días y reintentarlo podría duplicarlo.
+Estados y backoff: docstring de order_store.
 
 Todo detrás de `mercurio_pedidos_enabled` (False por defecto): en el deploy
 de la farmacia este módulo no hace nada.
@@ -227,9 +233,14 @@ async def _intentar_alta(order: dict, *, client=None, db=None) -> Optional[dict]
     store = get_order_store(db)
 
     async def _marcar(estado: str, error: str, *, consumir: bool = True) -> None:
+        # Una falla reintentable que consume un intento aplaza el pedido
+        # (backoff por pedido, base MERCURIO_PEDIDOS_RETRY_SECS, tope 6 h).
+        backoff = (s.mercurio_pedidos_retry_secs
+                   if consumir and estado == "pendiente" else None)
         try:
             await store.marcar_erp(order_id, estado, error=error[:500],
-                                   incrementar_intento=consumir, order=order)
+                                   incrementar_intento=consumir, backoff_secs=backoff,
+                                   order=order)
         except PedidoDuplicado as e2:
             logger.warning(f"Pedido {order_id}: no se marca {estado}: {e2}")
         except Exception as e2:
@@ -339,6 +350,21 @@ async def despachar_alta_erp(order: dict, *, client=None, db=None) -> Optional[d
     return await enviar_pedido_erp(order, client=client, db=db)
 
 
+async def _vencer_viejos(store, s) -> None:
+    """Tope de antigüedad: los 'pendiente' con más de MERCURIO_PEDIDOS_MAX_DIAS
+    (mínimo 1) pasan a 'vencido' y no se reintentan más. Nunca lanza."""
+    max_dias = max(1, int(s.mercurio_pedidos_max_dias or 1))
+    try:
+        vencidos = await store.vencer_pendientes(max_dias)
+    except Exception as e:
+        logger.error(f"Reintento de pedidos: no se pudieron vencer los pendientes viejos: {e}")
+        return
+    for v in vencidos:
+        logger.error(f"Pedido {v.get('order_id')} VENCIDO sin alta en el ERP (más de "
+                     f"{max_dias} días pendiente; no se reintenta más): "
+                     f"{v.get('erp_ultimo_error')}")
+
+
 async def reintentar_pedidos_pendientes(*, client=None, db=None, limit: int = 20) -> int:
     """
     Una pasada del job de fondo: reintenta el alta de los pedidos que quedaron
@@ -359,8 +385,10 @@ async def reintentar_pedidos_pendientes(*, client=None, db=None, limit: int = 20
     if db is None:
         from app.services.db import get_db
         db = get_db(s.database_url)
+    store = get_order_store(db)
+    await _vencer_viejos(store, s)
     try:
-        pendientes = await get_order_store(db).pendientes_erp(limit)
+        pendientes = await store.pendientes_erp(limit)
     except Exception as e:
         logger.error(f"Reintento de pedidos: no se pudo leer la cola: {e}")
         return 0

@@ -88,7 +88,8 @@ class Settings(BaseSettings):
     mercurio_pedidos_enabled: bool = False   # alta de pedidos: apagado hasta confirmar estados/cliente
     mercurio_pedido_state: str = "complete"  # `state` del POST /pedidos (pendiente de confirmar con el proveedor)
     mercurio_customer_id_default: str = ""   # customer_id para compradores sin alta (pendiente, mail 14/9)
-    mercurio_pedidos_retry_secs: int = 300   # reintento de pedidos con erp_estado=pendiente
+    mercurio_pedidos_retry_secs: int = 300   # reintento de pedidos con erp_estado=pendiente (y base del backoff por pedido)
+    mercurio_pedidos_max_dias: int = 6       # un pedido pendiente más viejo pasa a 'vencido' (la Idempotency-Key dura 7 días)
     mercurio_convivir: bool = False          # permitir el sync en una base que ya tiene otra sucursal (requiere DEFAULT_BRANCH_ID)
 
     class Config:
