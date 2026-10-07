@@ -131,13 +131,13 @@ _CAMBIO_DIR = [r"otra direcci[oó]n", r"cambiar.{0,12}direcci[oó]n", r"distinta
 # domicilio "te pedi 1 blister", "sertal 10 comprimidos" u "optiser de 20 mg":
 # el link salía "a domicilio a *Esta perfecto, pero solo te pedi 1 blister*"
 # (casos reales 6/8, 26/8, 1/10). Pesos y envases tampoco son domicilio: "la
-# bolsa de 15 kg" devolvía "bolsa de 15" (spec petshop §5). No va "kilo\w*":
-# "Ruta 8 kilómetro 52" es una dirección.
+# bolsa de 15 kg" devolvía "bolsa de 15" (spec petshop §5); lo mismo "la de 400
+# gramos" y "la de 15 l". No va "kilo\w*": "Ruta 8 kilómetro 52" es una dirección.
 _NO_DIR = re.compile(
-    r"\?|\d\s*(mg|ml|gr?s?|kgs?|lts?|cc|mcg|ui|%)\b|\bx\s*\d+|"
+    r"\?|\d\s*(mg|ml|gr?s?|kgs?|lts?|l|cc|mcg|ui|%)\b|\bx\s*\d+|"
     r"\b(comprimid\w*|comp|c[aá]psul\w*|bl[ií]ster\w*|caja\w*|tiras?|unidad\w*|frasco\w*|"
     r"ped[ií]\w*|quiero|quer[ií]a|precio\w*|link|cu[aá]nto|stock|ten[eé]s|tendr[aá]s|"
-    r"receta\w*|veces|producto\w*|kilos?|kilogram\w*|litros?|bolsa\w*|lata\w*)\b",
+    r"receta\w*|veces|producto\w*|kilos?|kilogram\w*|gramos?|litros?|bolsa\w*|lata\w*)\b",
     re.IGNORECASE)
 # Palabras que cortan la calle hacia atrás: "por favor me lo envías san javier
 # 837" → "san javier 837".
@@ -1749,14 +1749,14 @@ _COMBO_PRES_RE = re.compile(
 
 
 def _unidad_pres(unidad: str) -> tuple[str, float]:
-    """(tipo, factor) de una unidad: peso en gramos, volumen en ml."""
+    """(tipo, factor) de una unidad: peso en miligramos, volumen en ml."""
     u = unidad.lower()
     if u.startswith("k"):                   # kg, kgs, kilo(s), kilogramo(s)
-        return "g", 1000.0
+        return "mg", 1_000_000.0
     if u == "mg":
-        return "g", 0.001
+        return "mg", 1.0
     if u.startswith("g"):                   # g, gr, grs, gramo(s)
-        return "g", 1.0
+        return "mg", 1000.0
     if u in ("ml", "cc"):
         return "ml", 1.0
     return "ml", 1000.0                     # l, lt, lts, litro(s)
@@ -1765,16 +1765,18 @@ def _unidad_pres(unidad: str) -> tuple[str, float]:
 def presentaciones_de(t: str) -> set[tuple[str, float]]:
     """
     Presentaciones con unidad de un texto, normalizadas para comparar:
-    ("g", gramos), ("ml", mililitros) o ("n", talle). "royal canin 7,5 kg" →
-    {("g", 7500.0)}; "1L" → {("ml", 1000.0)}; "Nº 4" → {("n", 4.0)}. Acepta
-    una cifra y decimales con punto o coma; redondea a 3 decimales. Un número
-    sin unidad ("ibuprofeno 600") no es una presentación.
+    ("mg", miligramos), ("ml", mililitros) o ("n", talle). "royal canin 7,5 kg"
+    → {("mg", 7500000.0)}; "1L" → {("ml", 1000.0)}; "Nº 4" → {("n", 4.0)}. El
+    peso va en miligramos para que las dosis de farmacia bajo 1 mg ("0,5 mg"
+    frente a "1 mg") no se confundan. Acepta una cifra y decimales con punto o
+    coma; redondea a 6 decimales. Un número sin unidad ("ibuprofeno 600") no es
+    una presentación.
     """
     s = _COMBO_PRES_RE.sub(lambda m: f"{m.group(1)} {m.group(2)} / ", t or "")
     out: set[tuple[str, float]] = set()
     for num, unidad in _PRESENTACION_RE.findall(s):
         tipo, factor = _unidad_pres(unidad)
-        out.add((tipo, round(float(num.replace(",", ".")) * factor, 3)))
+        out.add((tipo, round(float(num.replace(",", ".")) * factor, 6)))
     for num in _TALLE_RE.findall(s):
         out.add(("n", float(num)))
     return out

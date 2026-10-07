@@ -735,7 +735,7 @@ pasa como número de calle y `extraer_direccion_de` devuelve "bolsa de 15": en
 
 | Archivo:línea | Hoy | Cambio | Farmacia |
 |---|---|---|---|
-| `checkout_helper.py:66-71` (`_NO_DIR`) | Grupo de unidades `(mg\|ml\|gr?s?\|cc\|mcg\|ui\|%)` | El grupo pasa a `(mg\|ml\|gr?s?\|kgs?\|lts?\|cc\|mcg\|ui\|%)` y la lista de palabras suma `kilos?\|kilogram\w*\|litros?\|bolsa\w*\|lata\w*`. **No** se agrega `kilo\w*`: excluiría "Ruta 8 kilómetro 52", que es una dirección válida. | **cambia** (ningún peso era un domicilio válido) |
+| `checkout_helper.py:66-71` (`_NO_DIR`) | Grupo de unidades `(mg\|ml\|gr?s?\|cc\|mcg\|ui\|%)` | El grupo pasa a `(mg\|ml\|gr?s?\|kgs?\|lts?\|l\|cc\|mcg\|ui\|%)` y la lista de palabras suma `kilos?\|kilogram\w*\|gramos?\|litros?\|bolsa\w*\|lata\w*`. **No** se agrega `kilo\w*`: excluiría "Ruta 8 kilómetro 52", que es una dirección válida. Con `gramos?` y la `l` suelta, "la de 400 gramos", "el de 500 gramos" y "la de 15 l" tampoco son domicilio (ruling del 7/10: sin eso quedaban como "de 400" y el vocabulario de `_NO_DIR` no coincidía con el de `presentaciones_de`). | **cambia** (ningún peso era un domicilio válido) |
 
 **Bug 2: "el de 3 kg" confirma la bolsa de 15.** `entidad_contradice_pendiente`
 (`checkout_helper.py:1556-1569`) compara con `numeros_de`
@@ -747,7 +747,7 @@ contradicción y se cobra la de 15. Lo mismo pasa con "el de 2 litros" frente a
 
 | Archivo:línea | Hoy | Cambio | Farmacia |
 |---|---|---|---|
-| `checkout_helper.py`, junto a 1556 (nuevo) | No hay comparación de presentaciones con unidad | Función pura `presentaciones_de(t) -> set[tuple[str, float]]`: pares `(tipo, valor normalizado)` para peso (`g`; `kg` ×1000), volumen (`ml`; `l`/`lt`/`litro` ×1000) y talle (`n`: "nº", "n°", "n", "numero", "talle"). Acepta una cifra y decimales con punto o coma ("7.5 kg", "1,5 l"); los valores se redondean a 3 decimales. Regex: `(\d+(?:[.,]\d+)?)\s*(kgs?\|kilos?\|kilogram\w*\|grs?\|g\|gramos?\|mg\|ml\|cc\|lts?\|l\|litros?)\b` para peso y volumen, y `\b(?:n[º°o]?\|numero\|número\|talle)\.?\s*(\d{1,2})\b` para talle. La `º` es opcional porque el prompt de petshop le pide al modelo escribir `pretal kipper n 4`. | sin cambio (función nueva) |
+| `checkout_helper.py`, junto a 1556 (nuevo) | No hay comparación de presentaciones con unidad | Función pura `presentaciones_de(t) -> set[tuple[str, float]]`: pares `(tipo, valor normalizado)` para peso (`mg`; `kg` ×1.000.000, `g` ×1.000), volumen (`ml`; `l`/`lt`/`litro` ×1000) y talle (`n`: "nº", "n°", "n", "numero", "talle"). Acepta una cifra y decimales con punto o coma ("7.5 kg", "1,5 l"); el peso se normaliza a miligramos (kg ×1.000.000, g ×1.000) y el volumen a mililitros, con valores redondeados a 6 decimales (ruling del 7/10: en gramos y con 3 decimales "0,5 mg" y "1 mg" daban los dos 0.001 y se cobraba la otra dosis). Regex: `(\d+(?:[.,]\d+)?)\s*(kgs?\|kilos?\|kilogram\w*\|grs?\|g\|gramos?\|mg\|ml\|cc\|lts?\|l\|litros?)\b` para peso y volumen, y `\b(?:n[º°o]?\|numero\|número\|talle)\.?\s*(\d{1,2})\b` para talle. La `º` es opcional porque el prompt de petshop le pide al modelo escribir `pretal kipper n 4`. | sin cambio (función nueva) |
 | `checkout_helper.py:1567-1569` (`entidad_contradice_pendiente`) | Mismo nombre y `numeros_de` disjuntos → contradicción | Primero: `p_ent, p_pend = presentaciones_de(entidad), presentaciones_de(pending_nombre)`. Si para algún **tipo** los dos tienen valores y no comparten ninguno → `True`. Si no, sigue la regla de hoy con `numeros_de`. `numeros_de` no se toca: alimenta el ranking de la búsqueda. | **cambia**: "el de 2 litros" sobre "1L" deja de confirmar. Lo que hoy contradice sigue contradiciendo. |
 
 Casos (todos con el mismo nombre de producto, así `nombre_coincide` da True):
@@ -756,7 +756,7 @@ Casos (todos con el mismo nombre de producto, así `nombre_coincide` da True):
 |---|---|---|---|
 | "royal canin 3 kg" | "ROYAL CANIN MEDIUM ADULT 15KG" | confirma (bug) | contradice |
 | "royal canin 15 kg" | "ROYAL CANIN MEDIUM ADULT 15KG" | confirma | confirma |
-| "royal canin 7.5 kg" | "ROYAL CANIN … 7,5 KG" | confirma | confirma (7500 g = 7500 g) |
+| "royal canin 7.5 kg" | "ROYAL CANIN … 7,5 KG" | confirma | confirma (7.500.000 mg = 7.500.000 mg) |
 | "royal urinary 400 gr" | "ROYAL URINARY CAT … 400GRS" | confirma | confirma |
 | "royal urinary 1.5 kg" | "ROYAL URINARY CAT … 400GRS" | confirma (bug) | contradice |
 | "shampoo 2 litros" | "SHAMPOO … 1L" | confirma (bug) | contradice |
@@ -772,6 +772,19 @@ productos de `catalogo_base.csv` con ese formato: "janumet 50 mg" frente a
 "Janumet 50/1000 Mg Comp.X 28" confirma hoy y pasaría a contradecir. Ese par se
 suma como 12º caso de la tabla (guarda de farmacia); §6.2 dice "los 12 pares"
 por eso: 11 de la tabla + 1 guarda.
+
+**Ajuste de la ronda de arreglo 1 (ruling del 7/10):** (1) `_NO_DIR` suma
+`gramos?` a la lista de palabras y `l` al grupo de unidades, para que "la de
+400 gramos", "el de 500 gramos" y "la de 15 l" no sean domicilio; sigue sin
+excluir "kilómetro". (2) `presentaciones_de` normaliza el peso a **miligramos**
+(`kg`, `kilo(s)` y `kilogramo(s)` ×1.000.000; `g`, `gr`, `grs` y `gramo(s)`
+×1.000; `mg` ×1) y el volumen a mililitros, con 6 decimales. En gramos y con 3
+decimales las dosis bajo 1 mg se confundían ("clonazepam 0,5 mg" y
+"CLONAZEPAM 1 MG" daban los dos `("g", 0.001)`) y la confirmación cobraba la
+otra dosis. Las dosis combinadas usan la misma escala. El tipo de la tupla de
+peso pasa a llamarse `"mg"`. Es un cambio del contrato interno, no de
+comportamiento: los 12 pares de la tabla dan lo mismo y solo cambian las dosis
+bajo 1 mg, que ahora se distinguen.
 
 Verificado sobre `07a1d7a`: la columna "Hoy" con la función real (en los 11
 pares `nombre_coincide` da True) y la columna "Después" con un prototipo de
@@ -993,13 +1006,21 @@ tienen que pasar en verde con el código de hoy.
 
 **`tests/test_pesos.py` (correcciones de pesos de §5; corre con farmacia y con petshop)**
 - `extraer_direccion_de` da `None` con: "la bolsa de 15 kg", "mandame la de 15
-  kilos", "dos latas de 85", "el de 2 litros", "una de 3 kgs". Sigue
+  kilos", "dos latas de 85", "el de 2 litros", "una de 3 kgs", "la de 400
+  gramos", "el de 500 gramos", "la de 15 l", "dame 2 de 1 l" (ruling del 7/10). Sigue
   devolviendo la dirección con: "san javier 837", "Ruta 8 kilómetro 52", "16 de
   enero 9279", "donado 608 piso 2" (y los casos de `test_direccion_envio.py`,
   sin cambios).
-- `presentaciones_de`: "royal canin 7,5 kg" → `{("g", 7500.0)}`; "400GRS" →
-  `{("g", 400.0)}`; "1L" → `{("ml", 1000.0)}`; "pretal kipper n 4" y "Nº 4" →
-  `{("n", 4.0)}`; "ibuprofeno 600" → `set()`.
+- `presentaciones_de` (escala nueva, ruling del 7/10): "royal canin 7,5 kg" →
+  `{("mg", 7500000.0)}`; "400GRS" → `{("mg", 400000.0)}`; "1L" →
+  `{("ml", 1000.0)}`; "pretal kipper n 4" y "Nº 4" → `{("n", 4.0)}`;
+  "ibuprofeno 600" → `set()`; "Janumet 50/1000 Mg Comp.X 28" →
+  `{("mg", 50.0), ("mg", 1000.0)}`. Dosis bajo 1 mg: "clonazepam 0,5 mg" →
+  `{("mg", 0.5)}` y "CLONAZEPAM 1 MG" → `{("mg", 1.0)}` (distintas, y
+  `entidad_contradice_pendiente` da `True`); "1,5 mg" y "2 mg", "0,25 mg" y
+  "0,1 mg" también se distinguen, y "0,25 mg" frente a "0.25 MG" no contradice.
+  También "kilos", "kilogramos", "gramos", "litros", "lts", "cc", "numero" y
+  "talle".
 - `entidad_contradice_pendiente`: los 12 pares de la tabla de §5, con el
   resultado de la columna "Después".
 - Webhook, en `esperando_entrega` con un pendiente "ROYAL CANIN MEDIUM ADULT

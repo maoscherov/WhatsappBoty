@@ -28,6 +28,11 @@ def perfil(request, usar_perfil):
     "dos latas de 85",
     "el de 2 litros",          # ya daba None (una cifra no es altura): guarda
     "una de 3 kgs",            # ídem
+    # Ronda de arreglo 1: "gramos" y una "l" sola también son unidades de peso/volumen
+    "la de 400 gramos",
+    "el de 500 gramos",
+    "la de 15 l",
+    "dame 2 de 1 l",           # ya daba None (cifras sueltas): guarda
 ])
 def test_peso_o_envase_no_es_domicilio(perfil, txt):
     assert ch.extraer_direccion_de(txt) is None
@@ -105,25 +110,91 @@ async def test_bolsa_de_15_kg_en_entrega_no_genera_envio(perfil, entorno, monkey
     assert deps["wa"].enviados and "bolsa de 15*" not in deps["wa"].enviados[-1]
 
 
+async def test_la_de_400_gramos_en_entrega_no_genera_envio(perfil, entorno, monkeypatch):
+    txt = "la de 400 gramos"
+    deps, pago = _armar(entorno, monkeypatch, {txt: {
+        "intencion": "pedido",
+        "respuesta": "Sí, es la de 400 gramos. ¿La retirás o te la enviamos?"}})
+    await _pendiente_royal_15(deps, "esperando_entrega")
+
+    await wh.procesar_mensajes([_msg(txt)])
+
+    s = await deps["session"].get(PHONE)
+    assert pago.links == []                                   # ningún link
+    assert s["estado"] == "esperando_entrega"                 # sigue eligiendo la entrega
+    assert s.get("tipo_entrega") != "envio" and not s.get("direccion_envio")
+    assert deps["wa"].enviados and "de 400*" not in deps["wa"].enviados[-1]
+
+
 # ── Bug 2: presentaciones con unidad ─────────────────────────────────────────────
+# El peso se normaliza a MILIGRAMOS (kg ×1.000.000, g ×1.000) y el volumen a
+# mililitros (ruling del 7/10): así las dosis bajo 1 mg se distinguen entre sí.
 @pytest.mark.parametrize("txt,esperado", [
-    ("royal canin 7,5 kg", {("g", 7500.0)}),
-    ("400GRS", {("g", 400.0)}),
+    ("royal canin 7,5 kg", {("mg", 7_500_000.0)}),
+    ("400GRS", {("mg", 400_000.0)}),
     ("1L", {("ml", 1000.0)}),
     ("pretal kipper n 4", {("n", 4.0)}),
     ("Nº 4", {("n", 4.0)}),
     ("ibuprofeno 600", set()),
     # Dosis combinada de farmacia: la unidad vale para los dos números
-    ("Janumet 50/1000 Mg Comp.X 28", {("g", 0.05), ("g", 1.0)}),
+    ("Janumet 50/1000 Mg Comp.X 28", {("mg", 50.0), ("mg", 1000.0)}),
+    # Todas las unidades del vocabulario
+    ("royal canin 2 kilos", {("mg", 2_000_000.0)}),
+    ("royal canin 1 kilo", {("mg", 1_000_000.0)}),
+    ("royal canin 3 kilogramos", {("mg", 3_000_000.0)}),
+    ("royal canin 3 kgs", {("mg", 3_000_000.0)}),
+    ("la de 400 gramos", {("mg", 400_000.0)}),
+    ("1 gramo", {("mg", 1000.0)}),
+    ("2 g", {("mg", 2000.0)}),
+    ("5 litros", {("ml", 5000.0)}),
+    ("2 lts", {("ml", 2000.0)}),
+    ("1,5 l", {("ml", 1500.0)}),
+    ("500 cc", {("ml", 500.0)}),
+    ("250 ml", {("ml", 250.0)}),
+    ("pretal kipper numero 3", {("n", 3.0)}),
+    ("pretal kipper número 3", {("n", 3.0)}),
+    ("talle 5", {("n", 5.0)}),
+    ("pretal kipper n° 2", {("n", 2.0)}),
+    # Dosis bajo 1 mg: con gramos y 3 decimales todas caían en 0.0 / 0.001 / 0.002
+    ("clonazepam 0,5 mg", {("mg", 0.5)}),
+    ("CLONAZEPAM 1 MG", {("mg", 1.0)}),
+    ("1,5 mg", {("mg", 1.5)}),
+    ("2 mg", {("mg", 2.0)}),
+    ("0,25 mg", {("mg", 0.25)}),
+    ("0,1 mg", {("mg", 0.1)}),
+    ("Gutron 2,5Mg", {("mg", 2.5)}),
+    ("Janumet 0,5/1000 Mg", {("mg", 0.5), ("mg", 1000.0)}),
 ])
 def test_presentaciones_de(perfil, txt, esperado):
     assert ch.presentaciones_de(txt) == esperado
 
 
+@pytest.mark.parametrize("a,b", [
+    ("clonazepam 0,5 mg", "CLONAZEPAM 1 MG"),
+    ("1,5 mg", "2 mg"),
+    ("0,25 mg", "0,1 mg"),
+    ("0,5 mg", "0,05 mg"),
+    ("400 gramos", "4 kilos"),
+])
+def test_presentaciones_de_distingue_valores_cercanos(perfil, a, b):
+    assert ch.presentaciones_de(a) != ch.presentaciones_de(b)
+
+
+@pytest.mark.parametrize("a,b", [
+    ("0,25 mg", "0.25 MG"),
+    ("1 g", "1000 mg"),
+    ("0,4 kg", "400 gramos"),
+    ("1,5 l", "1500 ml"),
+    ("2 kilos", "2 kg"),
+])
+def test_presentaciones_de_unidades_equivalentes_dan_lo_mismo(perfil, a, b):
+    assert ch.presentaciones_de(a) == ch.presentaciones_de(b)
+
+
 @pytest.mark.parametrize("entidad,pendiente,contradice", [
     ("royal canin 3 kg", "ROYAL CANIN MEDIUM ADULT 15KG", True),        # hoy confirma (bug)
     ("royal canin 15 kg", "ROYAL CANIN MEDIUM ADULT 15KG", False),
-    ("royal canin 7.5 kg", "ROYAL CANIN MINI ADULT 7,5 KG", False),     # 7500 g = 7500 g
+    ("royal canin 7.5 kg", "ROYAL CANIN MINI ADULT 7,5 KG", False),     # 7.500.000 mg = 7.500.000 mg
     ("royal urinary 400 gr", "ROYAL URINARY CAT LATA 400GRS", False),
     ("royal urinary 1.5 kg", "ROYAL URINARY CAT LATA 400GRS", True),    # hoy confirma (bug)
     ("shampoo 2 litros", "SHAMPOO OSSPRET PERRO 1L", True),            # hoy confirma (bug)
@@ -133,6 +204,24 @@ def test_presentaciones_de(perfil, txt, esperado):
     ("ibuprofeno 600", "IBUPROFENO 600 MG X 10", False),                # sin unidad: regla de hoy
     ("royal canin", "ROYAL CANIN MEDIUM ADULT 15KG", False),            # sin presentación
     ("janumet 50 mg", "Janumet 50/1000 Mg Comp.X 28", False),           # guarda farmacia (dosis combinada)
+    # Ronda de arreglo 1: unidades del vocabulario (kilos, litros, cc, numero, talle) y gramos
+    ("royal canin 2 kilos", "ROYAL CANIN MEDIUM ADULT 15KG", True),
+    ("royal urinary 400 gramos", "ROYAL URINARY CAT LATA 400GRS", False),
+    ("royal urinary 0,4 kg", "ROYAL URINARY CAT LATA 400GRS", False),   # 400.000 mg = 400.000 mg
+    ("shampoo 5 litros", "SHAMPOO OSSPRET PERRO 1L", True),
+    ("shampoo 1 lt", "SHAMPOO OSSPRET PERRO 1L", False),
+    ("shampoo 500 cc", "SHAMPOO OSSPRET PERRO 250 CC", True),
+    ("shampoo 250 cc", "SHAMPOO OSSPRET PERRO 250 CC", False),
+    ("pretal kipper numero 3", "PRETAL KIPPER Nº 4", True),
+    ("pretal kipper talle 3", "PRETAL KIPPER Nº 4", True),
+    ("pretal kipper talle 4", "PRETAL KIPPER Nº 4", False),
+    # Dosis bajo 1 mg (farmacia): con gramos y 3 decimales se confundían y se cobraba la otra dosis
+    ("clonazepam 0,5 mg", "CLONAZEPAM 1 MG", True),
+    ("gutron 1,5 mg", "GUTRON 2 MG", True),
+    ("nulipar 0,25 mg", "NULIPAR 0,1 MG", True),
+    ("nulipar 0,25 mg", "NULIPAR 0.25 MG X 30", False),
+    ("clonazepam 0,5 mg", "CLONAZEPAM 0,5 MG X 30", False),
+    ("janumet 0,5 mg", "Janumet 1/1000 Mg Comp.X 28", True),
 ])
 def test_entidad_contradice_pendiente_por_presentacion(perfil, entidad, pendiente, contradice):
     assert nombre_coincide(entidad, pendiente)      # mismo producto: decide la presentación
