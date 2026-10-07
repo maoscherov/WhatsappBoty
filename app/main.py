@@ -36,21 +36,7 @@ async def lifespan(app: FastAPI):
     # Restaurar archivos subidos (catálogo/padrón) desde Redis — el filesystem
     # de Railway es efímero y se borra en cada deploy.
     try:
-        blob = get_blob_store(settings.redis_url)
-        cat = await blob.load("catalogo")
-        if cat:
-            p = Path(settings.sku_csv_path)
-            p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_bytes(cat[0])
-            logger.info(f"Catálogo restaurado desde Redis ({len(cat[0])} bytes)")
-        soc = await blob.load("socios")
-        if soc:
-            data, ext = soc
-            dest = Path(settings.socios_path).with_suffix(ext or ".csv")
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(data)
-            settings.socios_path = str(dest)
-            logger.info(f"Padrón restaurado desde Redis ({len(data)} bytes → {dest.name})")
+        await _restaurar_archivos(settings, perfil, get_blob_store(settings.redis_url))
     except Exception as e:
         logger.warning(f"No se pudieron restaurar archivos desde Redis: {e}")
 
@@ -98,6 +84,7 @@ async def lifespan(app: FastAPI):
             cfg_actual = await _cfg_svc.get_all()
             logger.info(f"Config cargada ({len(cfg_actual)} claves, "
                         f"descuento socio: {cfg_actual.get('socio_discount_pct')}%)")
+            await _avisar_horario_por_defecto(_cfg_svc)
         except Exception as e:
             logger.warning(f"No se pudo hidratar la config: {e}")
 
@@ -107,18 +94,7 @@ async def lifespan(app: FastAPI):
         # cargó socios, se siembra la tabla desde el archivo. Best-effort: un
         # padrón mal cargado en Postgres nunca debe tumbar el arranque.
         try:
-            from app.services.socio_service import (get_socio_service, guardar_en_db,
-                                                     cargar_desde_db as cargar_socios_db)
-            _db_socios = get_db(settings.database_url)
-            if _db_socios.available():
-                _socio_svc = get_socio_service(settings.socios_path)
-                _n_db = await cargar_socios_db(_db_socios, _socio_svc)
-                if _n_db:
-                    logger.info(f"Padrón de socios cargado desde Postgres: {_n_db} socios")
-                elif _socio_svc.total:
-                    await guardar_en_db(_db_socios, _socio_svc)
-                    logger.info(f"Padrón de socios sembrado en Postgres desde el archivo: "
-                                f"{_socio_svc.total} socios")
+            await _hidratar_padron(settings, perfil, get_db(settings.database_url))
         except Exception as e:
             logger.warning(f"No se pudo hidratar/sembrar el padrón de socios en Postgres: {e}")
 
@@ -138,9 +114,7 @@ async def lifespan(app: FastAPI):
         # ver receta_referencia.py). Solo carga y recalcula el flag de todo
         # el catálogo ERP ANTES de cargarlo en el bot.
         try:
-            from app.services.receta_referencia import inicializar as _init_receta
-            _r = await asyncio.wait_for(_init_receta(get_db(settings.database_url)), timeout=60.0)
-            logger.info(f"Referencia de receta: {_r}")
+            await _init_referencia_receta(get_db(settings.database_url))
         except Exception as e:
             logger.error(f"No se pudo inicializar la referencia de receta: {e}")
 
@@ -221,6 +195,86 @@ async def lifespan(app: FastAPI):
         await get_db(settings.database_url).close()
     except Exception:
         pass
+
+
+async def _restaurar_archivos(settings, perfil, blob) -> None:
+    """
+    Restaura desde Redis el catálogo y el padrón subidos (el filesystem de
+    Railway es efímero). Sin SKU_CSV_PATH no hay dónde escribir el catálogo:
+    antes Path("").write_bytes reventaba y el except del lifespan salteaba
+    también el padrón. Un perfil sin socios no restaura el padrón (spec 4.8).
+    """
+    logger = logging.getLogger(__name__)
+    cat = await blob.load("catalogo")
+    if cat and settings.sku_csv_path:
+        p = Path(settings.sku_csv_path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(cat[0])
+        logger.info(f"Catálogo restaurado desde Redis ({len(cat[0])} bytes)")
+    if not perfil.socios:
+        logger.info("Perfil sin socios: no se carga el padrón")
+        return
+    soc = await blob.load("socios")
+    if soc:
+        data, ext = soc
+        dest = Path(settings.socios_path).with_suffix(ext or ".csv")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(data)
+        settings.socios_path = str(dest)
+        logger.info(f"Padrón restaurado desde Redis ({len(data)} bytes → {dest.name})")
+
+
+async def _hidratar_padron(settings, perfil, db) -> None:
+    """
+    Padrón de socios en Postgres (24/9): si la tabla tiene filas, el
+    singleton se carga desde ahí (pisa lo leído del archivo); si está vacía
+    y el archivo cargó socios, se siembra la tabla. Un perfil sin socios no
+    lo toca: defensa en profundidad, con el padrón vacío find_by_phone ya
+    devuelve None (spec 4.8).
+    """
+    if not perfil.socios or not db.available():
+        return
+    from app.services.socio_service import (get_socio_service, guardar_en_db,
+                                             cargar_desde_db as cargar_socios_db)
+    logger = logging.getLogger(__name__)
+    _socio_svc = get_socio_service(settings.socios_path)
+    _n_db = await cargar_socios_db(db, _socio_svc)
+    if _n_db:
+        logger.info(f"Padrón de socios cargado desde Postgres: {_n_db} socios")
+    elif _socio_svc.total:
+        await guardar_en_db(db, _socio_svc)
+        logger.info(f"Padrón de socios sembrado en Postgres desde el archivo: "
+                    f"{_socio_svc.total} socios")
+
+
+async def _init_referencia_receta(db):
+    """
+    Receta por código de barras (24/9): carga la referencia vigente desde
+    Postgres y recalcula requiere_receta de todo catalog_items. Un perfil
+    sin recetas no la carga ni recalcula (spec 4.2). Devuelve el resumen de
+    inicializar, o None.
+    """
+    logger = logging.getLogger(__name__)
+    if not get_perfil().recetas:
+        logger.info("Perfil sin recetas: no se carga la referencia ni se recalcula el catálogo")
+        return None
+    from app.services.receta_referencia import inicializar as _init_receta
+    _r = await asyncio.wait_for(_init_receta(db), timeout=60.0)
+    logger.info(f"Referencia de receta: {_r}")
+    return _r
+
+
+async def _avisar_horario_por_defecto(cfg_svc) -> bool:
+    """
+    Sin horario guardado (ni en Redis ni en Postgres), get_hours cae en
+    DEFAULT_HOURS en silencio y el bot promete L a V de 9 a 18. Solo avisa
+    en el log (spec 4.8); devuelve True si avisó.
+    """
+    from app.services.config_service import DEFAULT_HOURS
+    if await cfg_svc.get_hours() != DEFAULT_HOURS:
+        return False
+    logging.getLogger(__name__).warning("Horario no cargado: se usa DEFAULT_HOURS")
+    return True
 
 
 def _migrar():
