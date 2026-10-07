@@ -2323,6 +2323,9 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                            if isinstance(e, str) and e.strip()][:3]
                 if _extras:
                     from app.services.sku_service import nombre_coincide
+                    # Sin recetas (petshop), el flag "si"/"ambiguo" de una fila no
+                    # aparta al adicional: si no, desaparecía en silencio.
+                    _rec_on = get_perfil().recetas
                     _lineas_extra = []
                     _extras_guardar = []   # los que existen de verdad: sumables
                     from app.services.sku_service import (restaurar_palabras_cliente as _rpc,
@@ -2334,9 +2337,9 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                         # precios también los ve el cliente en el mensaje.
                         _r2, _ = aplicar_descuento_socio(_r2, phone, _cfg_desc)
                         _r2 = marcar_precio_dudoso(_r2, _cfg_desc, deps["sku"])
-                        _top2 = next((r for r in _r2 if r.get("vendible")
-                                      and r.get("requiere_receta") not in ("si", "ambiguo")), None)
-                        _top_rec = next((r for r in _r2 if r.get("vendible")
+                        _top2 = next((r for r in _r2 if r.get("vendible") and not (
+                            _rec_on and r.get("requiere_receta") in ("si", "ambiguo"))), None)
+                        _top_rec = next((r for r in _r2 if r.get("vendible") and _rec_on
                                          and r.get("requiere_receta") in ("si", "ambiguo")), None)
                         # El tipo solo ("crema") no alcanza para darlo por lo pedido:
                         # "crema Topics" matcheaba con cualquier crema (23/9).

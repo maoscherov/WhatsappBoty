@@ -95,3 +95,26 @@ async def test_receta_inventada_por_el_modelo_se_saca_en_petshop(usar_perfil, en
     assert "receta" not in enviado.lower()
     assert "$25.000" in enviado and "¿La querés?" in enviado
     assert (await deps["session"].get(PHONE)).get("pending_sku_id") == "20"
+
+
+@pytest.mark.parametrize("clave,deriva", [("petshop", False), ("farmacia", True)])
+async def test_adicional_con_receta(usar_perfil, entorno, clave, deriva):
+    usar_perfil(clave)
+    txt = "quiero el alimento Dog Chow 3kg y una pipeta frontline"
+    deps = entorno({txt: {
+        "intencion": "pedido", "entidad_producto": "alimento dog chow 3kg",
+        "entidades_adicionales": ["pipeta frontline"],
+        "respuesta": "Tengo el Dog Chow Adulto Razas Medianas 3 kg a $9.800. ¿Te lo preparo?"}})
+    deps["sku"] = _catalogo_pipeta_mo()
+    await wh.procesar_mensajes([_msg(txt)])
+    enviado = deps["wa"].enviados[-1]
+    if deriva:
+        assert _intenciones_perf(deps)[-1] == "derivado_receta"
+        return
+    assert "Sobre lo demás que me pediste:" in enviado
+    assert "• pipeta frontline: PIPETA FRONTLINE PLUS PERRO 10-20KG — $25,000.00" in enviado
+    assert "receta" not in enviado.lower()
+    s = await deps["session"].get(PHONE)
+    assert [e["sku_id"] for e in s.get("extras_ofrecidos") or []] == ["20"]
+    assert s["estado"] != "operador"
+    assert _intenciones_perf(deps)[-1] != "derivado_receta"
