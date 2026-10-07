@@ -192,17 +192,26 @@ async def bo_mercurio_sync(_=Depends(_auth)):
 
 @router.get("/mercurio/estado")
 async def bo_mercurio_estado(_=Depends(_auth)):
-    """Último sync + estado del servicio de Mercurio."""
-    from app.services.mercurio_service import get_mercurio_client, get_mercurio_sync, mercurio_configurado
-    if not mercurio_configurado():
-        return {"configurado": False}
+    """
+    Último sync + estado del servicio de Mercurio, y el bloque `pedidos` del
+    alta en el ERP (F5): flag, si hay customer_id por default y la cola
+    (pendientes, pendientes de más de 1 hora, rechazados, vencidos y el
+    último error con su order_id). El bloque va también sin clave: con el
+    flag prendido y sin MERCURIO_API_KEY la cola crece y acá se ve.
+    """
+    from app.services import mercurio_service as msvc
+    from app.services.mercurio_pedidos import estado_pedidos_erp
+    pedidos = await estado_pedidos_erp()
+    if not msvc.mercurio_configurado():
+        return {"configurado": False, "pedidos": pedidos}
     try:
-        estado = await get_mercurio_client().estado()
+        estado = await msvc.get_mercurio_client().estado()
     except Exception as e:
         estado = {"ok": False, "error": str(e)[:200]}
     return {"configurado": True, "servicio": estado,
             "branch_id": get_settings().mercurio_branch_id,
-            "ultimo_sync": get_mercurio_sync().ultimo}
+            "ultimo_sync": msvc.get_mercurio_sync().ultimo,
+            "pedidos": pedidos}
 
 
 @router.put("/catalog/{external_id}/extras")

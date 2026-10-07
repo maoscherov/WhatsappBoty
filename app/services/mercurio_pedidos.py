@@ -60,6 +60,51 @@ def erp_estado_inicial(order: dict) -> Optional[str]:
     return "pendiente"
 
 
+async def _registrar_evento(db, tipo: str, *, order_id: str, phone=None, total=None,
+                            motivo: str = "") -> None:
+    """Evento de métricas de un pedido que pasa a 'rechazado' o 'vencido'
+    (tabla eventos, ref = order_id): queda contado y a la vista del tablero.
+    Best-effort: nunca lanza."""
+    try:
+        from app.services.metrics_store import get_metrics_store
+        try:
+            monto = round(float(total), 2) if total is not None else None
+        except (TypeError, ValueError):
+            monto = None
+        await get_metrics_store(db).evento(tipo, phone=(str(phone) if phone else None),
+                                           dato=(motivo or "")[:200] or None, monto=monto,
+                                           ref=str(order_id))
+    except Exception as e:
+        logger.debug(f"evento {tipo} ({order_id}): {e}")
+
+
+async def estado_pedidos_erp(db=None) -> dict:
+    """
+    Bloque `pedidos` de /bo/mercurio/estado: si el alta está habilitada, si
+    hay customer_id por default, y los contadores de la cola (pendientes,
+    pendientes de más de 1 hora, rechazados, vencidos, último error con su
+    order_id). Con Postgres caído, los contadores en null y `error`. Nunca
+    lanza.
+    """
+    from app.config import get_settings
+    s = get_settings()
+    out = {
+        "habilitado": bool(s.mercurio_pedidos_enabled),
+        "customer_id_default": bool((s.mercurio_customer_id_default or "").strip()),
+        "pendientes": None, "pendientes_mas_1h": None, "rechazados": None,
+        "vencidos": None, "ultimo_error": None,
+    }
+    try:
+        from app.services.order_store import get_order_store
+        if db is None:
+            from app.services.db import get_db
+            db = get_db(s.database_url)
+        out.update(await asyncio.wait_for(get_order_store(db).resumen_erp(), timeout=5.0))
+    except Exception as e:
+        out["error"] = f"no se pudo leer la cola de pedidos: {e}"[:200]
+    return out
+
+
 def problemas_de_configuracion() -> list[str]:
     """
     Lo que falta para que el alta funcione con MERCURIO_PEDIDOS_ENABLED
@@ -281,6 +326,13 @@ async def _intentar_alta(order: dict, *, client=None, db=None) -> Optional[dict]
         except Exception as e2:
             logger.error(f"Pedido {order_id}: no se pudo marcar {estado}: {e2}")
 
+    async def _rechazado(motivo: str) -> None:
+        # Visible (hallazgo 9): además del ERROR en el log, un evento de
+        # métricas por pedido rechazado.
+        await _registrar_evento(db, "erp_pedido_rechazado", order_id=order_id,
+                                phone=order.get("phone"), total=order.get("total"),
+                                motivo=motivo)
+
     try:
         # Renglones: sin renglones confiables, o si no cuadran con lo cobrado,
         # no se manda nada (registraría otra cosa que lo vendido): rechazado.
@@ -290,6 +342,7 @@ async def _intentar_alta(order: dict, *, client=None, db=None) -> Optional[dict]
         except PedidoInconsistente as e:
             logger.error(f"Pedido {order_id} NO se manda al ERP: {e}")
             await _marcar("rechazado", str(e))
+            await _rechazado(str(e))
             return None
 
         # customer_id (obligatorio en el contrato): sin uno en la orden ni por
@@ -332,6 +385,7 @@ async def _intentar_alta(order: dict, *, client=None, db=None) -> Optional[dict]
         except MercurioPedidoRechazado as e:
             logger.error(f"Pedido {order_id} RECHAZADO por Mercurio: {e}")
             await _marcar("rechazado", str(e))
+            await _rechazado(str(e))
             return None
         except MercurioCredencialError as e:
             # Configuración, no el pedido: queda pendiente sin gastar un intento.
@@ -476,9 +530,10 @@ async def esperar_altas_en_curso(timeout: Optional[float] = None) -> int:
     return len(colgadas)
 
 
-async def _vencer_viejos(store, s) -> None:
+async def _vencer_viejos(store, s, db) -> None:
     """Tope de antigüedad: los 'pendiente' con más de MERCURIO_PEDIDOS_MAX_DIAS
-    (mínimo 1) pasan a 'vencido' y no se reintentan más. Nunca lanza."""
+    (mínimo 1) pasan a 'vencido' y no se reintentan más; cada uno deja un
+    ERROR en el log y un evento de métricas. Nunca lanza."""
     max_dias = max(1, int(s.mercurio_pedidos_max_dias or 1))
     try:
         vencidos = await store.vencer_pendientes(max_dias)
@@ -489,6 +544,9 @@ async def _vencer_viejos(store, s) -> None:
         logger.error(f"Pedido {v.get('order_id')} VENCIDO sin alta en el ERP (más de "
                      f"{max_dias} días pendiente; no se reintenta más): "
                      f"{v.get('erp_ultimo_error')}")
+        await _registrar_evento(db, "erp_pedido_vencido", order_id=v.get("order_id"),
+                                phone=v.get("phone"), total=v.get("total"),
+                                motivo=v.get("erp_ultimo_error") or "")
 
 
 async def reintentar_pedidos_pendientes(*, client=None, db=None, limit: int = 20) -> int:
@@ -513,7 +571,7 @@ async def reintentar_pedidos_pendientes(*, client=None, db=None, limit: int = 20
         from app.services.db import get_db
         db = get_db(s.database_url)
     store = get_order_store(db)
-    await _vencer_viejos(store, s)
+    await _vencer_viejos(store, s, db)
     try:
         pendientes = await store.pendientes_erp(limit)
     except Exception as e:

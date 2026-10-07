@@ -1407,3 +1407,226 @@ class TestAltaEnSegundoPlano:
         assert await mp.esperar_altas_en_curso(timeout=0.05) == 1
         assert mp._tareas == set() and mp._en_vuelo == set()
         assert (await _fila_erp(db))["erp_estado"] == "pendiente"
+
+
+# ── Visibilidad (hallazgo 9, fix-C2) ─────────────────────────────────────────
+
+class _RedisPedidos:
+    """Redis mínimo de OrderService para la consola de pedidos."""
+
+    def __init__(self):
+        self.kv: dict[str, str] = {}
+        self.z: dict[str, dict[str, float]] = {}
+
+    async def setex(self, key, ttl, value):
+        self.kv[key] = value
+
+    async def get(self, key):
+        return self.kv.get(key)
+
+    async def mget(self, keys):
+        return [self.kv.get(k) for k in keys]
+
+    async def zadd(self, key, mapping):
+        self.z.setdefault(key, {}).update(mapping)
+
+    async def zrevrange(self, key, a, b):
+        return sorted(self.z.get(key, {}), key=lambda k: -self.z[key][k])[a:b + 1]
+
+
+def _cliente_bo(monkeypatch, svc=None):
+    """Consola de pedidos + /bo/mercurio/* en el MISMO event loop del test
+    (el pool de asyncpg del fixture db no cruza de loop)."""
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+
+    from app.routers import backoffice_branches, orders_api
+    monkeypatch.setattr(get_settings(), "bo_key", "")
+    if svc is not None:
+        monkeypatch.setattr(orders_api, "get_order_service", lambda *a, **k: svc)
+    app = FastAPI()
+    app.include_router(orders_api.router)
+    app.include_router(backoffice_branches.router)
+    return AsyncClient(transport=ASGITransport(app=app), base_url="http://t")
+
+
+CAMPOS_ERP = ("erp_estado", "erp_ultimo_error", "erp_intentos", "erp_numero",
+              "erp_id_comprobante")
+
+
+class TestConsolaDePedidos:
+    async def _tres_pedidos(self, db):
+        """Uno rechazado, uno enviado (en Redis y en Postgres) y uno solo en Redis."""
+        from app.services.order_store import get_order_store
+        svc = _order_service_falso()
+        svc._redis = _RedisPedidos()
+        store = get_order_store(db)
+        rech = await svc.create(phone="549341111", sku_id="7508", sku_nombre="ROYAL",
+                                cantidad=1, total=10.0, mp_payment_id="mp-r")
+        env = await svc.create(phone="549341222", sku_id="7508", sku_nombre="ROYAL",
+                               cantidad=1, total=10.0, mp_payment_id="mp-e")
+        await store.marcar_erp(rech["order_id"], "rechazado", error="HTTP 422: state inválido",
+                               incrementar_intento=True)
+        await store.marcar_erp(env["order_id"], "enviado", id_comprobante="FC-7", numero="77",
+                               incrementar_intento=True)
+        solo_redis = {"order_id": "ORD-SOLO-REDIS", "phone": "549341333", "estado": "pendiente"}
+        await svc._redis.setex("order:ORD-SOLO-REDIS", 0, json.dumps(solo_redis))
+        await svc._redis.zadd("orders:idx", {"ORD-SOLO-REDIS": 0.5})
+        return svc, rech["order_id"], env["order_id"]
+
+    async def test_lista_y_detalle_traen_el_estado_del_erp(self, db, monkeypatch):
+        svc, rech, env = await self._tres_pedidos(db)
+        async with _cliente_bo(monkeypatch, svc) as ac:
+            r = await ac.get("/orders/api/list")
+            assert r.status_code == 200
+            por_id = {o["order_id"]: o for o in r.json()}
+            assert {k: por_id[rech][k] for k in CAMPOS_ERP} == {
+                "erp_estado": "rechazado", "erp_ultimo_error": "HTTP 422: state inválido",
+                "erp_intentos": 1, "erp_numero": None, "erp_id_comprobante": None}
+            assert {k: por_id[env][k] for k in CAMPOS_ERP} == {
+                "erp_estado": "enviado", "erp_ultimo_error": None, "erp_intentos": 1,
+                "erp_numero": "77", "erp_id_comprobante": "FC-7"}
+            assert {k: por_id["ORD-SOLO-REDIS"][k] for k in CAMPOS_ERP} == dict.fromkeys(
+                CAMPOS_ERP)
+
+            d = await ac.get(f"/orders/api/{rech}")
+            assert d.status_code == 200
+            assert d.json()["erp_estado"] == "rechazado"
+            assert d.json()["erp_ultimo_error"] == "HTTP 422: state inválido"
+            d = await ac.get("/orders/api/ORD-SOLO-REDIS")
+            assert d.status_code == 200 and d.json()["erp_estado"] is None
+
+    async def test_con_postgres_caido_los_campos_van_en_null(self, db, monkeypatch):
+        svc, rech, _ = await self._tres_pedidos(db)
+        monkeypatch.setattr(dbmod, "_instance", Database(""))      # sin Postgres
+        async with _cliente_bo(monkeypatch, svc) as ac:
+            r = await ac.get("/orders/api/list")
+            assert r.status_code == 200 and len(r.json()) == 3
+            for o in r.json():
+                assert {k: o[k] for k in CAMPOS_ERP} == dict.fromkeys(CAMPOS_ERP)
+            d = await ac.get(f"/orders/api/{rech}")
+            assert d.status_code == 200 and d.json()["erp_estado"] is None
+
+
+class TestEstadoMercurio:
+    async def _cola(self, db):
+        from app.services.order_store import get_order_store
+        store = get_order_store(db)
+        for oid, pid in (("ORD-P1", "mp-1"), ("ORD-P2-VIEJO", "mp-2"), ("ORD-R", "mp-3"),
+                         ("ORD-V", "mp-4"), ("ORD-E", "mp-5")):
+            await store.upsert(_orden(order_id=oid, mp_payment_id=pid), erp_estado="pendiente")
+        await store.upsert(_orden(order_id="ORD-NULL", mp_payment_id="mp-6"))   # farmacia
+        await db.execute("UPDATE orders SET created_at = now() - interval '2 hours' "
+                         "WHERE order_id = 'ORD-P2-VIEJO'")
+        await store.marcar_erp("ORD-R", "rechazado", error="HTTP 400: viejo")
+        await store.marcar_erp("ORD-V", "vencido", error="vencido: más de 6 días")
+        await store.marcar_erp("ORD-E", "enviado", id_comprobante="FC-1", numero="1")
+        await store.marcar_erp("ORD-P1", "pendiente", error="HTTP 503", incrementar_intento=True)
+        await db.execute("UPDATE orders SET updated_at = now() - interval '1 minute' "
+                         "WHERE order_id <> 'ORD-P1'")
+
+    async def test_bloque_pedidos_sin_clave(self, db, alta, monkeypatch):
+        monkeypatch.setattr(get_settings(), "mercurio_api_key", "")
+        await self._cola(db)
+        async with _cliente_bo(monkeypatch) as ac:
+            r = await ac.get("/bo/mercurio/estado")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["configurado"] is False
+        p = body["pedidos"]
+        assert (p["habilitado"], p["customer_id_default"]) == (True, True)
+        assert (p["pendientes"], p["pendientes_mas_1h"], p["rechazados"], p["vencidos"]) == \
+            (2, 1, 1, 1)
+        assert p["ultimo_error"]["order_id"] == "ORD-P1"
+        assert p["ultimo_error"]["erp_estado"] == "pendiente"
+        assert p["ultimo_error"]["error"] == "HTTP 503"
+
+    async def test_bloque_pedidos_con_clave_y_sin_customer_id(self, db, alta, monkeypatch):
+        import app.services.mercurio_service as msvc
+
+        class _Cli:
+            async def estado(self):
+                return {"ok": True}
+
+        class _Sync:
+            ultimo = {"variantes": 3}
+
+        s = get_settings()
+        monkeypatch.setattr(s, "mercurio_api_key", "mrc_x")
+        monkeypatch.setattr(s, "mercurio_customer_id_default", "")
+        monkeypatch.setattr(msvc, "get_mercurio_client", lambda: _Cli())
+        monkeypatch.setattr(msvc, "get_mercurio_sync", lambda: _Sync())
+        async with _cliente_bo(monkeypatch) as ac:
+            r = await ac.get("/bo/mercurio/estado")
+        body = r.json()
+        assert body["configurado"] is True and body["servicio"] == {"ok": True}
+        assert body["ultimo_sync"] == {"variantes": 3}
+        p = body["pedidos"]
+        assert (p["habilitado"], p["customer_id_default"]) == (True, False)
+        assert (p["pendientes"], p["rechazados"], p["vencidos"]) == (0, 0, 0)
+        assert p["ultimo_error"] is None
+
+    async def test_bloque_pedidos_con_postgres_caido(self, db, alta, monkeypatch):
+        monkeypatch.setattr(get_settings(), "mercurio_api_key", "")
+        monkeypatch.setattr(dbmod, "_instance", Database(""))
+        async with _cliente_bo(monkeypatch) as ac:
+            r = await ac.get("/bo/mercurio/estado")
+        assert r.status_code == 200
+        p = r.json()["pedidos"]
+        assert p["habilitado"] is True and p["pendientes"] is None
+        assert "error" in p
+
+
+@pytest.fixture
+def eventos(db, monkeypatch):
+    """metrics_store apuntando a la base del test (es un singleton)."""
+    import app.services.metrics_store as ms
+    monkeypatch.setattr(ms, "_instance", None)
+
+    async def _leer():
+        rows = await db.fetch("SELECT tipo, ref, phone, dato FROM eventos "
+                              "WHERE tipo LIKE 'erp_pedido_%' ORDER BY id")
+        return [dict(r) for r in rows]
+
+    return _leer
+
+
+class TestAvisos:
+    async def test_rechazo_del_erp_deja_error_y_evento(self, db, alta, eventos, caplog):
+        await db.execute("DELETE FROM eventos WHERE tipo LIKE 'erp_pedido_%'")
+        await _encolar(db, _orden())
+        reqs: list = []
+        c = _cliente_pedidos([(422, {"error": True, "message": "state inválido"}, None)], reqs)
+        await enviar_pedido_erp(_orden(), client=c, db=db)
+        [ev] = await eventos()
+        assert (ev["tipo"], ev["ref"], ev["phone"]) == (
+            "erp_pedido_rechazado", "ORD-20261005-120000-AB12C", "5493415551234")
+        assert "state inválido" in ev["dato"]
+        assert any(r.levelname == "ERROR" and "ORD-20261005-120000-AB12C" in r.getMessage()
+                   for r in caplog.records)
+
+    async def test_renglones_que_no_cuadran_dejan_evento(self, db, alta, eventos):
+        await db.execute("DELETE FROM eventos WHERE tipo LIKE 'erp_pedido_%'")
+        orden = _orden_con_items(total=3000.0)
+        await _encolar(db, orden)
+        await enviar_pedido_erp(orden, client=_cliente_pedidos([], []), db=db)
+        [ev] = await eventos()
+        assert ev["tipo"] == "erp_pedido_rechazado" and ev["ref"] == orden["order_id"]
+
+    async def test_vencido_deja_error_y_evento(self, db, alta, eventos, caplog):
+        from app.services.mercurio_pedidos import reintentar_pedidos_pendientes
+        await db.execute("DELETE FROM eventos WHERE tipo LIKE 'erp_pedido_%'")
+        await _encolar(db, _orden(order_id="ORD-VIEJO", mp_payment_id="mp-v"))
+        await db.execute("UPDATE orders SET created_at = now() - interval '7 days'")
+        await reintentar_pedidos_pendientes(client=_cliente_pedidos([], []), db=db)
+        [ev] = await eventos()
+        assert (ev["tipo"], ev["ref"]) == ("erp_pedido_vencido", "ORD-VIEJO")
+        assert "vencido" in ev["dato"]
+        assert any(r.levelname == "ERROR" and "ORD-VIEJO" in r.getMessage()
+                   for r in caplog.records)
+
+    async def test_un_pendiente_no_deja_evento(self, db, alta, eventos, esperas):
+        await db.execute("DELETE FROM eventos WHERE tipo LIKE 'erp_pedido_%'")
+        await _encolar(db, _orden())
+        await enviar_pedido_erp(_orden(), client=_cliente_500([]), db=db)
+        assert await eventos() == []

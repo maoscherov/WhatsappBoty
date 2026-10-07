@@ -45,6 +45,10 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+# Lo que la consola de pedidos muestra del alta en el ERP (estado_erp).
+CAMPOS_ERP = ("erp_estado", "erp_ultimo_error", "erp_intentos", "erp_numero",
+              "erp_id_comprobante")
+
 # Tope del backoff por pedido (6 horas) y del exponente (2^30 ya lo supera
 # con cualquier base razonable; evita un overflow con erp_intentos enormes).
 BACKOFF_TOPE_SECS = 6 * 3600
@@ -258,6 +262,48 @@ class OrderStore:
             """,
             int(max_dias), raise_errors=True)
         return [dict(r) for r in rows]
+
+
+    async def estado_erp(self, order_ids: list[str]) -> dict[str, dict]:
+        """{order_id: {erp_estado, erp_ultimo_error, erp_intentos, erp_numero,
+        erp_id_comprobante}} de esos pedidos (los que tienen fila). Es lo que
+        muestra la consola de pedidos: en Redis no está."""
+        ids = [str(i) for i in order_ids if i]
+        if not ids:
+            return {}
+        rows = await self._db.fetch(
+            "SELECT order_id, erp_estado, erp_ultimo_error, erp_intentos, erp_numero, "
+            "erp_id_comprobante FROM orders WHERE order_id = ANY($1::text[])",
+            ids, raise_errors=True)
+        return {r["order_id"]: {k: r[k] for k in CAMPOS_ERP} for r in rows}
+
+    async def resumen_erp(self) -> dict:
+        """Contadores de la cola del ERP para /bo/mercurio/estado: pendientes,
+        pendientes creados hace más de 1 hora, rechazados, vencidos y el
+        último error (pedido pendiente, rechazado o vencido con motivo)."""
+        row = await self._db.fetchrow(
+            """
+            SELECT
+                count(*) FILTER (WHERE erp_estado = 'pendiente')               AS pendientes,
+                count(*) FILTER (WHERE erp_estado = 'pendiente'
+                                   AND created_at < now() - interval '1 hour') AS pendientes_mas_1h,
+                count(*) FILTER (WHERE erp_estado = 'rechazado')               AS rechazados,
+                count(*) FILTER (WHERE erp_estado = 'vencido')                 AS vencidos
+            FROM orders WHERE erp_estado IS NOT NULL
+            """, raise_errors=True)
+        ultimo = await self._db.fetchrow(
+            "SELECT order_id, erp_estado, erp_ultimo_error, updated_at FROM orders "
+            "WHERE erp_ultimo_error IS NOT NULL "
+            "  AND erp_estado IN ('pendiente', 'rechazado', 'vencido') "
+            "ORDER BY updated_at DESC LIMIT 1", raise_errors=True)
+        out = {k: int(row[k] or 0) for k in ("pendientes", "pendientes_mas_1h",
+                                              "rechazados", "vencidos")}
+        out["ultimo_error"] = None if not ultimo else {
+            "order_id": ultimo["order_id"], "erp_estado": ultimo["erp_estado"],
+            "error": ultimo["erp_ultimo_error"],
+            "at": ultimo["updated_at"].isoformat() if ultimo["updated_at"] else None,
+        }
+        return out
 
 
 _instance: Optional[OrderStore] = None

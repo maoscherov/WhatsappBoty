@@ -9,8 +9,14 @@ PATCH /orders/api/{order_id}/retirado   → marcar retirado
 
 Las tres últimas aceptan {"agente": "Sofía G."} en el body para dejar trazado
 quién hizo la acción. El body es opcional: el backoffice viejo llama sin body.
+
+La lista y el detalle traen además el alta del pedido en el ERP (F5,
+Mercurio): erp_estado, erp_ultimo_error, erp_intentos, erp_numero y
+erp_id_comprobante, leídos de la tabla durable `orders` (Redis no los tiene).
+Sin fila, o con Postgres caído o lento, van en null (nunca rompen la consola).
 """
 
+import asyncio
 import json
 import logging
 from fastapi import APIRouter, HTTPException, Query, Depends, Request
@@ -85,6 +91,33 @@ def _con_personas(o: dict) -> dict:
     return d
 
 
+async def _estado_erp(order_ids: list) -> dict:
+    """{order_id: campos erp_*} de la tabla orders (el alta en el ERP, F5).
+    Con Postgres caído o lento (más de 3 s), {}: los campos van en null y la
+    consola de pedidos sigue andando."""
+    ids = [str(i) for i in order_ids if i]
+    if not ids:
+        return {}
+    try:
+        from app.services.db import get_db
+        from app.services.order_store import get_order_store
+        db = get_db(get_settings().database_url)
+        if not db.available():          # deploy sin Postgres: null, sin ruido en el log
+            return {}
+        return await asyncio.wait_for(get_order_store(db).estado_erp(ids), timeout=3.0)
+    except Exception as e:
+        logger.warning(f"Pedidos: no se pudo leer el estado del alta en el ERP: {e}")
+        return {}
+
+
+def _con_erp(d: dict, erp: dict) -> dict:
+    from app.services.order_store import CAMPOS_ERP
+    fila = erp.get(str(d.get("order_id"))) or {}
+    for k in CAMPOS_ERP:
+        d[k] = fila.get(k)
+    return d
+
+
 @router.get("/list")
 async def list_orders(_=Depends(_auth), estado: str = Query(None)):
     settings = get_settings()
@@ -92,7 +125,8 @@ async def list_orders(_=Depends(_auth), estado: str = Query(None)):
     orders = await svc.list_all()
     if estado:
         orders = [o for o in orders if o.get("estado") == estado]
-    return [_con_personas(o) for o in orders]
+    erp = await _estado_erp([o.get("order_id") for o in orders])
+    return [_con_erp(_con_personas(o), erp) for o in orders]
 
 
 @router.get("/export.csv")
@@ -151,7 +185,7 @@ async def get_order(order_id: str, _=Depends(_auth)):
     order = await svc.get(order_id)
     if not order:
         raise HTTPException(status_code=404, detail="Pedido no encontrado")
-    return _con_personas(order)
+    return _con_erp(_con_personas(order), await _estado_erp([order_id]))
 
 
 @router.post("/{order_id}/takeover")
