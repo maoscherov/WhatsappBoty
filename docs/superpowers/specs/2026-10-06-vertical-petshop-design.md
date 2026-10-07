@@ -541,7 +541,7 @@ Piezas nuevas compartidas con la visión:
 | `webhook.py:2010-2012` (compuerta A, tras Claude 1 y antes de la KB) | Con `por_sintoma` y sin entidad busca en el catálogo con la frase, llama a Claude 2 y suma la oferta del farmacéutico | `if get_perfil().sintomas == "derivar" and intent_result.get("por_sintoma")`: `_derivar_consulta_salud` y `continue`. No consulta la KB, no busca, no llama a Claude 2 y no deja pendiente. | `sintomas` |
 | `webhook.py:2161-2162` (compuerta B, tras Claude 2) | Claude 2 puede marcar `por_sintoma` y el flujo sigue: pendiente, métrica, imagen y farmacéutico | Lo mismo que A, antes de `_sin_precios_inventados`, `set_pending`, la métrica o la imagen | `sintomas` |
 | `webhook.py:1796-1798` (compuerta C, `esperando_confirmacion`) | Ignora `por_sintoma`; manda el texto del modelo | Lo mismo que A. No confirma, no cambia de producto y no limpia el pendiente (igual que `pidio_humano`). | `sintomas` |
-| `webhook.py:563-585` (compuerta D, `_responder_consulta_en_flujo`; agregada por el crítico) | En `esperando_entrega` y `esperando_direccion` descarta `por_sintoma`. El prompt promete "te paso" y nadie deriva. | Si `sintomas == "derivar"` y `resultado.get("por_sintoma")`: `set_estado(..., "operador", motivo="consulta_salud")` y devuelve `texto_consulta_salud(cfg)`. Los llamadores (1600, 1661) lo envían como hoy. | `sintomas` |
+| `webhook.py:563-585` (compuerta D, `_responder_consulta_en_flujo`; agregada por el crítico) | En `esperando_entrega` y `esperando_direccion` descarta `por_sintoma`. El prompt promete "te paso" y nadie deriva. | Si `sintomas == "derivar"` y `resultado.get("por_sintoma")`: `set_estado(..., "operador", motivo="consulta_salud")` y devuelve `texto_consulta_salud(cfg)`. Los llamadores (1600, 1661) lo envían como hoy. Revisión final, hallazgo 4 (**cambio que también afecta a la farmacia**, sin capacidad): después de la compuerta, si `derivacion_prometida(respuesta)` ("te paso con alguien del equipo", la frase que `PET_REGLAS` pide ante cuotas, descuentos, fiado o la sucursal sin cargar), `cumplir_derivacion_prometida(..., soltar_pendiente=False)`: pasa a `operador` con motivo `derivacion_prometida` y el pendiente queda intacto (el pedido ya está confirmado). | `sintomas` |
 | `webhook.py:487-529` (`_sin_precios_inventados`, rama `sintoma` 517-524) | Con un precio inventado y síntoma: "Para eso lo mejor es que te asesore el farmacéutico" | Dentro de `if sintoma:`, con `derivar`: `set_estado(..., motivo="consulta_salud")` y `return texto_consulta_salud(cfg)`. Si no, la rama de farmacia tal cual. | `sintomas` |
 | `webhook.py:2164-2166` y `2501-2506` | `sintoma = por_sintoma or intencion == "consulta_abierta"` | `sintoma = bool(por_sintoma) or (intencion == "consulta_abierta" and get_perfil().sintomas == "farmaceutico")`. En petshop, "¿qué alimento para un gato castrado?" con un dato inventado cae en la rama genérica ("No lo encuentro en nuestro catálogo 😕 ¿Querés que lo consulte con el equipo?"), no en salud. | `sintomas` |
 | `webhook.py:2316-2322` | Agrega la oferta del farmacéutico y marca `farmaceutico_ofrecido` | `if get_perfil().sintomas == "farmaceutico" and por_sintoma` | `sintomas` |
@@ -793,6 +793,28 @@ pares `nombre_coincide` da True) y la columna "Después" con un prototipo de
 "mandame la de 15 kilos" y "dos latas de 85" dejan de ser domicilio, y "san
 javier 837", "Ruta 8 kilómetro 52", "16 de enero 9279" y "donado 608 piso 2"
 lo siguen siendo.
+
+**Ajuste de la revisión final (7/10, hallazgos 2, 3 y 16).** Los tres son
+correcciones sin capacidad, para todos los perfiles:
+
+- **Hallazgo 2.** `_es_afirmacion_pura` (`webhook.py`) devuelve `False` si el
+  mensaje tiene un dígito. "sí, la de 3" con la bolsa de 15 pendiente
+  confirmaba la de 15 por el atajo, sin el modelo ni
+  `entidad_contradice_pendiente`; ahora va al modelo. "sí", "dale" y "si dale"
+  siguen confirmando por el atajo.
+- **Hallazgo 3.** `extraer_direccion_de` saltea la candidata si todos los
+  tokens de la calle son conectores (`de`, `del`, `la`, `el`, `los`, `las`):
+  "la de 20" devolvía el domicilio "de 20" y, con el link de retiro enviado,
+  "uh, me confundí, era la de 20" lo regeneraba como envío. "16 de enero
+  9279" sigue valiendo porque tiene "enero".
+- **Hallazgo 16.** `l`, `lt` y `lts` son también Lote y departamento ("Mz 5
+  L 12", "Corrientes 1234 4 L"). Salen del grupo de unidades de `_NO_DIR` y
+  cuentan como litros solo si no les sigue un número y si el número que las
+  precede no viene pegado a otro número (separado por un espacio o por coma y
+  espacio): en "1234 4 L" el 4 es el piso. "la de 15 lts", "el bidon de 20 l
+  por favor", "mandame 2 l" y "quiero el de 5 lt" siguen sin ser domicilio.
+  Costo (ruling): un volumen escrito como "1234 4 l" se toma como domicilio,
+  y "Calle 15 L" sigue sin reconocerse.
 
 ## 6. Pruebas
 
