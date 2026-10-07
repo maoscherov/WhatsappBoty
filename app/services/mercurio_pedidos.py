@@ -22,6 +22,8 @@ id_comprobante lo dejan `pendiente` con backoff por pedido (5 min, 10, 20...
 hasta 6 h) y lo retoma el job; 401/403 (la clave) corta la pasada del job sin
 gastar intentos. Un `pendiente` con más de MERCURIO_PEDIDOS_MAX_DIAS (6) pasa
 a `vencido`: la Idempotency-Key dura 7 días y reintentarlo podría duplicarlo.
+Un renglón con un SKU sintético (MANUAL, LIBREn, TEST: no es un artículo del
+ERP) deja el pedido `rechazado` de entrada, sin POST (ronda de arreglo 2).
 Estados y backoff: docstring de order_store.
 
 Todo detrás de `mercurio_pedidos_enabled` (False por defecto): en el deploy
@@ -31,6 +33,7 @@ de la farmacia este módulo no hace nada.
 import asyncio
 import hashlib
 import logging
+import re
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -180,6 +183,38 @@ def _items_de_la_orden(order: dict) -> list[dict]:
         raise PedidoInconsistente(f"renglones ilegibles en la orden: {e}") from e
 
 
+# SKU sintéticos que arma el sistema y que no son un artículo del ERP (nunca
+# van a tener código de Mercurio): MANUAL (link o cotización por monto libre
+# de /bo/paylink), LIBRE1, LIBRE2... (ítems libres del operador en /bo/paylink
+# con items y en /bo/pedido) y TEST (/payway/test). "MULTI" es el carrito sin
+# renglones y ya lo cubre _items_de_la_orden.
+_SKU_SIN_ARTICULO_RE = re.compile(r"MANUAL|TEST|LIBRE\d+")
+
+
+class ItemSinArticuloERP(PedidoInconsistente):
+    """Un renglón es un SKU sintético (MANUAL, LIBREn, TEST): no hay artículo
+    del ERP que registrar. 'rechazado' de entrada, sin POST: un humano lo
+    carga a mano (ronda de arreglo 2; antes quedaba 'pendiente' 6 días por
+    "sin código Mercurio" y vencía, y en un carrito mixto los productos
+    reales tampoco llegaban)."""
+
+
+def es_sku_sin_articulo(sku_id) -> bool:
+    return bool(_SKU_SIN_ARTICULO_RE.fullmatch(str(sku_id or "").strip()))
+
+
+def _validar_articulos(renglones: list[dict]) -> None:
+    """ItemSinArticuloERP si algún renglón es un SKU sintético."""
+    sinteticos = []
+    for r in renglones:
+        sku = str(r.get("sku_id") or "").strip()
+        if es_sku_sin_articulo(sku) and sku not in sinteticos:
+            sinteticos.append(sku)
+    if sinteticos:
+        raise ItemSinArticuloERP(
+            f"ítem sin artículo del ERP ({', '.join(sinteticos)}): cargar a mano")
+
+
 def _costo_envio(order: dict) -> float:
     return round(float(order.get("costo_envio") or 0), 2) if order.get("items") else 0.0
 
@@ -209,8 +244,9 @@ def pedido_desde_orden(order: dict, codigos: dict[str, dict], *,
     Un line_item por renglón de la orden (quantity = cantidad, subtotal =
     total = precio_unitario * cantidad). El envío va aparte, en
     `shipping_total` (solo si es > 0), y `total` es lo cobrado. Antes valida
-    que suma(line_items) + envío == total: si no cuadra, o la orden es un
-    carrito viejo sin renglones, PedidoInconsistente y no hay pedido.
+    que suma(line_items) + envío == total: si no cuadra, la orden es un
+    carrito viejo sin renglones o un renglón es un SKU sintético (MANUAL,
+    LIBREn, TEST: ItemSinArticuloERP), PedidoInconsistente y no hay pedido.
 
     Cada renglón necesita su `codigo` de variante (de mercurio_codigos). Nunca
     se cae al external_id: es el id_articulo_mercurio, comparte el espacio
@@ -219,6 +255,7 @@ def pedido_desde_orden(order: dict, codigos: dict[str, dict], *,
     """
     order_id = str(order.get("order_id"))
     renglones = _items_de_la_orden(order)
+    _validar_articulos(renglones)
     _validar_total(order, renglones)
     faltan = []
     for it in renglones:
@@ -284,8 +321,9 @@ async def _intentar_alta(order: dict, *, client=None, db=None) -> Optional[dict]
     pedido queda 'pendiente' con el error y SIN consumir un intento.
 
     Estados según el resultado:
-    - renglones ilegibles o que no cuadran, rechazo definitivo del ERP (422,
-      400, 404, 409, 413) -> 'rechazado' (no se reintenta);
+    - renglones ilegibles o que no cuadran, un ítem sin artículo del ERP
+      (MANUAL, LIBREn, TEST), rechazo definitivo del ERP (422, 400, 404,
+      409, 413) -> 'rechazado' (no se reintenta);
     - sin código de variante, sin poder leer los códigos, 429, 5xx, red, un
       2xx sin id_comprobante o una falla inesperada -> 'pendiente' (se
       reintenta), sumando un intento;
@@ -334,10 +372,13 @@ async def _intentar_alta(order: dict, *, client=None, db=None) -> Optional[dict]
                                 motivo=motivo)
 
     try:
-        # Renglones: sin renglones confiables, o si no cuadran con lo cobrado,
-        # no se manda nada (registraría otra cosa que lo vendido): rechazado.
+        # Renglones: sin renglones confiables, con un ítem que no es un
+        # artículo del ERP (MANUAL, LIBREn, TEST) o si no cuadran con lo
+        # cobrado, no se manda nada (registraría otra cosa que lo vendido, o
+        # nada): rechazado.
         try:
             renglones = _items_de_la_orden(order)
+            _validar_articulos(renglones)
             _validar_total(order, renglones)
         except PedidoInconsistente as e:
             logger.error(f"Pedido {order_id} NO se manda al ERP: {e}")

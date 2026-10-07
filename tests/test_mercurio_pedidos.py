@@ -1463,6 +1463,63 @@ class TestHookNoPisaUnEstadoPosterior:
         assert len(reqs) == 1 and (await _fila_erp(db))["erp_estado"] == "enviado"
 
 
+# ── Ronda de arreglo 2: SKU sintéticos sin artículo del ERP ──────────────────
+# MANUAL (link por monto libre de /bo/paylink), LIBREn (ítems libres del
+# operador en /bo/paylink y /bo/pedido) y TEST (/payway/test) nunca van a
+# tener código de Mercurio: quedaban 'pendiente' 6 días y vencían (y en un
+# carrito mixto, los productos reales tampoco llegaban). Van 'rechazado' de
+# entrada, sin POST, con el motivo y su evento.
+
+def _orden_mixta(sku_libre: str) -> dict:
+    items = [
+        {"sku_id": "7508", "nombre": "Royal 400 g", "cantidad": 2,
+         "precio_unitario": 1000.0, "total": 2000.0},
+        {"sku_id": sku_libre, "nombre": "Ítem libre", "cantidad": 1,
+         "precio_unitario": 500.0, "total": 500.0},
+    ]
+    return _orden(sku_id="MULTI", sku_nombre="2 productos", cantidad=1, total=2500.0,
+                  items=items, costo_envio=0.0)
+
+
+class TestSkuSinArticuloDelERP:
+    @pytest.mark.parametrize("orden, sku", [
+        (_orden(sku_id="MANUAL", cantidad=3, total=3000.0), "MANUAL"),
+        (_orden(sku_id="TEST", cantidad=1, total=10.0), "TEST"),
+        (_orden_mixta("LIBRE2"), "LIBRE2"),
+        (_orden_mixta("MANUAL"), "MANUAL"),
+        (_orden_mixta("LIBRE1"), "LIBRE1"),
+    ])
+    async def test_queda_rechazado_de_entrada_sin_post(self, db, alta, eventos, caplog,
+                                                       orden, sku):
+        await db.execute("DELETE FROM eventos WHERE tipo LIKE 'erp_pedido_%'")
+        await _encolar(db, orden)
+        reqs: list = []
+        assert await enviar_pedido_erp(orden, client=_cliente_pedidos([OK_201], reqs),
+                                       db=db) is None
+        assert reqs == []
+        fila = await _fila_erp(db)
+        assert fila["erp_estado"] == "rechazado"
+        assert fila["erp_ultimo_error"] == f"ítem sin artículo del ERP ({sku}): cargar a mano"
+        assert fila["erp_proximo_intento"] is None
+        [ev] = await eventos()
+        assert (ev["tipo"], ev["ref"]) == ("erp_pedido_rechazado", orden["order_id"])
+        assert any(r.levelname == "ERROR" and orden["order_id"] in r.getMessage()
+                   for r in caplog.records)
+
+    @pytest.mark.parametrize("sku", ["MANUAL", "LIBRE2", "TEST"])
+    def test_pedido_desde_orden_no_lo_arma(self, sku):
+        from app.services.mercurio_pedidos import PedidoInconsistente
+        with pytest.raises(PedidoInconsistente, match=rf"ítem sin artículo del ERP \({sku}\)"):
+            pedido_desde_orden(_orden(sku_id=sku, cantidad=1, total=10.0),
+                               {sku: {"codigo": "1", "codigo_padre": "1"}},
+                               state="complete", customer_id_default="x")
+
+    @pytest.mark.parametrize("sku", ["7508", "LIBRERIA", "MANUALES", "TESTER", "LIBRE"])
+    def test_un_sku_real_no_es_sintetico(self, sku):
+        from app.services.mercurio_pedidos import es_sku_sin_articulo
+        assert es_sku_sin_articulo(sku) is False
+
+
 # ── Visibilidad (hallazgo 9, fix-C2) ─────────────────────────────────────────
 
 class _RedisPedidos:

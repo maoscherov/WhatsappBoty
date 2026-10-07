@@ -14,8 +14,9 @@ la cola de reintentos del alta en el ERP (F5, Mercurio):
                           id_comprobante, o falta el customer_id)
               enviado   → registrado en el ERP (erp_id_comprobante / erp_numero)
               rechazado → rechazo definitivo del ERP (422, 400, 404, 409, 413),
-                          o renglones ilegibles o que no cuadran con el total:
-                          lo mira un humano, no se reintenta
+                          renglones ilegibles o que no cuadran con el total,
+                          o un ítem sin artículo del ERP (MANUAL, LIBREn,
+                          TEST): lo mira un humano, no se reintenta
               vencido   → siguió 'pendiente' más de MERCURIO_PEDIDOS_MAX_DIAS
                           (6) desde que se creó: no se reintenta más, porque
                           la Idempotency-Key del ERP dura 7 días y un
