@@ -203,3 +203,183 @@ async def test_link_en_mutual_sigue_derivando(usar_perfil, entorno):
     s = await deps["session"].get(PHONE)
     assert s["estado"] == "operador" and s["derivada_motivo"] == "receta_link"
     assert not _texto_llego_al_modelo(deps, _LINK_IG)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Beneficios (§4.4): socios, empleados, cuenta corriente, obras sociales
+# ══════════════════════════════════════════════════════════════════════════════
+class _IntentBen:
+    """Intent guionado que además guarda los kwargs de cada llamada."""
+    def __init__(self, guion=None):
+        self.guion = guion or {}
+        self.vistos = []
+        self.kwargs = []
+
+    async def procesar_rapido(self, mensaje, **k):
+        self.vistos.append(("rapido", mensaje))
+        self.kwargs.append(k)
+        return self.guion.get(mensaje, {"intencion": "saludo", "respuesta": "¡Hola!"})
+
+    async def procesar(self, mensaje, **k):
+        self.vistos.append(("procesar", mensaje))
+        self.kwargs.append(k)
+        return self.guion.get(mensaje, {"intencion": "desconocido", "respuesta": "¿En qué te ayudo?"})
+
+
+class _PadronBen:
+    """Padrón heredado de la farmacia: el teléfono de prueba es socio."""
+    total = 1
+
+    def find_by_phone(self, phone):
+        return {"nombre": "Ana Pérez", "nombre_pila": "Ana", "socio": "4001"} if phone == PHONE else None
+
+    def contexto_para_prompt(self, phone):
+        return "Nombre de pila (para saludar): Ana | N° de socio: 4001" if phone == PHONE else None
+
+
+class _EmpleadosBen:
+    def find_by_phone(self, phone):
+        return {"nombre": "Ana", "nombre_pila": "Ana", "activo": True} if phone == PHONE else None
+
+
+class _NadieBen:
+    total = 0
+
+    def find_by_phone(self, phone):
+        return None
+
+    def contexto_para_prompt(self, phone):
+        return None
+
+
+@pytest.fixture
+def con_beneficios(usar_perfil, entorno, monkeypatch):
+    """Webhook con padrón y empleado cargados (lo que MO heredaría si compartiera
+    datos con la farmacia). `armar` fija el perfil con `usar_perfil` antes de armar
+    el entorno; la config falsa sale de DEFAULTS (el fixture `entorno` usa
+    `_Cfg(dict(DEFAULTS))`), no del perfil."""
+    from app.services import checkout_helper as chh
+    from app.services import empleado_service as es
+
+    async def _sin_freno(*a, **k):
+        return None, None
+    monkeypatch.setattr(chh, "_chequear_stock_vivo", _sin_freno)
+
+    def armar(guion=None, cfg=None, padron=True, empleado=True, clave="petshop"):
+        usar_perfil(clave)
+        monkeypatch.setattr(es, "get_empleado_service",
+                            lambda *a, **k: _EmpleadosBen() if empleado else _NadieBen())
+        deps = entorno(guion, cfg=cfg)
+        deps["intent"] = _IntentBen(guion)
+        deps["socios"] = _PadronBen() if padron else _NadieBen()
+        return deps
+    return armar
+
+
+async def _link_enviado_ben(ss):
+    await ss.set_pending(PHONE, sku_id="P1", sku_nombre="DOG CHOW ADULTO 15KG",
+                         precio=30000.0, cantidad=1, opciones=[])
+    await ss.set_entrega(PHONE, "retiro", None)
+    await ss.set_estado(PHONE, "esperando_pago")
+
+
+def _llego_al_modelo(deps, txt):
+    return ("rapido", txt) in deps["intent"].vistos
+
+
+async def test_beneficios_petshop_sin_contexto_de_socio_ni_empleado(con_beneficios):
+    txt = "hola, tienen alimento para gato?"
+    deps = con_beneficios({txt: {"intencion": "saludo",
+                                 "respuesta": "¡Hola! ¿Para qué edad es tu gato?"}})
+    await wh.procesar_mensajes([_msg(txt)])
+    assert deps["intent"].kwargs, "el mensaje tiene que llegar al modelo"
+    assert all(k.get("contexto_cliente") is None for k in deps["intent"].kwargs)
+    enviado = " ".join(deps["wa"].enviados).lower()
+    assert not any(p in enviado for p in ("mutual", "socio", "empleado"))
+
+
+async def test_beneficios_farmacia_contexto_de_empleado_igual_que_hoy(con_beneficios):
+    txt = "hola, tienen alimento para gato?"
+    deps = con_beneficios({txt: {"intencion": "saludo", "respuesta": "¡Hola!"}}, clave="farmacia")
+    await wh.procesar_mensajes([_msg(txt)])
+    ctx = deps["intent"].kwargs[0]["contexto_cliente"]
+    assert ctx.startswith("Nombre de pila (para saludar): Ana") and "Es EMPLEADO de la mutual" in ctx
+
+
+@pytest.mark.parametrize("txt", [
+    "cuánto te debo?",
+    "tienen saldo de piedras?",
+    "anotame 2 bolsas más",
+    "sumale una bolsa a la cuenta",
+    "lo anoto en la cuenta",
+])
+async def test_beneficios_petshop_cuenta_corriente_va_al_modelo(con_beneficios, txt):
+    deps = con_beneficios(cfg={"cc_enabled": "true"})
+    await _link_enviado_ben(deps["session"])
+    await wh.procesar_mensajes([_msg(txt)])
+    assert _llego_al_modelo(deps, txt)
+    s = await deps["session"].get(PHONE)
+    assert s["estado"] == "esperando_pago"            # ni derivado ni cerrado en cuenta
+    assert "pago_metodo" not in s
+    assert not any("cuenta" in t.lower() for t in deps["wa"].enviados)
+
+
+async def test_beneficios_petshop_pagar_con_cc_no_es_pago_manual(con_beneficios):
+    txt = "¿puedo pagar con cuenta corriente?"
+    deps = con_beneficios(cfg={"pago_manual_mode": "derivar"}, padron=False, empleado=False)
+    await wh.procesar_mensajes([_msg(txt)])
+    assert _llego_al_modelo(deps, txt)
+    assert (await deps["session"].get(PHONE)).get("estado") != "operador"
+
+
+async def test_beneficios_petshop_transferencia_sigue_derivando(con_beneficios):
+    deps = con_beneficios(cfg={"pago_manual_mode": "derivar"}, padron=False, empleado=False)
+    await wh.procesar_mensajes([_msg("te pago por transferencia")])
+    s = await deps["session"].get(PHONE)
+    assert s["estado"] == "operador" and s["derivada_motivo"] == "transferencia_efectivo"
+
+
+@pytest.mark.parametrize("extra,deriva", [({}, True), ({"pago_mp_manual": "false"}, False)])
+async def test_beneficios_pago_mp_manual_decide_si_mp_deriva(con_beneficios, extra, deriva):
+    txt = "¿puedo pagar con mercado pago?"
+    deps = con_beneficios(cfg={"pago_manual_mode": "derivar", **extra}, padron=False, empleado=False)
+    await wh.procesar_mensajes([_msg(txt)])
+    s = await deps["session"].get(PHONE)
+    assert (s.get("derivada_motivo") == "transferencia_efectivo") is deriva
+    assert _llego_al_modelo(deps, txt) is not deriva
+
+
+async def test_beneficios_petshop_soy_socio_no_pide_dni(con_beneficios):
+    txt = "Hola, soy socio del club, tienen piedras sanitarias?"
+    deps = con_beneficios(padron=False, empleado=False)
+    await wh.procesar_mensajes([_msg(txt)])
+    assert _llego_al_modelo(deps, txt)
+    assert (await deps["session"].get(PHONE)).get("estado") != "operador"
+    enviado = " ".join(deps["wa"].enviados)
+    assert "padrón" not in enviado and "DNI" not in enviado
+
+
+@pytest.mark.parametrize("txt,empleado", [
+    ("¿tienen descuento por bolsa grande?", False),
+    ("tengo descuento?", True),
+])
+async def test_beneficios_petshop_descuento_va_al_modelo(con_beneficios, txt, empleado):
+    deps = con_beneficios(padron=False, empleado=empleado)
+    await wh.procesar_mensajes([_msg(txt)])
+    assert _llego_al_modelo(deps, txt)
+    enviado = " ".join(deps["wa"].enviados)
+    for frase in ("socios", "lo estamos habilitando", "Como empleado", "sin receta"):
+        assert frase not in enviado
+
+
+@pytest.mark.parametrize("txt", [
+    "¿Le va a andar bien a mi perro?",
+    "¿tienen cobertura de envío a Castelar?",
+    "aceptan el bono de Royal Canin?",
+])
+async def test_beneficios_petshop_sin_obra_social_ni_bono(con_beneficios, txt):
+    deps = con_beneficios(padron=False, empleado=False)
+    await wh.procesar_mensajes([_msg(txt)])
+    assert _llego_al_modelo(deps, txt)
+    s = await deps["session"].get(PHONE)
+    assert s.get("estado") != "operador" and not s.get("derivacion_ofrecida")

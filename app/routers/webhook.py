@@ -750,6 +750,7 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
     (descarga directa) y `texto_transcripto` (audio ya pasado a texto).
     """
     _s = get_settings()
+    perfil = get_perfil()      # capacidades del rubro; se lee una vez por lote
     deps = _deps(_s)
     _wa_base = deps["wa"]
     _session_base = deps["session"]
@@ -1090,36 +1091,42 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
 
             # Personalización: si el número está en el padrón de socios,
             # Claude recibe nombre y N° de socio para saludar por nombre.
-            _ctx_socio = deps["socios"].contexto_para_prompt(phone)
-            _socio_data = deps["socios"].find_by_phone(phone)
-            _nombre_socio = nombre_de_pila(_socio_data)
-            # Si el socio tiene descuento activo, los precios del catálogo YA
-            # vienen bonificados: el modelo tiene que saberlo para aclararlo al
-            # darlos, y para no volver a descontar por su cuenta.
-            _cfg_socio = await deps["config"].get_all()
-            _pct_cfg, _tipo_desc = descuento_para(phone, _cfg_socio, deps["socios"])
-            if _tipo_desc == "empleado":
-                # Empleado (20%, no acumulable): puede no estar en el padrón.
-                try:
-                    from app.services.empleado_service import get_empleado_service
-                    _emp = get_empleado_service().find_by_phone(phone) or {}
-                except Exception:
-                    _emp = {}
-                if not _nombre_socio:
-                    _nombre_socio = _emp.get("nombre_pila") or ""
-                if not _ctx_socio:
-                    _ctx_socio = f"Nombre de pila (para saludar): {_nombre_socio}".strip()
-                _ctx_socio += " | Es EMPLEADO de la mutual"
-            _en_catalogo = str(
-                _cfg_socio.get("socio_discount_en_catalogo", "true")).lower() == "true"
-            if _ctx_socio and _pct_cfg > 0 and _en_catalogo:
-                _ctx_socio += (
-                    f" | IMPORTANTE: los precios que ves YA tienen aplicado el "
-                    f"{_pct_cfg:g}% de descuento de {_tipo_desc}. Cuando digas un precio, "
-                    f"aclaralo en la misma frase (ej: \"sale $8.500, ya con tu "
-                    f"{_pct_cfg:g}% de {_tipo_desc}\"). No vuelvas a descontar nada vos, "
-                    f"ni menciones el precio de lista."
-                )
+            # Rubro sin socios (petshop): ni padrón, ni empleado, ni descuento.
+            if perfil.socios:
+                _ctx_socio = deps["socios"].contexto_para_prompt(phone)
+                _socio_data = deps["socios"].find_by_phone(phone)
+                _nombre_socio = nombre_de_pila(_socio_data)
+                # Si el socio tiene descuento activo, los precios del catálogo YA
+                # vienen bonificados: el modelo tiene que saberlo para aclararlo al
+                # darlos, y para no volver a descontar por su cuenta.
+                _cfg_socio = await deps["config"].get_all()
+                _pct_cfg, _tipo_desc = descuento_para(phone, _cfg_socio, deps["socios"])
+                if _tipo_desc == "empleado":
+                    # Empleado (20%, no acumulable): puede no estar en el padrón.
+                    try:
+                        from app.services.empleado_service import get_empleado_service
+                        _emp = get_empleado_service().find_by_phone(phone) or {}
+                    except Exception:
+                        _emp = {}
+                    if not _nombre_socio:
+                        _nombre_socio = _emp.get("nombre_pila") or ""
+                    if not _ctx_socio:
+                        _ctx_socio = f"Nombre de pila (para saludar): {_nombre_socio}".strip()
+                    _ctx_socio += " | Es EMPLEADO de la mutual"
+                _en_catalogo = str(
+                    _cfg_socio.get("socio_discount_en_catalogo", "true")).lower() == "true"
+                if _ctx_socio and _pct_cfg > 0 and _en_catalogo:
+                    _ctx_socio += (
+                        f" | IMPORTANTE: los precios que ves YA tienen aplicado el "
+                        f"{_pct_cfg:g}% de descuento de {_tipo_desc}. Cuando digas un precio, "
+                        f"aclaralo en la misma frase (ej: \"sale $8.500, ya con tu "
+                        f"{_pct_cfg:g}% de {_tipo_desc}\"). No vuelvas a descontar nada vos, "
+                        f"ni menciones el precio de lista."
+                    )
+            else:
+                _ctx_socio = None
+                _socio_data = None
+                _nombre_socio = ""
 
             # ── Control de horario de atención ──────────────────────────────
             hours = _hours_msg
@@ -1219,7 +1226,7 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
             # Antes que el flujo de cuenta corriente: "saldo de mi cuenta
             # corriente" matcheaba pide_cuenta_corriente y el bot contestaba
             # "cuando armemos tu pedido lo cargamos a tu cuenta".
-            if consulta_saldo(texto, hay_pedido=bool(
+            if perfil.cuenta_corriente and consulta_saldo(texto, hay_pedido=bool(
                     session.get("pending_sku_id") or session.get("pending_items"))):
                 _intencion = "consulta_cuenta_corriente"
                 await deps["session"].set_estado(phone, "operador",
@@ -1323,7 +1330,10 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
             # "Anotalo" a secas cuenta como cuenta corriente SOLO con un pedido
             # en curso (así lo piden los socios; fuera de contexto es ambiguo).
             _hay_pedido_cc = bool(session.get("pending_sku_id") or session.get("pending_items"))
-            if pide_cuenta_corriente(texto) or (_hay_pedido_cc and pide_anotar(texto)):
+            # Rubro sin cuenta corriente (petshop): "anotame 2 bolsas más" es un
+            # pedido y va al modelo.
+            if perfil.cuenta_corriente and (
+                    pide_cuenta_corriente(texto) or (_hay_pedido_cc and pide_anotar(texto))):
                 _items_cc = session.get("pending_items") or []
                 if _items_cc:
                     _monto_cc = sum(i["precio"] * i.get("cantidad", 1) for i in _items_cc)
@@ -1375,7 +1385,14 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 await deps["session"].add_message(phone, "assistant", respuesta)
                 continue
 
-            if pide_pago_manual(texto) and _pm_mode == "solo_tarjeta":
+            # "cuenta corriente" solo es pago manual si el rubro la tiene, y
+            # "mercado pago" solo si el comercio no cobra con MP (pago_mp_manual).
+            _pide_pm = pide_pago_manual(
+                texto,
+                incluir_cuenta_corriente=perfil.cuenta_corriente,
+                incluir_mercado_pago=str(_cfg_pm.get("pago_mp_manual", "true")).lower() != "false",
+            )
+            if _pide_pm and _pm_mode == "solo_tarjeta":
                 _intencion = "pago_solo_tarjeta"
                 respuesta = _cfg_pm.get("pago_solo_tarjeta_message") or (
                     "Por este canal aceptamos pago con tarjeta (débito o crédito) 💳. "
@@ -1387,7 +1404,7 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 await deps["session"].add_message(phone, "user", texto)
                 await deps["session"].add_message(phone, "assistant", respuesta)
                 continue
-            if pide_pago_manual(texto) and _pm_mode == "derivar":
+            if _pide_pm and _pm_mode == "derivar":
                 _intencion = "pago_manual"
                 await deps["session"].set_estado(phone, "operador", motivo="transferencia_efectivo")
                 respuesta = _cfg_pm.get("pago_manual_message") or (
@@ -1453,7 +1470,7 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
             # Plan a producción (24/9): al no socio el bot le vende sin el 15%;
             # solo deriva si dice ser socio, para validar el DNI y dar de alta
             # la línea. Mientras tanto no se le aplica ningún descuento.
-            if (dice_ser_socio(texto) and not deps["socios"].find_by_phone(phone)
+            if (perfil.socios and dice_ser_socio(texto) and not deps["socios"].find_by_phone(phone)
                     and descuento_para(phone, _cfg_pm, deps["socios"])[1] != "empleado"):
                 _intencion = "socio_no_reconocido"
                 await deps["session"].set_estado(phone, "operador", motivo="socio_no_reconocido")
@@ -1471,7 +1488,8 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
             # El modelo inventó "como socia tenés un descuento" con un precio
             # inexistente (caso 29). La respuesta sale de la config; el
             # descuento real —si está activo— se aplica solo al armar el link.
-            if pregunta_descuento(texto):
+            # Rubro sin socios: va al modelo, que tiene prohibido afirmar descuentos.
+            if perfil.socios and pregunta_descuento(texto):
                 _intencion = "consulta_descuento"
                 _pct_emp, _tipo_emp = descuento_para(phone, _cfg_pm, deps["socios"])
                 _pct_desc = float(_cfg_pm.get("socio_discount_pct") or 0)
@@ -1543,8 +1561,12 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
             # ── Obras sociales / bonos: respuesta fija por lista (feedback 59, 61)
             # El modelo contestaba de memoria (sí a OSDE, no a AMUR, al revés).
             _cfg_os = await deps["config"].get_all()
-            _os_preg = pregunta_obra_social(texto, parsear_lista(_cfg_os.get("obras_sociales", "")))
-            _bono_preg = pregunta_bono(texto) if _os_preg is None else None
+            if perfil.obras_sociales:
+                _os_preg = pregunta_obra_social(texto, parsear_lista(_cfg_os.get("obras_sociales", "")))
+                _bono_preg = pregunta_bono(texto) if _os_preg is None else None
+            else:
+                # Petshop: "andar", "cobertura" o "bono" no son obras sociales.
+                _os_preg = _bono_preg = None
             if _os_preg is not None or _bono_preg is not None:
                 if _os_preg is not None:
                     _intencion = "consulta_obra_social"
