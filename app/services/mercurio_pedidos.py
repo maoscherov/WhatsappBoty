@@ -190,10 +190,14 @@ async def enviar_pedido_erp(order: dict, *, client=None, db=None) -> Optional[di
     order_id = str(order.get("order_id"))
     store = get_order_store(db)
 
+    from app.services.order_store import PedidoDuplicado
+
     async def _marcar(estado: str, error: str) -> None:
         try:
             await store.marcar_erp(order_id, estado, error=error[:500],
                                    incrementar_intento=True, order=order)
+        except PedidoDuplicado as e2:
+            logger.warning(f"Pedido {order_id}: no se marca {estado}: {e2}")
         except Exception as e2:
             logger.error(f"Pedido {order_id}: no se pudo marcar {estado}: {e2}")
 
@@ -275,9 +279,15 @@ async def despachar_alta_erp(order: dict, *, client=None, db=None) -> Optional[d
     if db is None:
         from app.services.db import get_db
         db = get_db(s.database_url)
+    from app.services.order_store import PedidoDuplicado
     try:
         await get_order_store(db).marcar_erp(str(order.get("order_id")), "pendiente",
                                              order=order)
+    except PedidoDuplicado as e:
+        # El pago ya tiene OTRA orden en la tabla (esa es la que va al ERP):
+        # mandar esta duplicaría el pedido con otra Idempotency-Key.
+        logger.warning(f"Pedido {order.get('order_id')}: no se manda al ERP: {e}")
+        return None
     except Exception as e:
         logger.error(f"Pedido {order.get('order_id')}: no se pudo encolar para el ERP: {e}")
     return await enviar_pedido_erp(order, client=client, db=db)

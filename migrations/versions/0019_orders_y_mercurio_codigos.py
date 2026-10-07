@@ -20,6 +20,15 @@ operadores corre el upgrade() de la 0018 de develop y después crea lo suyo
 con IF NOT EXISTS. Farmacia, mutual (en 0017 o en 0018 = operadores) y MO
 llegan solas a 0019 al arrancar, sin `alembic stamp` a mano.
 
+Revisión final (fix-C1, 7/10), también con IF NOT EXISTS para que llegue a
+la orders que ya existe en MO:
+- `ux_orders_payment`: UNIQUE (payment_id) WHERE payment_id IS NOT NULL. Un
+  mismo pago crea una sola orden aunque Redis se pierda (find_by_payment cae
+  a esta tabla y un INSERT que choca se trata como duplicado). Reemplaza al
+  índice común `ix_orders_payment`. Si la base ya tiene pagos repetidos, la
+  migración no falla: avisa (NOTICE) y deja el índice común.
+- `erp_proximo_intento`: cuándo reintentar el alta en el ERP (backoff).
+
 Revision ID: 0019
 Revises: 0018
 Create Date: 2026-10-05
@@ -46,6 +55,7 @@ def downgrade() -> None:
     # Solo lo de esta migración. `operadores` es de la 0018 (develop): aunque en
     # la base de MO la haya creado _reparar_operadores, bajar a 0018 la deja.
     op.execute("DROP TABLE IF EXISTS mercurio_codigos")
+    op.execute("DROP INDEX IF EXISTS ux_orders_payment")
     op.execute("DROP INDEX IF EXISTS ix_orders_payment")
     op.execute("DROP INDEX IF EXISTS ix_orders_erp_pendiente")
     op.execute("DROP TABLE IF EXISTS orders")
@@ -102,7 +112,6 @@ def _orders() -> None:
     """)
     op.execute("CREATE INDEX IF NOT EXISTS ix_orders_erp_pendiente ON orders (created_at) "
                "WHERE erp_estado = 'pendiente'")
-    op.execute("CREATE INDEX IF NOT EXISTS ix_orders_payment ON orders (payment_id)")
     # Columnas e índices nuevos de orders van ACÁ abajo, para que lleguen
     # también a la tabla que ya existe en MO:
     #   ALTER TABLE orders ADD COLUMN IF NOT EXISTS ...
@@ -110,6 +119,29 @@ def _orders() -> None:
     # Un índice con un nombre que ya existe (ix_orders_payment) no se pisa con
     # IF NOT EXISTS: para cambiarlo, nombre nuevo (o DROP INDEX IF EXISTS antes).
     # Lo que se agregue acá se borra solo en downgrade() con el DROP TABLE.
+
+    # Backoff de los reintentos del alta en el ERP (lo usa el job).
+    op.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS erp_proximo_intento TIMESTAMPTZ NULL")
+
+    # Un pago, una orden. Sin pagos repetidos: índice único parcial y se va el
+    # común (ix_orders_payment, que creó la vieja 0018 en MO). Con repetidos
+    # (no debería pasar, pero el arranque corre `upgrade head` y no puede
+    # caerse): NOTICE y queda el índice común para las búsquedas por pago.
+    op.execute("""
+        DO $$
+        BEGIN
+            IF EXISTS (SELECT 1 FROM orders WHERE payment_id IS NOT NULL
+                       GROUP BY payment_id HAVING count(*) > 1) THEN
+                RAISE NOTICE 'orders tiene payment_id repetidos - no se crea ux_orders_payment';
+                CREATE INDEX IF NOT EXISTS ix_orders_payment ON orders (payment_id);
+            ELSE
+                CREATE UNIQUE INDEX IF NOT EXISTS ux_orders_payment ON orders (payment_id)
+                    WHERE payment_id IS NOT NULL;
+                DROP INDEX IF EXISTS ix_orders_payment;
+            END IF;
+        END
+        $$
+    """)
 
 
 def _mercurio_codigos() -> None:

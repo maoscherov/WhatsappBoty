@@ -115,17 +115,20 @@ class OrderService:
         for _k in ("armado_por", "atendido_por", "agente"):
             if order.get(_k):
                 order[_k] = canonico(order[_k])
+        # Primero la copia durable, después Redis. Alta en el ERP (F5): una
+        # orden cobrada online nace 'pendiente' en la cola del job en este
+        # mismo INSERT, antes del WhatsApp y de la sesión (un corte del
+        # post-cobro ya no la deja afuera; sin el flag, NULL). Si el pago ya
+        # tiene otra orden (índice único de payment_id) sale PedidoDuplicado
+        # antes de escribir en Redis: el que llama no confirma de nuevo.
+        from app.services.mercurio_pedidos import erp_estado_inicial
+        await self._persistir(order, erp_estado=erp_estado_inicial(order))
         ts = datetime.now(timezone.utc).timestamp()
         try:
             await self._redis.setex(self._key(order_id), ORDER_TTL, json.dumps(order))
             await self._redis.zadd(ORDERS_IDX, {order_id: ts})
         except Exception as e:
             logger.error(f"OrderService.create error: {e}")
-        # Alta en el ERP (F5): una orden cobrada online nace 'pendiente' en la
-        # cola del job en este mismo INSERT, antes del WhatsApp y de la sesión:
-        # un corte del post-cobro ya no la deja afuera. Sin el flag, NULL.
-        from app.services.mercurio_pedidos import erp_estado_inicial
-        await self._persistir(order, erp_estado=erp_estado_inicial(order))
         logger.info(f"Pedido creado: {order_id} phone={phone} producto={sku_nombre}")
         return order
 
@@ -133,7 +136,9 @@ class OrderService:
     async def _persistir(order: dict, erp_estado: Optional[str] = None) -> None:
         """Copia durable en Postgres (tabla orders, migración 0019): un pedido
         COBRADO no puede depender del TTL de 7 días de Redis. Best-effort —
-        sin Postgres el bot sigue solo con Redis, como el resto del sistema."""
+        sin Postgres el bot sigue solo con Redis, como el resto del sistema —
+        salvo PedidoDuplicado (el pago ya tiene otra orden), que se propaga."""
+        from app.services.order_store import PedidoDuplicado
         try:
             from app.config import get_settings
             from app.services.db import get_db
@@ -142,6 +147,8 @@ class OrderService:
             if not db.available():
                 return
             await get_order_store(db).upsert(order, erp_estado=erp_estado)
+        except PedidoDuplicado:
+            raise
         except Exception as e:
             logger.error(f"OrderService._persistir({order.get('order_id')}) error: {e}")
 
@@ -162,7 +169,11 @@ class OrderService:
             await self._redis.setex(self._key(order["order_id"]), ORDER_TTL, json.dumps(order))
         except Exception as e:
             logger.error(f"OrderService._save error: {e}")
-        await self._persistir(order)
+        from app.services.order_store import PedidoDuplicado
+        try:
+            await self._persistir(order)
+        except PedidoDuplicado:
+            pass                      # ya logueado como WARNING; la fila es la del otro cierre
 
     async def get(self, order_id: str) -> Optional[dict]:
         try:
@@ -176,17 +187,16 @@ class OrderService:
         Pedido ya creado para este pago, si existe. Es la defensa durable de
         idempotencia: MP reintenta la notificación del mismo pago durante DÍAS
         (caso real 6/9: pago del 1/9 renotificado 5 días después), más que la
-        vida de cualquier candado. Mientras el pedido viva en Redis (7 días),
-        el reintento se reconoce y no se vuelve a cerrar la venta.
+        vida de cualquier candado. Primero Redis (los últimos 500 pedidos); si
+        no está ahí (o Redis falla), la tabla durable orders: un reinicio o una
+        evicción de Redis no vuelve a cerrar la venta ni duplica el pedido.
         """
         pid = str(payment_id or "").strip()
         if not pid:
             return None
         try:
             ids = await self._redis.zrevrange(ORDERS_IDX, 0, 499)
-            if not ids:
-                return None
-            raws = await self._redis.mget([self._key(oid) for oid in ids])
+            raws = await self._redis.mget([self._key(oid) for oid in ids]) if ids else []
             for raw in raws:
                 if not raw:
                     continue
@@ -195,6 +205,25 @@ class OrderService:
                     return self._with_trace_defaults(o)
         except Exception as e:
             logger.error(f"OrderService.find_by_payment error: {e}")
+        return await self._pago_en_postgres(pid)
+
+    @classmethod
+    async def _pago_en_postgres(cls, pid: str) -> Optional[dict]:
+        try:
+            from app.config import get_settings
+            from app.services.db import get_db
+            from app.services.order_store import get_order_store
+            db = get_db(get_settings().database_url)
+            if not db.available():
+                return None
+            o = await get_order_store(db).por_pago(pid)
+        except Exception as e:
+            logger.error(f"OrderService.find_by_payment({pid}) en Postgres: {e}")
+            return None
+        if o:
+            logger.info(f"Pago {pid}: pedido {o.get('order_id')} encontrado en Postgres "
+                        "(no estaba en Redis)")
+            return cls._with_trace_defaults(o)
         return None
 
     async def list_all(self, limit: int = 300) -> list[dict]:

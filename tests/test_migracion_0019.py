@@ -180,7 +180,10 @@ def test_base_de_farmacia_en_0018_operadores_recibe_pedidos(base_aparte):
     _alembic(dsn, "upgrade", "head")
 
     assert {"operadores", "orders", "mercurio_codigos"} <= _tablas(dsn)
-    assert {"ix_orders_erp_pendiente", "ix_orders_payment"} <= _indices(dsn)
+    # fix-C1 (hallazgo 11): el índice de payment_id es UNIQUE (ux_orders_payment)
+    # y el no único (ix_orders_payment) ya no queda.
+    assert {"ix_orders_erp_pendiente", "ux_orders_payment"} <= _indices(dsn)
+    assert "ix_orders_payment" not in _indices(dsn)
     assert _version(dsn) == [("0019",)]
     assert _consulta(dsn, "SELECT nombre, aliases FROM operadores") == [("María", ["02"])]
 
@@ -190,3 +193,86 @@ def test_base_de_farmacia_en_0018_operadores_recibe_pedidos(base_aparte):
     assert "orders" not in tablas and "mercurio_codigos" not in tablas
     assert _consulta(dsn, "SELECT nombre FROM operadores") == [("María",)]
     assert _version(dsn) == [("0018",)]
+
+
+# ── fix-C1: índice único de payment_id y erp_proximo_intento ─────────────────
+# Hallazgo 11 (un mismo pago no crea dos órdenes aunque Redis se pierda) y la
+# columna que usa el backoff de los reintentos (fix-C2). Van al final de la
+# 0019 con IF NOT EXISTS: tienen que llegar también a la orders que ya existe
+# en MO (creada por la vieja 0018 de la rama).
+
+def _indice(dsn: str, nombre: str) -> list[tuple]:
+    return _consulta(dsn, f"SELECT indexdef FROM pg_indexes WHERE indexname = '{nombre}'")
+
+
+def _columna(dsn: str, tabla: str, columna: str) -> list[tuple]:
+    return _consulta(
+        dsn, "SELECT data_type, is_nullable FROM information_schema.columns "
+             f"WHERE table_name = '{tabla}' AND column_name = '{columna}'")
+
+
+def _assert_unico_y_proximo_intento(dsn: str) -> None:
+    [(definicion,)] = _indice(dsn, "ux_orders_payment")
+    assert "UNIQUE" in definicion and "(payment_id)" in definicion
+    assert "payment_id IS NOT NULL" in definicion
+    assert "ix_orders_payment" not in _indices(dsn)
+    assert _columna(dsn, "orders", "erp_proximo_intento") == [
+        ("timestamp with time zone", "YES")]
+
+
+def test_base_recien_migrada_tiene_indice_unico_y_proximo_intento(pg_dsn):
+    _assert_unico_y_proximo_intento(pg_dsn)
+
+
+def _base_de_mo(dsn: str, *filas: str) -> None:
+    """La base de MO: 0017 + el SQL de la vieja 0018 de la rama + sus filas,
+    estampada en 0018 (como fix-A, test (c))."""
+    _alembic(dsn, "upgrade", "0017")
+    _ejecutar(dsn, *_SQL_VIEJA_0018, *filas)
+    _alembic(dsn, "stamp", "0018")
+
+
+def test_mo_sin_pagos_repetidos_recibe_indice_unico_y_proximo_intento(base_aparte):
+    dsn = base_aparte
+    _base_de_mo(
+        dsn,
+        "INSERT INTO orders (order_id, phone, total, pago, payment_id, data, erp_estado) VALUES "
+        "('MO-0001', '549', 15000, 'online', 'pay-1', '{}', 'pendiente'),"
+        "('MO-0002', '549', 9000, 'online', 'pay-2', '{}', NULL),"
+        # efectivo / cuenta corriente: sin payment_id, pueden ser muchas
+        "('MO-0003', '549', 100, 'cuenta_corriente', NULL, '{}', NULL),"
+        "('MO-0004', '549', 200, 'efectivo', NULL, '{}', NULL)")
+    assert "ix_orders_payment" in _indices(dsn)
+
+    _alembic(dsn, "upgrade", "head")
+
+    assert _version(dsn) == [("0019",)]
+    _assert_unico_y_proximo_intento(dsn)
+    assert _consulta(dsn, "SELECT order_id, payment_id, erp_estado, erp_proximo_intento "
+                          "FROM orders ORDER BY order_id") == [
+        ("MO-0001", "pay-1", "pendiente", None), ("MO-0002", "pay-2", None, None),
+        ("MO-0003", None, None, None), ("MO-0004", None, None, None)]
+    # el índice muerde: otro pedido con el mismo pago no entra
+    with pytest.raises(psycopg2.errors.UniqueViolation):
+        _ejecutar(dsn, "INSERT INTO orders (order_id, phone, payment_id, data) "
+                       "VALUES ('MO-0005', '549', 'pay-1', '{}')")
+
+
+def test_mo_con_pagos_repetidos_migra_igual_sin_indice_unico(base_aparte):
+    """Si la base ya tiene dos órdenes con el mismo pago, la migración no
+    falla (el arranque corre `upgrade head`): avisa y deja el índice común."""
+    dsn = base_aparte
+    _base_de_mo(
+        dsn,
+        "INSERT INTO orders (order_id, phone, total, pago, payment_id, data) VALUES "
+        "('MO-0001', '549', 15000, 'online', 'pay-dup', '{}'),"
+        "('MO-0002', '549', 15000, 'online', 'pay-dup', '{}')")
+
+    _alembic(dsn, "upgrade", "head")
+
+    assert _version(dsn) == [("0019",)]
+    assert _indice(dsn, "ux_orders_payment") == []
+    assert "ix_orders_payment" in _indices(dsn)
+    assert _columna(dsn, "orders", "erp_proximo_intento") == [
+        ("timestamp with time zone", "YES")]
+    assert _consulta(dsn, "SELECT count(*) FROM orders") == [(2,)]

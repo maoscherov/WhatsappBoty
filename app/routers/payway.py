@@ -270,14 +270,22 @@ async def payway_charge(body: ChargeIn):
                                               tipo_entrega),
                     float(pending["total"]))
 
+            from app.services.order_store import PedidoDuplicado
             order_svc = get_order_service(settings.redis_url)
-            order = await order_svc.create(
-                phone=phone, sku_id=pending["sku_id"],
-                sku_nombre=nombre_producto, cantidad=int(pending["cantidad"]),
-                total=float(pending["total"]), mp_payment_id=str(data.get("id")),
-                tipo_entrega=tipo_entrega, direccion_envio=direccion_envio,
-                extra=extra_de_la_orden(snap),
-            )
+            try:
+                order = await order_svc.create(
+                    phone=phone, sku_id=pending["sku_id"],
+                    sku_nombre=nombre_producto, cantidad=int(pending["cantidad"]),
+                    total=float(pending["total"]), mp_payment_id=str(data.get("id") or ""),
+                    tipo_entrega=tipo_entrega, direccion_envio=direccion_envio,
+                    extra=extra_de_la_orden(snap),
+                )
+            except PedidoDuplicado:
+                # Otro cobro del mismo pago ya creó la orden (índice único en
+                # Postgres): no se confirma de nuevo ni va al ERP.
+                logger.warning(f"Pago Payway {data.get('id')} ya tiene pedido — "
+                               "cierre duplicado ignorado")
+                return {"status": "approved", "duplicado": True, "id": data.get("id")}
             logger.info(f"Pedido registrado (Payway): {order['order_id']} entrega={tipo_entrega}")
 
             cfg_svc = get_config_service(settings.redis_url)

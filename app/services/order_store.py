@@ -6,10 +6,15 @@ lee el backoffice. Esta tabla es la copia que no se pierde: un pedido COBRADO
 que desaparece por un reinicio o una evicción de Redis es plata. También es
 la cola de reintentos del alta en el ERP (F5, Mercurio):
 
-  erp_estado: NULL      → no aplica (deploy sin alta de pedidos habilitada)
-              pendiente → hay que (re)intentar el POST /pedidos
+  erp_estado: NULL      → no aplica (deploy sin alta de pedidos habilitada,
+                          o una orden sin cobro online)
+              pendiente → hay que (re)intentar el POST /pedidos (la orden
+                          cobrada nace así; también si falta un código)
               enviado   → registrado en el ERP (erp_id_comprobante / erp_numero)
-              rechazado → 422: lo mira un humano, no se reintenta
+              rechazado → 422, o renglones que no cuadran con el total: lo
+                          mira un humano, no se reintenta
+
+Un pago, una orden: índice único de payment_id (PedidoDuplicado).
 
 La escritura es best-effort desde order_service (si no hay Postgres, el bot
 sigue solo con Redis, como el resto del sistema). Pero acá los errores de
@@ -23,6 +28,27 @@ import logging
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+class PedidoDuplicado(Exception):
+    """El pago ya tiene OTRA orden (índice único ux_orders_payment, migración
+    0019): dos cierres del mismo pago, o una renotificación después de perder
+    Redis. No es un error: el que llama lo trata como reintento duplicado y
+    no crea la orden, no confirma de nuevo ni la manda al ERP."""
+
+    def __init__(self, payment_id: str, order_id: str):
+        super().__init__(f"el pago {payment_id} ya tiene una orden (no se crea {order_id})")
+        self.payment_id = payment_id
+        self.order_id = order_id
+
+
+def _es_pago_repetido(e: Exception) -> bool:
+    try:
+        import asyncpg
+    except ImportError:                                   # pragma: no cover
+        return False
+    return (isinstance(e, asyncpg.exceptions.UniqueViolationError)
+            and getattr(e, "constraint_name", "") == "ux_orders_payment")
 
 
 def _columnas(order: dict) -> tuple:
@@ -40,6 +66,19 @@ class OrderStore:
     def __init__(self, db):
         self._db = db
 
+    async def _insertar(self, sql: str, order: dict, *args) -> None:
+        """INSERT/upsert de una orden. Si choca con el índice único del pago,
+        PedidoDuplicado (WARNING, no ERROR): el pago ya tiene su orden."""
+        cols = _columnas(order)
+        try:
+            await self._db.execute(sql, *cols, *args, raise_errors=True)
+        except Exception as e:
+            if not _es_pago_repetido(e):
+                raise
+            logger.warning(f"Pedido {cols[0]}: el pago {cols[5]} ya tiene otra orden "
+                           "(índice único de payment_id) — se trata como duplicado")
+            raise PedidoDuplicado(cols[5], cols[0]) from e
+
     async def upsert(self, order: dict, erp_estado: Optional[str] = None) -> None:
         """
         Vuelca el pedido completo (JSON en `data` + columnas de consulta).
@@ -49,8 +88,10 @@ class OrderStore:
         la cola del job en el mismo INSERT que la crea, antes del WhatsApp).
         Nunca pisa un estado que ya tenga (COALESCE): un 'enviado' no vuelve a
         'pendiente' y un _save posterior (erp_estado=None) no lo toca.
+
+        Si el pago ya tiene OTRA orden, PedidoDuplicado (índice único).
         """
-        await self._db.execute(
+        await self._insertar(
             """
             INSERT INTO orders (order_id, phone, estado, total, pago, payment_id, data,
                                 erp_estado)
@@ -61,8 +102,23 @@ class OrderStore:
                 data = EXCLUDED.data, updated_at = now(),
                 erp_estado = COALESCE(orders.erp_estado, EXCLUDED.erp_estado)
             """,
-            *_columnas(order), erp_estado, raise_errors=True,
+            order, erp_estado,
         )
+
+    async def por_pago(self, payment_id: str) -> Optional[dict]:
+        """La orden de ese pago (JSON completo), o None. Es la defensa durable
+        de idempotencia cuando Redis ya no la tiene (OrderService.find_by_payment)."""
+        row = await self._db.fetchrow(
+            "SELECT order_id, data FROM orders WHERE payment_id = $1 "
+            "ORDER BY created_at LIMIT 1", str(payment_id), raise_errors=True)
+        if not row:
+            return None
+        try:
+            data = json.loads(row["data"]) if isinstance(row["data"], str) else dict(row["data"])
+        except (TypeError, ValueError):
+            data = {}
+        data.setdefault("order_id", row["order_id"])
+        return data
 
     async def marcar_erp(self, order_id: str, estado: str, *,
                          id_comprobante: Optional[str] = None,
@@ -96,7 +152,7 @@ class OrderStore:
                               f"'{estado}' en el ERP")
         logger.warning(f"Pedido {order_id}: no estaba en orders (falló el write-through); "
                        f"se inserta completo con erp_estado='{estado}'")
-        await self._db.execute(
+        await self._insertar(
             """
             INSERT INTO orders (order_id, phone, estado, total, pago, payment_id, data,
                                 erp_estado, erp_id_comprobante, erp_numero,
@@ -111,8 +167,7 @@ class OrderStore:
                 erp_intentos = orders.erp_intentos + EXCLUDED.erp_intentos,
                 updated_at = now()
             """,
-            *_columnas({**order, "order_id": order_id}), estado, id_comprobante, numero,
-            error, intento, raise_errors=True,
+            {**order, "order_id": order_id}, estado, id_comprobante, numero, error, intento,
         )
 
     async def pendientes_erp(self, limit: int = 20) -> list[dict]:

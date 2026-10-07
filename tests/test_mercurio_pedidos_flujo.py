@@ -543,3 +543,116 @@ def test_link_del_backoffice_guarda_los_renglones(monkeypatch, body, items, tota
     assert [(i["sku_id"], i["nombre"], i["cantidad"], i["precio_unitario"], i["total"])
             for i in snap["items"]] == items
     assert (snap["costo_envio"], snap["total"]) == (0.0, total)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Hallazgo 11: un mismo pago crea una sola orden (y un solo pedido en el ERP)
+# aunque Redis se pierda o dos cierres corran a la vez
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _orden_guardada(order_id, payment_id):
+    return {"order_id": order_id, "phone": PHONE, "sku_id": "7508", "cantidad": 1,
+            "total": 1000.0, "mp_payment_id": payment_id, "pago": "online",
+            "pickup_code": "123456"}
+
+
+async def test_find_by_payment_cae_a_postgres(db):
+    from app.services.order_store import get_order_store
+    await get_order_store(db).upsert(_orden_guardada("ORD-PG-1", "mp-pg-1"))
+    svc = _order_service(_FakeRedis())                 # Redis reiniciado: vacío
+    o = await svc.find_by_payment("mp-pg-1")
+    assert o is not None and o["order_id"] == "ORD-PG-1"
+    assert o["pickup_code"] == "123456"
+    assert await svc.find_by_payment("mp-otro") is None
+
+
+async def test_find_by_payment_con_redis_caido_cae_a_postgres(db):
+    from app.services.order_store import get_order_store
+
+    class _RedisCaido:
+        async def zrevrange(self, *a, **k):
+            raise ConnectionError("redis caído")
+
+    await get_order_store(db).upsert(_orden_guardada("ORD-PG-2", "mp-pg-2"))
+    o = await _order_service(_RedisCaido()).find_by_payment("mp-pg-2")
+    assert o is not None and o["order_id"] == "ORD-PG-2"
+
+
+async def test_mp_redis_perdido_y_renotificacion_no_duplica(erp, db, monkeypatch):
+    ent = _Entorno()
+    mpw = _montar_mp(monkeypatch, ent, _pago_mp())
+    r1 = await mpw.procesar_pago("mp-555")
+    assert r1["status"] == "ok"
+    ent.perder_redis()               # sin persistencia: se van el pedido, el índice y el candado
+    r2 = await mpw.procesar_pago("mp-555")             # MP renotifica días después
+    assert r2["status"] == "duplicado" and r2["order_id"] == r1["order_id"]
+    assert len(await _filas(db)) == 1
+    assert [q["number"] for q in erp.reqs] == [r1["order_id"]]
+    assert len(ent.wa.enviados) == 1
+
+
+def _order_service_ciego(redis):
+    """Dos cierres del mismo pago a la vez: ninguno ve todavía la orden del otro."""
+    o = _order_service(redis)
+
+    async def _nada(pid):
+        return None
+
+    o.find_by_payment = _nada
+    return o
+
+
+def _sin_errores_de_duplicado(caplog, payment_id):
+    errores = [r for r in caplog.records if r.levelno >= 40 and (
+        r.name in ("app.services.order_service", "app.services.order_store")
+        or payment_id in r.getMessage())]
+    assert errores == []
+    assert any(r.levelname == "WARNING" and payment_id in r.getMessage()
+               for r in caplog.records)
+
+
+async def test_mp_dos_cierres_del_mismo_pago_crean_una_sola_orden(erp, db, monkeypatch, caplog):
+    ent = _Entorno()
+    mpw = _montar_mp(monkeypatch, ent, _pago_mp())
+    monkeypatch.setattr(mpw, "get_order_service", lambda *a: _order_service_ciego(ent.redis))
+    r1 = await mpw.procesar_pago("mp-carrera-1")
+    ent.perder_redis()                     # tampoco lo frena el candado (otra réplica)
+    r2 = await mpw.procesar_pago("mp-carrera-1")
+    assert (r1["status"], r2["status"]) == ("ok", "duplicado")
+    assert len(await _filas(db)) == 1
+    assert len(ent.wa.enviados) == 1 and len(erp.reqs) == 1
+    _sin_errores_de_duplicado(caplog, "mp-carrera-1")
+
+
+async def test_payway_redis_perdido_no_duplica(erp, db, monkeypatch):
+    ent = _Entorno()
+    pending = _pending_payway("PID-DUP")
+    kv = _kv_con(pending)
+    pw = _montar_payway(monkeypatch, ent, kv, "PW-DUP-1")
+    assert await pw.payway_charge(pw.ChargeIn(pid="PID-DUP", token="t1", bin="450799")) == \
+        {"status": "approved"}
+    # Redis pierde el pedido y el candado, y el pendiente vuelve a estar sin aprobar
+    ent.perder_redis()
+    kv.update(_kv_con(pending))
+    r2 = await pw.payway_charge(pw.ChargeIn(pid="PID-DUP", token="t2", bin="450799"))
+    assert r2["status"] == "approved" and r2.get("duplicado") is True
+    assert len(await _filas(db)) == 1
+    assert len(erp.reqs) == 1 and len(ent.wa.enviados) == 1
+
+
+async def test_payway_dos_cobros_del_mismo_pago_crean_una_sola_orden(erp, db, monkeypatch, caplog):
+    import app.routers.payway as pwmod
+    ent = _Entorno()
+    pending = _pending_payway("PID-CARRERA")
+    kv = _kv_con(pending)
+    pw = _montar_payway(monkeypatch, ent, kv, "PW-CARRERA-1")
+    monkeypatch.setattr(pwmod, "get_order_service", lambda *a: _order_service_ciego(ent.redis))
+    assert (await pw.payway_charge(pw.ChargeIn(pid="PID-CARRERA", token="t1", bin="450799"))
+            )["status"] == "approved"
+    ent.perder_redis()
+    kv.update(_kv_con(pending))
+    r2 = await pw.payway_charge(pw.ChargeIn(pid="PID-CARRERA", token="t2", bin="450799"))
+    assert r2["status"] == "approved" and r2.get("duplicado") is True
+    assert len(await _filas(db)) == 1
+    assert len(erp.reqs) == 1 and len(ent.wa.enviados) == 1
+    _sin_errores_de_duplicado(caplog, "PW-CARRERA-1")

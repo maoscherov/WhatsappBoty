@@ -20,6 +20,7 @@ from app.services.payment_service import get_payment_service
 from app.services.whatsapp_service import get_whatsapp_service
 from app.services.session_service import get_session_service
 from app.services.order_service import get_order_service
+from app.services.order_store import PedidoDuplicado
 from app.services.config_service import get_config_service
 from app.services.checkout_helper import mensaje_pago_confirmado
 from app.services.perfil import get_perfil
@@ -207,17 +208,25 @@ async def _cerrar_venta(settings, payment: dict, payment_id: str, external_ref: 
 
     # ── Crear pedido en la consola de operaciones ────────────────────────────
     order_svc = get_order_service(settings.redis_url)
-    order = await order_svc.create(
-        phone=phone,
-        sku_id=sku_id,
-        sku_nombre=nombre_producto,
-        cantidad=cantidad,
-        total=total,
-        mp_payment_id=payment_id,
-        tipo_entrega=tipo_entrega,
-        direccion_envio=direccion_envio,
-        extra=extra_de_la_orden(snap),
-    )
+    try:
+        order = await order_svc.create(
+            phone=phone,
+            sku_id=sku_id,
+            sku_nombre=nombre_producto,
+            cantidad=cantidad,
+            total=total,
+            mp_payment_id=payment_id,
+            tipo_entrega=tipo_entrega,
+            direccion_envio=direccion_envio,
+            extra=extra_de_la_orden(snap),
+        )
+    except PedidoDuplicado:
+        # Otro cierre del mismo pago ya creó la orden (índice único en
+        # Postgres): es un reintento, no se confirma de nuevo ni va al ERP.
+        previo = await order_svc.find_by_payment(payment_id)
+        logger.warning(f"Pago {payment_id} ya tiene pedido — cierre duplicado ignorado")
+        return {"status": "duplicado", "payment_id": payment_id,
+                "order_id": (previo or {}).get("order_id")}
     logger.info(f"Pedido registrado: {order['order_id']} entrega={tipo_entrega}")
 
     # Enviar confirmación por WhatsApp con el código de retiro

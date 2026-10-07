@@ -730,3 +730,50 @@ class TestRenglones:
                                 "WHERE order_id = $1", orden["order_id"])
         assert row["erp_estado"] == "rechazado"
         assert motivo in row["erp_ultimo_error"]
+
+
+# ── Un pago, una orden: índice único de payment_id (hallazgo 11) ─────────────
+
+class TestPagoDuplicado:
+    async def test_create_con_un_pago_que_ya_tiene_orden_es_duplicado(self, db, caplog):
+        from app.services.order_store import PedidoDuplicado
+        primera = await _order_service_falso().create(
+            phone="549341999", sku_id="7508", sku_nombre="ROYAL", cantidad=1,
+            total=1728.42, mp_payment_id="mp-dup")
+        otra = _order_service_falso()                  # otro Redis (reiniciado)
+        with pytest.raises(PedidoDuplicado):
+            await otra.create(phone="549341999", sku_id="7508", sku_nombre="ROYAL",
+                              cantidad=1, total=1728.42, mp_payment_id="mp-dup")
+        assert otra._redis.kv == {} and otra._redis.z == {}     # no queda otra orden
+        rows = await db.fetch("SELECT order_id FROM orders WHERE payment_id = 'mp-dup'")
+        assert [r["order_id"] for r in rows] == [primera["order_id"]]
+        assert not [r for r in caplog.records if r.levelno >= 40]
+        assert any(r.levelname == "WARNING" and "mp-dup" in r.getMessage()
+                   for r in caplog.records)
+
+    async def test_sin_id_de_pago_no_hay_duplicado(self, db):
+        """Efectivo y cuenta corriente no tienen payment_id: no chocan."""
+        svc = _order_service_falso()
+        for _ in range(2):
+            await svc.create(phone="549341999", sku_id="7508", sku_nombre="ROYAL",
+                             cantidad=1, total=10.0, mp_payment_id="", pago="cuenta_corriente")
+        assert (await db.fetchrow("SELECT count(*) AS n FROM orders"))["n"] == 2
+
+    async def test_despachar_una_orden_de_un_pago_que_ya_tiene_otra_no_la_manda(self, db,
+                                                                               monkeypatch):
+        """El write-through de B falló y el pago ya tiene la orden A en la tabla:
+        el hook no inserta B ni la manda (sería otro pedido con otra clave)."""
+        from app.services.mercurio_pedidos import despachar_alta_erp
+        from app.services.order_store import get_order_store
+        s = get_settings()
+        monkeypatch.setattr(s, "mercurio_pedidos_enabled", True)
+        monkeypatch.setattr(s, "mercurio_branch_id", "mascotas-oeste")
+        await _preparar_codigos(db)
+        await get_order_store(db).upsert(_orden(order_id="ORD-A", mp_payment_id="mp-x"),
+                                         erp_estado="pendiente")
+        reqs: list = []
+        r = await despachar_alta_erp(_orden(order_id="ORD-B", mp_payment_id="mp-x"),
+                                     client=_cliente_pedidos([OK_201], reqs), db=db)
+        assert r is None and reqs == []
+        rows = await db.fetch("SELECT order_id FROM orders")
+        assert [x["order_id"] for x in rows] == ["ORD-A"]
