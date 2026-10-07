@@ -2267,7 +2267,7 @@ _PROHIBIDAS_PROMPT_PETSHOP = (
 )
 _OBLIGATORIAS_PROMPT_PETSHOP = (
     "Soy el asistente virtual de Mascotas del Oeste",
-    "¡Hola! Soy el asistente virtual de Mascotas del Oeste 🐾 ¿En qué te puedo ayudar?",
+    "¡Hola! Bienvenido a Mascotas del Oeste 🐾 ¿En qué te puedo ayudar?",
     "El sistema envía el link de pago después de que confirme.",
     "SALUD DE LA MASCOTA",
     "DESCUENTOS, PROMOCIONES Y CUPONES",
@@ -2344,7 +2344,7 @@ def test_prompt_petshop_resuelve_comercio_nombre_y_farmacia_conserva_el_hash(usa
     p = usar_perfil("petshop", comercio="MO Prueba")
     assert p.comercio == "MO Prueba"
     assert "Soy el asistente virtual de MO Prueba" in p.system_prompt
-    assert "¡Hola! Soy el asistente virtual de MO Prueba 🐾 ¿En qué te puedo ayudar?" in p.system_prompt
+    assert "¡Hola! Bienvenido a MO Prueba 🐾 ¿En qué te puedo ayudar?" in p.system_prompt
     assert "Mascotas del Oeste" not in p.system_prompt
     f = usar_perfil("farmacia", comercio="MO Prueba")
     assert _hashlib.sha256(f.system_prompt.encode("utf-8")).hexdigest() == _SHA_PROMPT_FARMACIA
@@ -2355,7 +2355,7 @@ def test_prompt_petshop_resuelve_comercio_nombre_y_farmacia_conserva_el_hash(usa
 Run: `.venv/Scripts/python -m pytest tests/test_perfil.py -k "test_prompt_petshop_ or reexporta_el_prompt" -v`
 
 Esperado: `3 failed, 2 passed`.
-- `test_prompt_petshop_frases_obligatorias` falla con `AssertionError: assert ['¡Hola! Soy el asistente virtual de Mascotas del Oeste 🐾 ¿En qué te puedo ayudar?', 'El sistema envía el link de pago después de que confirme.', 'SALUD DE LA MASCOTA', ...] == []`.
+- `test_prompt_petshop_frases_obligatorias` falla con `AssertionError: assert ['¡Hola! Bienvenido a Mascotas del Oeste 🐾 ¿En qué te puedo ayudar?', 'El sistema envía el link de pago después de que confirme.', 'SALUD DE LA MASCOTA', ...] == []`.
 - `test_prompt_petshop_contrato_con_farmacia` falla con `AssertionError: SEGUIMIENTO`.
 - `test_prompt_petshop_resuelve_comercio_nombre_y_farmacia_conserva_el_hash` falla en el saludo de "MO Prueba".
 - Pasan `test_intent_service_reexporta_el_prompt_de_farmacia` (el re-export es de Task 2) y `test_prompt_petshop_sin_vocabulario_de_farmacia` (con la plantilla provisoria es una guarda).
@@ -2435,7 +2435,7 @@ ENTREGA (RETIRO O ENVÍO A DOMICILIO):
 """
 
 PET_SALUDO = """\
-| saludo | "Hola", "Buen día", "Buenas", "Cómo están", "Buenas tardes" | Saludar con calidez. Ejemplo: "¡Hola! Soy el asistente virtual de {comercio} {emoji} ¿En qué te puedo ayudar?". OJO: si además de saludar el cliente menciona o pide un PRODUCTO ("hola, tenés Royal Canin?"), NO es un simple saludo — usá la intención de producto (consulta_stock/consulta_precio/pedido) y poné el producto en entidad_producto. |
+| saludo | "Hola", "Buen día", "Buenas", "Cómo están", "Buenas tardes" | Saludar con calidez. Ejemplo: "¡Hola! Bienvenido a {comercio} {emoji} ¿En qué te puedo ayudar?". OJO: si además de saludar el cliente menciona o pide un PRODUCTO ("hola, tenés Royal Canin?"), NO es un simple saludo — usá la intención de producto (consulta_stock/consulta_precio/pedido) y poné el producto en entidad_producto. |
 """
 
 PET_ABIERTA = """\
@@ -9388,7 +9388,7 @@ async def test_e2e_compra_completa_con_retiro_en_la_sucursal(usar_perfil, entorn
     consulta = "tenés dog chow 15 kg?"
     deps, pago = _e2e_armar(entorno, monkeypatch, {
         "hola": {"intencion": "saludo",
-                 "respuesta": "¡Hola! Soy el asistente virtual de Mascotas del Oeste 🐾 "
+                 "respuesta": "¡Hola! Bienvenido a Mascotas del Oeste 🐾 "
                               "¿En qué te puedo ayudar?"},
         consulta: {"intencion": "consulta_stock", "entidad_producto": "dog chow 15 kg",
                    "sku_seleccionado_index": 1,
@@ -9398,7 +9398,7 @@ async def test_e2e_compra_completa_con_retiro_en_la_sucursal(usar_perfil, entorn
     s = await _e2e_charla(deps, "hola", consulta, "si", "retiro")
     env = deps["wa"].enviados
     assert len(env) == 4
-    assert env[0].startswith("¡Hola! Soy el asistente virtual de Mascotas del Oeste")
+    assert env[0].startswith("¡Hola! Bienvenido a Mascotas del Oeste")
     assert "$52.000" in env[1]
     assert env[2] == ("¡Genial! ¿Cómo preferís recibirlo: *retiro en Sucursal Piloto* "
                       "o *envío a domicilio*?")
@@ -9616,9 +9616,9 @@ def test_revisar_marca_los_desvios():
         "por_sintoma False (esperado True)", "ofrece un precio ante un síntoma"]
     hola = _caso(m, "hola")
     assert m.revisar(hola, {"intencion": "saludo",
-                            "respuesta": "¡Hola! Soy el asistente virtual de Mascotas del Oeste 🐾"}) == []
+                            "respuesta": "¡Hola! Bienvenido a Mascotas del Oeste 🐾"}) == []
     assert "la respuesta dice 'remedia'" in m.revisar(
-        hola, {"intencion": "saludo", "respuesta": "¡Hola! Soy el asistente virtual de Remedia 💊"})
+        hola, {"intencion": "saludo", "respuesta": "¡Hola! Bienvenido a Remedia 💊"})
     varios = _caso(m, "alimento royal canin y piedras sanicat")
     assert m.revisar(varios, {"entidad_producto": "alimento royal canin",
                               "entidades_adicionales": ["piedras sanicat"], "respuesta": "x"}) == []
