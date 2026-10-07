@@ -24,6 +24,7 @@ from rapidfuzz import fuzz, process
 
 from app.models.sku import SKU
 from app.services.catalogo_enriquecido import expandir_abreviaturas, tipos_mencionados
+from app.services.perfil import MARCAS_AUDIO_FARMACIA, get_perfil
 
 logger = logging.getLogger(__name__)
 
@@ -711,13 +712,9 @@ def set_sku_service(svc: SKUService) -> SKUService:
 # transcripción escribió "Topics" y el modelo cambió "aveno" por "avena".
 # ══════════════════════════════════════════════════════════════════════════════
 # Marcas que más se piden por audio; se suman a las más frecuentes del catálogo.
-MARCAS_AUDIO_BASE = [
-    "Aveno", "Atopix", "Actron", "Ibupirac", "Ibuevanol", "Tafirol", "Bayaspirina", "Buscapina",
-    "Sertal", "Dermaglos", "Isdin", "La Roche-Posay", "Eucerin", "Cetaphil", "Hyalu C",
-    "Bagovit", "Lanzopral", "Omeprazol", "Holomagnesio", "Curflex", "Dioxaflex", "Novalgina",
-    "Refrianex", "Mejoral", "Geniol", "Aspirina", "Uvasal", "Sal de frutas Eno", "Loratadina",
-    "Allegra", "Cepage", "Cassará", "Bagó", "Roemmers", "Elea", "Vichy", "Avene", "Bioderma",
-]
+# Son del rubro: viven en el perfil (perfil.vocabulario_audio.marcas_base). Esta
+# lista queda por compatibilidad y es la de farmacia.
+MARCAS_AUDIO_BASE = list(MARCAS_AUDIO_FARMACIA)
 
 
 def marcas_frecuentes(sku_svc, n: int = 60) -> list[str]:
@@ -739,15 +736,17 @@ def marcas_frecuentes(sku_svc, n: int = 60) -> list[str]:
     return cache[:n]
 
 
-def vocabulario_audio(sku_svc, max_chars: int = 650) -> str:
-    """Texto de guía para la transcripción: marcas que tiene que escribir bien."""
+def vocabulario_audio(sku_svc, max_chars: int = 650, perfil=None) -> str:
+    """Texto de guía para la transcripción: marcas que tiene que escribir bien.
+    El prefijo y las marcas fijas son del perfil de rubro (el activo si no se pasa)."""
+    p = perfil or get_perfil()
     vistas, nombres = set(), []
-    for m in MARCAS_AUDIO_BASE + marcas_frecuentes(sku_svc):
+    for m in list(p.vocabulario_audio.marcas_base) + marcas_frecuentes(sku_svc):
         k = m.lower()
         if k not in vistas:
             vistas.add(k)
             nombres.append(m)
-    out = "Consulta a una farmacia. Productos y marcas: "
+    out = f"{p.vocabulario_audio.prefijo}. Productos y marcas: "
     for m in nombres:
         if len(out) + len(m) + 2 > max_chars:
             break

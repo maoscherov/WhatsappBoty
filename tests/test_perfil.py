@@ -489,3 +489,80 @@ def test_con_contexto_farmacia_y_mutual_igual_que_hoy(usar_perfil, clave):
     out = IntentService._con_contexto("m", "Nombre de pila (para saludar): Ana", "Horario: 9 a 18")
     assert out == ("m\n\n[DATOS DEL SOCIO]\nNombre de pila (para saludar): Ana"
                    "\n\n[INFORMACIÓN DE LA FARMACIA]\nHorario: 9 a 18\n" + _KB_INSTRUCCION)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Task 5 — vocabulario de audio por perfil (spec §4.1, fila sku_service)
+# ══════════════════════════════════════════════════════════════════════════════
+import csv as _csv
+
+# Lo que hoy (07a1d7a) devuelve vocabulario_audio para el catálogo de prueba de
+# abajo: las 38 marcas de farmacia y después las del catálogo.
+_VOCAB_FARMACIA_HOY = (
+    "Consulta a una farmacia. Productos y marcas: Aveno, Atopix, Actron, Ibupirac, Ibuevanol, "
+    "Tafirol, Bayaspirina, Buscapina, Sertal, Dermaglos, Isdin, La Roche-Posay, Eucerin, Cetaphil, "
+    "Hyalu C, Bagovit, Lanzopral, Omeprazol, Holomagnesio, Curflex, Dioxaflex, Novalgina, Refrianex, "
+    "Mejoral, Geniol, Aspirina, Uvasal, Sal de frutas Eno, Loratadina, Allegra, Cepage, Cassará, Bagó, "
+    "Roemmers, Elea, Vichy, Avene, Bioderma, Royal Canin, Sanicat."
+)
+
+
+@pytest.fixture
+def sku_mo(tmp_path):
+    """SKUService de prueba con dos marcas de petshop."""
+    from app.services.sku_service import SKUService
+    path = tmp_path / "mo.csv"
+    with open(path, "w", encoding="utf-8-sig", newline="") as f:
+        w = _csv.writer(f)
+        w.writerow(["SKU", "Nombre", "Precio", "Marca", "Laboratorio",
+                    "Codigo_Barras_1", "Categoria", "Es_Medicamento"])
+        w.writerow(["1", "ROYAL CANIN MEDIUM ADULT 15KG", "98000", "ROYAL CANIN", "ROYAL CANIN",
+                    "7790001", "ALIMENTO PERROS", "false"])
+        w.writerow(["2", "PIEDRAS SANICAT CLASSIC 4KG", "6200", "SANICAT", "SANICAT",
+                    "7790002", "PIEDRAS SANITARIAS", "false"])
+    return SKUService(str(path))
+
+
+def test_marcas_de_audio_de_farmacia_en_el_perfil():
+    from app.services.perfil import MARCAS_AUDIO_FARMACIA, perfil_por_clave
+    from app.services.sku_service import MARCAS_AUDIO_BASE
+    va = perfil_por_clave("farmacia").vocabulario_audio
+    assert va.prefijo == "Consulta a una farmacia"
+    assert va.marcas_base == MARCAS_AUDIO_FARMACIA
+    assert len(va.marcas_base) == 38 and va.marcas_base[:3] == ("Aveno", "Atopix", "Actron")
+    assert MARCAS_AUDIO_BASE == list(MARCAS_AUDIO_FARMACIA)       # compatibilidad
+    assert perfil_por_clave("mutual").vocabulario_audio == va
+    assert perfil_por_clave("petshop").vocabulario_audio.marcas_base == ()
+
+
+def test_vocabulario_audio_farmacia_igual_que_hoy(usar_perfil, sku_mo):
+    from app.services.sku_service import vocabulario_audio
+    usar_perfil("farmacia")
+    assert vocabulario_audio(sku_mo) == _VOCAB_FARMACIA_HOY
+
+
+def test_vocabulario_audio_petshop(usar_perfil, sku_mo):
+    from app.services.sku_service import vocabulario_audio
+    usar_perfil("petshop")
+    v = vocabulario_audio(sku_mo)
+    assert v.startswith("Consulta a un petshop. Productos y marcas: ")
+    assert "Royal Canin" in v and "Sanicat" in v
+    assert "Atopix" not in v and "farmacia" not in v
+    assert len(v) <= 650
+    assert v == "Consulta a un petshop. Productos y marcas: Royal Canin, Sanicat."
+
+
+def test_vocabulario_audio_con_perfil_explicito(usar_perfil, sku_mo):
+    """El parámetro `perfil` gana sobre el del entorno."""
+    from app.services.perfil import perfil_por_clave
+    from app.services.sku_service import vocabulario_audio
+    usar_perfil("petshop")
+    assert vocabulario_audio(sku_mo, perfil=perfil_por_clave("farmacia")) == _VOCAB_FARMACIA_HOY
+
+
+def test_vocabulario_audio_respeta_el_tope(usar_perfil, sku_mo):
+    from app.services.sku_service import vocabulario_audio
+    usar_perfil("farmacia")
+    v = vocabulario_audio(sku_mo, max_chars=80)
+    assert len(v) <= 80
+    assert v == "Consulta a una farmacia. Productos y marcas: Aveno, Atopix, Actron, Ibupirac."
