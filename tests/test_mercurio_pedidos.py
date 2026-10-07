@@ -1297,3 +1297,113 @@ class TestConfiguracionAlArrancar:
                    if r.levelname == "ERROR" and r.name == "app.main"]
         assert any("MERCURIO_CUSTOMER_ID_DEFAULT" in m for m in errores)
         assert any("MERCURIO_API_KEY" in m for m in errores)
+
+
+# ── Alta en segundo plano (hallazgo 12) y pedidos en vuelo (M2), fix-C2 ──────
+
+class _ClienteColgado:
+    """Mercurio que no contesta hasta que el test lo suelta."""
+
+    def __init__(self):
+        import asyncio
+        self.soltar = asyncio.Event()
+        self.llamado = asyncio.Event()
+        self.reqs: list = []
+
+    async def crear_pedido(self, pedido, idempotency_key):
+        self.reqs.append(idempotency_key)
+        self.llamado.set()
+        await self.soltar.wait()
+        return {"id_comprobante": "FC-9", "numero": "9", "replay": False}
+
+
+@pytest.fixture
+async def sin_altas_colgadas():
+    """Al terminar el test, cancela las altas en segundo plano que queden."""
+    yield
+    from app.services.mercurio_pedidos import esperar_altas_en_curso
+    await esperar_altas_en_curso(timeout=0)
+
+
+class TestAltaEnSegundoPlano:
+    async def test_flag_apagado_no_programa_nada(self, db, monkeypatch, sin_altas_colgadas):
+        import app.services.mercurio_pedidos as mp
+        monkeypatch.setattr(get_settings(), "mercurio_pedidos_enabled", False)
+        c = _ClienteColgado()
+        assert mp.programar_alta_erp(_orden(), client=c, db=db) is None
+        assert mp._tareas == set() and mp._en_vuelo == set()
+
+    async def test_programa_y_vuelve_enseguida(self, db, alta, sin_altas_colgadas):
+        import app.services.mercurio_pedidos as mp
+        await _encolar(db, _orden())
+        c = _ClienteColgado()
+        tarea = mp.programar_alta_erp(_orden(), client=c, db=db)
+        assert tarea is not None and not tarea.done()
+        assert "ORD-20261005-120000-AB12C" in mp._en_vuelo
+        await c.llamado.wait()                         # el POST salió y está colgado
+        assert (await _fila_erp(db))["erp_estado"] == "pendiente"
+        c.soltar.set()
+        assert await mp.esperar_altas_en_curso() == 0
+        assert (await _fila_erp(db))["erp_estado"] == "enviado"
+        assert mp._tareas == set() and mp._en_vuelo == set()
+
+    def test_sin_loop_no_lanza(self, monkeypatch):
+        """Llamado fuera de un event loop: no lanza ni deja la orden en vuelo."""
+        import app.services.mercurio_pedidos as mp
+        monkeypatch.setattr(get_settings(), "mercurio_pedidos_enabled", True)
+        assert mp.programar_alta_erp(_orden()) is None
+        assert "ORD-20261005-120000-AB12C" not in mp._en_vuelo
+
+    async def test_orden_sin_id_no_lanza(self, alta, sin_altas_colgadas):
+        import app.services.mercurio_pedidos as mp
+        assert mp.programar_alta_erp({"total": 1}) is None
+        assert mp.programar_alta_erp(None) is None
+
+    async def test_el_mismo_pedido_no_se_programa_dos_veces(self, db, alta, sin_altas_colgadas):
+        import app.services.mercurio_pedidos as mp
+        await _encolar(db, _orden())
+        c = _ClienteColgado()
+        assert mp.programar_alta_erp(_orden(), client=c, db=db) is not None
+        assert mp.programar_alta_erp(_orden(), client=c, db=db) is None
+        await c.llamado.wait()
+        c.soltar.set()
+        await mp.esperar_altas_en_curso()
+        assert c.reqs == ["ORD-20261005-120000-AB12C"]
+
+    async def test_el_job_saltea_un_pedido_en_vuelo(self, db, alta, sin_altas_colgadas):
+        import app.services.mercurio_pedidos as mp
+        await _encolar(db, _orden())
+        c = _ClienteColgado()
+        mp.programar_alta_erp(_orden(), client=c, db=db)
+        await c.llamado.wait()
+        reqs: list = []
+        assert await mp.reintentar_pedidos_pendientes(
+            client=_cliente_pedidos([OK_201], reqs), db=db) == 0
+        assert reqs == []                               # no hubo un segundo POST en paralelo
+        c.soltar.set()
+        await mp.esperar_altas_en_curso()
+        assert (await _fila_erp(db))["erp_estado"] == "enviado"
+
+    async def test_el_hook_saltea_un_pedido_que_manda_el_job(self, db, alta, sin_altas_colgadas):
+        import asyncio
+
+        import app.services.mercurio_pedidos as mp
+        await _encolar(db, _orden())
+        c = _ClienteColgado()
+        job = asyncio.create_task(mp.reintentar_pedidos_pendientes(client=c, db=db))
+        await c.llamado.wait()
+        assert mp.programar_alta_erp(_orden(), client=c, db=db) is None
+        c.soltar.set()
+        assert await job == 1
+        assert c.reqs == ["ORD-20261005-120000-AB12C"]
+        assert mp._en_vuelo == set()
+
+    async def test_al_apagar_se_cancelan_y_quedan_pendientes(self, db, alta, sin_altas_colgadas):
+        import app.services.mercurio_pedidos as mp
+        await _encolar(db, _orden())
+        c = _ClienteColgado()
+        mp.programar_alta_erp(_orden(), client=c, db=db)
+        await c.llamado.wait()
+        assert await mp.esperar_altas_en_curso(timeout=0.05) == 1
+        assert mp._tareas == set() and mp._en_vuelo == set()
+        assert (await _fila_erp(db))["erp_estado"] == "pendiente"

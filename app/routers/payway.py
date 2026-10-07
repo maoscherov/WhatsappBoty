@@ -312,10 +312,13 @@ async def payway_charge(body: ChargeIn):
             except Exception as e:
                 logger.debug(f"messages (Payway): {e}")
             # Alta del pedido en el ERP de MO (F5) — después de confirmar al
-            # cliente. No-op sin MERCURIO_PEDIDOS_ENABLED (deploy farmacia).
+            # cliente y EN SEGUNDO PLANO: el navegador que espera esta
+            # respuesta no espera al ERP. La orden ya nació 'pendiente': si el
+            # alta no termina, la retoma el job. No-op sin
+            # MERCURIO_PEDIDOS_ENABLED (deploy farmacia).
             try:
-                from app.services.mercurio_pedidos import despachar_alta_erp
-                await despachar_alta_erp(order)
+                from app.services import mercurio_pedidos
+                mercurio_pedidos.programar_alta_erp(order)
             except Exception as e:
                 logger.error(f"Alta ERP (Payway) {order['order_id']}: {e}")
         except Exception as e:

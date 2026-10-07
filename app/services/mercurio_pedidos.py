@@ -28,11 +28,19 @@ Todo detrás de `mercurio_pedidos_enabled` (False por defecto): en el deploy
 de la farmacia este módulo no hace nada.
 """
 
+import asyncio
 import hashlib
 import logging
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+# Altas al ERP en segundo plano en ESTE proceso (revisión final, hallazgo 12):
+# la referencia a cada tarea (sin ella el GC puede cortarla a mitad de camino)
+# y las order_id en vuelo, que el job y el hook saltean para no mandar dos
+# POST en paralelo con la misma Idempotency-Key.
+_tareas: set = set()
+_en_vuelo: set = set()
 
 
 def erp_estado_inicial(order: dict) -> Optional[str]:
@@ -357,12 +365,13 @@ async def _intentar_alta(order: dict, *, client=None, db=None) -> Optional[dict]
 
 async def despachar_alta_erp(order: dict, *, client=None, db=None) -> Optional[dict]:
     """
-    Hook post-cobro (mp_webhook / payway): intenta el alta. La orden ya nació
-    'pendiente' en la fila durable (OrderService.create, erp_estado_inicial):
-    si el post-cobro se corta antes de llegar acá, o el proceso muere en el
-    medio, el job de reintentos la retoma con la misma Idempotency-Key. Igual
-    la vuelve a marcar 'pendiente' antes del POST, e inserta la orden si el
-    write-through había fallado. Con el flag apagado no hace nada (farmacia).
+    El alta post-cobro (la corre programar_alta_erp en segundo plano). La
+    orden ya nació 'pendiente' en la fila durable (OrderService.create,
+    erp_estado_inicial): si el post-cobro se corta antes de llegar acá, o el
+    proceso muere en el medio, el job de reintentos la retoma con la misma
+    Idempotency-Key. Igual la vuelve a marcar 'pendiente' antes del POST, e
+    inserta la orden si el write-through había fallado. Con el flag apagado
+    no hace nada (farmacia).
     """
     from app.config import get_settings
     from app.services.order_store import get_order_store
@@ -385,6 +394,86 @@ async def despachar_alta_erp(order: dict, *, client=None, db=None) -> Optional[d
     except Exception as e:
         logger.error(f"Pedido {order.get('order_id')}: no se pudo encolar para el ERP: {e}")
     return await enviar_pedido_erp(order, client=client, db=db)
+
+
+def programar_alta_erp(order: dict, *, client=None, db=None) -> Optional[asyncio.Task]:
+    """
+    Hook post-cobro (mp_webhook / payway): programa el alta en el ERP en
+    segundo plano y vuelve enseguida. Ni el webhook de MP ni /payway/charge
+    esperan al ERP (con Mercurio colgado eran unos 3 minutos con el cliente
+    mirando "Procesando el pago…"). La orden ya nació 'pendiente': si el alta
+    no termina (el proceso se reinicia), la retoma el job con la misma
+    Idempotency-Key.
+
+    Guarda la referencia de la tarea en un set del módulo (y la saca al
+    terminar). Si la orden ya está en vuelo en este proceso (el job la está
+    mandando), no programa nada. Nunca lanza; con el flag apagado no hace
+    nada (farmacia). Devuelve la tarea, o None si no programó nada.
+    """
+    order_id = ""
+    try:
+        from app.config import get_settings
+        if not get_settings().mercurio_pedidos_enabled:
+            return None
+        order_id = str((order or {}).get("order_id") or "")
+        if not order_id:
+            logger.error("Alta ERP: orden sin order_id, no se programa el alta")
+            return None
+        if order_id in _en_vuelo:
+            logger.info(f"Pedido {order_id}: el alta en el ERP ya está en curso en este "
+                        "proceso; no se programa otra")
+            return None
+        trabajo = _alta_en_segundo_plano(order, client=client, db=db)
+        try:
+            tarea = asyncio.create_task(trabajo, name=f"alta-erp-{order_id}")
+        except BaseException:
+            trabajo.close()
+            raise
+    except Exception as e:
+        logger.error(f"Pedido {order_id or '?'}: no se pudo programar el alta en el ERP "
+                     f"(queda pendiente para el job): {e}")
+        return None
+    _en_vuelo.add(order_id)
+    _tareas.add(tarea)
+    tarea.add_done_callback(lambda t, oid=order_id: _al_terminar(t, oid))
+    return tarea
+
+
+def _al_terminar(tarea, order_id: str) -> None:
+    _tareas.discard(tarea)
+    _en_vuelo.discard(order_id)
+
+
+async def _alta_en_segundo_plano(order: dict, *, client=None, db=None) -> None:
+    order_id = order.get("order_id")
+    try:
+        await despachar_alta_erp(order, client=client, db=db)
+    except asyncio.CancelledError:
+        logger.warning(f"Pedido {order_id}: alta en el ERP cortada (apagado del proceso); "
+                       "queda pendiente para el job")
+        raise
+    except Exception as e:
+        logger.error(f"Pedido {order_id}: el alta en el ERP en segundo plano falló "
+                     f"(queda pendiente para el job): {e}")
+
+
+async def esperar_altas_en_curso(timeout: Optional[float] = None) -> int:
+    """
+    Espera las altas en segundo plano de este proceso (las de este event
+    loop). Con `timeout`, cancela las que no terminaron: quedan 'pendiente' y
+    las retoma el job con la misma Idempotency-Key. Devuelve cuántas canceló.
+    La usan el apagado ordenado (lifespan) y los tests.
+    """
+    loop = asyncio.get_running_loop()
+    tareas = [t for t in list(_tareas) if not t.done() and t.get_loop() is loop]
+    if not tareas:
+        return 0
+    _, colgadas = await asyncio.wait(tareas, timeout=timeout)
+    for t in colgadas:
+        t.cancel()
+    if colgadas:
+        await asyncio.gather(*colgadas, return_exceptions=True)
+    return len(colgadas)
 
 
 async def _vencer_viejos(store, s) -> None:
@@ -410,7 +499,8 @@ async def reintentar_pedidos_pendientes(*, client=None, db=None, limit: int = 20
 
     Atrapa por pedido: un pedido roto no corta la pasada. Un error de
     credencial (401/403) sí la corta (los demás darían lo mismo) sin consumir
-    intentos, con un ERROR en el log.
+    intentos, con un ERROR en el log. Saltea los pedidos que el hook está
+    mandando en este proceso (y marca en vuelo los que manda él).
     """
     from app.config import get_settings
     from app.services.mercurio_service import MercurioCredencialError
@@ -432,6 +522,13 @@ async def reintentar_pedidos_pendientes(*, client=None, db=None, limit: int = 20
     enviados = 0
     for order in pendientes:
         order_id = str(order.get("order_id"))
+        if order_id in _en_vuelo:
+            # El hook post-cobro lo está mandando ahora: un segundo POST en
+            # paralelo con la misma clave no suma nada (y el ERP podría no
+            # tener idempotencia atómica).
+            logger.info(f"Reintento de pedidos: {order_id} ya está en vuelo, lo salteo")
+            continue
+        _en_vuelo.add(order_id)
         try:
             if await _intentar_alta(order, client=client, db=db) is not None:
                 enviados += 1
@@ -442,6 +539,8 @@ async def reintentar_pedidos_pendientes(*, client=None, db=None, limit: int = 20
         except Exception as e:
             logger.error(f"Reintento de pedidos: el pedido {order_id} falló, sigo con "
                          f"el próximo: {e}")
+        finally:
+            _en_vuelo.discard(order_id)
     if pendientes:
         logger.info(f"Reintento de pedidos ERP: {enviados}/{len(pendientes)} registrados")
     return enviados

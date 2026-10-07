@@ -211,6 +211,13 @@ async def lifespan(app: FastAPI):
         mercurio_task.cancel()
     if pedidos_task:
         pedidos_task.cancel()
+    # Altas al ERP en segundo plano (F5): unos segundos para terminar; las que
+    # no, se cancelan y quedan 'pendiente' para el job del próximo arranque.
+    try:
+        from app.services.mercurio_pedidos import esperar_altas_en_curso
+        await esperar_altas_en_curso(timeout=5.0)
+    except Exception:
+        pass
     try:
         await get_db(settings.database_url).close()
     except Exception:

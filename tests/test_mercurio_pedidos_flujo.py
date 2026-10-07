@@ -233,6 +233,14 @@ async def _filas(db):
         "ORDER BY created_at")]
 
 
+async def _altas():
+    """Espera las altas al ERP que el cierre de la venta dejó en segundo
+    plano (fix-C2, hallazgo 12: ni el webhook de MP ni /payway/charge esperan
+    al ERP)."""
+    from app.services.mercurio_pedidos import esperar_altas_en_curso
+    await esperar_altas_en_curso()
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Hallazgos 6 y 14: un corte después de crear la orden no la saca de la cola
 # ══════════════════════════════════════════════════════════════════════════════
@@ -274,6 +282,7 @@ async def test_mp_con_el_flag_apagado_no_encola(erp, db, monkeypatch):
     mpw = _montar_mp(monkeypatch, ent, _pago_mp())
     r = await mpw.procesar_pago("mp-sin-flag-1")
     assert r["status"] == "ok"
+    await _altas()
     [fila] = await _filas(db)
     assert fila["erp_estado"] is None
     assert erp.reqs == []
@@ -430,6 +439,7 @@ async def test_mp_carrito_llega_al_erp_con_sus_renglones(erp, db, monkeypatch):
 
     r = await mpw.procesar_pago("mp-carrito-1")
     assert r["status"] == "ok"
+    await _altas()
     [body] = erp.reqs
     assert _renglones(body) == [("2209004", "ROY1051701", 1, 1000.0, 1000.0),
                                 ("10955", "PET1304801", 2, 1000.0, 1000.0)]
@@ -448,6 +458,7 @@ async def test_mp_envio_llega_con_la_cantidad_y_shipping_total(erp, db, monkeypa
     mpw = _montar_mp(monkeypatch, ent, _pago_mp_del_link(link))
 
     assert (await mpw.procesar_pago("mp-envio-1"))["status"] == "ok"
+    await _altas()
     [body] = erp.reqs
     assert _renglones(body) == [("2209004", "ROY1051701", 3, 3000.0, 3000.0)]
     assert body["shipping_total"] == 2000.0 and body["total"] == 5000.0
@@ -468,6 +479,7 @@ async def test_payway_carrito_llega_al_erp_con_sus_renglones(erp, db, monkeypatc
 
     r = await pw.payway_charge(pw.ChargeIn(pid=pid, token="tok", bin="450799"))
     assert r == {"status": "approved"}
+    await _altas()
     [body] = erp.reqs
     assert _renglones(body) == [("2209004", "ROY1051701", 1, 1000.0, 1000.0),
                                 ("10955", "PET1304801", 2, 1000.0, 1000.0)]
@@ -484,6 +496,7 @@ async def test_mp_sin_metadata_usa_el_carrito_de_la_sesion(erp, db, monkeypatch)
     mpw = _montar_mp(monkeypatch, ent, _pago_mp_del_link(link, con_metadata=False))
 
     assert (await mpw.procesar_pago("mp-sin-meta-1"))["status"] == "ok"
+    await _altas()
     [body] = erp.reqs
     assert _renglones(body) == [("2209004", "ROY1051701", 1, 1000.0, 1000.0),
                                 ("10955", "PET1304801", 2, 1000.0, 1000.0)]
@@ -502,6 +515,7 @@ async def test_mp_sin_metadata_y_otra_sesion_no_inventa_renglones(erp, db, monke
     mpw = _montar_mp(monkeypatch, ent, _pago_mp_del_link(link, con_metadata=False))
 
     assert (await mpw.procesar_pago("mp-sin-meta-2"))["status"] == "ok"
+    await _altas()
     [body] = erp.reqs
     assert _renglones(body) == [("2209004", "ROY1051701", 2, 2000.0, 2000.0)]
     data = json.loads((await db.fetchrow("SELECT data FROM orders"))["data"])
@@ -516,6 +530,7 @@ async def test_mp_carrito_sin_metadata_ni_sesion_queda_rechazado(erp, db, monkey
     mpw = _montar_mp(monkeypatch, ent, _pago_mp_del_link(link, con_metadata=False))
 
     assert (await mpw.procesar_pago("mp-sin-meta-3"))["status"] == "ok"
+    await _altas()
     assert erp.reqs == []
     [fila] = await _filas(db)
     assert fila["erp_estado"] == "rechazado"
@@ -583,8 +598,10 @@ async def test_mp_redis_perdido_y_renotificacion_no_duplica(erp, db, monkeypatch
     mpw = _montar_mp(monkeypatch, ent, _pago_mp())
     r1 = await mpw.procesar_pago("mp-555")
     assert r1["status"] == "ok"
+    await _altas()
     ent.perder_redis()               # sin persistencia: se van el pedido, el índice y el candado
     r2 = await mpw.procesar_pago("mp-555")             # MP renotifica días después
+    await _altas()
     assert r2["status"] == "duplicado" and r2["order_id"] == r1["order_id"]
     assert len(await _filas(db)) == 1
     assert [q["number"] for q in erp.reqs] == [r1["order_id"]]
@@ -616,8 +633,10 @@ async def test_mp_dos_cierres_del_mismo_pago_crean_una_sola_orden(erp, db, monke
     mpw = _montar_mp(monkeypatch, ent, _pago_mp())
     monkeypatch.setattr(mpw, "get_order_service", lambda *a: _order_service_ciego(ent.redis))
     r1 = await mpw.procesar_pago("mp-carrera-1")
+    await _altas()
     ent.perder_redis()                     # tampoco lo frena el candado (otra réplica)
     r2 = await mpw.procesar_pago("mp-carrera-1")
+    await _altas()
     assert (r1["status"], r2["status"]) == ("ok", "duplicado")
     assert len(await _filas(db)) == 1
     assert len(ent.wa.enviados) == 1 and len(erp.reqs) == 1
@@ -631,10 +650,12 @@ async def test_payway_redis_perdido_no_duplica(erp, db, monkeypatch):
     pw = _montar_payway(monkeypatch, ent, kv, "PW-DUP-1")
     assert await pw.payway_charge(pw.ChargeIn(pid="PID-DUP", token="t1", bin="450799")) == \
         {"status": "approved"}
+    await _altas()
     # Redis pierde el pedido y el candado, y el pendiente vuelve a estar sin aprobar
     ent.perder_redis()
     kv.update(_kv_con(pending))
     r2 = await pw.payway_charge(pw.ChargeIn(pid="PID-DUP", token="t2", bin="450799"))
+    await _altas()
     assert r2["status"] == "approved" and r2.get("duplicado") is True
     assert len(await _filas(db)) == 1
     assert len(erp.reqs) == 1 and len(ent.wa.enviados) == 1
@@ -649,10 +670,129 @@ async def test_payway_dos_cobros_del_mismo_pago_crean_una_sola_orden(erp, db, mo
     monkeypatch.setattr(pwmod, "get_order_service", lambda *a: _order_service_ciego(ent.redis))
     assert (await pw.payway_charge(pw.ChargeIn(pid="PID-CARRERA", token="t1", bin="450799"))
             )["status"] == "approved"
+    await _altas()
     ent.perder_redis()
     kv.update(_kv_con(pending))
     r2 = await pw.payway_charge(pw.ChargeIn(pid="PID-CARRERA", token="t2", bin="450799"))
+    await _altas()
     assert r2["status"] == "approved" and r2.get("duplicado") is True
     assert len(await _filas(db)) == 1
     assert len(erp.reqs) == 1 and len(ent.wa.enviados) == 1
     _sin_errores_de_duplicado(caplog, "PW-CARRERA-1")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Hallazgo 12 (fix-C2): el cierre de la venta no espera al ERP. El webhook de
+# MP y /payway/charge programan el alta en segundo plano y responden ya.
+# ══════════════════════════════════════════════════════════════════════════════
+
+class _ERPColgado:
+    """Mercurio que no contesta hasta que el test lo suelta."""
+
+    def __init__(self):
+        import asyncio
+        self.soltar = asyncio.Event()
+        self.llamado = asyncio.Event()
+        self.reqs: list[dict] = []
+
+    async def crear_pedido(self, pedido, idempotency_key):
+        self.reqs.append(pedido)
+        self.llamado.set()
+        await self.soltar.wait()
+        return {"id_comprobante": "FC-1", "numero": "1", "replay": False}
+
+
+@pytest.fixture
+def erp_colgado(erp, monkeypatch):
+    colgado = _ERPColgado()
+    monkeypatch.setattr(msvc, "get_mercurio_client", lambda: colgado)
+    return colgado
+
+
+class _Espia:
+    """Registra las órdenes que el cierre de la venta manda a programar."""
+
+    def __init__(self, real):
+        self.real = real
+        self.ordenes: list[dict] = []
+
+    def __call__(self, order, **kw):
+        self.ordenes.append(dict(order))
+        return self.real(order, **kw)
+
+
+@pytest.fixture
+def espia(monkeypatch):
+    import app.services.mercurio_pedidos as mp
+    e = _Espia(mp.programar_alta_erp)
+    monkeypatch.setattr(mp, "programar_alta_erp", e)
+    return e
+
+
+async def test_mp_responde_sin_esperar_al_erp(erp_colgado, db, monkeypatch, espia):
+    import asyncio
+
+    import app.services.mercurio_pedidos as mp
+    ent = _Entorno()
+    mpw = _montar_mp(monkeypatch, ent, _pago_mp())
+    try:
+        r = await asyncio.wait_for(mpw.procesar_pago("mp-bg-1"), timeout=5)
+        assert r["status"] == "ok"
+        assert len(ent.wa.enviados) == 1                    # el cliente ya tiene su confirmación
+        [orden] = espia.ordenes                             # programó el alta de la orden creada
+        [fila] = await _filas(db)
+        assert orden["order_id"] == fila["order_id"] == r["order_id"]
+        assert fila["erp_estado"] == "pendiente"
+        await asyncio.wait_for(erp_colgado.llamado.wait(), timeout=5)
+        assert r["order_id"] in mp._en_vuelo               # el POST sigue colgado
+        erp_colgado.soltar.set()
+        await _altas()
+        assert (await _filas(db))[0]["erp_estado"] == "enviado"
+    finally:
+        await mp.esperar_altas_en_curso(timeout=0)
+
+
+async def test_payway_responde_sin_esperar_al_erp(erp_colgado, db, monkeypatch, espia):
+    import asyncio
+
+    import app.services.mercurio_pedidos as mp
+    ent = _Entorno()
+    pw = _montar_payway(monkeypatch, ent, _kv_con(_pending_payway("PID-BG")), "PW-BG-1")
+    try:
+        r = await asyncio.wait_for(
+            pw.payway_charge(pw.ChargeIn(pid="PID-BG", token="tok", bin="450799")), timeout=5)
+        assert r == {"status": "approved"}
+        [orden] = espia.ordenes
+        [fila] = await _filas(db)
+        assert orden["order_id"] == fila["order_id"]
+        assert (fila["payment_id"], fila["erp_estado"]) == ("PW-BG-1", "pendiente")
+        await asyncio.wait_for(erp_colgado.llamado.wait(), timeout=5)
+        erp_colgado.soltar.set()
+        await _altas()
+        assert (await _filas(db))[0]["erp_estado"] == "enviado"
+    finally:
+        await mp.esperar_altas_en_curso(timeout=0)
+
+
+async def test_mp_con_el_flag_apagado_no_programa_nada(erp, db, monkeypatch):
+    import app.services.mercurio_pedidos as mp
+    monkeypatch.setattr(get_settings(), "mercurio_pedidos_enabled", False)
+    ent = _Entorno()
+    mpw = _montar_mp(monkeypatch, ent, _pago_mp())
+    assert (await mpw.procesar_pago("mp-bg-off"))["status"] == "ok"
+    assert mp._tareas == set() and mp._en_vuelo == set()
+    await _altas()
+    assert erp.reqs == []
+
+
+async def test_payway_con_el_flag_apagado_no_programa_nada(erp, db, monkeypatch):
+    import app.services.mercurio_pedidos as mp
+    monkeypatch.setattr(get_settings(), "mercurio_pedidos_enabled", False)
+    ent = _Entorno()
+    pw = _montar_payway(monkeypatch, ent, _kv_con(_pending_payway("PID-OFF")), "PW-OFF-1")
+    assert await pw.payway_charge(pw.ChargeIn(pid="PID-OFF", token="tok", bin="450799")) == \
+        {"status": "approved"}
+    assert mp._tareas == set() and mp._en_vuelo == set()
+    await _altas()
+    assert erp.reqs == []
+    assert (await _filas(db))[0]["erp_estado"] is None
