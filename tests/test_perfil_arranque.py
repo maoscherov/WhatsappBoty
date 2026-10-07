@@ -231,3 +231,23 @@ async def test_flujo_mutual_solo_sin_venta(entorno, usar_perfil, monkeypatch, ve
     assert vistos == ["hola"] * llamadas
     if llamadas:
         assert deps["wa"].enviados[-1] == "respuesta de la mutual"
+
+
+# ── Review Focus: primer arranque de MO, con el catálogo vacío ──────────────────
+async def test_petshop_con_catalogo_vacio_no_inventa_ni_deja_pendiente(entorno, usar_perfil,
+                                                                       sku_singleton):
+    """Hasta el primer sync de Mercurio el catálogo está vacío (spec 9.2): el
+    bot no puede ofrecer ni cobrar lo que no tiene, aunque el modelo lo invente."""
+    usar_perfil("petshop")
+    txt = "hola, tenés royal canin medium adult 15 kg?"
+    deps = entorno({txt: {"intencion": "consulta_stock",
+                          "entidad_producto": "royal canin medium adult 15 kg",
+                          "respuesta": "¡Sí! Tengo Royal Canin Medium Adult 15 kg a $98.000 🐾"}})
+    deps["sku"] = sku_singleton.get_sku_service()          # lo que hay antes del primer sync
+    assert deps["sku"].total == 0
+    await wh.procesar_mensajes([_msg(txt)])
+    enviado = deps["wa"].enviados[-1]
+    assert enviado.startswith("No lo encuentro en nuestro catálogo")
+    assert "98.000" not in enviado and "farmac" not in enviado.lower()
+    s = await deps["session"].get(PHONE)
+    assert not s.get("pending_sku_id")
