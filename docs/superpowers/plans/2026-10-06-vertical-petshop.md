@@ -35,10 +35,10 @@
 Cinco clases de entrada o modos de falla que el spec implica y que ninguna tarea ejercitaba, de la más probable a la menos probable. Cada una quedó fijada con un test en su tarea dueña (en el estilo de esa tarea); pasan de entrada porque fijan lo que la tarea ya implementó, y se verificaron con el plan completo aplicado sobre `07a1d7a` (suite entera: 1373 passed).
 
 1. **Mensajes en mayúsculas, sin tildes o transcriptos de audio sin signos.** La corrección de §5 decide con regex sobre texto libre, y los 31 casos de §6.2 van casi todos en minúscula y con "?". En WhatsApp y en los audios transcriptos llegan "EN QUE SUCURSAL PUEDE SER", "Donde Retiro" o "RETIRO EN SUCURSAL". Test: `test_es_pregunta_entrega_en_mayusculas_sin_tildes_ni_signos` (11 casos) y `test_pregunta_en_mayusculas_y_sin_signos_al_elegir_entrega_se_responde`, en **Task 13, Step 26b** (`tests/test_entrega_sucursal.py`, con los dos perfiles). Riesgo residual que NO se fija con test, porque fijarlo sería afirmar un bug: sin "?", con el interrogativo lejos del principio o sin tilde ("y la sucursal donde queda", "cuando puedo pasar", "cuanto sale el envio"), `es_pregunta_entrega` da `False` y el mensaje sigue contando como elección de retiro o envío, igual que hoy. Es una decisión del regex del spec (`_INTERROGATIVO_INICIO` exige tilde en "cómo", "cuándo", "cuánto" y "qué" para que "como siempre, retiro" siga siendo elección). Revisarlo con mensajes reales de MO antes de abrir el número.
-2. **Config guardada en Redis o Postgres de MO que pisa los textos del perfil.** MO corre hoy como farmacia, así que su Redis y su Postgres pueden tener claves guardadas (§9.2). Los tests de la Task 3 prueban "lo guardado gana" con una clave neutra y los fallbacks con un `cfg` armado a mano, no el caso real: un texto vaciado desde el panel y un texto viejo con 💊, leídos de Redis y de Postgres. Test: `test_config_guardada_de_mo_vaciada_cae_al_perfil_y_con_pildora_gana[redis|postgres]`, en **Task 3, Step 16b** (`tests/test_perfil_config.py`). El vacío cae al texto del perfil al usarlo; el de 💊 gana, y por eso el Step 10.3 de la Task 16 (borrar esas claves) es obligatorio.
+2. **Config guardada en Redis o Postgres de MO que pisa los textos del perfil.** MO corre hoy como farmacia, así que su Redis y su Postgres pueden tener claves guardadas (§9.2). Los tests de la Task 3 prueban "lo guardado gana" con una clave neutra y los fallbacks con un `cfg` armado a mano, no el caso real: un texto vaciado desde el panel y un texto viejo con 💊, leídos de Redis y de Postgres. Test: `test_config_guardada_de_mo_vaciada_cae_al_perfil_y_con_pildora_gana[redis|postgres]`, en **Task 3, Step 16b** (`tests/test_perfil_config.py`). El vacío cae al texto del perfil al usarlo; el de 💊 gana, y por eso el Step 10.3 de la Task 17 (borrar esas claves) es obligatorio.
 3. **Primer arranque de MO con el catálogo vacío.** Hasta que termina el primer sync de Mercurio, `get_sku_service()` devuelve un catálogo vacío (§9.2). Los tests de la Task 12 miran `total == 0`, pero ninguno pasa un mensaje por el webhook en ese estado. Test: `test_petshop_con_catalogo_vacio_no_inventa_ni_deja_pendiente`, en **Task 12, Step 17b** (`tests/test_perfil_arranque.py`). Aunque el modelo invente producto y precio, sale "No lo encuentro en nuestro catálogo…", sin el precio, sin pendiente y sin "farmacia".
 4. **`VERTICAL` con espacios y mayúsculas, y `COMERCIO_NOMBRE` con ñ, tildes y espacios.** Hay cobertura parcial: la normalización de `VERTICAL` en `get_perfil` (Task 2), el descriptor ASCII con "Piñata … Ñuñoa" y `/pay` con "Ñandú & Cía <MO>" (Task 11). Ningún test cobraba por Payway con los dos valores tal como se cargan a mano en Railway, donde el `device_unique_identifier` de respaldo tiene que salir ASCII y la descripción tiene que llevar el nombre recortado. Test: `test_payway_con_vertical_en_mayusculas_y_comercio_con_enie_y_tildes`, en **Task 11, Step 13b** (`tests/test_petshop.py`).
-5. **Perfil cacheado en un singleton.** §3.1 nombra cuatro singletons. `IntentService` (Task 4), `PaymentService` y `PaywayService` (Task 11) tienen un test con la misma instancia y dos perfiles; `ConfigService` no lo tenía, y `valores_base()` tiene que recalcularse en cada `get_all`/`get`, sin quedar fijado en la instancia. Test: `test_config_service_no_fija_el_perfil_en_la_instancia`, en **Task 3, Step 16b** (`tests/test_perfil_config.py`). El control estático (`get_perfil()` en una variable de módulo o en `self.`) es la Task 16, Step 6.
+5. **Perfil cacheado en un singleton.** §3.1 nombra cuatro singletons. `IntentService` (Task 4), `PaymentService` y `PaywayService` (Task 11) tienen un test con la misma instancia y dos perfiles; `ConfigService` no lo tenía, y `valores_base()` tiene que recalcularse en cada `get_all`/`get`, sin quedar fijado en la instancia. Test: `test_config_service_no_fija_el_perfil_en_la_instancia`, en **Task 3, Step 16b** (`tests/test_perfil_config.py`). El control estático (`get_perfil()` en una variable de módulo o en `self.`) es la Task 17, Step 6.
 
 ## File Structure
 
@@ -51,7 +51,7 @@ Cinco clases de entrada o modos de falla que el spec implica y que ninguna tarea
 | `app/services/intent_service.py` | Modificar | 2, 4 | Re-exporta `SYSTEM_PROMPT`; sin parámetro `vertical`; prompt, bloque de socio, rótulo de KB y marca de receta salen del perfil en cada llamada. |
 | `app/services/image_service.py` | Modificar | 2, 10 | `_PROMPT` como alias; prompt y categorías del clasificador según `get_perfil().vision`. |
 | `app/services/config_service.py` | Modificar | 3 | `valores_base()` (DEFAULTS + textos del perfil) en `get_all`/`get`; claves `pago_mp_manual`, `retiro_sucursal` y `retiro_info_message`; comentario de `sintoma_farmaceutico_message`. |
-| `app/routers/backoffice.py` | Modificar | 3, 12 | `ConfigUpdate` con las tres claves nuevas; `bo_tablero` con `get_perfil().clave`. |
+| `app/routers/backoffice.py` | Modificar | 3, 12, 16 | `ConfigUpdate` con las tres claves nuevas; `bo_tablero` con `get_perfil().clave`; `GET /bo/perfil` para el portal. |
 | `app/routers/orders_api.py` | Modificar | 3 | Aviso de pedido listo con fallback a `perfil.textos`. |
 | `app/services/checkout_helper.py` | Modificar | 3, 6, 7, 8, 9, 11, 13, 14 | Fallbacks a `perfil.textos`; gates de recetas, cuenta corriente y descuentos; `dominio_propio`/`contiene_link`; `pide_pago_manual` con exclusiones; `MOTIVO_CONSULTA_SALUD` y `texto_consulta_salud`; `mensaje_pago_confirmado`; detección de preguntas de entrega y textos con la sucursal; `_NO_DIR` con pesos y `presentaciones_de`. |
 | `app/routers/webhook.py` | Modificar | 3, 4, 6, 7, 8, 9, 10, 12, 13 | `perfil = get_perfil()` por lote y gates por capacidad (socios, cuenta corriente, obras sociales, recetas, links, venta), compuertas de salud A-D, ramas de imagen por perfil, pregunta en la elección de entrega y dato de la sucursal para el modelo. |
@@ -73,6 +73,7 @@ Cinco clases de entrada o modos de falla que el spec implica y que ninguna tarea
 | `tests/test_perfil_arranque.py` | Crear | 12 | Arranque, CSV de la farmacia, tablero, desvío sin venta y Review Focus de catálogo vacío. |
 | `tests/test_petshop.py` | Crear | 4, 6, 7, 8, 9, 10, 11 | Unitarios por capacidad, cada uno con su par de farmacia "igual que hoy". |
 | `tests/test_petshop_conversaciones.py` | Crear | 6, 7, 8, 9, 10, 15 | Conversaciones por el webhook completo con dependencias falsas, incluidas las punta a punta. |
+| `tests/test_perfil_bo.py` | Crear | 16 | `GET /bo/perfil`: identidad y capacidades por rubro, autenticación y que no expone prompt ni textos. |
 | `tests/test_entrega_sucursal.py` | Crear | 13 | Corrección de §5 (pregunta en la elección de entrega), con farmacia y con petshop. |
 | `tests/test_pesos.py` | Crear | 14 | Pesos y presentaciones de §5, con farmacia y con petshop. |
 | `tests/test_probar_prompt_petshop.py` | Crear | 15 | El script de prueba del prompt, sin red. |
@@ -2165,7 +2166,7 @@ Dos modos de falla que el spec implica y que los tests de arriba no ejercitan (v
 async def test_config_guardada_de_mo_vaciada_cae_al_perfil_y_con_pildora_gana(usar_perfil, origen):
     """Lo guardado gana (spec 3.4): un texto vaciado desde el panel ("") cae al
     del perfil recién al usarlo; un texto viejo con 💊 sigue saliendo, por eso
-    el despliegue borra esas claves (spec 7.3, paso 7; Task 16, Step 10)."""
+    el despliegue borra esas claves (spec 7.3, paso 7; Task 17, Step 10)."""
     from app.routers.orders_api import armar_mensaje_pedido_listo
     from app.services.config_service import DEFAULTS
     usar_perfil("petshop")
@@ -9839,7 +9840,7 @@ VERTICAL=petshop ANTHROPIC_API_KEY= OPENAI_API_KEY= .venv/Scripts/python scripts
 VERTICAL=farmacia .venv/Scripts/python scripts/probar_prompt_petshop.py; echo "exit=$?"
 ```
 
-Esperado: `4 passed`; después `Falta ANTHROPIC_API_KEY (u OPENAI_API_KEY): este script llama al modelo real.` con `exit=2`, y `El perfil activo es 'farmacia': correr con VERTICAL=petshop.` con `exit=2`. La corrida con la clave real es parte de la verificación del despliegue (Task 16, Step 12).
+Esperado: `4 passed`; después `Falta ANTHROPIC_API_KEY (u OPENAI_API_KEY): este script llama al modelo real.` con `exit=2`, y `El perfil activo es 'farmacia': correr con VERTICAL=petshop.` con `exit=2`. La corrida con la clave real es parte de la verificación del despliegue (Task 17, Step 12).
 
 - [ ] **Step 10: Commit**
 
@@ -9858,7 +9859,176 @@ Esperado: `0 failed`; el total sube en 18 respecto de antes de esta tarea (14 co
 
 ---
 
-### Task 16: Regresión completa y despliegue en Mascotas del Oeste (§6.4, §7)
+### Task 16: `GET /bo/perfil` para el portal de MO
+
+Decisión del usuario del 7/10 (posterior al spec): el portal de MO es una remix del panel de Remedia en Lovable. Para que el mismo código de panel sirva a los dos rubros, el panel pregunta el rubro de la instancia y oculta las secciones de las capacidades apagadas (recetas, socios, cuenta corriente, obras sociales). El endpoint se autentica como el resto de `/bo` y devuelve **solo** identidad y capacidades, nunca el prompt ni los textos del perfil.
+
+**Files:**
+- Modify: `app/routers/backoffice.py` (endpoint nuevo inmediatamente después de `bo_wa_config`, que en `07a1d7a` termina en la línea 1519)
+- Create: `tests/test_perfil_bo.py`
+
+**Interfaces:**
+- Consumes: `get_perfil()` y `Perfil` (Task 2); fixture `usar_perfil(clave, comercio=None)` (Task 1); `_auth` (ya existe en `backoffice.py`).
+- Produces: `GET /bo/perfil` → `{"clave": str, "comercio": str, "emoji": str, "capacidades": {"venta": bool, "recetas": bool, "obras_sociales": bool, "socios": bool, "cuenta_corriente": bool, "links_como_receta": bool, "sintomas": "farmaceutico" | "derivar"}}`. Devuelve 403 si falta la `BO_KEY` correcta (header `x-bo-key` o `?key=`).
+
+- [ ] **Step 1: Escribir los tests (fallan)**
+
+Crear `tests/test_perfil_bo.py`:
+
+```python
+"""
+GET /bo/perfil: el portal de cada instancia lee el rubro (identidad y
+capacidades) para ocultar las secciones que no aplican. Autenticado con la
+BO_KEY como el resto de /bo, y sin el prompt ni los textos del perfil.
+"""
+
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from app.config import get_settings
+from app.routers import backoffice
+
+CLAVE = "clave-de-test"
+CAMPOS = {"clave", "comercio", "emoji", "capacidades"}
+CAPACIDADES = {"venta", "recetas", "obras_sociales", "socios",
+               "cuenta_corriente", "links_como_receta", "sintomas"}
+
+
+def _get(monkeypatch, headers=None):
+    monkeypatch.setattr(get_settings(), "bo_key", CLAVE)
+    app = FastAPI()
+    app.include_router(backoffice.router)
+    return TestClient(app).get("/bo/perfil", headers=headers if headers is not None
+                               else {"x-bo-key": CLAVE})
+
+
+def test_bo_perfil_petshop(usar_perfil, monkeypatch):
+    usar_perfil("petshop")
+    r = _get(monkeypatch)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["clave"] == "petshop"
+    assert body["comercio"] == "Mascotas del Oeste"
+    assert body["emoji"] == "🐾"
+    assert body["capacidades"] == {
+        "venta": True, "recetas": False, "obras_sociales": False, "socios": False,
+        "cuenta_corriente": False, "links_como_receta": False, "sintomas": "derivar",
+    }
+
+
+def test_bo_perfil_farmacia(usar_perfil, monkeypatch):
+    usar_perfil("farmacia")
+    r = _get(monkeypatch)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["clave"] == "farmacia"
+    assert body["comercio"] == "Remedia"
+    assert body["emoji"] == "💊"
+    assert body["capacidades"] == {
+        "venta": True, "recetas": True, "obras_sociales": True, "socios": True,
+        "cuenta_corriente": True, "links_como_receta": True, "sintomas": "farmaceutico",
+    }
+
+
+def test_bo_perfil_mutual_no_vende(usar_perfil, monkeypatch):
+    usar_perfil("mutual")
+    r = _get(monkeypatch)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["clave"] == "mutual"
+    assert body["capacidades"]["venta"] is False
+    assert body["capacidades"]["recetas"] is True        # igual que hoy (spec §3.3)
+
+
+def test_bo_perfil_con_comercio_nombre(usar_perfil, monkeypatch):
+    usar_perfil("petshop", comercio="MO Prueba")
+    r = _get(monkeypatch)
+    assert r.status_code == 200
+    assert r.json()["comercio"] == "MO Prueba"
+
+
+def test_bo_perfil_no_expone_prompt_ni_textos(usar_perfil, monkeypatch):
+    usar_perfil("petshop")
+    r = _get(monkeypatch)
+    assert r.status_code == 200
+    body = r.json()
+    assert set(body) == CAMPOS
+    assert set(body["capacidades"]) == CAPACIDADES
+    assert "Soy el asistente virtual" not in r.text
+    assert "consulta_salud_message" not in r.text
+
+
+def test_bo_perfil_exige_clave(usar_perfil, monkeypatch):
+    usar_perfil("petshop")
+    assert _get(monkeypatch, headers={}).status_code == 403
+    assert _get(monkeypatch, headers={"x-bo-key": "otra"}).status_code == 403
+    assert _get(monkeypatch).status_code == 200
+```
+
+- [ ] **Step 2: Correr los tests y ver que fallan**
+
+Run: `.venv/Scripts/python -m pytest tests/test_perfil_bo.py -v`
+
+Esperado: `6 failed`. Los cinco primeros fallan con `assert 404 == 200` y `test_bo_perfil_exige_clave` con `assert 404 == 403`, porque la ruta todavía no existe.
+
+- [ ] **Step 3: Implementar el endpoint**
+
+En `app/routers/backoffice.py`, inmediatamente después de la función `bo_wa_config` (la que termina con `"vertical": s.vertical,` y `}`), agregar:
+
+```python
+@router.get("/perfil")
+async def bo_perfil(_=Depends(_auth)):
+    """
+    Rubro de esta instancia para el portal: identidad y capacidades. El panel
+    oculta las secciones de las capacidades apagadas (recetas, socios, cuenta
+    corriente, obras sociales). No expone el prompt ni los textos del perfil.
+    """
+    from app.services.perfil import get_perfil
+    p = get_perfil()
+    return {
+        "clave": p.clave,
+        "comercio": p.comercio,
+        "emoji": p.emoji,
+        "capacidades": {
+            "venta": p.venta,
+            "recetas": p.recetas,
+            "obras_sociales": p.obras_sociales,
+            "socios": p.socios,
+            "cuenta_corriente": p.cuenta_corriente,
+            "links_como_receta": p.links_como_receta,
+            "sintomas": p.sintomas,
+        },
+    }
+```
+
+- [ ] **Step 4: Correr los tests y ver que pasan**
+
+Run: `.venv/Scripts/python -m pytest tests/test_perfil_bo.py -v`
+
+Esperado: `6 passed`.
+
+- [ ] **Step 5: Suite completa**
+
+Run: `.venv/Scripts/python -m pytest -q`
+
+Esperado: `0 failed`. Con el plan aplicado en orden sobre `07a1d7a` dan `1379 passed`: los 1373 de las tareas 1 a 15 más estos 6.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add app/routers/backoffice.py tests/test_perfil_bo.py
+git commit -F - <<'MSG'
+Backoffice: GET /bo/perfil con identidad y capacidades del rubro
+
+El portal de cada instancia (remix del panel de Remedia) lo lee para
+ocultar las secciones de las capacidades apagadas. Autenticado con la
+BO_KEY y sin exponer el prompt ni los textos del perfil.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+MSG
+```
+
+### Task 17: Regresión completa y despliegue en Mascotas del Oeste (§6.4, §7)
 
 Sin código nuevo. Los Steps 1 a 8 corren en local; los Steps 9 a 15 son la checklist del despliegue y los hace el usuario (son cambios en Railway, en la config de producción de MO y en WhatsApp).
 
@@ -9876,7 +10046,7 @@ unset VERTICAL COMERCIO_NOMBRE
 .venv/Scripts/python -m pytest -q
 ```
 
-Esperado: `0 failed`, con `N passed` donde N = 933 + los tests nuevos de todas las tareas (`1373 passed` al aplicar este plan completo sobre `07a1d7a`, en unos 9 minutos). Anotar N para el PR.
+Esperado: `0 failed`, con `N passed` donde N = 933 + los tests nuevos de todas las tareas (`1379 passed` al aplicar este plan completo sobre `07a1d7a`, en unos 9 minutos). Anotar N para el PR.
 
 - [ ] **Step 2: Los tests existentes no cambiaron de expectativa (§6.3)**
 
@@ -9900,7 +10070,7 @@ Esperado: `1953a4e6815d855e635406c1da8f97ff83bb9be6a2fd040b69eabfae4c540749 1468
 VERTICAL=petshop .venv/Scripts/python -m pytest -q tests/test_goldens_farmacia.py tests/test_perfil*.py tests/test_petshop.py tests/test_petshop_conversaciones.py tests/test_entrega_sucursal.py tests/test_pesos.py tests/test_probar_prompt_petshop.py
 ```
 
-Esperado: `440 passed`, `0 failed`. Un test que falla solo acá depende del entorno en vez de fijar su perfil con `usar_perfil` (o de borrar `VERTICAL` con `monkeypatch.delenv` si prueba el default): corregir ese test.
+Esperado: `446 passed`, `0 failed`. Un test que falla solo acá depende del entorno en vez de fijar su perfil con `usar_perfil` (o de borrar `VERTICAL` con `monkeypatch.delenv` si prueba el default): corregir ese test.
 
 - [ ] **Step 5: El perfil no se filtra de un test a otro**
 
