@@ -2105,8 +2105,15 @@ def referencia_ambigua_bloquea(texto: str, session: dict, pendiente_con_receta: 
     return bool(adj) and float(adj) >= float(pend)
 
 
+# "Ya te paso" / "ya te derivo" promete una persona solo si sigue "con ...",
+# "a(l) <persona>" o el fin de la oración ("Ya te paso.", "ya te paso 🙌").
+# "Elegí y ya te paso el link de pago" habla del link, no de una persona: se
+# tomaba como derivación y, desde que el chequeo corre también en el flujo de
+# entrega y dirección, pasaba la charla a operador (ronda de arreglo 2).
 _DERIV_PROMETIDA = re.compile(
-    r"\b(te\s+(paso|derivo|comunico|conecto)\s+con|ya\s+te\s+(paso|derivo)|"
+    r"\b(te\s+(paso|derivo|comunico|conecto)\s+con|"
+    r"ya\s+te\s+(paso|derivo)(?=\s*(?:con\b|$|[^\w\s:$])|\s+al?\s+(?:alguien|una\s+persona|"
+    r"(?:el\s+)?equipo|las\s+chicas|una\s+de\s+las\s+chicas)\b)|"
     r"te\s+va\s+a\s+(atender|contactar|escribir)\s+(alguien|una\s+persona|el\s+equipo|una\s+de\s+las\s+chicas))",
     re.IGNORECASE,
 )

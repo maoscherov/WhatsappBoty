@@ -604,6 +604,89 @@ async def test_consulta_en_medio_del_flujo_sin_promesa_no_deriva(entorno, usar_p
     assert s.get("pending_sku_id") == "31"
 
 
+# ── Ronda de arreglo 2: "ya te paso el link" no es una derivación ──────────────
+# _DERIV_PROMETIDA tomaba "ya te (paso|derivo)" sin destinatario, y desde la
+# ronda 1 corre también en el flujo de entrega y dirección, justo cuando el
+# modelo habla del link. "Ya te paso/derivo" promete una persona solo si sigue
+# "con ...", "a(l) <persona>" o el fin de la oración. Función compartida:
+# CAMBIO QUE TAMBIÉN AFECTA A LA FARMACIA (mejora en los caminos viejos).
+@pytest.mark.parametrize("txt,esperado", [
+    ("Elegí y ya te paso el link de pago.", False),
+    ("El envío cuesta $3.000. Elegí y ya te paso el link de pago.", False),
+    ("ya te paso el link", False),
+    ("ya te paso los datos", False),
+    ("Ya te paso el total con el envío.", False),
+    ("Ya te paso la dirección de la sucursal 🙂", False),
+    ("ya te derivo el pedido al depósito", False),
+    ("Ya te paso.", True),
+    ("Ya te paso 🙌", True),
+    ("Listo, ya te paso, aguardá un momento.", True),
+    ("ya te paso con alguien del equipo", True),
+    ("ya te derivo al equipo.", True),
+    ("Ya te derivo a una persona del equipo", True),
+    ("te paso con una persona", True),
+    ("¿querés que te pase con alguien?", False),
+    ("Si querés ya te paso con alguien del equipo.", False),
+])
+def test_derivacion_prometida_ya_te_paso(txt, esperado):
+    from app.services.checkout_helper import derivacion_prometida
+    assert derivacion_prometida(txt) is esperado
+
+
+@pytest.mark.parametrize("clave", ["farmacia", "petshop"])
+def test_texto_de_consulta_de_salud_sigue_siendo_derivacion(usar_perfil, clave):
+    """El texto de salud de petshop ("... Ya te paso. Si lo notás ...") sigue
+    contando como una promesa de persona (se mide con los dos perfiles: la
+    función es la misma)."""
+    from app.services.checkout_helper import derivacion_prometida
+    from app.services.perfil import perfil_por_clave
+    usar_perfil(clave)
+    assert derivacion_prometida(perfil_por_clave("petshop").textos["consulta_salud_message"])
+
+
+_DURA = "cuanto me dura la bolsa"
+_YA_TE_PASO_EL_LINK = ("La bolsa de 15 kg rinde aprox. 1 mes.\n"
+                       "Elegí y ya te paso el link de pago.\n¿Retiro o envío?")
+
+
+class _PagoFalso:
+    def __init__(self):
+        self.links = []
+
+    async def crear_link(self, sku_id, nombre, precio, phone, cantidad=1, snapshot=None):
+        self.links.append(nombre)
+        return f"https://pago.test/{len(self.links)}", None
+
+
+@pytest.mark.parametrize("clave", ["farmacia", "petshop"])
+@pytest.mark.parametrize("estado", ["esperando_entrega", "esperando_direccion"])
+async def test_ya_te_paso_el_link_en_medio_del_flujo_no_deriva(entorno, usar_perfil,
+                                                               monkeypatch, clave, estado):
+    usar_perfil(clave)
+    guion = {_DURA: {"intencion": "consulta_abierta", "entidad_producto": None,
+                     "por_sintoma": False, "respuesta": _YA_TE_PASO_EL_LINK}}
+    deps = entorno(guion, "otro", valores_base())
+    deps["sku"] = _catalogo_mo_salud()
+    pago = _PagoFalso()
+    deps["payment"] = pago
+    monkeypatch.setattr(wh, "payment_svc_para", lambda cfg, s=None: pago)
+    await _pendiente_royal_mo(deps["session"])
+    await deps["session"].set_estado(PHONE, estado)
+
+    await wh.procesar_mensajes([_msg(_DURA)])
+
+    s = await deps["session"].get(PHONE)
+    assert ("procesar", _DURA) in _vistos(deps)               # lo contestó el modelo en el flujo
+    assert s["estado"] == estado                              # no pasó a operador
+    assert s.get("derivada_motivo") != "derivacion_prometida"
+    assert s.get("pending_sku_id") == "31"
+    if estado == "esperando_entrega":
+        await wh.procesar_mensajes([_msg("lo retiro")])
+        s = await deps["session"].get(PHONE)
+        assert s["estado"] == "esperando_pago"                # el retiro sigue andando
+        assert pago.links == ["ROYAL CANIN MEDIUM ADULT 15KG"]
+
+
 async def test_consulta_abierta_con_dato_inventado_no_va_por_salud(entorno, usar_perfil):
     txt = "qué alimento me recomendás para un gato castrado?"
     guion = {txt: {"intencion": "consulta_abierta", "entidad_producto": None, "por_sintoma": False,
