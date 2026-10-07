@@ -1854,10 +1854,25 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     await deps["session"].add_message(phone, "assistant", respuesta)
                     continue
 
+                elif es_pregunta_entrega(texto_lower) and pregunta_por_retiro(texto_lower) \
+                        and responder_pregunta_retiro(_cfg_dx):
+                    # "¿En qué sucursal puede ser?" con el pedido sin confirmar:
+                    # se contesta con la sucursal cargada y NO se confirma
+                    # (antes "sucursal" confirmaba con retiro — spec §5).
+                    _intencion = "consulta_retiro"
+                    respuesta = responder_pregunta_retiro(_cfg_dx) + "\n\n¿Lo confirmamos?"
+                    _ts = _time.perf_counter()
+                    await deps["wa"].send_text(phone, respuesta)
+                    _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
+                    await deps["session"].add_message(phone, "user", texto)
+                    await deps["session"].add_message(phone, "assistant", respuesta)
+                    continue
+
                 elif (_es_afirmacion_pura(texto_lower) or match_envio(texto_lower)
                       or match_retiro(texto_lower)) \
                         and not _empieza_con_no(texto_lower) \
-                        and not session.get("_espera_eleccion"):
+                        and not session.get("_espera_eleccion") \
+                        and not es_pregunta_entrega(texto_lower):
                     # Confirma. Si además ya indicó cómo recibirlo, se resuelve sin re-preguntar.
                     _entrega = ("envio" if match_envio(texto_lower)
                                 else "retiro" if match_retiro(texto_lower) else None)

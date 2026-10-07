@@ -257,3 +257,20 @@ async def test_f_horario_fuera_de_la_entrega_igual_que_hoy(entorno):
     deps["intent"] = _IntentEnt()
     await wh.procesar_mensajes([_msg("hasta qué hora puedo retirar?")])
     assert deps["wa"].enviados[-1] == f"Atendemos {_HORARIO} 🕐 ¿Te ayudo con algo más?"
+
+
+async def test_e_pregunta_por_la_sucursal_al_confirmar_no_confirma(entorno, monkeypatch):
+    deps, links = await _armar(entorno, monkeypatch, "esperando_confirmacion", _SUC)
+    await wh.procesar_mensajes([_msg("en que sucursal puede ser?")])
+    assert deps["wa"].enviados[-1] == f"{_INFO}\n\n¿Lo confirmamos?"
+    assert links == [] and deps["intent"].llamadas == []
+    s = await deps["session"].get(PHONE)
+    assert s["estado"] == "esperando_confirmacion" and s["pending_sku_id"] == "30"
+
+
+async def test_e_sin_sucursal_la_pregunta_al_confirmar_va_al_modelo(entorno, monkeypatch):
+    deps, links = await _armar(entorno, monkeypatch, "esperando_confirmacion")
+    await wh.procesar_mensajes([_msg("en que sucursal puede ser?")])
+    assert [c[1] for c in deps["intent"].vio("procesar")] == ["en que sucursal puede ser?"]
+    assert links == []
+    assert await _estado(deps) == "esperando_confirmacion"
