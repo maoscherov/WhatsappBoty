@@ -993,3 +993,39 @@ async def test_paginas_de_pago_escapan_el_nombre_del_comercio(usar_perfil, monke
     assert '<div class="wordmark">Ñandú &amp; Cía &lt;MO&gt;</div>' in pagina
     assert "<title>Pagar · Ñandú &amp; Cía &lt;MO&gt;</title>" in pagina
     assert "<MO>" not in pagina
+
+
+# ── Avisos de pedido listo y de efectivo: textos del perfil (§3.4) ──────────────
+def test_aviso_pedido_listo_petshop_con_clave_vacia(usar_perfil):
+    from app.routers.orders_api import armar_mensaje_pedido_listo
+    usar_perfil("petshop")
+    base = {"sku_nombre": "Royal Canin 15KG", "total": 9800, "pickup_code": "654321"}
+    retiro = armar_mensaje_pedido_listo({**base, "tipo_entrega": "retiro"},
+                                        {"pedido_listo_retiro_message": ""})
+    envio = armar_mensaje_pedido_listo({**base, "tipo_entrega": "envio", "direccion_envio": "Mitre 100"},
+                                       {"pedido_listo_envio_message": ""})
+    assert retiro.endswith("¡Te esperamos! 🐾") and "654321" in retiro
+    assert envio.endswith("Te avisamos cuando esté en camino. 🐾") and "Mitre 100" in envio
+    assert "💊" not in retiro + envio
+
+
+async def test_efectivo_petshop_con_clave_vacia(usar_perfil, monkeypatch):
+    from app.services.checkout_helper import _cerrar_venta_efectivo
+    from app.services.session_service import SessionService
+    import app.services.order_service as omod
+
+    class _Orders:
+        async def create(self, **kw):
+            return {"order_id": "ORD-EF", "pickup_code": "445566"}
+    monkeypatch.setattr(omod, "_instance", _Orders())
+    usar_perfil("petshop")
+    ss = SessionService("redis://127.0.0.1:1")
+    s = {"pending_sku_id": "S1", "pending_sku_nombre": "Royal Canin 15KG",
+         "pending_precio": 9800.0, "pending_cantidad": 1}
+    retiro = await _cerrar_venta_efectivo(ss, "549EF1", s, "retiro", None, total=9800.0,
+                                          cfg={"efectivo_retiro_message": ""})
+    envio = await _cerrar_venta_efectivo(ss, "549EF2", s, "envio", "Mitre 100", total=9800.0,
+                                         cfg={"efectivo_envio_message": ""})
+    assert retiro.endswith("¡Muchas gracias! 🐾") and "445566" in retiro
+    assert envio.endswith("¡Muchas gracias! 🐾") and "Mitre 100" in envio
+    assert "💊" not in retiro + envio
