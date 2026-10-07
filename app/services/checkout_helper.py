@@ -10,6 +10,7 @@ import logging
 import re
 from typing import Optional
 
+from app.services.perfil import get_perfil
 from app.services.sku_service import requiere_derivacion
 
 logger = logging.getLogger(__name__)
@@ -1521,18 +1522,15 @@ def responder_bono(lab: str, cfg: dict, nombre: str = "", por_foto: bool = False
     hit = laboratorio_trabajado(lab, cfg)
     if hit:
         if por_foto:
-            txt = cfg.get("bono_recibido_message") or (
-                "¡Hola {nombre}! Sí, trabajamos los bonos de {laboratorio} 🙌 Te paso con "
-                "alguien del equipo que lo gestiona con vos.")
+            txt = (cfg.get("bono_recibido_message")
+                   or get_perfil().textos["bono_recibido_message"])
         else:
-            txt = cfg.get("bono_consulta_si_message") or (
-                "Sí, trabajamos los bonos de {laboratorio} 🙂 Mandame la foto del bono y te "
-                "paso con alguien del equipo que lo gestiona.")
+            txt = (cfg.get("bono_consulta_si_message")
+                   or get_perfil().textos["bono_consulta_si_message"])
         return personalizar_nombre(txt.replace("{laboratorio}", hit), nombre), True
     if por_foto:
-        txt = cfg.get("bono_no_reconocido_message") or (
-            "¡Hola {nombre}! Recibí tu bono 🙌 Te paso con alguien del equipo para "
-            "confirmar si lo trabajamos.")
+        txt = (cfg.get("bono_no_reconocido_message")
+               or get_perfil().textos["bono_no_reconocido_message"])
     else:
         txt = cfg.get("bono_consulta_no_message") or (
             "Eso lo confirma el equipo: te paso con alguien para que lo vea con vos 🙂")
@@ -1541,8 +1539,9 @@ def responder_bono(lab: str, cfg: dict, nombre: str = "", por_foto: bool = False
 
 # ── 48b: pedido por síntoma → dejar a mano el farmacéutico ─────────────────────
 def agregar_oferta_farmaceutico(respuesta: str, cfg: dict) -> str:
-    extra = cfg.get("sintoma_farmaceutico_message") or (
-        "Si preferís, decime \"farmacéutico\" y te paso con el nuestro para que te oriente.")
+    # Vacío en la config → el del perfil (petshop lo trae vacío: no agrega nada).
+    extra = (cfg.get("sintoma_farmaceutico_message")
+             or get_perfil().textos["sintoma_farmaceutico_message"])
     if not extra.strip() or "farmac" in (respuesta or "").lower():
         return respuesta
     return f"{(respuesta or '').rstrip()}\n\n{extra}"
@@ -1692,17 +1691,11 @@ async def _cerrar_venta_efectivo(session_svc, phone: str, session: dict,
     plazo = f" Tenés {horas} hs para pasar a buscarlo." if horas > 0 and tipo_entrega != "envio" else ""
     envio_line = f" (incluye ${costo_envio:,.0f} de envío)" if costo_envio > 0 else ""
     if tipo_entrega == "envio":
-        plantilla = cfg.get("efectivo_envio_message") or (
-            "✅ *¡Listo! Tomamos tu pedido* 🙌\n\n"
-            "*{producto}* — ${total}{envio}\n"
-            "🚚 Te lo enviamos a *{direccion}* y lo pagás en efectivo al recibirlo.\n"
-            "📋 Código de pedido: *{codigo}*\n\n¡Muchas gracias! 💊")
+        plantilla = (cfg.get("efectivo_envio_message")
+                     or get_perfil().textos["efectivo_envio_message"])
     else:
-        plantilla = cfg.get("efectivo_retiro_message") or (
-            "✅ *¡Listo! Tomamos tu pedido* 🙌\n\n"
-            "*{producto}* — ${total}\n"
-            "💵 Lo pagás en efectivo al retirar.{plazo}\n"
-            "🔑 *Tu código de retiro es: {codigo}*\n\n¡Muchas gracias! 💊")
+        plantilla = (cfg.get("efectivo_retiro_message")
+                     or get_perfil().textos["efectivo_retiro_message"])
     msg = (plantilla.replace("{producto}", nombre).replace("{total}", f"{total:,.2f}")
            .replace("{envio}", envio_line).replace("{plazo}", plazo)
            .replace("{direccion}", direccion or "tu domicilio")

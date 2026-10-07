@@ -21,6 +21,7 @@ from app.config import get_settings
 from app.services.order_service import get_order_service
 from app.services.whatsapp_service import get_whatsapp_service
 from app.services.config_service import get_config_service
+from app.services.perfil import get_perfil
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/orders/api")
@@ -158,19 +159,13 @@ def armar_mensaje_pedido_listo(order: dict, cfg: dict, pickup_text: str = "") ->
     producto = nombre + (f" x{cantidad}" if cantidad > 1 else "")
     horario = f"\n{pickup_text}" if pickup_text else ""
 
+    # Sin texto guardado, el del perfil de rubro (farmacia: el de DEFAULTS).
     if (order.get("tipo_entrega") or "retiro") == "envio":
-        plantilla = cfg.get("pedido_listo_envio_message") or (
-            "🎉 *¡Tu pedido está listo!*\n\n"
-            "*{producto}* — ${total}\n"
-            "🚚 Sale para *{direccion}*. Te avisamos cuando esté en camino. 💊"
-        )
+        plantilla = (cfg.get("pedido_listo_envio_message")
+                     or get_perfil().textos["pedido_listo_envio_message"])
     else:
-        plantilla = cfg.get("pedido_listo_retiro_message") or (
-            "🎉 *¡Tu pedido está listo para retirar!*\n\n"
-            "*{producto}* — ${total}\n"
-            "🔑 *Código de retiro: {codigo}*{horario}\n\n"
-            "Presentá este código y te lo entregamos. ¡Te esperamos! 💊"
-        )
+        plantilla = (cfg.get("pedido_listo_retiro_message")
+                     or get_perfil().textos["pedido_listo_retiro_message"])
 
     if (order.get("pago") or "") == "efectivo" and not order.get("cobrado_at"):
         plantilla += "\n\n💵 Recordá que lo abonás en efectivo."

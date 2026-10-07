@@ -23,6 +23,7 @@ from app.services.config_service import TZ_ARG as _TZ_LOCAL
 from fastapi import APIRouter, Request, Query, HTTPException
 
 from app.config import get_settings
+from app.services.perfil import get_perfil
 from app.models.whatsapp import WhatsAppMessage
 from app.services.sku_service import get_sku_service
 from app.services.session_service import get_session_service
@@ -983,19 +984,14 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                         # Configurable (receta_recibida_message): promete la
                         # validación en ~10 min, en línea con el SLA de 15.
                         _cfg_rr = await deps["config"].get_all()
-                        respuesta = _cfg_rr.get("receta_recibida_message") or (
-                            "¡Hola {nombre}! Recibimos tu receta 🙌 Validamos la "
-                            "información y volvemos con vos dentro de los próximos "
-                            "10 minutos."
-                        )
+                        respuesta = (_cfg_rr.get("receta_recibida_message")
+                                     or get_perfil().textos["receta_recibida_message"])
                     elif img["tipo"] == "comprobante":
                         # Acuse de recibo (minuta 79, acción 8): el bot NUNCA
                         # da el pago por confirmado — lo verifica una persona.
                         _cfg_cp = await deps["config"].get_all()
-                        respuesta = _cfg_cp.get("comprobante_recibido_message") or (
-                            "¡Listo {nombre}! Recibimos tu comprobante 🙌 Lo "
-                            "verificamos y te confirmamos en un rato."
-                        )
+                        respuesta = (_cfg_cp.get("comprobante_recibido_message")
+                                     or get_perfil().textos["comprobante_recibido_message"])
                     else:
                         respuesta = (
                             "¡Hola {nombre}! Recibí la credencial 🙌. Para gestionarla te paso "
@@ -1479,15 +1475,12 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     respuesta = (f"¡Sí! Como empleado tenés {_pct_emp:g}% de descuento en "
                                  "productos sin receta, y ya te lo muestro aplicado en los precios 🙂")
                 elif _pct_desc > 0:
-                    respuesta = (_cfg_pm.get("socio_discount_info_message") or
-                                 "¡Sí! Los socios de la Mutual tienen {pct}% de descuento en "
-                                 "productos sin receta — se aplica solo en el link de pago 🙂"
+                    respuesta = (_cfg_pm.get("socio_discount_info_message")
+                                 or get_perfil().textos["socio_discount_info_message"]
                                  ).replace("{pct}", f"{_pct_desc:g}")
                 else:
-                    respuesta = (_cfg_pm.get("socio_discount_off_message") or
-                                 "Por ahora te puedo ofrecer el precio de lista 🙂 El descuento "
-                                 "para socios lo estamos habilitando — cuando esté activo se "
-                                 "aplica automáticamente.")
+                    respuesta = (_cfg_pm.get("socio_discount_off_message")
+                                 or get_perfil().textos["socio_discount_off_message"])
                 _ts = _time.perf_counter()
                 await deps["wa"].send_text(phone, respuesta)
                 _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
