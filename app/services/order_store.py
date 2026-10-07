@@ -1,5 +1,5 @@
 """
-Persistencia durable de pedidos (tabla `orders`, migración 0017).
+Persistencia durable de pedidos (tabla `orders`, migración 0019).
 
 Los pedidos viven en Redis con TTL de 7 días (order_service) y eso es lo que
 lee el backoffice. Esta tabla es la copia que no se pierde: un pedido COBRADO

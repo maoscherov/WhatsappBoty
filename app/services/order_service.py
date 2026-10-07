@@ -127,7 +127,7 @@ class OrderService:
 
     @staticmethod
     async def _persistir(order: dict) -> None:
-        """Copia durable en Postgres (tabla orders, migración 0017): un pedido
+        """Copia durable en Postgres (tabla orders, migración 0019): un pedido
         COBRADO no puede depender del TTL de 7 días de Redis. Best-effort —
         sin Postgres el bot sigue solo con Redis, como el resto del sistema."""
         try:

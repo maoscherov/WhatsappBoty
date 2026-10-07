@@ -10210,4 +10210,11 @@ En ningún mensaje puede aparecer farmacia, receta, obra social, socio, mutual, 
 Antes de mergear:
 1. En Railway, Remedia y CERCA tienen `VERTICAL` en minúsculas o sin setear (hoy "Mutual" con mayúscula se coacciona a farmacia; con la normalización pasaría a mutual).
 2. Su `PUBLIC_BASE_URL` es un host bajo `remedia.ar` (§4.3): si no, los links a `remedia.ar` pasarían a derivarse.
-3. Suite completa en verde (Step 1) y aviso al equipo de la farmacia de los cambios que también la afectan: la pregunta en `esperando_entrega` y `esperando_confirmacion` (§5), "¿cuánto sale el envío?" eligiendo la entrega ahora lo contesta el modelo, y las correcciones de pesos y presentaciones.
+3. Suite completa en verde (Step 1) y aviso al equipo de la farmacia de los cambios que también la afectan: la pregunta en `esperando_entrega` y `esperando_confirmacion` (§5), "¿cuánto sale el envío?" eligiendo la entrega ahora lo contesta el modelo, las correcciones de pesos y presentaciones, y "los pedidos se copian a Postgres (tabla orders)".
+4. La rama al día con `develop` (trae 07e3aa2, operadores), `alembic heads` con una sola cabeza (`0019`) y la suite completa corrida sobre el resultado del merge.
+
+Migraciones (7/10, hallazgos 1 y 13 de la revisión final): la migración de pedidos de la rama ahora es `0019_orders_y_mercurio_codigos.py` (revision `0019` sobre la `0018` de operadores de `develop`) y se auto-repara en MO: su base quedó estampada en `0018` con la vieja migración de pedidos (tiene `orders`, no tiene `operadores`) y la `0019` corre el upgrade() de `0018_operadores.py` si falta esa tabla. No hace falta `alembic stamp` a mano. Verificación después del deploy en los tres servicios (MO al desplegar esta versión de la rama; farmacia y mutual al desplegar `develop` con el merge):
+- `GET /health` devuelve `"db": "0019"`.
+- En la consola de Postgres del servicio, `SELECT to_regclass('orders'), to_regclass('operadores');` no devuelve ningún NULL.
+
+Write-through de pedidos (ruling del 7/10, hallazgo 15): la copia de pedidos a Postgres (tabla `orders`) corre en TODOS los perfiles, también en la farmacia, como cambio explícito (protege pedidos cobrados ante la pérdida de Redis); no depende de `MERCURIO_PEDIDOS_ENABLED`. La política de retención de esa tabla (guarda teléfono y dirección) queda pendiente. Detalle en §7.6 del spec.

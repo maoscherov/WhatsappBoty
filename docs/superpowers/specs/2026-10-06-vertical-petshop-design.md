@@ -1150,6 +1150,39 @@ Antes de mergear:
 - Confirmar que su `PUBLIC_BASE_URL` es un host bajo `remedia.ar` (§4.3).
 - Suite completa en verde y aviso al equipo de la farmacia por la corrección
   de §5.
+- La rama al día con `develop` (ya trae 07e3aa2, operadores), `alembic heads`
+  con una sola cabeza (`0019`) y la suite completa corrida sobre el resultado
+  del merge.
+
+Migraciones (7/10, hallazgos 1 y 13 de la revisión final). `develop` agregó
+su propia `0018` (operadores) y la migración de pedidos de la rama, que
+también era `0018`, pasó a `0019_orders_y_mercurio_codigos.py` (revision
+`0019`, down_revision `0018`). La `0019` se auto-repara: la base de MO quedó
+estampada en `0018` con la vieja migración de pedidos (tiene `orders` y
+`mercurio_codigos`, no tiene `operadores`), y la `0019` corre el upgrade() de
+`0018_operadores.py` si falta esa tabla y después crea lo suyo con
+`IF NOT EXISTS`. Farmacia y mutual, en `0017` o en `0018` (operadores), llegan
+solas a `0019`. No hace falta `alembic stamp` a mano en ningún servicio.
+
+Verificación después de cada deploy, en los tres servicios (MO al desplegar
+esta versión de la rama; farmacia y mutual al desplegar `develop` con el
+merge):
+- `GET /health` devuelve `"db": "0019"`. Si dice `0017` o `0018`, la
+  migración no se aplicó: buscar en el log del arranque "No se pudieron
+  aplicar migraciones Alembic".
+- Las tablas `orders` y `operadores` existen: en la consola de Postgres del
+  servicio, `SELECT to_regclass('orders'), to_regclass('operadores');` no
+  devuelve ningún NULL.
+
+Pedidos copiados a Postgres en todos los perfiles (ruling del 7/10, hallazgo
+15). El write-through de pedidos a la tabla `orders` (`OrderService.create` y
+`_save` → `_persistir`) corre en TODOS los perfiles, también en la farmacia y
+la mutual, y no depende de `MERCURIO_PEDIDOS_ENABLED`: protege los pedidos
+cobrados ante una pérdida de Redis (TTL de 7 días, reinicio o evicción). Es un
+cambio explícito para la farmacia. La tabla guarda el JSON completo del pedido
+(teléfono y dirección incluidos) y **la política de retención queda
+pendiente**. El aviso del merge al equipo de la farmacia tiene que decir: "los
+pedidos se copian a Postgres (tabla orders)".
 
 ## 8. Fuera de alcance
 
