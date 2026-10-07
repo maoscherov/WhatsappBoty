@@ -16,6 +16,8 @@ from zoneinfo import ZoneInfo
 
 import redis.asyncio as aioredis
 
+from app.services.perfil import get_perfil
+
 logger = logging.getLogger(__name__)
 
 CONFIG_KEY   = "bot:config"
@@ -201,7 +203,8 @@ DEFAULTS: dict[str, str] = {
         "Eso lo confirma el equipo: te paso con alguien para que lo vea con vos 🙂"
     ),
     # Fila 48: pedido por síntoma ("algo para la gripe") → tras ofrecer venta
-    # libre, dejar a mano al farmacéutico. Vacío = apagado.
+    # libre, dejar a mano al farmacéutico. Un espacio lo apaga; vacío vuelve
+    # al texto del perfil de rubro (en la farmacia, este mismo).
     "sintoma_farmaceutico_message": (
         "Si preferís, decime \"farmacéutico\" y te paso con el nuestro para que te oriente."
     ),
@@ -233,6 +236,9 @@ DEFAULTS: dict[str, str] = {
         "Por este canal aceptamos pago con tarjeta (débito o crédito) 💳. "
         "Si querés, seguimos con tu pedido y te mando el link de pago seguro."
     ),
+    # "mercado pago" en el mensaje cuenta como pago manual (deriva o "solo
+    # tarjeta"). "false" = no: para un comercio que cobra con MP (spec 4.4).
+    "pago_mp_manual": "true",
     # Cierre por inactividad (minuta 2026-07-31). El texto es provisorio hasta
     # que la farmacia mande el definitivo — se cambia desde el backoffice.
     "inactivity_minutes": "15",
@@ -272,6 +278,12 @@ DEFAULTS: dict[str, str] = {
     # histórico). Con costo, se muestra al preguntar la entrega y se suma al
     # total del link (requerimiento de la farmacia, 4/9: $2000).
     "envio_costo": "0",
+    # Sucursal de retiro (spec 5): nombre corto que se muestra en "*retiro en
+    # {sucursal}*". Vacío = "*retiro en sucursal*" como siempre. La respuesta a
+    # "¿dónde queda la sucursal?" solo sale con la sucursal cargada; ningún
+    # default trae una dirección (el bot nunca la inventa).
+    "retiro_sucursal": "",
+    "retiro_info_message": "Lo retirás en *{sucursal}* 🏪",
     # Cabecera del mensaje de cotización de receta que envía el operador
     # desde el backoffice ({producto} se reemplaza). El desglose de precios y
     # descuentos lo arma el código: los números nunca se redactan a mano.
@@ -344,6 +356,16 @@ DEFAULT_HOURS = {
 }
 
 
+def valores_base() -> dict:
+    """
+    DEFAULTS + los textos del perfil de rubro (spec 3.4). Lo guardado en
+    Redis/Postgres se mezcla ENCIMA y siempre gana. En farmacia y mutual los
+    textos del perfil se arman desde DEFAULTS: da DEFAULTS tal cual. Pública
+    para que los tests armen su config falsa con los textos del perfil.
+    """
+    return {**DEFAULTS, **get_perfil().textos}
+
+
 class ConfigService:
     """
     Config editable desde el backoffice, con tres niveles:
@@ -410,7 +432,7 @@ class ConfigService:
             try:
                 data = await self._redis.hgetall(CONFIG_KEY)
                 if data:
-                    return {**DEFAULTS, **data}
+                    return {**valores_base(), **data}
             except Exception:
                 pass
 
@@ -425,9 +447,9 @@ class ConfigService:
                                 f"({len(durable)} claves)")
             except Exception:
                 pass
-            return {**DEFAULTS, **durable}
+            return {**valores_base(), **durable}
 
-        return {**DEFAULTS, **self._cache}
+        return {**valores_base(), **self._cache}
 
     async def sincronizar_durable(self) -> int:
         """
@@ -458,7 +480,7 @@ class ConfigService:
 
     async def get(self, key: str) -> str:
         config = await self.get_all()
-        return config.get(key, DEFAULTS.get(key, ""))
+        return config.get(key, valores_base().get(key, ""))
 
     async def set(self, key: str, value: str):
         await self.set_many({key: value})

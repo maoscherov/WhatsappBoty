@@ -924,6 +924,7 @@ class ConfigUpdate(BaseModel):
     pago_manual_mode: str | None = None          # "derivar" | "solo_tarjeta"
     pago_manual_message: str | None = None
     pago_solo_tarjeta_message: str | None = None
+    pago_mp_manual: str | None = None            # "false" = "mercado pago" no es pago manual
     auto_liberar_minutos: str | None = None      # derivación sin atender vuelve al bot (0 = nunca)
     auto_liberar_message: str | None = None
     inactivity_minutes: str | None = None        # cierre por inactividad (min)
@@ -933,6 +934,8 @@ class ConfigUpdate(BaseModel):
     handoff_reminder_minutes: str | None = None  # aviso de demora post-derivación ("0" = off)
     handoff_reminder_message: str | None = None
     envio_costo: str | None = None               # costo del envío a domicilio ("0" = gratis)
+    retiro_sucursal: str | None = None           # nombre de la sucursal de retiro ("" = "sucursal")
+    retiro_info_message: str | None = None       # respuesta a "¿dónde queda?" ({sucursal})
     receta_ocr_enabled: str | None = None        # "true" = leer recetas al derivar
     receta_cotizacion_intro: str | None = None   # cabecera del mensaje de cotización ({producto})
     receta_cotizacion_cierre: str | None = None  # invitación a confirmar (modo cotizar, sin link)
