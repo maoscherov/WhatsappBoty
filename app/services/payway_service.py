@@ -18,9 +18,13 @@ Verificar contra sandbox — los valores exactos dependen del comercio.
 """
 
 import logging
+import re
+import unicodedata
 from typing import Optional
 
 import httpx
+
+from app.services.perfil import get_perfil
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +39,12 @@ _CHECKOUT_API_PROD = "https://ventasonline.payway.com.ar/api/v1/checkout-payment
 # Base de la página del formulario hosteado (donde vive {payment_id})
 _CHECKOUT_WEB_SANDBOX = "https://developers.decidir.com/web/checkout"
 _CHECKOUT_WEB_PROD = "https://ventasonline.payway.com.ar/web/checkout"
+
+
+def _slug(texto: str) -> str:
+    """'Mascotas del Oeste' → 'mascotas-del-oeste'; 'Remedia' → 'remedia'."""
+    plano = unicodedata.normalize("NFKD", texto or "").encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"[^a-z0-9]+", "-", plano.lower()).strip("-")
 
 
 def _xsource() -> str:
@@ -148,7 +158,7 @@ class PaywayService:
         return [{"code": c, "description": f"Campo MDD{c}"} for c in codes]
 
     def _fraud_detection(self, amount: float, email: str, device_id: str,
-                         producto: str = "Producto") -> dict:
+                         producto: str = "Producto", comercio: str = "") -> dict:
         """
         Bloque antifraude Cybersource — vertical RETAIL (según cs_retail.js del
         SDK oficial). Valores por defecto de sandbox; en producción conviene
@@ -161,7 +171,7 @@ class PaywayService:
             "customer_id": "1",
             "email": email or "cliente@remedia.ar",
             "first_name": "Cliente",
-            "last_name": "Remedia",
+            "last_name": comercio or get_perfil().comercio,
             "phone_number": "1100000000",
             "postal_code": "1000",
             "state": "C",
@@ -222,6 +232,7 @@ class PaywayService:
         Retorna (respuesta_dict, error). amount en pesos → se convierte a centavos.
         device_id: mismo fingerprint usado al tokenizar (requerido por Cybersource).
         """
+        comercio = get_perfil().comercio
         payload = {
             "site_transaction_id": site_transaction_id,
             "token": token,
@@ -230,14 +241,14 @@ class PaywayService:
             "amount": int(round(amount * 100)),   # centavos
             "currency": "ARS",
             "installments": int(installments),
-            "description": "Compra Remedia",
+            "description": f"Compra {comercio}",
             "payment_type": "single",
             "sub_payments": [],
         }
         # Cybersource: el comercio exige datos antifraude en el cobro.
         if self._cybersource:
-            dev = device_id or "remedia-web"
-            payload["fraud_detection"] = self._fraud_detection(amount, email, dev, producto)
+            dev = device_id or f"{_slug(comercio)}-web"
+            payload["fraud_detection"] = self._fraud_detection(amount, email, dev, producto, comercio)
             # El fingerprint también en la raíz del pago.
             payload["device_unique_identifier"] = dev
         if email:

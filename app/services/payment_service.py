@@ -1,11 +1,30 @@
 import httpx
 import logging
+import re
+import unicodedata
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+
+from app.services.perfil import get_perfil
 
 logger = logging.getLogger(__name__)
 
 MP_BASE_URL = "https://api.mercadopago.com"
+
+
+def statement_descriptor() -> str:
+    """
+    Texto del resumen de la tarjeta. El del perfil si lo tiene (farmacia:
+    "FARMACIA AMI"); si no, el nombre del comercio en mayúsculas, sin tildes
+    ni ñ (solo A-Z, 0-9 y espacios) y hasta 22 caracteres. Se lee en cada
+    link: nunca queda fijado en el singleton.
+    """
+    p = get_perfil()
+    if p.descriptor_tarjeta:
+        return p.descriptor_tarjeta
+    plano = unicodedata.normalize("NFKD", p.comercio).encode("ascii", "ignore").decode("ascii")
+    limpio = " ".join(re.sub(r"[^A-Z0-9 ]+", " ", plano.upper()).split())
+    return limpio[:22].strip()
 
 
 class PaymentService:
@@ -45,7 +64,7 @@ class PaymentService:
             }],
             "expiration_date_to": expiration,
             "external_reference": f"{phone}_{sku_id}",
-            "statement_descriptor": "FARMACIA AMI",
+            "statement_descriptor": statement_descriptor(),
         }
 
         if self._notification_url:

@@ -821,3 +821,92 @@ async def test_payway_confirmacion_farmacia_igual_que_hoy(usar_perfil, monkeypat
     r = await pw.payway_charge(pw.ChargeIn(pid="PID-FARM-1", token="tok", bin="450799"))
     assert r == {"status": "approved"}
     assert enviados[0] == _CONF_MP_FARMACIA
+
+
+class _RespHttp:
+    def __init__(self, status, data):
+        self.status_code = status
+        self._data = data
+        self.text = json.dumps(data)
+
+    def json(self):
+        return self._data
+
+
+def _http_falso(monkeypatch, modulo, status, data):
+    """Reemplaza httpx.AsyncClient y devuelve la lista de payloads posteados."""
+    capturados = []
+
+    class _Cliente:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, headers=None, json=None, timeout=None):
+            capturados.append(json)
+            return _RespHttp(status, data)
+
+    monkeypatch.setattr(modulo.httpx, "AsyncClient", _Cliente)
+    return capturados
+
+
+async def test_statement_descriptor_por_perfil(usar_perfil, monkeypatch):
+    from app.services import payment_service as ps
+    cap = _http_falso(monkeypatch, ps, 201, {"init_point": "https://mp.test/x"})
+    svc = ps.PaymentService("TEST-TOKEN", "https://bot.test/mp/notification")
+    usar_perfil("farmacia")
+    link, err = await svc.crear_link(sku_id="S1", nombre="Royal Canin 15KG", precio=9800.0, phone="549")
+    assert (link, err) == ("https://mp.test/x", None)
+    assert cap[-1]["statement_descriptor"] == "FARMACIA AMI"
+    # Misma instancia: el descriptor se lee en cada link, no en __init__
+    usar_perfil("petshop")
+    await svc.crear_link(sku_id="S1", nombre="Royal Canin 15KG", precio=9800.0, phone="549")
+    assert cap[-1]["statement_descriptor"] == "MASCOTAS DEL OESTE"
+
+
+async def test_statement_descriptor_ascii_y_hasta_22(usar_perfil, monkeypatch):
+    from app.services import payment_service as ps
+    cap = _http_falso(monkeypatch, ps, 201, {"init_point": "https://mp.test/x"})
+    usar_perfil("petshop", comercio="Piñata Mascotas Ñuñoa Sucursal Centro")
+    await ps.PaymentService("TEST-TOKEN", "https://bot.test/mp/notification").crear_link(
+        sku_id="S1", nombre="Royal Canin 15KG", precio=9800.0, phone="549")
+    d = cap[-1]["statement_descriptor"]
+    assert d == "PINATA MASCOTAS NUNOA"
+    assert d.isascii() and len(d) <= 22
+
+
+async def test_payway_crear_pago_con_el_comercio_del_perfil(usar_perfil, monkeypatch):
+    from app.services import payway_service as pws
+    cap = _http_falso(monkeypatch, pws, 201, {"id": 1, "status": "approved"})
+    svc = pws.PaywayService("pub", "priv", sandbox=True, cybersource=True)
+    usar_perfil("petshop")
+    data, err = await svc.crear_pago(token="tok", amount=9800.0, site_transaction_id="t1",
+                                     payment_method_id=1, bin="450799", producto="Royal Canin 15KG")
+    assert err is None
+    pl = cap[-1]
+    assert pl["description"] == "Compra Mascotas del Oeste"
+    assert pl["fraud_detection"]["bill_to"]["last_name"] == "Mascotas del Oeste"
+    assert pl["fraud_detection"]["retail_transaction_data"]["ship_to"]["last_name"] == "Mascotas del Oeste"
+    assert pl["device_unique_identifier"] == "mascotas-del-oeste-web"
+    assert pl["fraud_detection"]["device_unique_identifier"] == "mascotas-del-oeste-web"
+    # Con el fingerprint del navegador, se usa ese
+    await svc.crear_pago(token="tok", amount=9800.0, site_transaction_id="t2",
+                         payment_method_id=1, bin="450799", device_id="fp-123")
+    assert cap[-1]["device_unique_identifier"] == "fp-123"
+
+
+async def test_payway_crear_pago_farmacia_igual_que_hoy(usar_perfil, monkeypatch):
+    from app.services import payway_service as pws
+    cap = _http_falso(monkeypatch, pws, 201, {"id": 1, "status": "approved"})
+    usar_perfil("farmacia")
+    await pws.PaywayService("pub", "priv", sandbox=True, cybersource=True).crear_pago(
+        token="tok", amount=4770.0, site_transaction_id="t1", payment_method_id=1, bin="450799")
+    pl = cap[-1]
+    assert pl["description"] == "Compra Remedia"
+    assert pl["fraud_detection"]["bill_to"]["last_name"] == "Remedia"
+    assert pl["device_unique_identifier"] == "remedia-web"
