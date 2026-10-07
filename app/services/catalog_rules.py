@@ -8,6 +8,7 @@ no medicinal fuerzan "no". Se calcula al ESCRIBIR en catalog_items para que la
 lectura sea directa; un cambio de regla requiere re-sync o migración de datos.
 """
 
+from app.services.perfil import get_perfil
 from app.services.sku_service import es_venta_libre, _categoria_sin_receta
 
 _BAJO_RECETA = "medicamentos bajo receta"
@@ -42,12 +43,19 @@ ORIGENES = {
     "categoria_bajo_receta": "Categoría \"Medicamentos bajo receta\"",
     "sin_referencia": "Medicamento sin referencia (a validar)",
     "otro": "No es medicamento",
+    # Perfil sin recetas (petshop): nada se marca; el panel muestra el porqué.
+    "sin_recetas": "Este comercio no vende con receta",
 }
 
 
 def explicar_receta(category: str, rubro: str, subrubro: str, name: str,
                     barcodes=(), referencia=None) -> tuple[str, str]:
     """(flag, origen) con el mismo orden que `derivar_requiere_receta`."""
+    # Rubro sin recetas (petshop): antes de la lista OTC y de la referencia,
+    # que ni se importa. Un rubro de Mercurio con "medicament" quedaba
+    # "ambiguo" y en modo conservador derivaba la pipeta.
+    if not get_perfil().recetas:
+        return "no", "sin_recetas"
     if es_venta_libre(name):
         return "no", "venta_libre_conocida"
     if _categoria_sin_receta(category):

@@ -29,3 +29,55 @@ def test_formatear_productos_farmacia_marca_receta_como_hoy(usar_perfil):
         " | REQUIERE RECETA | ID: 20\n"
         "2. PIPETA FRONTLINE PLUS PERRO 10-20KG | $15000.00 | Disponible (cantidad aprox: 4)"
         " | STOCK BAJO - ofrecer con urgencia | REQUIERE RECETA | ID: 21")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Recetas (recetas = False)
+# ══════════════════════════════════════════════════════════════════════════════
+import pytest
+
+from app.services.sku_service import SKUService
+
+_PIPETA_ERP = ("MEDICAMENTOS", "PERROS", "ANTIPARASITARIOS", "Pipeta Frontline 10-20kg")
+
+
+def test_explicar_receta_petshop_no_vende_con_receta(usar_perfil):
+    from app.services.catalog_rules import ORIGENES, explicar_receta
+    usar_perfil("petshop")
+    # La referencia diría "si": el perfil sin recetas gana antes de consultarla.
+    assert explicar_receta(*_PIPETA_ERP, referencia=lambda b: "si") == ("no", "sin_recetas")
+    assert ORIGENES["sin_recetas"] == "Este comercio no vende con receta"
+
+
+def test_explicar_receta_farmacia_igual_que_hoy(usar_perfil):
+    from app.services.catalog_rules import explicar_receta
+    usar_perfil("farmacia")
+    assert explicar_receta(*_PIPETA_ERP, referencia=lambda b: None) == ("ambiguo", "sin_referencia")
+    assert explicar_receta("Medicamentos Bajo Receta", "", "", "Pipeta Frontline 10-20kg",
+                           referencia=lambda b: None) == ("si", "categoria_bajo_receta")
+
+
+def _item_medicamento():
+    from app.models.sync import CatalogItemIn
+    return CatalogItemIn(external_id="9001", hash="a" * 64,
+                         name="PIPETA FRONTLINE PLUS PERRO 10-20KG", category="MEDICAMENTOS",
+                         rubro="PERROS", subrubro="ANTIPARASITARIOS",
+                         barcodes=["7790000000001"])
+
+
+def test_fila_del_catalogo_petshop_no_requiere_receta(usar_perfil, monkeypatch):
+    from app.services import receta_referencia
+    from app.services.catalog_store import _fila
+    usar_perfil("petshop")
+    monkeypatch.setattr(receta_referencia, "_MAPA", {"7790000000001": "si"})
+    fila = _fila("mascotas-oeste", _item_medicamento(), "mercurio")
+    assert fila[17] == "no"          # requiere_receta ($18 del upsert)
+
+
+def test_fila_del_catalogo_farmacia_igual_que_hoy(usar_perfil, monkeypatch):
+    from app.services import receta_referencia
+    from app.services.catalog_store import _fila
+    usar_perfil("farmacia")
+    monkeypatch.setattr(receta_referencia, "_MAPA", {})
+    fila = _fila("farmacia-centro", _item_medicamento(), "observer-gestion")
+    assert fila[17] == "ambiguo"
