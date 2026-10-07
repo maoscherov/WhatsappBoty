@@ -74,11 +74,21 @@ class TestPedidoDesdeOrden:
                                state="complete", customer_id_default="99999999")
         assert p["customer_id"] == "20304050"
 
-    def test_sin_codigo_conocido_cae_al_external_id(self):
-        p = pedido_desde_orden(_orden(sku_id="424242"), {}, state="complete",
+    def test_sin_codigo_conocido_no_arma_el_pedido(self):
+        """Hallazgo 7: nunca se cae al external_id (es el id_articulo_mercurio,
+        no el codigo: 422 para siempre, o peor, el codigo de OTRO artículo)."""
+        from app.services.mercurio_pedidos import CodigoMercurioFaltante
+        with pytest.raises(CodigoMercurioFaltante,
+                           match="sin código Mercurio para 424242; se reintenta "
+                                 "después del próximo sync"):
+            pedido_desde_orden(_orden(sku_id="424242"), {}, state="complete",
                                customer_id_default="x")
-        [li] = p["line_items"]
-        assert li["variant_id"] == "424242" and li["product_id"] == "424242"
+
+    def test_codigo_vacio_cuenta_como_faltante(self):
+        from app.services.mercurio_pedidos import CodigoMercurioFaltante
+        with pytest.raises(CodigoMercurioFaltante, match="7508"):
+            pedido_desde_orden(_orden(), {"7508": {"codigo": "", "codigo_padre": "X"}},
+                               state="complete", customer_id_default="x")
 
 
 # ── Cliente: POST /pedidos ────────────────────────────────────────────────────
@@ -585,3 +595,57 @@ class TestEncoladoTemprano:
         n = await reintentar_pedidos_pendientes(client=_cliente_pedidos([OK_201], reqs), db=db)
         assert n == 1
         assert await _erp_estado(db, "ORD-20261005-120000-AB12C") == "enviado"
+
+
+# ── Códigos de Mercurio: sin código no hay POST (hallazgo 7) ──────────────────
+
+class TestCodigosMercurio:
+    @pytest.fixture(autouse=True)
+    def _flag(self, monkeypatch):
+        s = get_settings()
+        monkeypatch.setattr(s, "mercurio_pedidos_enabled", True)
+        monkeypatch.setattr(s, "mercurio_branch_id", "mascotas-oeste")
+
+    async def _fila(self, db):
+        return await db.fetchrow("SELECT erp_estado, erp_ultimo_error, erp_intentos FROM orders "
+                                 "WHERE order_id = $1", "ORD-20261005-120000-AB12C")
+
+    async def test_sin_codigo_no_hay_post_y_queda_pendiente(self, db):
+        """El artículo todavía no tiene código (p. ej. antes del primer sync):
+        no se manda nada y se reintenta después del próximo sync."""
+        from app.services.order_store import get_order_store
+        await get_order_store(db).upsert(_orden(), erp_estado="pendiente")   # sin códigos
+        reqs: list = []
+        assert await enviar_pedido_erp(_orden(), client=_cliente_pedidos([OK_201], reqs),
+                                       db=db) is None
+        assert reqs == []
+        row = await self._fila(db)
+        assert row["erp_estado"] == "pendiente"
+        assert row["erp_ultimo_error"] == ("sin código Mercurio para 7508; se reintenta "
+                                           "después del próximo sync")
+
+        # El sync trae el código: la pasada siguiente lo manda.
+        await _preparar_codigos(db)
+        assert await enviar_pedido_erp(_orden(), client=_cliente_pedidos([OK_201], reqs),
+                                       db=db) is not None
+        assert json.loads(reqs[0].content)["line_items"][0]["variant_id"] == "2209004"
+
+    async def test_falla_al_leer_los_codigos_no_hay_post(self, db):
+        """Un corte transitorio de Postgres al leer mercurio_codigos ya no se
+        confunde con "sin códigos" ni sale con el external_id."""
+        from app.services.order_store import get_order_store
+        await _preparar_codigos(db)
+        await get_order_store(db).upsert(_orden(), erp_estado="pendiente")
+        real = db._pool
+        db._pool = _PoolQueFalla(real, fallas=1)            # solo la lectura de códigos
+        reqs: list = []
+        try:
+            assert await enviar_pedido_erp(_orden(), client=_cliente_pedidos([OK_201], reqs),
+                                           db=db) is None
+        finally:
+            db._pool = real
+        assert reqs == []
+        row = await self._fila(db)
+        assert row["erp_estado"] == "pendiente"
+        assert "códigos Mercurio" in row["erp_ultimo_error"]
+        assert "conexion reseteada" in row["erp_ultimo_error"]

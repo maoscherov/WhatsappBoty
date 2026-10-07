@@ -8,7 +8,9 @@ fondo) jamás duplica el pedido.
 Contrato (spec 14/9): en line_items, `variant_id` = codigo de la variante y
 `product_id` = codigo_padre. Esos códigos no están en catalog_items (el
 contrato compartido con el agente no los tiene): el sync los deja en la
-tabla `mercurio_codigos` y acá se resuelven por external_id (= sku_id).
+tabla `mercurio_codigos` y acá se resuelven por external_id (= sku_id). Sin
+código (o sin poder leerlos) no hay POST: el pedido queda `pendiente` y se
+reintenta después del próximo sync. Nunca se manda el external_id.
 
 `state` y `customer_id` siguen pendientes de confirmación del proveedor
 (mail 14/9): salen de Settings (mercurio_pedido_state /
@@ -62,20 +64,40 @@ def _items_de_la_orden(order: dict) -> list[dict]:
     }]
 
 
+class CodigoMercurioFaltante(LookupError):
+    """Algún renglón no tiene código de Mercurio (el artículo todavía no pasó
+    por el sync) o no se pudieron leer: el pedido NO se manda y queda
+    'pendiente' hasta la pasada siguiente del job."""
+
+
 def pedido_desde_orden(order: dict, codigos: dict[str, dict], *,
                        state: str, customer_id_default: str) -> dict:
-    """Arma el JSON del POST /pedidos (campos obligatorios del contrato)."""
+    """
+    Arma el JSON del POST /pedidos (campos obligatorios del contrato).
+
+    Cada renglón necesita su `codigo` de variante (de mercurio_codigos). Nunca
+    se cae al external_id: es el id_articulo_mercurio, comparte el espacio
+    numérico con los códigos y podría registrar OTRO artículo. Si falta alguno,
+    CodigoMercurioFaltante y no hay pedido.
+    """
     order_id = str(order.get("order_id"))
-    line_items = []
-    for it in _items_de_la_orden(order):
+    renglones = _items_de_la_orden(order)
+    faltan = []
+    for it in renglones:
         sku = str(it.get("sku_id") or "")
-        cod = codigos.get(sku) or {}
+        if not (codigos.get(sku) or {}).get("codigo") and sku not in faltan:
+            faltan.append(sku)
+    if faltan:
+        raise CodigoMercurioFaltante(
+            f"sin código Mercurio para {', '.join(faltan)}; "
+            "se reintenta después del próximo sync")
+    line_items = []
+    for it in renglones:
+        cod = codigos[str(it.get("sku_id") or "")]
         total_item = round(float(it.get("total") or 0), 2)
         line_items.append({
-            # Sin código conocido se cae al external_id: el 422 del ERP lo
-            # delata y queda rechazado con el motivo a la vista.
-            "variant_id": cod.get("codigo") or sku,
-            "product_id": cod.get("codigo_padre") or cod.get("codigo") or sku,
+            "variant_id": cod["codigo"],
+            "product_id": cod.get("codigo_padre") or cod["codigo"],
             "quantity": int(it.get("cantidad") or 1),
             "subtotal": total_item,
             "total": total_item,
@@ -118,39 +140,47 @@ async def enviar_pedido_erp(order: dict, *, client=None, db=None) -> Optional[di
     order_id = str(order.get("order_id"))
     store = get_order_store(db)
 
+    async def _marcar(estado: str, error: str) -> None:
+        try:
+            await store.marcar_erp(order_id, estado, error=error[:500],
+                                   incrementar_intento=True, order=order)
+        except Exception as e2:
+            logger.error(f"Pedido {order_id}: no se pudo marcar {estado}: {e2}")
+
+    # Códigos de variante. Un error de Postgres se propaga (raise_errors): no
+    # se confunde con "no hay códigos" ni se manda nada a ciegas.
     try:
         codigos: dict[str, dict] = {}
         skus = [str(i.get("sku_id") or "") for i in _items_de_la_orden(order)]
         rows = await db.fetch(
             "SELECT external_id, codigo, codigo_padre FROM mercurio_codigos "
             "WHERE branch_id = $1 AND external_id = ANY($2::text[])",
-            s.mercurio_branch_id, [x for x in skus if x])
+            s.mercurio_branch_id, [x for x in skus if x], raise_errors=True)
         for r in rows:
             codigos[r["external_id"]] = {"codigo": r["codigo"],
                                          "codigo_padre": r["codigo_padre"]}
     except Exception as e:
-        logger.warning(f"Pedido {order_id}: no se pudieron resolver códigos: {e}")
-        codigos = {}
+        motivo = f"no se pudieron leer los códigos Mercurio ({e}); se reintenta"
+        logger.warning(f"Pedido {order_id}: {motivo}")
+        await _marcar("pendiente", motivo)
+        return None
 
-    pedido = pedido_desde_orden(order, codigos, state=s.mercurio_pedido_state,
-                                customer_id_default=s.mercurio_customer_id_default)
+    try:
+        pedido = pedido_desde_orden(order, codigos, state=s.mercurio_pedido_state,
+                                    customer_id_default=s.mercurio_customer_id_default)
+    except CodigoMercurioFaltante as e:
+        logger.warning(f"Pedido {order_id}: {e}")
+        await _marcar("pendiente", str(e))
+        return None
     try:
         resultado = await client.crear_pedido(pedido, idempotency_key=order_id)
     except MercurioPedidoRechazado as e:
         logger.error(f"Pedido {order_id} RECHAZADO por Mercurio: {e}")
-        try:
-            await store.marcar_erp(order_id, "rechazado", error=str(e)[:500],
-                                   incrementar_intento=True, order=order)
-        except Exception as e2:
-            logger.error(f"Pedido {order_id}: no se pudo marcar rechazado: {e2}")
+        await _marcar("rechazado", str(e))
         return None
     except MercurioError as e:
         logger.warning(f"Pedido {order_id}: ERP inalcanzable, queda pendiente: {e}")
-        try:
-            await store.marcar_erp(order_id, "pendiente", error=str(e)[:500],
-                                   incrementar_intento=True, order=order)
-        except Exception as e2:
-            logger.error(f"Pedido {order_id}: no se pudo marcar pendiente: {e2}")
+        await _marcar("pendiente", str(e))
         return None
 
     try:
