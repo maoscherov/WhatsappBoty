@@ -708,3 +708,253 @@ async def test_farmacia_indicacion_veterinaria_no_tiene_rama(entorno, usar_perfi
     await wh.procesar_mensajes([_foto_mo()])
     s = await deps["session"].get(PHONE)
     assert s["estado"] == "operador" and s["derivada_motivo"] == "imagen_no_reconocida"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Punta a punta (Task 15): venta, compra completa, links y recetas en cadena.
+# Helpers con prefijo _e2e para no pisar los de las secciones de otras tareas.
+# ══════════════════════════════════════════════════════════════════════════════
+import pytest  # noqa: E402,F811
+
+from app.routers import webhook as wh  # noqa: E402,F811
+from app.services import checkout_helper as _e2e_chh  # noqa: E402
+from app.services import config_service as _e2e_cs  # noqa: E402
+from app.services.config_service import valores_base as _e2e_valores_base  # noqa: E402
+from app.services.sku_service import SKUService  # noqa: E402,F811
+from test_webhook_secuencias import PHONE, _msg, entorno  # noqa: E402,F401,F811
+
+_E2E_SUC = {"retiro_sucursal": "Sucursal Piloto",
+            "retiro_info_message": "Lo retirás en *{sucursal}*, Calle Falsa 123 🐾"}
+_E2E_PROHIBIDAS = ("farmac", "receta", "socio", "obra social", "mutual", "cuenta corriente", "💊")
+
+
+def _e2e_catalogo():
+    base = {"hash": "f" * 64, "barcodes": [], "troquel": None, "brand": "", "drug": None,
+            "form": None, "rubro": "PERROS", "subrubro": "", "therapeutic_actions": [],
+            "stock": 5, "visible": True, "active": True, "source": "mercurio",
+            "category": "ALIMENTOS", "requiere_receta": "no"}
+    return SKUService.from_rows([
+        {**base, "external_id": "40", "name": "DOG CHOW ADULTO RAZAS MEDIANAS 15KG", "price": 52000.0},
+        {**base, "external_id": "41", "name": "DOG CHOW CACHORROS 3KG", "price": 14500.0},
+        {**base, "external_id": "42", "name": "PIPETA FRONTLINE PLUS PERRO 10-20KG", "price": 25000.0,
+         "category": "Medicamentos Bajo Receta", "requiere_receta": "si"},
+    ])
+
+
+class _E2ECfg:
+    """Config falsa: textos del perfil activo + sucursal de retiro cargada."""
+    def __init__(self, extra=None):
+        self.v = {**_e2e_valores_base(), **_E2E_SUC, **(extra or {})}
+
+    async def get_all(self):
+        return dict(self.v)
+
+    async def get(self, k):
+        return self.v.get(k)
+
+    async def get_hours(self):
+        return {"enabled": False}
+
+    def is_open_now(self, hours):
+        return True
+
+    def proxima_apertura(self, hours):
+        return ""
+
+    def texto_horario(self, hours):
+        return ""
+
+
+class _E2EPago:
+    """Proveedor de cobro falso: guarda cada link pedido."""
+    def __init__(self):
+        self.links = []
+
+    async def crear_link(self, **k):
+        self.links.append(k)
+        return f"https://pago.test/mo-{len(self.links)}", None
+
+
+def _e2e_armar(entorno, monkeypatch, guion=None):
+    """Webhook completo con catálogo de MO, sucursal cargada y cobro falso.
+    El perfil se fija ANTES (la config falsa toma los textos del perfil)."""
+    deps = entorno(guion)
+    deps["sku"] = _e2e_catalogo()
+    deps["config"] = _E2ECfg()
+    pago = _E2EPago()
+    monkeypatch.setattr(wh, "payment_svc_para", lambda cfg, s=None: pago)
+    # crear_link_y_responder lee la config del servicio real: que lea la falsa.
+    monkeypatch.setattr(_e2e_cs, "get_config_service", lambda *a, **k: deps["config"])
+
+    async def _sin_freno(*a, **k):
+        return None, None
+    monkeypatch.setattr(_e2e_chh, "_chequear_stock_vivo", _sin_freno)
+    monkeypatch.delitem(_e2e_chh._ULTIMA_DIRECCION, PHONE, raising=False)
+    return deps, pago
+
+
+async def _e2e_charla(deps, *mensajes):
+    for t in mensajes:
+        await wh.procesar_mensajes([_msg(t)])
+    return await deps["session"].get(PHONE)
+
+
+def _e2e_sin_rubro_farmacia(enviados):
+    for t in enviados:
+        assert not any(p in t.lower() for p in _E2E_PROHIBIDAS), t
+
+
+# ── Venta: solo la mutual entra al flujo sin venta ──────────────────────────────
+@pytest.mark.parametrize("clave,llamadas", [("farmacia", 0), ("petshop", 0), ("mutual", 1)])
+async def test_e2e_solo_la_mutual_entra_al_flujo_sin_venta(usar_perfil, entorno, monkeypatch,
+                                                           clave, llamadas):
+    usar_perfil(clave)
+    deps = entorno()
+    vistos = []
+
+    async def _flujo(deps_, phone, session, texto, *a, **k):
+        vistos.append(texto)
+        return "Info de la mutual", "mutual_info"
+    monkeypatch.setattr(wh, "_flujo_mutual", _flujo)
+    await wh.procesar_mensajes([_msg("hola")])
+    assert len(vistos) == llamadas
+    assert deps["wa"].enviados[-1] == ("Info de la mutual" if llamadas else "¡Hola!")
+
+
+# ── Compra completa en petshop ──────────────────────────────────────────────────
+async def test_e2e_compra_completa_con_retiro_en_la_sucursal(usar_perfil, entorno, monkeypatch):
+    usar_perfil("petshop")
+    consulta = "tenés dog chow 15 kg?"
+    deps, pago = _e2e_armar(entorno, monkeypatch, {
+        "hola": {"intencion": "saludo",
+                 "respuesta": "¡Hola! Soy el asistente virtual de Mascotas del Oeste 🐾 "
+                              "¿En qué te puedo ayudar?"},
+        consulta: {"intencion": "consulta_stock", "entidad_producto": "dog chow 15 kg",
+                   "sku_seleccionado_index": 1,
+                   "respuesta": "¡Sí! Tengo el Dog Chow Adulto Razas Medianas 15 kg a $52.000. "
+                                "¿Te lo preparo?"},
+    })
+    s = await _e2e_charla(deps, "hola", consulta, "si", "retiro")
+    env = deps["wa"].enviados
+    assert len(env) == 4
+    assert env[0].startswith("¡Hola! Soy el asistente virtual de Mascotas del Oeste")
+    assert "$52.000" in env[1]
+    assert env[2] == ("¡Genial! ¿Cómo preferís recibirlo: *retiro en Sucursal Piloto* "
+                      "o *envío a domicilio*?")
+    assert "https://pago.test/mo-1" in env[3]
+    assert "🏪 Lo retirás en *Sucursal Piloto*" in env[3]
+    assert [(l["sku_id"], l["precio"]) for l in pago.links] == [("40", 52000.0)]
+    assert s["estado"] == "esperando_pago" and s["tipo_entrega"] == "retiro"
+    _e2e_sin_rubro_farmacia(env)
+
+
+# ── Links: en petshop un link va al modelo; la mutual sigue derivando ───────────
+@pytest.mark.parametrize("clave,deriva", [("petshop", False), ("mutual", True)])
+async def test_e2e_link_de_instagram(usar_perfil, entorno, monkeypatch, clave, deriva):
+    usar_perfil(clave)
+    txt = "Hola, tenés este? https://www.instagram.com/p/C1abc/"
+    deps = entorno({txt: {"intencion": "social",
+                          "respuesta": "¡Hola! No puedo abrir links 🙈 ¿Me decís qué producto es?"}})
+
+    async def _flujo(*a, **k):
+        return "Info de la mutual", "mutual_info"
+    monkeypatch.setattr(wh, "_flujo_mutual", _flujo)
+    await wh.procesar_mensajes([_msg(txt)])
+    s = await deps["session"].get(PHONE)
+    if deriva:
+        assert deps["wa"].enviados[-1].startswith("Recibí tu link")
+        assert s["estado"] == "operador" and s["derivada_motivo"] == "receta_link"
+        return
+    assert not any(t.startswith("Recibí tu link") for t in deps["wa"].enviados)
+    assert s.get("estado") != "operador"
+    assert ("rapido", txt) in deps["intent"].vistos
+    assert deps["wa"].enviados[-1] == "¡Hola! No puedo abrir links 🙈 ¿Me decís qué producto es?"
+
+
+# ── Recetas punta a punta: un producto "bajo receta" del ERP se vende ───────────
+@pytest.mark.parametrize("clave", ["petshop", "farmacia"])
+async def test_e2e_compra_de_una_pipeta_bajo_receta(usar_perfil, entorno, monkeypatch, clave):
+    usar_perfil(clave)
+    consulta = "tenés pipeta frontline para perro de 10 a 20 kg?"
+    deps, pago = _e2e_armar(entorno, monkeypatch, {consulta: {
+        "intencion": "consulta_stock", "entidad_producto": "pipeta frontline", "por_sintoma": False,
+        "sku_seleccionado_index": 1,
+        "respuesta": ("Tengo la Pipeta Frontline Plus Perro 10-20kg a $25.000. "
+                      "Ojo que va con receta del veterinario. ¿La querés?")}})
+    s = await _e2e_charla(deps, consulta, "si", "retiro")
+    if clave == "farmacia":        # igual que hoy: la receta la gestiona una persona
+        assert "derivado_receta" in _intenciones_perf(deps)
+        assert s["estado"] == "operador" and pago.links == []
+        return
+    env = deps["wa"].enviados
+    assert "$25.000" in env[0] and "¿La querés?" in env[0]
+    assert "derivado_receta" not in _intenciones_perf(deps)
+    assert [l["sku_id"] for l in pago.links] == ["42"]
+    assert s["estado"] == "esperando_pago"
+    for t in env:
+        assert "receta" not in t.lower() and "medicamento" not in t.lower() and "🩺" not in t
+
+
+@pytest.mark.parametrize("clave", ["petshop", "farmacia"])
+async def test_e2e_pedido_con_pipeta_adicional_hasta_el_link(usar_perfil, entorno, monkeypatch, clave):
+    usar_perfil(clave)
+    pedido = "quiero el alimento Dog Chow 3kg y una pipeta frontline"
+    deps, pago = _e2e_armar(entorno, monkeypatch, {pedido: {
+        "intencion": "pedido", "entidad_producto": "alimento dog chow 3kg",
+        "entidades_adicionales": ["pipeta frontline"], "sku_seleccionado_index": 1,
+        "respuesta": "Tengo el Dog Chow Cachorros 3 kg a $14.500. ¿Te lo preparo?"}})
+    s = await _e2e_charla(deps, pedido)
+    if clave == "farmacia":        # igual que hoy: el adicional con receta deriva el pedido
+        assert _intenciones_perf(deps)[-1] == "derivado_receta" and s["estado"] == "operador"
+        return
+    r1 = deps["wa"].enviados[-1]
+    assert "Sobre lo demás que me pediste:" in r1
+    assert "• pipeta frontline: PIPETA FRONTLINE PLUS PERRO 10-20KG — $25,000.00" in r1
+    assert [e["sku_id"] for e in s["extras_ofrecidos"]] == ["42"]
+    # "todos" suma la pipeta; "si" confirma; "retiro" cobra los dos juntos.
+    s = await _e2e_charla(deps, "todos", "si", "retiro")
+    assert "derivado_receta" not in _intenciones_perf(deps)
+    assert [(l["sku_id"], l["precio"]) for l in pago.links] == [("MULTI", 39500.0)]
+    assert s["estado"] == "esperando_pago"
+    _e2e_sin_rubro_farmacia(deps["wa"].enviados)
+
+
+@pytest.mark.parametrize("clave", ["petshop", "farmacia"])
+async def test_e2e_agregar_pipeta_con_el_link_ya_enviado(usar_perfil, entorno, monkeypatch, clave):
+    usar_perfil(clave)
+    consulta, agrega = "tenés dog chow cachorros 3kg?", "agregame la pipeta frontline"
+    deps, pago = _e2e_armar(entorno, monkeypatch, {
+        consulta: {"intencion": "consulta_stock", "entidad_producto": "dog chow cachorros 3kg",
+                   "sku_seleccionado_index": 1,
+                   "respuesta": "Tengo el Dog Chow Cachorros 3 kg a $14.500. ¿Te lo preparo?"},
+        agrega: {"intencion": "pedido", "entidad_producto": "pipeta frontline",
+                 "agregar_al_pedido": True, "sku_seleccionado_index": 1,
+                 "respuesta": "Te sumo la Pipeta Frontline Plus Perro 10-20kg a $25.000."},
+    })
+    s = await _e2e_charla(deps, consulta, "si", "retiro")
+    assert s["estado"] == "esperando_pago" and len(pago.links) == 1
+    s = await _e2e_charla(deps, agrega)
+    if clave == "farmacia":        # igual que hoy: agregar algo con receta deriva
+        assert _intenciones_perf(deps)[-1] == "derivado_receta" and s["estado"] == "operador"
+        return
+    r = deps["wa"].enviados[-1]
+    assert r.startswith("¡Listo, lo sumé! Tu pedido queda así:")
+    assert "PIPETA FRONTLINE PLUS PERRO 10-20KG" in r and "receta" not in r.lower()
+    assert _intenciones_perf(deps)[-1] == "item_agregado"
+    assert [i["sku_id"] for i in s["pending_items"]] == ["41", "42"]
+
+
+@pytest.mark.parametrize("clave", ["petshop", "farmacia"])
+async def test_e2e_receta_cargada_en_el_sistema_va_al_modelo(usar_perfil, entorno, clave):
+    usar_perfil(clave)
+    txt = "tengo la receta del veterinario cargada en el sistema"
+    deps = entorno({txt: {"intencion": "social",
+                          "respuesta": "¡Dale! Contame qué producto necesitás y te lo busco 🐾"}})
+    s = await _e2e_charla(deps, txt)
+    enviado = deps["wa"].enviados[-1]
+    if clave == "farmacia":        # igual que hoy
+        assert "sistema de recetas" in enviado and s["derivada_motivo"] == "receta_nube"
+        return
+    assert "sistema de recetas" not in enviado and "🩺" not in enviado
+    assert ("rapido", txt) in deps["intent"].vistos
+    assert s.get("estado") != "operador"
