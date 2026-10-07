@@ -27,6 +27,23 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
+def erp_estado_inicial(order: dict) -> Optional[str]:
+    """
+    Estado del alta en el ERP con el que NACE la fila durable de la orden
+    (OrderStore.upsert, en el mismo INSERT): 'pendiente' si el alta está
+    habilitada y la orden se cobró online (pago "online" con id de pago);
+    None si no aplica (flag apagado, efectivo, cuenta corriente).
+    """
+    from app.config import get_settings
+    if not get_settings().mercurio_pedidos_enabled:
+        return None
+    if (order.get("pago") or "online") != "online":
+        return None
+    if not str(order.get("mp_payment_id") or "").strip():
+        return None
+    return "pendiente"
+
+
 def _id_estable(order_id: str) -> int:
     """`id` del contrato del ecommerce: entero estable por pedido, derivado
     de la order_id para que el reintento mande exactamente el mismo cuerpo."""
@@ -123,7 +140,7 @@ async def enviar_pedido_erp(order: dict, *, client=None, db=None) -> Optional[di
         logger.error(f"Pedido {order_id} RECHAZADO por Mercurio: {e}")
         try:
             await store.marcar_erp(order_id, "rechazado", error=str(e)[:500],
-                                   incrementar_intento=True)
+                                   incrementar_intento=True, order=order)
         except Exception as e2:
             logger.error(f"Pedido {order_id}: no se pudo marcar rechazado: {e2}")
         return None
@@ -131,7 +148,7 @@ async def enviar_pedido_erp(order: dict, *, client=None, db=None) -> Optional[di
         logger.warning(f"Pedido {order_id}: ERP inalcanzable, queda pendiente: {e}")
         try:
             await store.marcar_erp(order_id, "pendiente", error=str(e)[:500],
-                                   incrementar_intento=True)
+                                   incrementar_intento=True, order=order)
         except Exception as e2:
             logger.error(f"Pedido {order_id}: no se pudo marcar pendiente: {e2}")
         return None
@@ -139,7 +156,7 @@ async def enviar_pedido_erp(order: dict, *, client=None, db=None) -> Optional[di
     try:
         await store.marcar_erp(order_id, "enviado",
                                id_comprobante=resultado.get("id_comprobante"),
-                               numero=resultado.get("numero"), error=None)
+                               numero=resultado.get("numero"), error=None, order=order)
     except Exception as e:
         logger.error(f"Pedido {order_id}: alta OK pero no se pudo registrar: {e}")
     if resultado.get("replay"):
@@ -152,10 +169,12 @@ async def enviar_pedido_erp(order: dict, *, client=None, db=None) -> Optional[di
 
 async def despachar_alta_erp(order: dict, *, client=None, db=None) -> Optional[dict]:
     """
-    Hook post-cobro (mp_webhook / payway): deja la fila durable en 'pendiente'
-    ANTES de intentar el POST — si el proceso muere en el medio, el job de
-    reintentos lo retoma con la misma Idempotency-Key — y recién entonces
-    intenta el alta. Con el flag apagado no hace nada (deploy farmacia).
+    Hook post-cobro (mp_webhook / payway): intenta el alta. La orden ya nació
+    'pendiente' en la fila durable (OrderService.create, erp_estado_inicial):
+    si el post-cobro se corta antes de llegar acá, o el proceso muere en el
+    medio, el job de reintentos la retoma con la misma Idempotency-Key. Igual
+    la vuelve a marcar 'pendiente' antes del POST, e inserta la orden si el
+    write-through había fallado. Con el flag apagado no hace nada (farmacia).
     """
     from app.config import get_settings
     from app.services.order_store import get_order_store
@@ -167,7 +186,8 @@ async def despachar_alta_erp(order: dict, *, client=None, db=None) -> Optional[d
         from app.services.db import get_db
         db = get_db(s.database_url)
     try:
-        await get_order_store(db).marcar_erp(str(order.get("order_id")), "pendiente")
+        await get_order_store(db).marcar_erp(str(order.get("order_id")), "pendiente",
+                                             order=order)
     except Exception as e:
         logger.error(f"Pedido {order.get('order_id')}: no se pudo encolar para el ERP: {e}")
     return await enviar_pedido_erp(order, client=client, db=db)

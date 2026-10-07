@@ -64,23 +64,37 @@ class Database:
     def available(self) -> bool:
         return bool(self._ok and self._pool)
 
-    async def execute(self, query: str, *args):
+    # `raise_errors=True`: el error (o la falta de Postgres) se PROPAGA en vez
+    # de loguearse y devolver vacío. Lo usan los pedidos cobrados (OrderStore,
+    # alta en Mercurio): un pedido que no se pudo guardar o encolar tiene que
+    # saberse, no confundirse con "no hay filas". El resto de los llamadores
+    # sigue con la degradación de siempre.
+
+    async def execute(self, query: str, *args, raise_errors: bool = False):
         if not self.available():
+            if raise_errors:
+                raise RuntimeError("Postgres no disponible")
             return None
         try:
             async with self._pool.acquire() as con:
                 return await con.execute(query, *args)
         except Exception as e:
+            if raise_errors:
+                raise
             logger.error(f"DB execute error: {e}")
             return None
 
-    async def fetch(self, query: str, *args) -> list:
+    async def fetch(self, query: str, *args, raise_errors: bool = False) -> list:
         if not self.available():
+            if raise_errors:
+                raise RuntimeError("Postgres no disponible")
             return []
         try:
             async with self._pool.acquire() as con:
                 return await con.fetch(query, *args)
         except Exception as e:
+            if raise_errors:
+                raise
             logger.error(f"DB fetch error: {e}")
             return []
 
@@ -108,14 +122,18 @@ class Database:
         async with pool.acquire() as con:
             await con.executemany(query, args_list)
 
-    async def fetchrow(self, query: str, *args):
-        """Una fila o None. Best-effort como fetch()."""
+    async def fetchrow(self, query: str, *args, raise_errors: bool = False):
+        """Una fila o None. Best-effort como fetch() (salvo raise_errors)."""
         if not self.available():
+            if raise_errors:
+                raise RuntimeError("Postgres no disponible")
             return None
         try:
             async with self._pool.acquire() as con:
                 return await con.fetchrow(query, *args)
         except Exception as e:
+            if raise_errors:
+                raise
             logger.error(f"DB fetchrow error: {e}")
             return None
 

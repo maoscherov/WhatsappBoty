@@ -412,3 +412,176 @@ class TestEnviarPedidoERP:
                                 "WHERE order_id = $1", "ORD-20261005-120000-AB12C")
         assert row["erp_estado"] == "pendiente"
         assert row["erp_intentos"] == 1
+
+
+# ── Errores de Postgres que se propagan (hallazgo 6) ─────────────────────────
+
+class _PoolQueFalla:
+    """Pool cuya próxima adquisición falla (corte transitorio de Postgres)."""
+
+    def __init__(self, real, fallas: int = 1):
+        self.real = real
+        self.fallas = fallas
+
+    def acquire(self):
+        if self.fallas > 0:
+            self.fallas -= 1
+            raise ConnectionError("conexion reseteada")
+        return self.real.acquire()
+
+    async def close(self):
+        await self.real.close()
+
+
+class TestDbRaiseErrors:
+    async def test_sin_raise_errors_se_sigue_tragando_el_error(self, db):
+        real = db._pool
+        db._pool = _PoolQueFalla(real, fallas=3)
+        try:
+            assert await db.execute("SELECT 1") is None
+            assert await db.fetch("SELECT 1") == []
+            assert await db.fetchrow("SELECT 1") is None
+        finally:
+            db._pool = real
+
+    async def test_con_raise_errors_el_error_se_propaga(self, db):
+        real = db._pool
+        db._pool = _PoolQueFalla(real, fallas=3)
+        try:
+            with pytest.raises(ConnectionError):
+                await db.execute("SELECT 1", raise_errors=True)
+            with pytest.raises(ConnectionError):
+                await db.fetch("SELECT 1", raise_errors=True)
+            with pytest.raises(ConnectionError):
+                await db.fetchrow("SELECT 1", raise_errors=True)
+        finally:
+            db._pool = real
+        assert [dict(r) for r in await db.fetch("SELECT 1 AS x", raise_errors=True)] == [{"x": 1}]
+
+    async def test_sin_postgres_raise_errors_lanza(self):
+        d = Database("")
+        assert await d.connect() is False
+        assert await d.execute("SELECT 1") is None           # igual que siempre
+        with pytest.raises(RuntimeError, match="no disponible"):
+            await d.execute("SELECT 1", raise_errors=True)
+        with pytest.raises(RuntimeError, match="no disponible"):
+            await d.fetch("SELECT 1", raise_errors=True)
+
+    async def test_order_store_propaga_los_errores(self, db):
+        from app.services.order_store import get_order_store
+        store = get_order_store(db)
+        real = db._pool
+        db._pool = _PoolQueFalla(real, fallas=3)
+        try:
+            with pytest.raises(ConnectionError):
+                await store.upsert(_orden())
+            with pytest.raises(ConnectionError):
+                await store.marcar_erp("ORD-20261005-120000-AB12C", "pendiente")
+            with pytest.raises(ConnectionError):
+                await store.pendientes_erp()
+        finally:
+            db._pool = real
+
+
+# ── Encolado temprano: la orden cobrada nace 'pendiente' (hallazgos 6 y 14) ──
+
+def _order_service_falso():
+    from app.services.order_service import OrderService
+    svc = OrderService.__new__(OrderService)
+    svc._redis = _FakeRedis()
+    return svc
+
+
+async def _erp_estado(db, order_id):
+    row = await db.fetchrow("SELECT erp_estado FROM orders WHERE order_id = $1", order_id)
+    return row["erp_estado"] if row else "SIN FILA"
+
+
+class TestEncoladoTemprano:
+    async def test_cobrada_online_nace_pendiente_con_el_flag(self, db, monkeypatch):
+        monkeypatch.setattr(get_settings(), "mercurio_pedidos_enabled", True)
+        order = await _order_service_falso().create(
+            phone="549341999", sku_id="7508", sku_nombre="ROYAL", cantidad=1,
+            total=1728.42, mp_payment_id="mp-1")
+        assert await _erp_estado(db, order["order_id"]) == "pendiente"
+
+    async def test_sin_flag_nace_sin_estado_erp(self, db, monkeypatch):
+        monkeypatch.setattr(get_settings(), "mercurio_pedidos_enabled", False)
+        order = await _order_service_falso().create(
+            phone="549341999", sku_id="7508", sku_nombre="ROYAL", cantidad=1,
+            total=1728.42, mp_payment_id="mp-1")
+        assert await _erp_estado(db, order["order_id"]) is None
+
+    @pytest.mark.parametrize("pago, payment_id", [("cuenta_corriente", ""), ("efectivo", ""),
+                                                  ("online", "")])
+    async def test_sin_cobro_online_no_se_encola(self, db, monkeypatch, pago, payment_id):
+        monkeypatch.setattr(get_settings(), "mercurio_pedidos_enabled", True)
+        order = await _order_service_falso().create(
+            phone="549341999", sku_id="7508", sku_nombre="ROYAL", cantidad=1,
+            total=1728.42, mp_payment_id=payment_id, pago=pago)
+        assert await _erp_estado(db, order["order_id"]) is None
+
+    async def test_el_upsert_no_pisa_un_estado_posterior(self, db):
+        from app.services.order_store import get_order_store
+        store = get_order_store(db)
+        oid = "ORD-20261005-120000-AB12C"
+        await store.upsert(_orden(), erp_estado="pendiente")
+        assert await _erp_estado(db, oid) == "pendiente"
+        await store.marcar_erp(oid, "enviado", id_comprobante="FC-1", numero="1")
+        await store.upsert(_orden(estado="preparado"), erp_estado="pendiente")
+        await store.upsert(_orden(estado="retirado"))          # un _save del backoffice
+        row = await db.fetchrow("SELECT estado, erp_estado FROM orders WHERE order_id = $1", oid)
+        assert (row["estado"], row["erp_estado"]) == ("retirado", "enviado")
+
+    async def test_save_no_encola_una_orden_vieja(self, db, monkeypatch):
+        """Una orden creada con el flag apagado no entra a la cola porque el
+        operador la marque preparada después de encender el flag."""
+        monkeypatch.setattr(get_settings(), "mercurio_pedidos_enabled", False)
+        svc = _order_service_falso()
+        order = await svc.create(phone="549341999", sku_id="7508", sku_nombre="ROYAL",
+                                 cantidad=1, total=1728.42, mp_payment_id="mp-1")
+        monkeypatch.setattr(get_settings(), "mercurio_pedidos_enabled", True)
+        await svc._save(dict(order, estado="preparado"))
+        assert await _erp_estado(db, order["order_id"]) is None
+
+    async def test_marcar_erp_sin_fila_inserta_la_orden(self, db):
+        from app.services.order_store import get_order_store
+        await get_order_store(db).marcar_erp("ORD-20261005-120000-AB12C", "pendiente",
+                                             error="x", incrementar_intento=True,
+                                             order=_orden())
+        row = await db.fetchrow("SELECT * FROM orders WHERE order_id = $1",
+                                "ORD-20261005-120000-AB12C")
+        assert row["erp_estado"] == "pendiente"
+        assert row["erp_intentos"] == 1 and row["erp_ultimo_error"] == "x"
+        assert row["payment_id"] == "mp-777"
+        assert json.loads(row["data"])["sku_id"] == "7508"
+
+    async def test_marcar_erp_sin_fila_y_sin_orden_lanza(self, db):
+        from app.services.order_store import get_order_store
+        with pytest.raises(LookupError, match="ORD-NO-EXISTE"):
+            await get_order_store(db).marcar_erp("ORD-NO-EXISTE", "pendiente")
+
+    async def test_despachar_sin_fila_y_erp_caido_queda_en_la_cola(self, db, monkeypatch):
+        """El write-through falló al crear la orden: el hook la inserta y,
+        con el ERP caído, queda 'pendiente' para el job (antes: 0 filas)."""
+        import app.services.mercurio_service as m
+        from app.services.mercurio_pedidos import (despachar_alta_erp,
+                                                   reintentar_pedidos_pendientes)
+
+        async def _sin_espera(_s):
+            return None
+
+        monkeypatch.setattr(m.asyncio, "sleep", _sin_espera)
+        s = get_settings()
+        monkeypatch.setattr(s, "mercurio_pedidos_enabled", True)
+        monkeypatch.setattr(s, "mercurio_branch_id", "mascotas-oeste")
+        await _preparar_codigos(db)
+
+        reqs: list = []
+        c = _cliente_pedidos([(500, {"error": True, "message": "x"}, None)] * 3, reqs)
+        assert await despachar_alta_erp(_orden(), client=c, db=db) is None
+        assert await _erp_estado(db, "ORD-20261005-120000-AB12C") == "pendiente"
+
+        n = await reintentar_pedidos_pendientes(client=_cliente_pedidos([OK_201], reqs), db=db)
+        assert n == 1
+        assert await _erp_estado(db, "ORD-20261005-120000-AB12C") == "enviado"

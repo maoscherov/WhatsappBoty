@@ -121,12 +121,16 @@ class OrderService:
             await self._redis.zadd(ORDERS_IDX, {order_id: ts})
         except Exception as e:
             logger.error(f"OrderService.create error: {e}")
-        await self._persistir(order)
+        # Alta en el ERP (F5): una orden cobrada online nace 'pendiente' en la
+        # cola del job en este mismo INSERT, antes del WhatsApp y de la sesión:
+        # un corte del post-cobro ya no la deja afuera. Sin el flag, NULL.
+        from app.services.mercurio_pedidos import erp_estado_inicial
+        await self._persistir(order, erp_estado=erp_estado_inicial(order))
         logger.info(f"Pedido creado: {order_id} phone={phone} producto={sku_nombre}")
         return order
 
     @staticmethod
-    async def _persistir(order: dict) -> None:
+    async def _persistir(order: dict, erp_estado: Optional[str] = None) -> None:
         """Copia durable en Postgres (tabla orders, migración 0019): un pedido
         COBRADO no puede depender del TTL de 7 días de Redis. Best-effort —
         sin Postgres el bot sigue solo con Redis, como el resto del sistema."""
@@ -134,7 +138,10 @@ class OrderService:
             from app.config import get_settings
             from app.services.db import get_db
             from app.services.order_store import get_order_store
-            await get_order_store(get_db(get_settings().database_url)).upsert(order)
+            db = get_db(get_settings().database_url)
+            if not db.available():
+                return
+            await get_order_store(db).upsert(order, erp_estado=erp_estado)
         except Exception as e:
             logger.error(f"OrderService._persistir({order.get('order_id')}) error: {e}")
 
