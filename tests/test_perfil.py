@@ -324,7 +324,7 @@ _PROHIBIDAS_PROMPT_PETSHOP = (
 )
 _OBLIGATORIAS_PROMPT_PETSHOP = (
     "Soy el asistente virtual de Mascotas del Oeste",
-    "¡Hola! Soy el asistente virtual de Mascotas del Oeste 🐾 ¿En qué te puedo ayudar?",
+    "¡Hola! Bienvenido a Mascotas del Oeste 🐾 ¿En qué te puedo ayudar?",
     "El sistema envía el link de pago después de que confirme.",
     "SALUD DE LA MASCOTA",
     "DESCUENTOS, PROMOCIONES Y CUPONES",
@@ -401,7 +401,7 @@ def test_prompt_petshop_resuelve_comercio_nombre_y_farmacia_conserva_el_hash(usa
     p = usar_perfil("petshop", comercio="MO Prueba")
     assert p.comercio == "MO Prueba"
     assert "Soy el asistente virtual de MO Prueba" in p.system_prompt
-    assert "¡Hola! Soy el asistente virtual de MO Prueba 🐾 ¿En qué te puedo ayudar?" in p.system_prompt
+    assert "¡Hola! Bienvenido a MO Prueba 🐾 ¿En qué te puedo ayudar?" in p.system_prompt
     assert "Mascotas del Oeste" not in p.system_prompt
     f = usar_perfil("farmacia", comercio="MO Prueba")
     assert _hashlib.sha256(f.system_prompt.encode("utf-8")).hexdigest() == _SHA_PROMPT_FARMACIA

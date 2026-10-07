@@ -439,7 +439,7 @@ ENTREGA (RETIRO O ENVÍO A DOMICILIO):
 - No calcules costos de envío ni tiempos — de eso se encarga el sistema/operador.
 
 PET_SALUDO (fila de la matriz)
-| saludo | "Hola", "Buen día", "Buenas", "Cómo están", "Buenas tardes" | Saludar con calidez. Ejemplo: "¡Hola! Soy el asistente virtual de {comercio} {emoji} ¿En qué te puedo ayudar?". OJO: si además de saludar el cliente menciona o pide un PRODUCTO ("hola, tenés Royal Canin?"), NO es un simple saludo — usá la intención de producto (consulta_stock/consulta_precio/pedido) y poné el producto en entidad_producto. |
+| saludo | "Hola", "Buen día", "Buenas", "Cómo están", "Buenas tardes" | Saludar con calidez. Ejemplo: "¡Hola! Bienvenido a {comercio} {emoji} ¿En qué te puedo ayudar?". OJO: si además de saludar el cliente menciona o pide un PRODUCTO ("hola, tenés Royal Canin?"), NO es un simple saludo — usá la intención de producto (consulta_stock/consulta_precio/pedido) y poné el producto en entidad_producto. |
 
 PET_ABIERTA (fila de la matriz)
 | consulta_abierta | "Qué alimento me recomendás para un cachorro", "Algo para un gato castrado", "Qué piedras me conviene", "Un juguete para un perro grande" | Indagar lo que falte (especie, edad, tamaño o raza) → sugerir productos del catálogo. Si cuenta un síntoma o un problema de salud, no es consulta_abierta: poné "por_sintoma": true |
@@ -471,8 +471,10 @@ Si el cliente rechaza el pendiente mencionando OTRO producto (ej: "no, un Excell
   - poner ese nuevo producto en "entidad_producto" (ej: "excellent", "pro plan", "vitalcan"),
 ```
 
-Resuelto con los valores de MO, el saludo de ejemplo queda: "¡Hola! Soy el
-asistente virtual de Mascotas del Oeste 🐾 ¿En qué te puedo ayudar?".
+Resuelto con los valores de MO, el saludo de ejemplo queda: "¡Hola! Bienvenido a
+Mascotas del Oeste 🐾 ¿En qué te puedo ayudar?" (cambio pedido por el usuario el
+7/10; la regla de identidad sigue siendo "Soy el asistente virtual de Mascotas del
+Oeste").
 
 ### 4.2 Recetas (`recetas = False`)
 
@@ -843,8 +845,8 @@ tienen que pasar en verde con el código de hoy.
   `obra social`, `remedia`, `mercado pago`, `mutual`, `medicament`, `remedio`,
   `semanalmente`, `{comercio}`, `{emoji}`, `ibuprofeno`, `lotrial`, `bayer`,
   `aveno` ni `talco`. Contiene "Soy el asistente virtual de Mascotas del Oeste",
-  "¡Hola! Soy el asistente virtual de Mascotas del Oeste 🐾 ¿En qué te puedo
-  ayudar?", "El sistema envía el link de pago después de que confirme.",
+  "¡Hola! Bienvenido a Mascotas del Oeste 🐾 ¿En qué te puedo ayudar?",
+  "El sistema envía el link de pago después de que confirme.",
   "SALUD DE LA MASCOTA", "DESCUENTOS, PROMOCIONES Y CUPONES",
   "Nunca inventes la dirección" y "especie".
 - Contrato: cada bloque compartido es substring de los dos prompts; la línea del

@@ -330,7 +330,7 @@ ENTREGA (RETIRO O ENVÍO A DOMICILIO):
 """
 
 PET_SALUDO = """\
-| saludo | "Hola", "Buen día", "Buenas", "Cómo están", "Buenas tardes" | Saludar con calidez. Ejemplo: "¡Hola! Soy el asistente virtual de {comercio} {emoji} ¿En qué te puedo ayudar?". OJO: si además de saludar el cliente menciona o pide un PRODUCTO ("hola, tenés Royal Canin?"), NO es un simple saludo — usá la intención de producto (consulta_stock/consulta_precio/pedido) y poné el producto en entidad_producto. |
+| saludo | "Hola", "Buen día", "Buenas", "Cómo están", "Buenas tardes" | Saludar con calidez. Ejemplo: "¡Hola! Bienvenido a {comercio} {emoji} ¿En qué te puedo ayudar?". OJO: si además de saludar el cliente menciona o pide un PRODUCTO ("hola, tenés Royal Canin?"), NO es un simple saludo — usá la intención de producto (consulta_stock/consulta_precio/pedido) y poné el producto en entidad_producto. |
 """
 
 PET_ABIERTA = """\
