@@ -80,3 +80,36 @@ def _adjuntos_en_tmp(tmp_path, monkeypatch):
     producción, el volumen /data/chat)."""
     from app.services import chat_media
     monkeypatch.setattr(chat_media, "_dir", lambda: tmp_path / "chat")
+
+
+@pytest.fixture
+def usar_perfil():
+    """Cambia el perfil de rubro durante el test y devuelve el Perfil activo:
+    usar_perfil("petshop") o usar_perfil("petshop", comercio="MO Prueba").
+
+    Pisa `vertical` y `comercio_nombre` en el Settings cacheado (no setea
+    variables de entorno ni recrea Settings: pg_dsn deja DATABASE_URL en
+    os.environ para toda la sesión y un Settings nuevo lo levantaría) y limpia
+    el cache de get_perfil antes y en el teardown, DESPUÉS de restaurar los
+    atributos. Sin ese cache_clear el perfil se filtra al resto de la suite.
+    Como no recrea Settings, convive con monkeypatch.setattr(get_settings(), ...)
+    en cualquier orden.
+
+    Requiere app/services/perfil.py (Task 2 del plan): los imports son
+    diferidos para que este conftest cargue antes de que exista.
+    """
+    from app.config import get_settings
+    from app.services.perfil import get_perfil
+
+    mp = pytest.MonkeyPatch()
+
+    def _usar(clave: str, comercio: str | None = None):
+        s = get_settings()
+        mp.setattr(s, "vertical", clave)
+        mp.setattr(s, "comercio_nombre", comercio or "")
+        get_perfil.cache_clear()
+        return get_perfil()
+
+    yield _usar
+    mp.undo()
+    get_perfil.cache_clear()
