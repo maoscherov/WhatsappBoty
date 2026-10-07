@@ -141,3 +141,56 @@ def test_pregunta_por_retiro_y_respuesta_sin_sucursal():
     assert chh.responder_pregunta_retiro({"retiro_sucursal": "Sucursal Piloto"}) == \
         "Lo retirás en *Sucursal Piloto* 🏪"
     assert chh.responder_pregunta_retiro(_SUC) == _INFO
+
+
+def test_textos_de_entrega_sin_sucursal_igual_que_hoy():
+    assert chh.pregunta_entrega({}) == \
+        "¡Genial! ¿Cómo preferís recibirlo: *retiro en sucursal* o *envío a domicilio*?"
+    assert chh.pregunta_entrega({}, saludo=False) == \
+        "¿Preferís *retiro en sucursal* o *envío a domicilio*? 🙂"
+    assert chh.pregunta_entrega({"retiro_sucursal": ""}, saludo=False) == \
+        "¿Preferís *retiro en sucursal* o *envío a domicilio*? 🙂"
+    assert chh.texto_entrega("retiro", None) == \
+        "🏪 Lo retirás en la sucursal (te enviamos el código al confirmar el pago)."
+
+
+def test_textos_de_entrega_nombran_la_sucursal():
+    cfg = {"retiro_sucursal": "Sucursal Piloto"}
+    assert chh.pregunta_entrega(cfg) == \
+        "¡Genial! ¿Cómo preferís recibirlo: *retiro en Sucursal Piloto* o *envío a domicilio*?"
+    assert chh.pregunta_entrega(cfg, saludo=False) == _REPREGUNTA
+    assert chh.texto_entrega("retiro", None, sucursal="Sucursal Piloto") == \
+        "🏪 Lo retirás en *Sucursal Piloto* (te enviamos el código al confirmar el pago)."
+    assert chh.texto_entrega("retiro", None, sucursal="") == \
+        "🏪 Lo retirás en la sucursal (te enviamos el código al confirmar el pago)."
+    assert chh.texto_entrega("envio", "Mitre 100", sucursal="Sucursal Piloto") == \
+        "🚚 Te lo enviamos a domicilio a *Mitre 100*."
+
+
+def test_responder_horario_con_cierre():
+    cfg = _CfgEnt()
+    assert chh.responder_horario(cfg, {"enabled": False}) == \
+        f"Atendemos {_HORARIO} 🕐 ¿Te ayudo con algo más?"
+    assert chh.responder_horario(cfg, {"enabled": False}, cierre=_REPREGUNTA) == \
+        f"Atendemos {_HORARIO} 🕐 {_REPREGUNTA}"
+
+
+async def test_link_de_retiro_nombra_la_sucursal(monkeypatch):
+    from app.services import config_service as cs
+    from app.services.session_service import SessionService
+    cfg = _CfgEnt(_SUC)
+    monkeypatch.setattr(cs, "get_config_service", lambda *a, **k: cfg)
+
+    async def _sin_freno(*a, **k):
+        return None, None
+    monkeypatch.setattr(chh, "_chequear_stock_vivo", _sin_freno)
+
+    class _Pago:
+        async def crear_link(self, **k):
+            return "https://pago/abc", None
+    ss = SessionService("redis://127.0.0.1:1")
+    await ss.set_pending(PHONE, sku_id="30", sku_nombre="DOG CHOW ADULTO RAZAS MEDIANAS 15KG",
+                         precio=52000.0, cantidad=1, opciones=[])
+    resp, link = await chh.crear_link_y_responder(_Pago(), ss, PHONE, await ss.get(PHONE), "retiro", None)
+    assert link == "https://pago/abc"
+    assert "🏪 Lo retirás en *Sucursal Piloto* (te enviamos el código al confirmar el pago)." in resp

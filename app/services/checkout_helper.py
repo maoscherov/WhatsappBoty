@@ -943,18 +943,25 @@ def pregunta_entrega(cfg: dict, extra: str = "", saludo: bool = True,
     envio_txt = (f"*{destino}* (+${costo:,.0f})" if costo > 0 else f"*{destino}*")
     if dom:
         extra = f"{extra} Si es a otra dirección, decímela.".rstrip() if extra else " Si es a otra dirección, decímela."
+    # Sucursal de retiro cargada en el panel (spec §5); vacía = "sucursal".
+    retiro_txt = f"*retiro en {(cfg.get('retiro_sucursal') or '').strip() or 'sucursal'}*"
     if saludo:
-        return f"¡Genial! ¿Cómo preferís recibirlo: *retiro en sucursal* o {envio_txt}?{extra}"
-    return f"¿Preferís *retiro en sucursal* o {envio_txt}? 🙂{extra}"
+        return f"¡Genial! ¿Cómo preferís recibirlo: {retiro_txt} o {envio_txt}?{extra}"
+    return f"¿Preferís {retiro_txt} o {envio_txt}? 🙂{extra}"
 
 
-def texto_entrega(tipo: str, direccion: Optional[str], costo_envio: float = 0) -> str:
-    """Línea que describe la entrega elegida, para el mensaje del link de pago."""
+def texto_entrega(tipo: str, direccion: Optional[str], costo_envio: float = 0,
+                  sucursal: str = "") -> str:
+    """Línea que describe la entrega elegida, para el mensaje del link de pago.
+    `sucursal`: la de retiro cargada en el panel (vacía = "la sucursal")."""
     if tipo == "envio":
         dir_txt = f" a *{direccion}*" if direccion else ""
         costo_txt = (f" Incluye el envío (${costo_envio:,.2f})."
                      if costo_envio > 0 else "")
         return f"🚚 Te lo enviamos a domicilio{dir_txt}.{costo_txt}"
+    suc = (sucursal or "").strip()
+    if suc:
+        return f"🏪 Lo retirás en *{suc}* (te enviamos el código al confirmar el pago)."
     return "🏪 Lo retirás en la sucursal (te enviamos el código al confirmar el pago)."
 
 
@@ -1363,7 +1370,8 @@ async def crear_link_y_responder(
         )
     else:
         nombre_con_cant = session["pending_sku_nombre"] + (f" x{cantidad}" if cantidad > 1 else "")
-    entrega_line = texto_entrega(tipo_entrega, direccion, _costo_envio)
+    entrega_line = texto_entrega(tipo_entrega, direccion, _costo_envio,
+                                 sucursal=_cfg.get("retiro_sucursal") or "")
     descuento_bloque = f"{descuento_line}\n" if descuento_line else ""
     respuesta = (
         f"Perfecto! Acá te mando el link de pago para "
@@ -2125,9 +2133,10 @@ def pregunta_horario(texto: str) -> bool:
     return bool(_PREGUNTA_HORARIO.search(texto or ""))
 
 
-def responder_horario(cfg_svc, hours: dict) -> str:
+def responder_horario(cfg_svc, hours: dict, cierre: str = "¿Te ayudo con algo más?") -> str:
     """Respuesta fija con el horario y si ahora está abierto. Vacío si no hay
-    horario cargado (que conteste el modelo como siempre)."""
+    horario cargado (que conteste el modelo como siempre). `cierre`: la
+    pregunta final (eligiendo la entrega, se vuelve a ofrecer retiro o envío)."""
     texto = cfg_svc.texto_horario(hours)
     if not texto:
         return ""
@@ -2138,7 +2147,7 @@ def responder_horario(cfg_svc, hours: dict) -> str:
         else:
             cuando = cfg_svc.proxima_apertura(hours)
             r += " Ahora estamos cerrados" + (f": abrimos {cuando}." if cuando else ".")
-    return r + " ¿Te ayudo con algo más?"
+    return f"{r} {cierre}"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
