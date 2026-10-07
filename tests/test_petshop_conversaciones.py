@@ -550,6 +550,60 @@ async def test_sintoma_dando_la_direccion_deriva(entorno, usar_perfil):
     assert deps["wa"].enviados[-1] == p.textos["consulta_salud_message"]
 
 
+# ── Revisión final, hallazgo 4: "te paso con alguien del equipo" en medio del flujo
+# PET_REGLAS le pide al modelo esa frase ante cuotas, descuentos, fiado o la
+# sucursal sin cargar, para que la derivación se cumpla. En esperando_entrega y
+# esperando_direccion la respuesta sale de _responder_consulta_en_flujo, que no
+# la cumplía: el cliente esperaba a una persona que nunca llegaba. El pedido ya
+# está confirmado, así que deriva SIN soltar el pendiente. La función es
+# compartida: CAMBIO QUE TAMBIÉN AFECTA A LA FARMACIA (corre con los dos perfiles).
+_CUOTAS = "¿tienen cuotas sin interés?"
+_PROMETE_EQUIPO = "Eso lo ve el equipo: te paso con alguien del equipo 🙌"
+
+
+@pytest.mark.parametrize("clave", ["farmacia", "petshop"])
+@pytest.mark.parametrize("estado", ["esperando_entrega", "esperando_direccion"])
+async def test_derivacion_prometida_en_medio_del_flujo_se_cumple(entorno, usar_perfil,
+                                                                 clave, estado):
+    usar_perfil(clave)
+    guion = {_CUOTAS: {"intencion": "consulta_abierta", "entidad_producto": None,
+                       "por_sintoma": False, "respuesta": _PROMETE_EQUIPO}}
+    deps = entorno(guion, "otro", valores_base())
+    deps["sku"] = _catalogo_mo_salud()
+    await _pendiente_royal_mo(deps["session"])
+    await deps["session"].set_estado(PHONE, estado)
+
+    await wh.procesar_mensajes([_msg(_CUOTAS)])
+
+    s = await deps["session"].get(PHONE)
+    assert ("procesar", _CUOTAS) in _vistos(deps)             # lo contestó el modelo en el flujo
+    assert deps["wa"].enviados[-1] == _PROMETE_EQUIPO
+    assert s["estado"] == "operador" and s["derivada_motivo"] == "derivacion_prometida"
+    assert s.get("pending_sku_id") == "31"                    # el pedido confirmado queda intacto
+    antes = len(deps["wa"].enviados)
+    await wh.procesar_mensajes([_msg("lo retiro")])
+    assert len(deps["wa"].enviados) == antes                  # modo operador: el bot calla
+
+
+@pytest.mark.parametrize("estado", ["esperando_entrega", "esperando_direccion"])
+async def test_consulta_en_medio_del_flujo_sin_promesa_no_deriva(entorno, usar_perfil, estado):
+    """Guarda: si el modelo solo OFRECE una persona, el flujo sigue como hoy."""
+    usar_perfil("petshop")
+    guion = {_CUOTAS: {"intencion": "consulta_abierta", "entidad_producto": None,
+                       "por_sintoma": False,
+                       "respuesta": "No tengo info de cuotas. ¿Querés que te pase con alguien del equipo?"}}
+    deps = entorno(guion, "otro", valores_base())
+    deps["sku"] = _catalogo_mo_salud()
+    await _pendiente_royal_mo(deps["session"])
+    await deps["session"].set_estado(PHONE, estado)
+
+    await wh.procesar_mensajes([_msg(_CUOTAS)])
+
+    s = await deps["session"].get(PHONE)
+    assert s["estado"] == estado
+    assert s.get("pending_sku_id") == "31"
+
+
 async def test_consulta_abierta_con_dato_inventado_no_va_por_salud(entorno, usar_perfil):
     txt = "qué alimento me recomendás para un gato castrado?"
     guion = {txt: {"intencion": "consulta_abierta", "entidad_producto": None, "por_sintoma": False,

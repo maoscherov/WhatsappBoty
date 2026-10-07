@@ -2088,15 +2088,20 @@ def derivacion_prometida(texto: str) -> bool:
     return False
 
 
-async def cumplir_derivacion_prometida(session_svc, phone: str, respuesta: str) -> bool:
+async def cumplir_derivacion_prometida(session_svc, phone: str, respuesta: str,
+                                       soltar_pendiente: bool = True) -> bool:
     """Si la respuesta promete una persona, la conversación pasa a la cola del
-    operador y se suelta el producto pendiente. Devuelve True si derivó."""
+    operador y se suelta el producto pendiente. Devuelve True si derivó.
+
+    soltar_pendiente=False: el pedido ya está confirmado (el cliente elige la
+    entrega o da la dirección) y queda tal cual para el operador."""
     if not derivacion_prometida(respuesta):
         return False
     s = await session_svc.get(phone)
     if s.get("estado") == "operador":
         return True
-    await session_svc.clear_pending(phone)
+    if soltar_pendiente:
+        await session_svc.clear_pending(phone)
     await session_svc.set_estado(phone, "operador", motivo="derivacion_prometida")
     logger.info(f"Derivación prometida por el modelo → cumplida para {phone}")
     return True

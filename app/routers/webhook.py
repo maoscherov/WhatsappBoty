@@ -597,7 +597,14 @@ async def _responder_consulta_en_flujo(deps, phone: str, session: dict, texto: s
         if get_perfil().sintomas == "derivar" and resultado.get("por_sintoma"):
             await deps["session"].set_estado(phone, "operador", motivo=MOTIVO_CONSULTA_SALUD)
             return texto_consulta_salud(await deps["config"].get_all())
-        return (resultado.get("respuesta") or "").strip() or fallback
+        respuesta = (resultado.get("respuesta") or "").strip() or fallback
+        # El modelo prometió una persona ("te paso con alguien del equipo", la
+        # frase que PET_REGLAS pide ante cuotas, descuentos o la sucursal sin
+        # cargar): se cumple. Sin soltar el pendiente: el pedido ya está
+        # confirmado (revisión final de petshop, hallazgo 4).
+        await cumplir_derivacion_prometida(deps["session"], phone, respuesta,
+                                           soltar_pendiente=False)
+        return respuesta
     except Exception as e:
         logger.warning(f"No se pudo responder la consulta en flujo para {phone}: {e}")
         return fallback
