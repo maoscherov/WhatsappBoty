@@ -65,6 +65,7 @@ from app.services.checkout_helper import (
     producto_respaldado, productos_con_precio, parece_direccion,
     personalizar_nombre, pide_cuenta_corriente, habilitado_cc, consulta_saldo,
     aviso_fuera_horario, dice_ser_socio, pregunta_horario, responder_horario,
+    MOTIVO_CONSULTA_SALUD, texto_consulta_salud,
 )
 
 logger = logging.getLogger(__name__)
@@ -516,6 +517,11 @@ async def _sin_precios_inventados(deps, phone: str, session: dict, respuesta: st
     if alts:
         return texto_alternativas(alts)
     if sintoma:
+        if get_perfil().sintomas == "derivar":
+            # Salud de la mascota: un síntoma no se asesora, lo atiende una
+            # persona del equipo.
+            await deps["session"].set_estado(phone, "operador", motivo=MOTIVO_CONSULTA_SALUD)
+            return texto_consulta_salud(cfg)
         # "¿Qué puedo tomar para el dolor de garganta?" sin productos en el
         # catálogo: lo asesora el farmacéutico (C-3964), no "no lo encuentro".
         _ses = await deps["session"].get(phone)
@@ -584,6 +590,22 @@ async def _responder_consulta_en_flujo(deps, phone: str, session: dict, texto: s
     except Exception as e:
         logger.warning(f"No se pudo responder la consulta en flujo para {phone}: {e}")
         return fallback
+
+
+async def _derivar_consulta_salud(deps: dict, phone: str, texto: str) -> str:
+    """
+    Salud de la mascota (perfil con sintomas="derivar"): un síntoma, una dosis
+    o "pasame con el veterinario" no se busca ni se recomienda. La charla pasa
+    a una persona con motivo consulta_salud: se envía el texto, se guarda el
+    historial y se devuelve lo enviado (el llamador lo deja en `respuesta`
+    para el historial permanente).
+    """
+    await deps["session"].set_estado(phone, "operador", motivo=MOTIVO_CONSULTA_SALUD)
+    respuesta = texto_consulta_salud(await deps["config"].get_all())
+    await deps["wa"].send_text(phone, respuesta)
+    await deps["session"].add_message(phone, "user", texto)
+    await deps["session"].add_message(phone, "assistant", respuesta)
+    return respuesta
 
 
 @router.get("/webhook")

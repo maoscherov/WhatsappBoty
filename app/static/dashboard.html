@@ -288,7 +288,8 @@ async function loadDashboard() {
 }
 
 const DERIV_INTENTS = new Set(['derivado_humano','derivado_receta','pago_manual','sin_stock_derivado',
-                               'receta_link','imagen_receta','imagen_credencial','cambio_postventa','operador']);
+                               'receta_link','imagen_receta','imagen_credencial','cambio_postventa','operador',
+                               'derivado_consulta_salud','imagen_indicacion_veterinaria']);
 
 function drawSerie(dias) {
   const cv = document.getElementById('chart-dias');

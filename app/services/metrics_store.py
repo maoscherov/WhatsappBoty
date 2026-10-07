@@ -16,6 +16,8 @@ logger = logging.getLogger(__name__)
 _DERIVACIONES = (
     "derivado_humano", "derivado_receta", "pago_manual", "sin_stock_derivado",
     "receta_link", "imagen_receta", "imagen_credencial", "cambio_postventa",
+    # Perfil petshop (salud de la mascota). La farmacia nunca las emite.
+    "derivado_consulta_salud", "imagen_indicacion_veterinaria",
 )
 
 

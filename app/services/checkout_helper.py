@@ -1601,6 +1601,20 @@ def responder_bono(lab: str, cfg: dict, nombre: str = "", por_foto: bool = False
     return personalizar_nombre(txt, nombre), False
 
 
+# ── Salud de la mascota (perfil con sintomas="derivar") ───────────────────────
+# Un síntoma, una dosis o "pasame con el veterinario" no se asesora: lo atiende
+# una persona del equipo. Lo usan las compuertas del webhook y la foto de una
+# indicación veterinaria.
+MOTIVO_CONSULTA_SALUD = "consulta_salud"
+
+
+def texto_consulta_salud(cfg: dict) -> str:
+    """Texto de la derivación por salud: el de la config si está cargado, si no
+    el del perfil. Solo se llama con sintomas == "derivar" (la clave existe solo
+    en esos perfiles)."""
+    return cfg.get("consulta_salud_message") or get_perfil().textos["consulta_salud_message"]
+
+
 # ── 48b: pedido por síntoma → dejar a mano el farmacéutico ─────────────────────
 def agregar_oferta_farmaceutico(respuesta: str, cfg: dict) -> str:
     # Vacío en la config → el del perfil (petshop lo trae vacío: no agrega nada).

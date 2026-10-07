@@ -423,3 +423,128 @@ async def test_beneficios_simulate_farmacia_igual_que_hoy(usar_perfil, monkeypat
     usar_perfil("farmacia")
     kwargs = await _simular_hola(monkeypatch)
     assert kwargs[0]["contexto_cliente"] == "Nombre de pila (para saludar): Ana"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Salud de la mascota (§4.5): con sintomas="derivar" un síntoma va a una persona
+# ══════════════════════════════════════════════════════════════════════════════
+from app.services.session_service import SessionService
+
+_TEL_SALUD = "5493410000077"
+
+
+class _MetricasSalud:
+    def __init__(self):
+        self.eventos = []
+
+    async def evento(self, *a, **k):
+        self.eventos.append((a, k))
+
+
+class _WaSalud:
+    def __init__(self):
+        self.enviados = []
+
+    async def send_text(self, phone, texto, **k):
+        self.enviados.append(texto)
+        return True
+
+
+class _CfgSalud:
+    def __init__(self, valores):
+        self.v = dict(valores)
+
+    async def get_all(self):
+        return dict(self.v)
+
+
+def _deps_salud(cfg=None):
+    return {"session": SessionService("redis://127.0.0.1:1"), "metrics": _MetricasSalud(),
+            "wa": _WaSalud(), "config": _CfgSalud(cfg or {})}
+
+
+def test_motivo_consulta_salud():
+    from app.services.checkout_helper import MOTIVO_CONSULTA_SALUD
+    assert MOTIVO_CONSULTA_SALUD == "consulta_salud"
+
+
+def test_texto_consulta_salud_config_gana_y_vacio_cae_al_perfil(usar_perfil):
+    from app.services.checkout_helper import texto_consulta_salud
+    p = usar_perfil("petshop")
+    assert texto_consulta_salud({}) == p.textos["consulta_salud_message"]
+    assert texto_consulta_salud({"consulta_salud_message": ""}) == p.textos["consulta_salud_message"]
+    assert texto_consulta_salud({"consulta_salud_message": "Te paso con el equipo"}) == "Te paso con el equipo"
+
+
+async def test_sin_precios_inventados_con_sintoma_deriva_en_petshop(usar_perfil):
+    from app.routers.webhook import _sin_precios_inventados
+    from app.services.config_service import valores_base
+    p = usar_perfil("petshop")
+    deps = _deps_salud()
+    session = await deps["session"].get(_TEL_SALUD)
+    r = await _sin_precios_inventados(deps, _TEL_SALUD, session, "Dale Vomitol $5.000", [],
+                                      valores_base(), None, sintoma=True)
+    assert r == p.textos["consulta_salud_message"]
+    s = await deps["session"].get(_TEL_SALUD)
+    assert s["estado"] == "operador" and s["derivada_motivo"] == "consulta_salud"
+    assert not s.get("farmaceutico_ofrecido")
+
+
+async def test_sin_precios_inventados_con_sintoma_farmacia_igual_que_hoy(usar_perfil):
+    from app.routers.webhook import _sin_precios_inventados
+    from app.services.config_service import DEFAULTS
+    usar_perfil("farmacia")
+    deps = _deps_salud()
+    session = await deps["session"].get(_TEL_SALUD)
+    r = await _sin_precios_inventados(deps, _TEL_SALUD, session, "Tomá Ibupirac $5.000", [],
+                                      dict(DEFAULTS), None, sintoma=True)
+    assert r == ("Para eso lo mejor es que te asesore el farmacéutico 🙌 "
+                 "¿Querés que te pase con él?")
+    s = await deps["session"].get(_TEL_SALUD)
+    assert s.get("farmaceutico_ofrecido") is True
+    assert s.get("estado") != "operador"
+
+
+def test_agregar_oferta_farmaceutico_vacio_no_agrega_en_petshop(usar_perfil):
+    from app.services.checkout_helper import agregar_oferta_farmaceutico
+    usar_perfil("petshop")
+    r = agregar_oferta_farmaceutico("Te ofrezco Pipeta X", {"sintoma_farmaceutico_message": ""})
+    assert r == "Te ofrezco Pipeta X"
+
+
+def test_agregar_oferta_farmaceutico_farmacia_igual_que_hoy(usar_perfil):
+    from app.services.checkout_helper import agregar_oferta_farmaceutico
+    usar_perfil("farmacia")
+    r = agregar_oferta_farmaceutico("Te ofrezco Ibupirac", {"sintoma_farmaceutico_message": ""})
+    assert r == ("Te ofrezco Ibupirac\n\nSi preferís, decime \"farmacéutico\" y te paso "
+                 "con el nuestro para que te oriente.")
+
+
+async def test_derivar_consulta_salud_envia_guarda_y_deriva(usar_perfil):
+    from app.routers.webhook import _derivar_consulta_salud
+    from app.services.config_service import valores_base
+    p = usar_perfil("petshop")
+    deps = _deps_salud(valores_base())
+    r = await _derivar_consulta_salud(deps, _TEL_SALUD, "mi perro vomita")
+    assert r == p.textos["consulta_salud_message"]
+    assert deps["wa"].enviados == [r]
+    s = await deps["session"].get(_TEL_SALUD)
+    assert s["estado"] == "operador" and s["derivada_motivo"] == "consulta_salud"
+    assert [(m["role"], m["content"]) for m in s["history"][-2:]] == [
+        ("user", "mi perro vomita"), ("assistant", r)]
+
+
+def test_metricas_cuentan_las_derivaciones_nuevas():
+    from app.services.metrics_store import _DERIVACIONES
+    assert "derivado_consulta_salud" in _DERIVACIONES
+    assert "imagen_indicacion_veterinaria" in _DERIVACIONES
+
+
+def test_dashboard_cuenta_las_derivaciones_nuevas():
+    from pathlib import Path
+    html = (Path(__file__).resolve().parents[1] / "app" / "static" / "dashboard.html"
+            ).read_text(encoding="utf-8")
+    ini = html.index("const DERIV_INTENTS")
+    conjunto = html[ini:html.index("]);", ini)]
+    assert "'derivado_consulta_salud'" in conjunto
+    assert "'imagen_indicacion_veterinaria'" in conjunto
