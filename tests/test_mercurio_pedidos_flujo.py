@@ -560,6 +560,76 @@ def test_link_del_backoffice_guarda_los_renglones(monkeypatch, body, items, tota
     assert (snap["costo_envio"], snap["total"]) == (0.0, total)
 
 
+# ── Ronda de arreglo 2: cotización de un SKU con cantidad > 1 (/bo/paylink) ──
+# El modo "cotizar" de un solo SKU armaba la sesión con pending_cantidad=1 y
+# pending_precio = total de las N unidades: el link y la orden salían x1 y el
+# ERP recibía quantity=1 con el subtotal de N (los montos cuadraban).
+
+class _WAok:
+    def __init__(self):
+        self.enviados: list[str] = []
+
+    async def send_text(self, to, text, **kw):
+        self.enviados.append(text)
+        return True
+
+
+class _SkuRoyal:
+    sku_id = "7508"
+    sku_nombre = "Royal Canin Mini Adult 3 kg"
+    sku_nombre_original = None
+    precio_venta = 1000.0
+
+
+class _SkuSvcRoyal:
+    def get_by_id(self, sid):
+        return _SkuRoyal() if str(sid) == "7508" else None
+
+
+async def _cotizar(monkeypatch, ent, wa, **body):
+    import app.routers.backoffice as bo
+    monkeypatch.setattr(bo, "get_session_service", lambda *a, **k: ent.ss)
+    monkeypatch.setattr(bo, "get_whatsapp_service", lambda *a, **k: wa)
+    monkeypatch.setattr(bo, "get_sku_service", lambda *a, **k: _SkuSvcRoyal())
+    return await bo.bo_paylink(bo.PaylinkIn(phone=PHONE, **body))
+
+
+async def test_cotizar_un_sku_x3_llega_al_erp_con_cantidad_3(erp, db, monkeypatch):
+    from app.services.mercurio_pedidos import pedido_desde_orden
+    ent, wa = _Entorno(), _WAok()
+    r = await _cotizar(monkeypatch, ent, wa, sku_id="7508", cantidad=3, modo="cotizar",
+                       enviar=True, delegar=True)
+    # Lo que ve el cliente en la cotización no cambia: el total de las 3.
+    assert r["total"] == 3000.0
+    assert "El precio es $3,000.00." in wa.enviados[-1]
+    s = await ent.ss.get(PHONE)
+    assert (s["estado"], s["pending_sku_id"], s["pending_cantidad"], s["pending_precio"]) == \
+        ("esperando_confirmacion", "7508", 3, 1000.0)
+    assert s["pending_items"] == [{"sku_id": "7508", "nombre": "Royal Canin Mini Adult 3 kg",
+                                   "precio": 1000.0, "cantidad": 3}]
+
+    link = await _link(monkeypatch, ent)               # el cliente dice "sí, lo retiro"
+    assert (link["sku_id"], link["precio"], link["cantidad"]) == ("7508", 1000.0, 3)
+    assert link["snapshot"] == {
+        "items": [{"sku_id": "7508", "nombre": "Royal Canin Mini Adult 3 kg", "cantidad": 3,
+                   "precio_unitario": 1000.0, "total": 3000.0}],
+        "costo_envio": 0.0, "total": 3000.0}            # el link cobra lo mismo
+
+    mpw = _montar_mp(monkeypatch, ent, _pago_mp_del_link(link))
+    assert (await mpw.procesar_pago("mp-cotizar-x3"))["status"] == "ok"
+    await _altas()
+    [body] = erp.reqs
+    assert _renglones(body) == [("2209004", "ROY1051701", 3, 3000.0, 3000.0)]
+    assert body["total"] == 3000.0
+    orden = json.loads((await db.fetchrow("SELECT data FROM orders"))["data"])
+    assert orden["cantidad"] == 3 and orden["total"] == 3000.0
+    assert [(i["sku_id"], i["cantidad"]) for i in orden["items"]] == [("7508", 3)]
+    pedido = pedido_desde_orden(orden, {"7508": {"codigo": "2209004",
+                                                 "codigo_padre": "ROY1051701"}},
+                                state="complete", customer_id_default="20111111112")
+    assert [(li["quantity"], li["subtotal"]) for li in pedido["line_items"]] == [(3, 3000.0)]
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Hallazgo 11: un mismo pago crea una sola orden (y un solo pedido en el ERP)
 # aunque Redis se pierda o dos cierres corran a la vez

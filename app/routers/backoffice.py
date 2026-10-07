@@ -1330,9 +1330,15 @@ async def bo_paylink(body: PaylinkIn, _=Depends(_auth)):
         enviado = False
         if body.enviar:
             session_svc = get_session_service(settings.redis_url)
-            await session_svc.armar_cotizacion(body.phone, sku_id=sku_id,
-                                               sku_nombre=nombre, precio=total,
-                                               delegar=body.delegar, agente=body.agente)
+            # Con la cantidad real y el precio UNITARIO (como _paylink_items):
+            # el link cobra lo mismo (unitario x cantidad) y la orden y el
+            # ERP reciben las N unidades. Antes iba precio=total con cantidad
+            # 1 y el ERP registraba 1 unidad (ronda de arreglo 2).
+            await session_svc.armar_cotizacion(
+                body.phone, sku_id=sku_id, sku_nombre=nombre, precio=round(precio, 2),
+                delegar=body.delegar, agente=body.agente,
+                items=[{"sku_id": sku_id, "nombre": nombre, "precio": round(precio, 2),
+                        "cantidad": cantidad}])
             wa = get_whatsapp_service(settings.whatsapp_token, settings.whatsapp_phone_number_id)
             enviado = await wa.send_text(body.phone, mensaje)
             if enviado:
