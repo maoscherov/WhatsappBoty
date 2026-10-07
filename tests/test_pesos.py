@@ -298,3 +298,39 @@ async def test_si_pelado_sigue_confirmando(perfil, entorno, monkeypatch, txt):
     assert s["estado"] == "esperando_entrega"
     assert s["pending_sku_id"] == "RC15"
     assert not _llego_al_modelo(deps, txt)
+
+
+# ── Revisión final, hallazgo 3: un peso sin unidad no es un domicilio ───────────
+@pytest.mark.parametrize("txt", [
+    "la de 15",
+    "mandame la de 20",
+    "era la de 20",
+    "uh, me confundí, era la de 20",
+    "el de 15",
+])
+def test_peso_sin_unidad_no_es_domicilio(perfil, txt):
+    """"la de 20": la calle quedaba ["de"] (la es stopword) y salía el
+    domicilio "de 20". Una calle hecha solo de conectores no es una calle."""
+    assert ch.extraer_direccion_de(txt) is None
+    assert ch.parece_direccion(txt) is False
+
+
+async def test_me_confundi_era_la_de_20_no_regenera_el_link_como_envio(perfil, entorno,
+                                                                        monkeypatch):
+    """Con el link de RETIRO ya enviado, "era la de 20" regeneraba el link como
+    ENVÍO a "de 20" y cobraba el producto anterior."""
+    txt = "uh, me confundí, era la de 20"
+    deps, pago = _armar(entorno, monkeypatch, {txt: {
+        "intencion": "desconocido",
+        "respuesta": "¿Me decís cuál querés así lo cambio?"}})
+    await _pendiente_royal_15(deps, "esperando_entrega")
+    await wh.procesar_mensajes([_msg("lo retiro")])
+    s = await deps["session"].get(PHONE)
+    assert s["estado"] == "esperando_pago" and len(pago.links) == 1   # link de retiro enviado
+
+    await wh.procesar_mensajes([_msg(txt)])
+
+    s = await deps["session"].get(PHONE)
+    assert len(pago.links) == 1                               # no se regeneró el link
+    assert s.get("tipo_entrega") != "envio" and not s.get("direccion_envio")
+    assert not any("de 20*" in t for t in deps["wa"].enviados)

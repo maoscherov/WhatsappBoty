@@ -151,6 +151,11 @@ _STOP_DIR = {
     "traémelo", "traemelo", "vivo", "casa", "queda",
 }
 _SUFIJO_DIR = {"bis", "piso", "dto", "dpto", "depto", "timbre", "casa", "lote"}
+# Una "calle" hecha solo de conectores no es una calle: en "la de 20" ("la"
+# corta la calle hacia atrás) quedaba ["de"] y salía el domicilio "de 20". Un
+# peso sin unidad es como habla el cliente de un petshop (revisión final,
+# hallazgo 3). "16 de enero 9279" sigue valiendo: tiene "enero".
+_CONECTORES_DIR = {"de", "del", "la", "el", "los", "las"}
 # Esquina: solo con "esquina" explícito o el lado "9 de julio" — "jabón y crema"
 # no es una dirección.
 _ESQUINA_RE = re.compile(
@@ -185,6 +190,8 @@ def extraer_direccion_de(t: str) -> Optional[str]:
             k -= 1
         calle = toks[k + 1:i]
         if not calle or not re.search(r"[a-záéíóúñ]{2,}", " ".join(calle), re.IGNORECASE):
+            continue
+        if all(c.lower().strip(".") in _CONECTORES_DIR for c in calle):
             continue
         fin = i + 1
         while fin < len(toks) and (
