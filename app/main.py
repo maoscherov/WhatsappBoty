@@ -85,6 +85,15 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Postgres init falló: {e} — se usa solo Redis")
 
+        # Un pago, una orden (índice único ux_orders_payment, migración 0019):
+        # si la base ya tenía pagos repetidos la 0019 no lo crea y su NOTICE
+        # no llega a ningún log. Se avisa acá (ronda de arreglo 2).
+        try:
+            await asyncio.wait_for(_avisar_indice_de_pagos(get_db(settings.database_url)),
+                                   timeout=10.0)
+        except Exception as e:
+            logger.warning(f"No se pudo revisar el índice único de pagos de orders: {e}")
+
         # Config: Postgres es la fuente de verdad, Redis el cache. Se lee acá
         # para repoblar el cache si Redis se reinició y quedó vacío — si no,
         # los valores editados desde el backoffice vuelven a los defaults.
@@ -289,6 +298,32 @@ async def _init_referencia_receta(db):
     _r = await asyncio.wait_for(_init_receta(db), timeout=60.0)
     logger.info(f"Referencia de receta: {_r}")
     return _r
+
+
+SQL_PAGOS_REPETIDOS = ("SELECT payment_id, count(*) FROM orders WHERE payment_id IS NOT NULL "
+                       "GROUP BY payment_id HAVING count(*) > 1")
+
+
+async def _avisar_indice_de_pagos(db) -> bool:
+    """
+    WARNING al arrancar si existe la tabla orders y falta el índice único
+    ux_orders_payment: la 0019 no lo crea si ya había pagos repetidos (deja
+    el índice común y un RAISE NOTICE que no llega a ningún log). Sin él, dos
+    cierres del mismo pago pueden volver a crear dos órdenes (hallazgo 11).
+    Devuelve True si avisó. Lanza si la consulta falla (el lifespan lo atrapa).
+    """
+    row = await db.fetchrow(
+        "SELECT to_regclass('orders') IS NOT NULL AS hay_orders, "
+        "to_regclass('ux_orders_payment') IS NOT NULL AS hay_indice", raise_errors=True)
+    if not row or not row["hay_orders"] or row["hay_indice"]:
+        return False
+    logging.getLogger(__name__).warning(
+        "La tabla orders NO tiene el índice único ux_orders_payment (la migración 0019 no "
+        "lo creó porque había pagos repetidos): un mismo pago puede crear dos órdenes. "
+        f"Para encontrar los duplicados: {SQL_PAGOS_REPETIDOS}. Resolverlos a mano y crear "
+        "el índice: CREATE UNIQUE INDEX ux_orders_payment ON orders (payment_id) WHERE "
+        "payment_id IS NOT NULL; DROP INDEX IF EXISTS ix_orders_payment;")
+    return True
 
 
 async def _avisar_horario_por_defecto(cfg_svc) -> bool:

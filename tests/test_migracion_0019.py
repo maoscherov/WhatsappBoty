@@ -302,3 +302,47 @@ def test_mo_recibe_erp_actualizado_at(base_aparte):
         ("timestamp with time zone", "YES")]
     assert _consulta(dsn, "SELECT order_id, erp_actualizado_at FROM orders") == [
         ("MO-0001", None)]
+
+
+# ── Ronda de arreglo 2 (h): aviso al arrancar si falta ux_orders_payment ─────
+# Si la base ya tenía pagos repetidos, la 0019 no crea el índice único y su
+# RAISE NOTICE no llega a ningún log. El arranque (lifespan, con Postgres)
+# avisa con un WARNING y la consulta para encontrar los duplicados.
+
+async def _aviso(dsn: str, caplog) -> bool:
+    import logging
+
+    from app.main import _avisar_indice_de_pagos
+    from app.services.db import Database
+    d = Database(dsn)
+    assert await d.connect()
+    try:
+        with caplog.at_level(logging.WARNING, logger="app.main"):
+            return await _avisar_indice_de_pagos(d)
+    finally:
+        await d.close()
+
+
+async def test_arranque_avisa_si_falta_el_indice_unico_de_pagos(base_aparte, caplog):
+    dsn = base_aparte
+    _base_de_mo(
+        dsn,
+        "INSERT INTO orders (order_id, phone, total, pago, payment_id, data) VALUES "
+        "('MO-0001', '549', 15000, 'online', 'pay-dup', '{}'),"
+        "('MO-0002', '549', 15000, 'online', 'pay-dup', '{}')")
+    _alembic(dsn, "upgrade", "head")
+    assert _indice(dsn, "ux_orders_payment") == []
+
+    assert await _aviso(dsn, caplog) is True
+    [aviso] = [r for r in caplog.records if r.levelname == "WARNING" and r.name == "app.main"]
+    msg = aviso.getMessage()
+    assert "ux_orders_payment" in msg
+    assert ("SELECT payment_id, count(*) FROM orders WHERE payment_id IS NOT NULL "
+            "GROUP BY payment_id HAVING count(*) > 1") in msg
+
+
+async def test_arranque_no_avisa_con_el_indice_o_sin_orders(pg_dsn, base_aparte, caplog):
+    assert await _aviso(pg_dsn, caplog) is False               # base migrada, con el índice
+    _alembic(base_aparte, "upgrade", "0017")                   # sin la tabla orders
+    assert await _aviso(base_aparte, caplog) is False
+    assert not [r for r in caplog.records if r.name == "app.main"]
