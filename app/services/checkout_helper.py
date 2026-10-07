@@ -56,6 +56,60 @@ def afirma_envio(t: str) -> bool:
     return tiene_afirma and tiene_cue
 
 
+# ── Pregunta en medio de la elección de entrega (spec 2026-10-06 §5) ──────────
+# Caso real MO 6/10: en esperando_entrega, "¿en qué sucursal puede ser?"
+# matcheaba _RETIRO por "sucursal": salía el link sin contestar. Una pregunta
+# no es una elección: se responde y se vuelve a ofrecer la elección. Un pedido
+# con forma de pregunta ("¿me lo podés enviar?", "¿lo puedo retirar hoy?")
+# sigue siendo elección (C-3854, C-3912). El signo "?" solo no alcanza: cuenta
+# junto con un interrogativo, o con "sucursal"/"local" sin verbo de entrega.
+_INTERROGATIVO = re.compile(
+    r"\b(en|a|hasta|desde|para|por|de)\s+(qu[eé]|q)\b"
+    r"|\bqu[eé]\s+(sucursal\w*|local\w*|hora|horarios?|d[ií]as?|direcci[oó]n)\b|\bqué\b"
+    r"|\bcu[aá]l(es)?\b|\b(a)?d[oó]nde\b|\bcu[aá]ndo\b|\bc[oó]mo\b|\bcu[aá]nt[oa]s?\b",
+    re.IGNORECASE)
+_INTERROGATIVO_INICIO = re.compile(
+    r"^\W*(y|pero|che|perd[oó]n|disculp\w*|una\s+consulta)?\W*"
+    r"((en|a|hasta|desde)\s+(qu[eé]|q)\b|qu[eé]\s+(sucursal\w*|local\w*|hora|horarios?|direcci[oó]n)\b"
+    r"|cu[aá]l(es)?\b|(a)?d[oó]nde\b|cómo\b|cuándo\b|cuánto\b|qué\b)",
+    re.IGNORECASE)
+_LUGAR_RETIRO = re.compile(r"\b(sucursal(es)?|local(es)?)\b", re.IGNORECASE)
+_ACCION_ENTREGA = re.compile(
+    r"\b(retir\w*|pas\w*|busc\w*|voy|vamos|env[ií]\w*|mand\w*|tra[eé]\w*)\b", re.IGNORECASE)
+_TEMA_RETIRO = re.compile(
+    r"\b(retir\w*|d[oó]nde|direcci[oó]n|queda|local\w*|hora|horarios?|abren|cierran)\b",
+    re.IGNORECASE)
+
+
+def es_pregunta_entrega(t: str) -> bool:
+    """True si el mensaje PREGUNTA algo (no elige retiro/envío)."""
+    s = (t or "").strip().lower()
+    if not s:
+        return False
+    signo = "?" in s or "¿" in s
+    if signo and _INTERROGATIVO.search(s):
+        return True
+    if _INTERROGATIVO_INICIO.search(s):
+        return True
+    return bool(signo and _LUGAR_RETIRO.search(s) and not _ACCION_ENTREGA.search(s))
+
+
+def pregunta_por_retiro(t: str) -> bool:
+    """La pregunta es sobre el retiro (sucursal, dónde, a qué hora), no sobre el envío."""
+    s = (t or "").lower()
+    return (match_retiro(s) or bool(_TEMA_RETIRO.search(s))) and not match_envio(s)
+
+
+def responder_pregunta_retiro(cfg: dict) -> str:
+    """Dato de la sucursal de retiro cargado en el panel. Vacío si no hay
+    sucursal cargada: nunca se inventa una dirección."""
+    suc = (cfg.get("retiro_sucursal") or "").strip()
+    if not suc:
+        return ""
+    plantilla = cfg.get("retiro_info_message") or "Lo retirás en *{sucursal}* 🏪"
+    return plantilla.replace("{sucursal}", suc).strip()
+
+
 # Cambio de dirección: el cliente quiere enviar a otra parte.
 _CAMBIO_DIR = [r"otra direcci[oó]n", r"cambiar.{0,12}direcci[oó]n", r"distinta direcci[oó]n",
                r"a otra parte", r"a otro lado", r"otro domicilio", r"cambiar.{0,8}env[ií]o",
