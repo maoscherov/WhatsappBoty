@@ -325,3 +325,53 @@ async def test_pregunta_en_mayusculas_y_sin_signos_al_elegir_entrega_se_responde
     assert deps["wa"].enviados[-1] == f"{_INFO}\n\n{_REPREGUNTA}"
     assert links == [] and deps["intent"].llamadas == []
     assert await _estado(deps) == "esperando_entrega"
+
+
+# ── Fix ronda 1: en la consulta general el dato de la sucursal entra solo si el
+# mensaje nombra la sucursal, el local o el retiro (ruling del 7/10). El disparador
+# amplio (_TEMA_RETIRO: dónde, queda, hora...) hacía que "¿dónde está mi pedido?"
+# con una sucursal cargada entrara como KB y dejara de derivarse a una persona.
+@pytest.mark.parametrize("txt", [
+    "¿dónde queda la sucursal?",
+    "en que local lo retiro?",
+    "donde retiro?",
+    "puedo retirar hoy?",
+    "tienen sucursales?",
+])
+def test_menciona_sucursal_detecta_sucursal_local_o_retiro(txt):
+    assert chh.menciona_sucursal(txt) is True
+
+
+@pytest.mark.parametrize("txt", [
+    "¿dónde está mi pedido?",
+    "me queda grande el collar, donde lo cambio?",
+    "a que hora llega el envio?",
+    "hola",
+])
+def test_menciona_sucursal_no_confunde_preguntas_generales(txt):
+    assert chh.menciona_sucursal(txt) is False
+
+
+async def _consulta_general(entorno, txt, cfg=None):
+    """Mensaje 'desconocido' sin pedido pendiente. Devuelve lo observable:
+    (kb que recibió el modelo, estado, motivo de derivación, último texto enviado)."""
+    deps = entorno()
+    deps["config"] = _CfgEnt(cfg)
+    deps["intent"] = _IntentEnt({txt: {"intencion": "desconocido", "entidad_producto": None,
+                                       "respuesta": "Te cuento 🙂"}})
+    await wh.procesar_mensajes([_msg(txt)])
+    s = await deps["session"].get(PHONE)
+    kb = [c[2].get("contexto_kb") for c in deps["intent"].vio("procesar")]
+    return kb, s.get("estado"), s.get("derivada_motivo"), deps["wa"].enviados[-1]
+
+
+@pytest.mark.parametrize("txt", [
+    "¿dónde está mi pedido?",
+    "me queda grande el collar, donde lo cambio?",
+])
+async def test_h_pregunta_general_con_sucursal_cargada_sigue_derivando(entorno, txt):
+    con_suc = await _consulta_general(entorno, txt, _SUC)
+    sin_suc = await _consulta_general(entorno, txt)
+    kb, estado, motivo, _ = con_suc
+    assert kb == [] and estado == "operador" and motivo == "no_entendido"
+    assert con_suc == sin_suc                        # igual que sin sucursal cargada

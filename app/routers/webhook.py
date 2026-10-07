@@ -65,7 +65,7 @@ from app.services.checkout_helper import (
     producto_respaldado, productos_con_precio, parece_direccion,
     personalizar_nombre, pide_cuenta_corriente, habilitado_cc, consulta_saldo,
     aviso_fuera_horario, dice_ser_socio, pregunta_horario, responder_horario,
-    es_pregunta_entrega, pregunta_por_retiro, responder_pregunta_retiro,
+    es_pregunta_entrega, menciona_sucursal, pregunta_por_retiro, responder_pregunta_retiro,
     MOTIVO_CONSULTA_SALUD, texto_consulta_salud,
 )
 
@@ -2144,10 +2144,13 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
             _general = intencion == "desconocido" or (intencion == "consulta_abierta" and not entidad)
             _tuvo_kb = False
             # "¿Dónde queda la sucursal?": el dato de la sucursal cargada en el
-            # panel va junto con la KB (spec §5). Sin sucursal, igual que hoy.
+            # panel va junto con la KB (spec §5), solo si el mensaje nombra la
+            # sucursal, el local o el retiro: con el disparador amplio de
+            # esperando_entrega, "¿dónde está mi pedido?" dejaba de derivarse.
+            # Sin sucursal, igual que hoy.
             _cfg_kb = await deps["config"].get_all()
             _info_ret = (responder_pregunta_retiro(_cfg_kb)
-                         if _general and pregunta_por_retiro(texto) else "")
+                         if _general and menciona_sucursal(texto) else "")
             if _general and (deps["rag"].enabled() or _info_ret):
                 _docs = []
                 if deps["rag"].enabled():

@@ -100,6 +100,18 @@ def pregunta_por_retiro(t: str) -> bool:
     return (match_retiro(s) or bool(_TEMA_RETIRO.search(s))) and not match_envio(s)
 
 
+# En la consulta general (sin pedido pendiente) _TEMA_RETIRO es demasiado amplio:
+# "¿dónde está mi pedido?" o "me queda grande, ¿dónde lo cambio?" lo matchean y,
+# con una sucursal cargada, el dato entraba como KB y dejaba de derivarse (regla
+# del 16/9). Ahí el dato de la sucursal se agrega solo si el mensaje la nombra.
+_MENCION_SUCURSAL = re.compile(r"\b(sucursal(es)?|local(es)?|retir\w*)\b", re.IGNORECASE)
+
+
+def menciona_sucursal(t: str) -> bool:
+    """El mensaje nombra la sucursal, el local o el retiro."""
+    return bool(_MENCION_SUCURSAL.search((t or "").lower()))
+
+
 def responder_pregunta_retiro(cfg: dict) -> str:
     """Dato de la sucursal de retiro cargado en el panel. Vacío si no hay
     sucursal cargada: nunca se inventa una dirección."""
