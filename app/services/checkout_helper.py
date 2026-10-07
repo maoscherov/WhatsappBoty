@@ -133,8 +133,14 @@ _CAMBIO_DIR = [r"otra direcci[oó]n", r"cambiar.{0,12}direcci[oó]n", r"distinta
 # (casos reales 6/8, 26/8, 1/10). Pesos y envases tampoco son domicilio: "la
 # bolsa de 15 kg" devolvía "bolsa de 15" (spec petshop §5); lo mismo "la de 400
 # gramos" y "la de 15 l". No va "kilo\w*": "Ruta 8 kilómetro 52" es una dirección.
+# L, Lt y Lts son también Lote y departamento ("Mz 5 L 12", "Corrientes 1234 4
+# L"): cuentan como litros solo si no les sigue un número y si el número que
+# las precede no viene pegado a otro número (en "1234 4 L" y "1234, 4 L" el 4
+# es el piso).
+# Revisión final, hallazgo 16.
 _NO_DIR = re.compile(
-    r"\?|\d\s*(mg|ml|gr?s?|kgs?|lts?|l|cc|mcg|ui|%)\b|\bx\s*\d+|"
+    r"\?|\d\s*(mg|ml|gr?s?|kgs?|cc|mcg|ui|%)\b|\bx\s*\d+|"
+    r"(?<![\d.,])(?<!\d\s)(?<!\d,\s)\d+(?:[.,]\d+)?\s*(lts?|l)\b(?![.\s]*\d)|"
     r"\b(comprimid\w*|comp|c[aá]psul\w*|bl[ií]ster\w*|caja\w*|tiras?|unidad\w*|frasco\w*|"
     r"ped[ií]\w*|quiero|quer[ií]a|precio\w*|link|cu[aá]nto|stock|ten[eé]s|tendr[aá]s|"
     r"receta\w*|veces|producto\w*|kilos?|kilogram\w*|gramos?|litros?|bolsa\w*|lata\w*)\b",

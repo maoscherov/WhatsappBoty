@@ -334,3 +334,41 @@ async def test_me_confundi_era_la_de_20_no_regenera_el_link_como_envio(perfil, e
     assert len(pago.links) == 1                               # no se regeneró el link
     assert s.get("tipo_entrega") != "envio" and not s.get("direccion_envio")
     assert not any("de 20*" in t for t in deps["wa"].enviados)
+
+
+# ── Revisión final, hallazgo 16: L / Lt / Lts también son Lote y departamento ───
+@pytest.mark.parametrize("txt", [
+    "Mz 5 L 12",
+    "Mz 5 Lt 12",
+    "Mz. 5 Lt. 12",
+    "Mz 22 L 3 barrio 25 de mayo",
+    "Corrientes 1234 4 L",
+    "Rivadavia 5000 1 L",
+    "Corrientes 1234 4L",
+    "Corrientes 1234, 4 L",
+    # Los que ya eran domicilio
+    "san javier 837",
+    "Ruta 8 kilómetro 52",
+    "16 de enero 9279",
+    "donado 608 piso 2",
+])
+def test_lote_y_depto_l_son_domicilio(perfil, txt):
+    """La l suelta como unidad de volumen (ronda de arreglo 1 de la Task 14)
+    descartaba direcciones con manzana y lote o con depto L, que la farmacia
+    reconocía antes: el bot pedía la dirección en loop."""
+    assert ch.extraer_direccion_de(txt) is not None
+    assert ch.parece_direccion(txt) is True
+
+
+@pytest.mark.parametrize("txt", [
+    "la de 15 lts",
+    "el bidon de 20 l por favor",
+    "mandame 2 l",
+    "quiero el de 5 lt",
+    "la de 15 l",
+    "dame 2 de 1 l",
+])
+def test_volumen_en_litros_sigue_sin_ser_domicilio(perfil, txt):
+    """Guarda: un volumen (l/lt/lts sin un número después) no es domicilio."""
+    assert ch.extraer_direccion_de(txt) is None
+    assert ch.parece_direccion(txt) is False
