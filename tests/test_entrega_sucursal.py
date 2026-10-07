@@ -299,3 +299,29 @@ async def test_g_sin_sucursal_cargada_igual_que_hoy(entorno):
     assert deps["intent"].vio("procesar") == []          # sin KB ni sucursal: no hay con qué
     s = await deps["session"].get(PHONE)
     assert s["estado"] == "operador" and s["derivada_motivo"] == "no_entendido"
+
+
+# ── Review Focus: mayúsculas, sin tildes y sin signos (WhatsApp y audio) ────────
+@pytest.mark.parametrize("txt,pregunta", [
+    ("EN QUE SUCURSAL PUEDE SER", True),
+    ("DONDE QUEDA LA SUCURSAL", True),
+    ("Donde Retiro", True),
+    ("a que hora puedo pasar a buscarlo", True),
+    ("Cual sucursal me queda mas cerca", True),
+    ("en q sucursal lo retiro", True),
+    ("RETIRO EN SUCURSAL", False),
+    ("ENVIO A DOMICILIO", False),
+    ("LO PASO A BUSCAR", False),
+    ("como siempre retiro", False),
+    ("Dale lo busco", False),
+])
+def test_es_pregunta_entrega_en_mayusculas_sin_tildes_ni_signos(txt, pregunta):
+    assert chh.es_pregunta_entrega(txt) is pregunta
+
+
+async def test_pregunta_en_mayusculas_y_sin_signos_al_elegir_entrega_se_responde(entorno, monkeypatch):
+    deps, links = await _armar(entorno, monkeypatch, "esperando_entrega", _SUC)
+    await wh.procesar_mensajes([_msg("EN QUE SUCURSAL PUEDE SER")])
+    assert deps["wa"].enviados[-1] == f"{_INFO}\n\n{_REPREGUNTA}"
+    assert links == [] and deps["intent"].llamadas == []
+    assert await _estado(deps) == "esperando_entrega"
