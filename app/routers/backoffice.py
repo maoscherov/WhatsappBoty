@@ -1524,6 +1524,31 @@ async def bo_wa_config(_=Depends(_auth)):
     }
 
 
+@router.get("/perfil")
+async def bo_perfil(_=Depends(_auth)):
+    """
+    Rubro de esta instancia para el portal: identidad y capacidades. El panel
+    oculta las secciones de las capacidades apagadas (recetas, socios, cuenta
+    corriente, obras sociales). No expone el prompt ni los textos del perfil.
+    """
+    from app.services.perfil import get_perfil
+    p = get_perfil()
+    return {
+        "clave": p.clave,
+        "comercio": p.comercio,
+        "emoji": p.emoji,
+        "capacidades": {
+            "venta": p.venta,
+            "recetas": p.recetas,
+            "obras_sociales": p.obras_sociales,
+            "socios": p.socios,
+            "cuenta_corriente": p.cuenta_corriente,
+            "links_como_receta": p.links_como_receta,
+            "sintomas": p.sintomas,
+        },
+    }
+
+
 @router.post("/wa/test")
 async def bo_wa_test(to: str = Query(...), texto: str = Query("Prueba de envío ✅"),
                      _=Depends(_auth)):
