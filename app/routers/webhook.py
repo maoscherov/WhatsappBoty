@@ -1149,7 +1149,10 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 continue
 
             # ── Receta/bono enviado como LINK → derivar (igual que la foto) ──
-            if contiene_link(texto, dominio_propio(get_settings().public_base_url)):
+            # Rubro sin recetas ni bonos (petshop): un link (Instagram, la web de
+            # una marca) es una consulta más y sigue al modelo.
+            if get_perfil().links_como_receta and \
+                    contiene_link(texto, dominio_propio(get_settings().public_base_url)):
                 _intencion = "receta_link"
                 await deps["session"].set_estado(phone, "operador", motivo="receta_link")
                 respuesta = (

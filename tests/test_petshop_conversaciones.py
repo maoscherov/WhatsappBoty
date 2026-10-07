@@ -176,3 +176,30 @@ async def test_farmacia_links_propios_no_derivan(farmacia_remedia, entorno, text
     await wh.procesar_mensajes([_msg(texto)])
     assert not any(t.startswith("Recibí tu link") for t in deps["wa"].enviados)
     assert (await deps["session"].get(PHONE)).get("derivada_motivo") != "receta_link"
+
+
+_LINK_IG = "Hola, tenés este? https://www.instagram.com/p/C1abc/"
+
+
+async def test_link_de_instagram_va_al_modelo_en_petshop(usar_perfil, entorno, monkeypatch):
+    from app.config import get_settings
+    usar_perfil("petshop")
+    monkeypatch.setattr(get_settings(), "public_base_url", "https://bot.mascotasdeloeste.com.ar")
+    deps = entorno({_LINK_IG: {
+        "intencion": "saludo",
+        "respuesta": "¡Hola! No puedo abrir links 🙏 ¿Me decís el nombre del producto? 🐾"}})
+    await wh.procesar_mensajes([_msg(_LINK_IG)])
+    assert deps["wa"].enviados and not any("Recibí tu link" in t for t in deps["wa"].enviados)
+    assert (await deps["session"].get(PHONE)).get("estado") != "operador"
+    assert _texto_llego_al_modelo(deps, _LINK_IG)
+    assert "receta_link" not in _intenciones_perf(deps)
+
+
+async def test_link_en_mutual_sigue_derivando(usar_perfil, entorno):
+    usar_perfil("mutual")
+    deps = entorno()
+    await wh.procesar_mensajes([_msg(_LINK_IG)])
+    assert deps["wa"].enviados[-1].startswith("Recibí tu link 🙌")
+    s = await deps["session"].get(PHONE)
+    assert s["estado"] == "operador" and s["derivada_motivo"] == "receta_link"
+    assert not _texto_llego_al_modelo(deps, _LINK_IG)
