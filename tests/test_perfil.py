@@ -309,3 +309,99 @@ def test_arranque_loguea_el_perfil_antes_de_tocar_redis(usar_perfil, monkeypatch
             with TestClient(main.app):
                 pass
     assert "Perfil de rubro: petshop (Mascotas del Oeste)" in caplog.text
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Task 4 — prompt de petshop (spec §4.1 y §6.2)
+# ══════════════════════════════════════════════════════════════════════════════
+import hashlib as _hashlib
+import re as _re
+
+_PROHIBIDAS_PROMPT_PETSHOP = (
+    "farmac", "receta", "socio", "obra social", "remedia", "mercado pago", "mutual",
+    "medicament", "remedio", "semanalmente", "{comercio}", "{emoji}", "ibuprofeno",
+    "lotrial", "bayer", "aveno", "talco",
+)
+_OBLIGATORIAS_PROMPT_PETSHOP = (
+    "Soy el asistente virtual de Mascotas del Oeste",
+    "¡Hola! Soy el asistente virtual de Mascotas del Oeste 🐾 ¿En qué te puedo ayudar?",
+    "El sistema envía el link de pago después de que confirme.",
+    "SALUD DE LA MASCOTA",
+    "DESCUENTOS, PROMOCIONES Y CUPONES",
+    "Nunca inventes la dirección",
+    "especie",
+)
+# Bloques de farmacia que el prompt de petshop reusa tal cual (prompts.py).
+_BLOQUES_COMPARTIDOS = (
+    "SEGUIMIENTO", "DERIVACION", "RESERVAS", "CONFIRMACIONES", "RESPUESTA_DIRECTA",
+    "CATALOGO_BUSQUEDA", "PAGO_SIN_LINKS", "PAGO_CORRECCION_CANTIDAD",
+    "VARIOS_PRIMERO_Y_DEMAS", "VARIOS_NUNCA_JUNTES",
+)
+_SHA_PROMPT_FARMACIA = "1953a4e6815d855e635406c1da8f97ff83bb9be6a2fd040b69eabfae4c540749"
+
+
+def _prompt_petshop() -> str:
+    from app.services.perfil import perfil_por_clave
+    return perfil_por_clave("petshop").system_prompt
+
+
+def _claves_json(prompt: str) -> list[str]:
+    """Claves del esquema JSON de FORMATO DE RESPUESTA, en orden."""
+    bloque = prompt[prompt.index("FORMATO DE RESPUESTA:"):]
+    bloque = bloque[bloque.index("{"): bloque.index("}") + 1]
+    return _re.findall(r'^\s*"(\w+)":', bloque, _re.M)
+
+
+def test_intent_service_reexporta_el_prompt_de_farmacia():
+    from app.services import intent_service, prompts
+    assert intent_service.SYSTEM_PROMPT is prompts.SYSTEM_PROMPT
+    assert intent_service._SYSTEM_CACHED is prompts.SYSTEM_PROMPT
+    assert _hashlib.sha256(intent_service.SYSTEM_PROMPT.encode("utf-8")).hexdigest() == _SHA_PROMPT_FARMACIA
+
+
+def test_prompt_petshop_sin_vocabulario_de_farmacia():
+    low = _prompt_petshop().lower()
+    assert [w for w in _PROHIBIDAS_PROMPT_PETSHOP if w in low] == []
+
+
+def test_prompt_petshop_frases_obligatorias():
+    p = _prompt_petshop()
+    assert [f for f in _OBLIGATORIAS_PROMPT_PETSHOP if f not in p] == []
+
+
+def test_prompt_petshop_contrato_con_farmacia():
+    from app.services import prompts
+    farm, pet = prompts.SYSTEM_PROMPT, _prompt_petshop()
+    # Cada bloque compartido está, tal cual, en los dos prompts
+    for nombre in _BLOQUES_COMPARTIDOS:
+        bloque = getattr(prompts, nombre)
+        assert bloque and bloque in farm and bloque in pet, nombre
+    # El enum de `intencion` es la misma línea en los dos
+    enum_farm = [x for x in farm.splitlines() if x.lstrip().startswith('"intencion":')]
+    enum_pet = [x for x in pet.splitlines() if x.lstrip().startswith('"intencion":')]
+    assert len(enum_farm) == 1 and enum_farm == enum_pet
+    # Mismas claves del JSON, en el mismo orden
+    assert _claves_json(farm) == _claves_json(pet) == [
+        "intencion", "entidad_producto", "entidades_adicionales", "agregar_al_pedido", "cantidad",
+        "sku_seleccionado_index", "confirmacion", "solicita_imagen", "por_sintoma", "respuesta"]
+    # Reglas duras de venta, idénticas
+    for frase in (
+        "- REGLA ESTRICTA: solo podés ofrecer productos que aparezcan en [RESULTADOS DEL CATÁLOGO] u [OPCIONES MOSTRADAS].",
+        "- NUNCA incluyas URLs, links ni texto que parezca un link en tu respuesta.",
+    ):
+        assert frase in farm and frase in pet
+    # Las filas de la matriz que no son del rubro (todas menos saludo y consulta_abierta)
+    def _filas_fijas(p):
+        return [x for x in p.splitlines() if x.startswith("| ")
+                and not x.startswith(("| saludo |", "| consulta_abierta |"))]
+    assert len(_filas_fijas(farm)) == 8 and _filas_fijas(farm) == _filas_fijas(pet)
+
+
+def test_prompt_petshop_resuelve_comercio_nombre_y_farmacia_conserva_el_hash(usar_perfil):
+    p = usar_perfil("petshop", comercio="MO Prueba")
+    assert p.comercio == "MO Prueba"
+    assert "Soy el asistente virtual de MO Prueba" in p.system_prompt
+    assert "¡Hola! Soy el asistente virtual de MO Prueba 🐾 ¿En qué te puedo ayudar?" in p.system_prompt
+    assert "Mascotas del Oeste" not in p.system_prompt
+    f = usar_perfil("farmacia", comercio="MO Prueba")
+    assert _hashlib.sha256(f.system_prompt.encode("utf-8")).hexdigest() == _SHA_PROMPT_FARMACIA
