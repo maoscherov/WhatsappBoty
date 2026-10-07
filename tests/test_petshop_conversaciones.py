@@ -135,3 +135,44 @@ async def test_receta_cargada_en_el_sistema(usar_perfil, entorno, clave, deriva)
     assert "sistema de recetas" not in enviado and "🩺" not in enviado
     assert _texto_llego_al_modelo(deps, txt)
     assert s.get("estado") != "operador"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Links
+# ══════════════════════════════════════════════════════════════════════════════
+@pytest.fixture
+def farmacia_remedia(usar_perfil, monkeypatch):
+    """La farmacia como está en Railway: PUBLIC_BASE_URL bajo remedia.ar (§4.3).
+    Se pisa el atributo del Settings cacheado, después de elegir el perfil:
+    usar_perfil (Task 1) no recrea Settings y un setenv no llegaría al webhook."""
+    from app.config import get_settings
+    perfil = usar_perfil("farmacia")
+    monkeypatch.setattr(get_settings(), "public_base_url", "https://farmacia.remedia.ar")
+    return perfil
+
+
+@pytest.mark.parametrize("texto", [
+    "te mando la receta https://drive.google.com/file/d/abc/view",
+    "ahí va receta_ana.jpg",
+    "www.fotos.com/receta",
+])
+async def test_farmacia_link_externo_deriva_como_receta(farmacia_remedia, entorno, texto):
+    """Regresión escrita ANTES del cambio: pasa con el código de hoy."""
+    deps = entorno()
+    await wh.procesar_mensajes([_msg(texto)])
+    assert deps["wa"].enviados[-1].startswith("Recibí tu link 🙌")
+    s = await deps["session"].get(PHONE)
+    assert s["estado"] == "operador" and s["derivada_motivo"] == "receta_link"
+
+
+@pytest.mark.parametrize("texto", [
+    "el link https://farmacia.remedia.ar/pay/abc123 no me abre",
+    "vi esto en https://www.remedia.ar/promos",
+    "y esto? https://cerca.remedia.ar/x",
+])
+async def test_farmacia_links_propios_no_derivan(farmacia_remedia, entorno, texto):
+    """Regresión escrita ANTES del cambio: pasa con el código de hoy."""
+    deps = entorno()
+    await wh.procesar_mensajes([_msg(texto)])
+    assert not any(t.startswith("Recibí tu link") for t in deps["wa"].enviados)
+    assert (await deps["session"].get(PHONE)).get("derivada_motivo") != "receta_link"

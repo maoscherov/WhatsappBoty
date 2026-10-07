@@ -136,3 +136,20 @@ def test_texto_alternativas_farmacia_igual_que_hoy(usar_perfil):
     t = texto_alternativas(_ALTS_RECETA)
     assert "• Pipeta Frontline Plus Perro 10-20kg — $25,000.00 (requiere receta)\n" in t
     assert "• Dog Chow Adulto 3kg — $9,800.00\n" in t
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Links (links_como_receta = False)
+# ══════════════════════════════════════════════════════════════════════════════
+@pytest.mark.parametrize("texto,esperado", [
+    ("te mando la receta https://drive.google.com/file/d/abc/view", True),
+    ("ahí va receta_ana.jpg", True),
+    ("www.fotos.com/receta", True),
+    ("el link https://pagos.ejemplo.com/pay/abc123 no me abre", False),
+    ("hola, tenés pipetas?", False),
+])
+def test_contiene_link_regresion_farmacia(texto, esperado):
+    """Regresión escrita ANTES del cambio de firma: pasa con el código de hoy
+    y sigue pasando después (sin dominio propio)."""
+    from app.services.checkout_helper import contiene_link
+    assert contiene_link(texto) is esperado
