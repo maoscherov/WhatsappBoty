@@ -2149,6 +2149,43 @@ def quitar_saludo_repetido(respuesta: str, history: list) -> str:
     return resto[0].upper() + resto[1:]
 
 
+# ── Listas numeradas en un solo renglón (8/10) ────────────────────────────────
+# "Te puedo ofrecer estos polvos: 1. Maybelline a $3.600 2. L'Oréal…": el
+# modelo pega el primer ítem (o todos) al texto. Cada ítem va en su renglón.
+# El número no puede venir pegado a "$", otra cifra, punto o coma ("$3.600",
+# "x 30. 2."), y el ítem tiene que empezar con texto.
+_ITEM_NUM_RE = re.compile(r"(?<![\d$.,])(\d{1,2})\.[ \t]+(?=[^\d\s])")
+
+
+def separar_lista_numerada(texto: str) -> str:
+    """Pone la lista 1., 2., 3. en renglones propios, con la frase que la
+    presenta y la pregunta final separadas por un renglón en blanco."""
+    if not texto:
+        return texto
+    marcas = list(_ITEM_NUM_RE.finditer(texto))
+    inicio = next((i for i, m in enumerate(marcas) if m.group(1) == "1"), None)
+    if inicio is None:
+        return texto
+    serie, esperado = [marcas[inicio]], 2
+    for m in marcas[inicio + 1:]:
+        if int(m.group(1)) == esperado:
+            serie.append(m)
+            esperado += 1
+    if len(serie) < 2:
+        return texto
+    intro = texto[:serie[0].start()].rstrip()
+    items = [texto[a.start():b.start()].strip() for a, b in zip(serie, serie[1:])]
+    ultimo = texto[serie[-1].start():].strip()
+    cierre = ""
+    corte = min([p for p in (ultimo.find("\n\n"), ultimo.find("¿")) if p > 0], default=-1)
+    if corte > 0:
+        ultimo, cierre = ultimo[:corte].strip(), ultimo[corte:].strip()
+    items.append(ultimo)
+    items = [" ".join(i.split()) for i in items]
+    out = (intro + "\n\n" if intro else "") + "\n".join(items)
+    return out + ("\n\n" + cierre if cierre else "")
+
+
 
 # ── "Sí, encargalo" (auditoría 2/10) ──────────────────────────────────────────
 # El bot decía "no lo tengo, ¿lo encargamos?" y en la misma respuesta ofrecía

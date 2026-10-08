@@ -53,6 +53,7 @@ from app.services.checkout_helper import (
     quitar_cierres_vagos, ya_dice_no_disponible, solo_la_pregunta,
     alternativas_con_precio, texto_alternativas, precios_inventados, referencias_de_precio,
     quitar_receta_inventada, quitar_saludo_repetido, pide_encargo, marcar_precio_dudoso,
+    separar_lista_numerada,
     nombres_inventados, es_refinamiento_de_marca, marca_en_resultado, match_envio,
     pide_cancelar_pedido, pregunta_obra_social, responder_obra_social, parsear_lista,
     pregunta_bono, responder_bono, agregar_oferta_farmaceutico, acepta_farmaceutico,
@@ -1977,6 +1978,7 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                             respuesta = "Dale, sin problema. ¿En qué más te puedo ayudar?"
 
                     respuesta = quitar_saludo_repetido(respuesta, session.get("history") or [])
+                    respuesta = separar_lista_numerada(respuesta)
                     if await cumplir_derivacion_prometida(deps["session"], phone, respuesta):
                         _intencion = "derivacion_prometida"
                     _ts = _time.perf_counter()
@@ -2504,6 +2506,9 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     deps, phone, session, respuesta, None,
                     await deps["config"].get_all(), entidad,
                     sintoma=bool(intent_result.get("por_sintoma")) or _intencion == "consulta_abierta")
+
+            # Listas "1. … 2. …" pegadas al texto: cada ítem en su renglón (8/10).
+            respuesta = separar_lista_numerada(respuesta)
 
             # El bot iba a repetir textual su mensaje anterior (C-4033: "no tengo
             # el de Algabo, ¿te muestro alternativas?" dos veces): no está
