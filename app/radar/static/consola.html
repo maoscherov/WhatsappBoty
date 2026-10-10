@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Radar — Consola KIS</title>
+<link rel="stylesheet" href="/radar/estaticos/radar.css">
+<script src="/radar/estaticos/radar.js" defer></script>
+</head>
+<body data-modo="consola">
+<header>
+  <h1>Consola KIS</h1>
+  <p class="nota">Solo admins de Keep IT Simple. Cada acción queda auditada. Nunca se muestran conversaciones ni claves de WAHA.</p>
+  <button type="button" id="btn-salir">Salir</button>
+</header>
+<p id="error" class="error" role="alert"></p>
+
+<section id="alta">
+  <h2>Alta</h2>
+  <p id="alta-aviso" role="status"></p>
+
+  <form id="form-alta">
+    <h3>Cliente nuevo</h3>
+    <label>Nombre del cliente <input type="text" id="alta-nombre" maxlength="120" required autocomplete="off"></label>
+    <label>Rubro <input type="text" id="alta-rubro" maxlength="40" pattern="[a-z_]{1,40}" title="minúsculas y guion bajo, ej.: farmacia" required autocomplete="off"></label>
+    <span class="nota">minúsculas y guion bajo, ej.: farmacia</span>
+    <p id="alta-propuesta" class="nota"></p>
+    <label>Email del dueño <input type="email" id="alta-dueno-email" maxlength="254" required autocomplete="off"></label>
+    <label>Nombre del dueño <input type="text" id="alta-dueno-nombre" maxlength="120" autocomplete="off"></label>
+    <label>Primera línea <input type="text" id="alta-linea-nombre" maxlength="80" required autocomplete="off"></label>
+    <button type="submit" id="btn-alta">Crear cliente y mandar la invitación</button>
+  </form>
+
+  <form id="form-linea">
+    <h3>Agregar línea</h3>
+    <label>Cliente
+      <select id="linea-cliente" required><option value="">Elegí un cliente</option></select>
+    </label>
+    <label>Nombre de la línea <input type="text" id="linea-nombre" maxlength="80" required autocomplete="off"></label>
+    <button type="submit" id="btn-agregar-linea">Agregar línea</button>
+  </form>
+
+  <form id="form-invitacion">
+    <h3>Reenviar invitación</h3>
+    <label>Cliente
+      <select id="inv-cliente" required><option value="">Elegí un cliente</option></select>
+    </label>
+    <label>Email del usuario <input type="email" id="inv-email" maxlength="254" required autocomplete="off"></label>
+    <button type="submit" id="btn-invitar">Reenviar</button>
+  </form>
+</section>
+
+<section>
+  <h2>Líneas</h2>
+  <div class="filtros">
+    <label>Estado
+      <select id="filtro-estado">
+        <option value="">Todos</option>
+        <option value="vinculada">Vinculada</option>
+        <option value="sin_vinculo">Sin vínculo</option>
+        <option value="de_baja">De baja</option>
+      </select>
+    </label>
+    <label>Cliente
+      <select id="filtro-cliente"><option value="">Todos</option></select>
+    </label>
+    <button type="button" id="btn-refrescar">Refrescar</button>
+  </div>
+  <div class="tabla">
+    <table>
+      <thead>
+        <tr>
+          <th>Semáforo</th><th>Cliente</th><th>Línea</th><th>Número</th><th>Estado</th><th>Sesión WAHA</th>
+          <th>Observado hasta</th><th>Último mensaje</th><th>Sincronización</th><th>Huecos</th>
+          <th>Salud de la cuenta</th><th>Worker</th><th>IA del mes</th><th></th>
+        </tr>
+      </thead>
+      <tbody id="lineas"></tbody>
+    </table>
+  </div>
+  <p class="nota">"—" = dato que llega con la ingesta (tramo 3) o con la IA (tramo 5). De cada worker solo se ve el nombre y la ocupación: la Consola nunca muestra la clave de WAHA.</p>
+</section>
+
+<section id="panel" hidden>
+  <h2 id="panel-titulo"></h2>
+  <button type="button" id="btn-cerrar-panel">Cerrar</button>
+
+  <div id="paso-consentimiento" hidden>
+    <h3>Consentimiento asistido</h3>
+    <pre id="texto-consentimiento"></pre>
+    <p id="parametros" class="nota"></p>
+    <input type="hidden" id="version" value="">
+    <label><input type="checkbox" id="acepto"> El titular leyó y aceptó este texto en esta sesión</label>
+    <div id="fila-asistido">
+      <label>Modo
+        <select id="modo">
+          <option value="presencial">Presencial</option>
+          <option value="videollamada">Videollamada</option>
+        </select>
+      </label>
+      <label>Quién aceptó <input type="text" id="nombre" maxlength="120" autocomplete="off"></label>
+    </div>
+    <button type="button" id="btn-consentir">Registrar consentimiento y enviar copia al dueño</button>
+  </div>
+
+  <div id="paso-vincular" hidden>
+    <h3>Conectar WhatsApp</h3>
+    <p id="fila-profundidad"><label><input type="checkbox" id="full-sync"> Hasta 12 meses de historial (solo servidores NOWEB; no se puede cambiar después de escanear)</label></p>
+    <button type="button" id="btn-generar">Generar QR</button>
+  </div>
+
+  <div id="paso-estado">
+    <p id="estado-texto" role="status"></p>
+    <img id="qr" alt="Código QR para vincular WhatsApp" width="264" height="264" hidden>
+    <p id="cuenta" class="nota" hidden></p>
+    <p id="reinicios" class="nota"></p>
+    <button type="button" id="btn-reiniciar" hidden>Generar un código nuevo</button>
+    <p class="nota">Abrí WhatsApp → Dispositivos vinculados → Vincular un dispositivo → Escaneá. Si falla del lado del teléfono, revisá que no tenga ya 4 dispositivos vinculados.</p>
+    <details>
+      <summary>Estoy en el mismo teléfono: vincular con código</summary>
+      <label>Número de la línea, en formato internacional <input type="tel" id="telefono" autocomplete="off"></label>
+      <button type="button" id="btn-codigo">Pedir código</button>
+      <p id="codigo"></p>
+    </details>
+    <p id="aviso" class="nota"></p>
+  </div>
+
+  <div id="acciones">
+    <h3>Acciones</h3>
+    <button type="button" id="btn-desconectar">Desconectar</button>
+    <button type="button" id="btn-borrar" class="peligro">Desconectar y borrar todo</button>
+    <div id="fila-restriccion">
+      <label>Restricción de cuenta hasta <input type="datetime-local" id="restriccion-hasta"></label>
+      <button type="button" id="btn-restriccion">Marcar restricción (vacío = sin fecha)</button>
+      <button type="button" id="btn-levantar">Levantar restricción</button>
+    </div>
+  </div>
+</section>
+
+<section id="servidores">
+  <h2>Servidores WAHA</h2>
+  <p class="nota">Cada servidor tiene su motor y su clave de administrador. La clave viaja una sola vez a Radar, se prueba contra el propio servidor y se guarda fuera de la base. La Consola nunca muestra la clave.</p>
+  <p id="worker-aviso" role="status"></p>
+  <p id="worker-error" class="error" role="alert"></p>
+  <div class="tabla">
+    <table>
+      <thead>
+        <tr><th>Nombre</th><th>Motor</th><th>URL</th><th>Sesiones</th><th>Disco usado/total</th><th>Activo</th><th>Clave cargada</th><th></th></tr>
+      </thead>
+      <tbody id="workers"></tbody>
+    </table>
+  </div>
+  <p class="nota">«Clave cargada» dice si Radar tiene guardada la clave de ese servidor; la Consola nunca muestra la clave, solo permite reemplazarla. «Disco» carga los GB que usa el servidor.</p>
+
+  <form id="form-worker">
+    <h3>Registrar un servidor</h3>
+    <label>Nombre <input type="text" id="worker-nombre" maxlength="40" pattern="[a-z0-9_\-]{1,40}" title="minúsculas, números, guion y guion bajo, ej.: waha-1" required autocomplete="off"></label>
+    <label>URL <input type="url" id="worker-url" maxlength="200" required autocomplete="off"></label>
+    <span class="nota">La que alcanza Radar, sin usuario ni contraseña. En Railway: http://&lt;servicio&gt;.railway.internal:3000</span>
+    <label>Motor
+      <select id="worker-motor" required>
+        <option value="">Elegí el motor</option>
+        <option value="GOWS">GOWS</option>
+        <option value="NOWEB">NOWEB</option>
+      </select>
+    </label>
+    <label>Máximo de sesiones <input type="number" id="worker-max" min="1" max="500" step="1" value="50" required></label>
+    <label>Disco total (GB) <input type="number" id="worker-disco" min="0.01" max="100000" step="any" required></label>
+    <label>Clave de administrador de WAHA <input type="password" id="worker-clave" minlength="16" maxlength="256" required autocomplete="off"></label>
+    <button type="submit" id="btn-worker">Probar la clave y registrar</button>
+  </form>
+
+  <form id="form-worker-clave">
+    <h3>Reemplazar clave</h3>
+    <label>Servidor
+      <select id="worker-reemplazo" required><option value="">Elegí un servidor</option></select>
+    </label>
+    <label>Clave nueva <input type="password" id="worker-clave-nueva" minlength="16" maxlength="256" required autocomplete="off"></label>
+    <button type="submit" id="btn-worker-clave">Probar la clave y reemplazar</button>
+  </form>
+</section>
+</body>
+</html>

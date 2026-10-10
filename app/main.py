@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
+from app.middleware import log_errores
 from app.routers import (webhook, simulate, backoffice, mp_webhook, orders_api,
                          media, payway, sync_api, agent_ws, backoffice_branches,
                          backoffice_receta, backoffice_pedidos, backoffice_diccionario,
@@ -378,89 +379,69 @@ async def _cerrar_sesiones_inactivas():
             logger.error(f"Job de inactividad: {e}")
 
 
-app = FastAPI(
-    title="Remedia Bot",
-    version="1.0.0",
-    lifespan=lifespan,
-)
+def crear_app(settings=None) -> FastAPI:
+    """Una imagen, dos modos (APP_MODE). En modo radar no se monta ningún
+    router del bot ni sus páginas; en modo bot no se monta nada de Radar."""
+    settings = settings or get_settings()
+    if settings.app_mode == "radar":
+        from app.radar.app import crear_app_radar
+        return crear_app_radar()
+    if settings.app_mode != "bot":
+        raise RuntimeError(f"APP_MODE inválido: {settings.app_mode!r} (bot|radar)")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+    app = FastAPI(title="Remedia Bot", version="1.0.0", lifespan=lifespan)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    app.middleware("http")(log_errores)
 
+    for modulo in (webhook, simulate, backoffice, mp_webhook, orders_api, media,
+                   payway, sync_api, agent_ws, backoffice_branches,
+                   backoffice_receta, backoffice_pedidos, backoffice_diccionario,
+                   backoffice_operadores):
+        app.include_router(modulo.router)
 
-@app.middleware("http")
-async def _log_errores(request, call_next):
-    """Loguea cualquier 5xx con el método + endpoint para poder rastrearlo en Railway."""
-    import logging as _logging
-    _log = _logging.getLogger("app.errors")
-    try:
-        response = await call_next(request)
-    except Exception as e:
-        _log.exception(f"💥 500 en {request.method} {request.url.path} — {type(e).__name__}: {e}")
-        raise
-    if response.status_code >= 500:
-        _log.error(f"💥 {response.status_code} en {request.method} {request.url.path}")
-    return response
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
+    @app.get("/")
+    async def root():
+        return FileResponse(STATIC_DIR / "index.html")
 
-app.include_router(webhook.router)
-app.include_router(simulate.router)
-app.include_router(backoffice.router)
-app.include_router(mp_webhook.router)
-app.include_router(orders_api.router)
-app.include_router(media.router)
-app.include_router(payway.router)
-app.include_router(sync_api.router)
-app.include_router(agent_ws.router)
-app.include_router(backoffice_branches.router)
-app.include_router(backoffice_receta.router)
-app.include_router(backoffice_pedidos.router)
-app.include_router(backoffice_diccionario.router)
-app.include_router(backoffice_operadores.router)
+    @app.get("/bo")
+    async def backoffice_ui():
+        return FileResponse(STATIC_DIR / "backoffice.html")
 
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+    @app.get("/backoffice")
+    async def orders_ui():
+        return FileResponse(STATIC_DIR / "orders.html")
 
+    @app.get("/dashboard")
+    async def dashboard_ui():
+        return FileResponse(STATIC_DIR / "dashboard.html")
 
-@app.get("/")
-async def root():
-    return FileResponse(STATIC_DIR / "index.html")
+    @app.get("/tablero")
+    async def tablero_ui():
+        """Tablero CERCA: indicadores por vertical (diseño 'Tableros CERCA')."""
+        return FileResponse(STATIC_DIR / "tablero.html")
 
-@app.get("/bo")
-async def backoffice_ui():
-    return FileResponse(STATIC_DIR / "backoffice.html")
+    @app.get("/health")
+    async def health():
+        import os
+        return {
+            "status": "ok",
+            "bot": "Remedia",
+            # Railway inyecta el SHA del commit deployado — permite verificar qué
+            # versión está corriendo sin mirar los logs.
+            "commit": (os.getenv("RAILWAY_GIT_COMMIT_SHA") or "")[:9] or None,
+            # Versión del esquema de la base: si no coincide con la última
+            # migración del código, algo no se aplicó.
+            "db": await _version_db(),
+        }
 
-@app.get("/backoffice")
-async def orders_ui():
-    return FileResponse(STATIC_DIR / "orders.html")
-
-@app.get("/dashboard")
-async def dashboard_ui():
-    return FileResponse(STATIC_DIR / "dashboard.html")
-
-
-@app.get("/tablero")
-async def tablero_ui():
-    """Tablero CERCA: indicadores por vertical (diseño 'Tableros CERCA')."""
-    return FileResponse(STATIC_DIR / "tablero.html")
-
-
-@app.get("/health")
-async def health():
-    import os
-    return {
-        "status": "ok",
-        "bot": "Remedia",
-        # Railway inyecta el SHA del commit deployado — permite verificar qué
-        # versión está corriendo sin mirar los logs.
-        "commit": (os.getenv("RAILWAY_GIT_COMMIT_SHA") or "")[:9] or None,
-        # Versión del esquema de la base: si no coincide con la última
-        # migración del código, algo no se aplicó.
-        "db": await _version_db(),
-    }
+    return app
 
 
 async def _version_db():
@@ -472,3 +453,6 @@ async def _version_db():
         return filas[0]["version_num"] if filas else None
     except Exception:
         return None
+
+
+app = crear_app()

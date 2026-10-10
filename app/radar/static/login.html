@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Radar — Entrar</title>
+<link rel="stylesheet" href="/radar/estaticos/radar.css">
+<script src="/radar/estaticos/radar.js" defer></script>
+</head>
+<body data-modo="login">
+<header>
+  <h1>Entrar a Radar</h1>
+  <p class="nota">Escribí tu email y te mandamos un link para entrar. No hace falta contraseña.</p>
+</header>
+<p id="error" class="error" role="alert"></p>
+
+<form id="form-login">
+  <label>Email <input type="email" id="email" autocomplete="email" maxlength="254" required></label>
+  <button type="submit" id="btn-entrar">Recibir el link</button>
+</form>
+<p id="aviso" role="status"></p>
+</body>
+</html>

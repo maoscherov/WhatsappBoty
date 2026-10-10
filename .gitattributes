@@ -1,0 +1,3 @@
+# Los scripts de shell siempre con LF: con core.autocrlf=true, un checkout en Windows
+# los dejaría con CRLF y bash fallaría en la primera línea.
+*.sh text eol=lf

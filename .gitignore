@@ -10,3 +10,4 @@ data/*.xls
 !data/catalogo_base.csv
 dist/
 scratch/
+.radar_local/

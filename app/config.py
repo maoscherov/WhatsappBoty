@@ -27,6 +27,11 @@ class Settings(BaseSettings):
     vertical: str = "farmacia"
 
     env: str = "development"
+
+    # Modo del despliegue: "bot" (Remedia; por defecto, nada cambia para los
+    # despliegues existentes) o "radar" (despliegue propio de Radar, §6.2:
+    # routers de Radar y ninguno del bot).
+    app_mode: str = "bot"
     sku_csv_path: str = "data/catalogo_base.csv"
     socios_path: str = "data/socios.csv"      # padrón de socios (CSV o XLSX)
     socios_area_default: str = "341"
