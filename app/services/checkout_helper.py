@@ -2149,6 +2149,55 @@ def quitar_saludo_repetido(respuesta: str, history: list) -> str:
     return resto[0].upper() + resto[1:]
 
 
+# ── "¿Qué otras opciones tienen?" (C-4939, 13/10) ─────────────────────────────
+# Sin producto nombrado no se buscaba nada y el modelo inventaba la lista.
+_OTRAS_OPCIONES_RE = re.compile(
+    r"\b(otr[oa]s?\s+(opci[oó]n|opciones|marcas?|cosas?|alternativas?|variedad|modelos?)|"
+    r"algo\s+(parecido|similar|igual)|alternativas?|similar(es)?|reemplazo|"
+    r"qu[eé]\s+m[aá]s\s+(ten[eé]s|tienen|hay)|qu[eé]\s+(otra|otro)\b)",
+    re.IGNORECASE)
+_PALABRAS_VACIAS = {"de", "del", "con", "sin", "para", "por", "el", "la", "los", "las", "un",
+                    "una", "y", "en", "que", "me", "mi", "tu", "x", "ml", "gr", "mg", "g"}
+
+
+def pide_otras_opciones(texto: str) -> bool:
+    return bool(_OTRAS_OPCIONES_RE.search(texto or ""))
+
+
+def tipo_de_producto(consulta: str, sku_svc, minimo: Optional[int] = None) -> str:
+    """
+    Lo que queda de una consulta sacando marca, línea y medidas: "Maybelline
+    FIT me! Mate & Sin Poros polvo compacto 12g" → "mate polvo compacto".
+    Se quedan las palabras genéricas del catálogo (están en muchos productos)
+    que no son una marca. Vacío si no queda ninguna.
+    """
+    from app.services.catalogo_enriquecido import TIPOS_PRODUCTO
+    marcas = getattr(sku_svc, "_tokens_marca", None)
+    if marcas is None:
+        marcas = set()
+        for s in sku_svc.todos():
+            marcas.update(re.findall(r"[a-záéíóúñ]+", (getattr(s, "marca", "") or "").lower()))
+        try:
+            sku_svc._tokens_marca = marcas
+        except Exception:
+            pass
+    tipos = set().union(*TIPOS_PRODUCTO.values())
+    df = getattr(sku_svc, "_token_df", {}) or {}
+    if minimo is None:      # "genérica" = en 15+ productos (menos en catálogos chicos)
+        minimo = min(15, max(2, len(getattr(sku_svc, "_search_index", []) or []) // 200))
+    out = []
+    for t in re.findall(r"[a-záéíóúñ0-9]+", (consulta or "").lower()):
+        if t in out or t in _PALABRAS_VACIAS or any(c.isdigit() for c in t) or len(t) < 3:
+            continue
+        if t in tipos or (t not in marcas and df.get(t, 0) >= minimo):
+            out.append(t)
+    # Solo una forma ("gel" de "gel lord cheseline"): traería pañales y
+    # esmaltes. Mejor no buscar: el control de precios ofrece consultarlo.
+    if len(out) == 1 and out[0] in tipos:
+        return ""
+    return " ".join(out)
+
+
 # ── Listas numeradas en un solo renglón (8/10) ────────────────────────────────
 # "Te puedo ofrecer estos polvos: 1. Maybelline a $3.600 2. L'Oréal…": el
 # modelo pega el primer ítem (o todos) al texto. Cada ítem va en su renglón.

@@ -53,7 +53,7 @@ from app.services.checkout_helper import (
     quitar_cierres_vagos, ya_dice_no_disponible, solo_la_pregunta,
     alternativas_con_precio, texto_alternativas, precios_inventados, referencias_de_precio,
     quitar_receta_inventada, quitar_saludo_repetido, pide_encargo, marcar_precio_dudoso,
-    separar_lista_numerada,
+    separar_lista_numerada, pide_otras_opciones, tipo_de_producto,
     nombres_inventados, es_refinamiento_de_marca, marca_en_resultado, match_envio,
     pide_cancelar_pedido, pregunta_obra_social, responder_obra_social, parsear_lista,
     pregunta_bono, responder_bono, agregar_oferta_farmaceutico, acepta_farmaceutico,
@@ -487,7 +487,7 @@ async def _flujo_mutual(deps, phone: str, session: dict, texto: str,
 
 async def _sin_precios_inventados(deps, phone: str, session: dict, respuesta: str,
                                   resultados, cfg: dict, entidad: "str | None" = None,
-                                  sintoma: bool = False) -> str:
+                                  sintoma: bool = False, solo_precios: bool = False) -> str:
     """
     Verifica que todo precio de la respuesta del modelo salga de un dato real
     (catálogo, pedido en curso, envío, lo ya dicho). Si inventó alguno
@@ -498,7 +498,7 @@ async def _sin_precios_inventados(deps, phone: str, session: dict, respuesta: st
     try:
         unit, totales = referencias_de_precio(resultados, session, cfg, respuesta)
         malos = precios_inventados(respuesta, unit, totales)
-        malos_nombres = nombres_inventados(respuesta, resultados)
+        malos_nombres = [] if solo_precios else nombres_inventados(respuesta, resultados)
     except Exception as e:
         logger.warning(f"Control de precios falló para {phone}: {e}")
         return respuesta
@@ -2069,6 +2069,20 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     intencion == "consulta_abierta" or intent_result.get("por_sintoma")):
                 entidad = texto
 
+            # "¿Qué otras opciones tienen?" después de un "no lo tengo": se busca
+            # el TIPO de producto de lo anterior ("polvo compacto"). Sin búsqueda
+            # el modelo inventaba productos y precios (C-4939, 13/10: Fit Me
+            # $3.200, L'Oréal Infallible $3.600, ninguno en el catálogo).
+            if not entidad and not ya_tiene_pending and pide_otras_opciones(texto):
+                _prev_op = session.get("_ultima_busqueda") or next(
+                    (m.get("content") for m in reversed(session.get("history") or [])
+                     if m.get("role") == "user" and not str(m.get("content") or "").startswith("📷")),
+                    None)
+                _tipo_op = tipo_de_producto(_prev_op or "", deps["sku"])
+                if _tipo_op:
+                    logger.info(f"Otras opciones: {_prev_op!r} → {_tipo_op!r}")
+                    entidad = _tipo_op
+
             # Buscar SIEMPRE que Claude haya detectado un producto (entidad),
             # aunque el mensaje también salude (ej: "hola, tenés Dexopral?").
             # Antes solo se buscaba si la intención era de SKU, y un mensaje que
@@ -2500,12 +2514,17 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
 
             # Respuesta directa del modelo sin búsqueda (saludo, consulta
             # general): tampoco puede traer precios que no salen de ningún dato.
-            if resultados_sku is None and _intencion in (
-                    "saludo", "social", "agradecimiento", "desconocido", "consulta_abierta"):
+            # Con cualquier otra intención también: "consulta_stock" sin producto
+            # nombrado ("¿qué otras opciones tienen?") salía sin control y con
+            # precios inventados (C-4939). Solo sobre texto del modelo (la
+            # intención no la cambió el código); ahí se controlan solo precios.
+            _generales = ("saludo", "social", "agradecimiento", "desconocido", "consulta_abierta")
+            if resultados_sku is None and (_intencion in _generales or _intencion == intencion):
                 respuesta = await _sin_precios_inventados(
                     deps, phone, session, respuesta, None,
                     await deps["config"].get_all(), entidad,
-                    sintoma=bool(intent_result.get("por_sintoma")) or _intencion == "consulta_abierta")
+                    sintoma=bool(intent_result.get("por_sintoma")) or _intencion == "consulta_abierta",
+                    solo_precios=_intencion not in _generales)
 
             # Listas "1. … 2. …" pegadas al texto: cada ítem en su renglón (8/10).
             respuesta = separar_lista_numerada(respuesta)

@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     # Rubro del asistente: "farmacia" (catálogo, carrito y cobro) o
     # "mutual" (información institucional + derivación, sin venta).
     vertical: str = "farmacia"
+    # Nombre con el que se presenta el bot ("Bienvenido a ..."). Env: NOMBRE_COMERCIO.
+    nombre_comercio: str = "Remedia"
 
     env: str = "development"
 

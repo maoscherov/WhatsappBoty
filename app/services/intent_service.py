@@ -189,7 +189,11 @@ class IntentService:
         if self._vertical == "mutual":
             from app.services.mutual_helper import SYSTEM_PROMPT_MUTUAL
             return SYSTEM_PROMPT_MUTUAL
-        return SYSTEM_PROMPT
+        # El nombre del comercio sale del entorno (NOMBRE_COMERCIO): la farmacia
+        # saludaba "Bienvenida a Remedia" en vez de su nombre (9/10).
+        from app.config import get_settings
+        nombre = (getattr(get_settings(), "nombre_comercio", "") or "").strip() or "Remedia"
+        return SYSTEM_PROMPT if nombre == "Remedia" else SYSTEM_PROMPT.replace("Remedia", nombre)
 
     # ── Helpers internos ──────────────────────────────────────────────────────
 
