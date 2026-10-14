@@ -288,6 +288,11 @@ async def retomar_venta(phone: str, sku_id: str) -> str:
         raise ConflictoMarca("El producto no se puede vender ahora (sin stock, sin precio o "
                              "pausado): la conversación sigue con el operador")
     session = await deps["session"].get(phone)
+    # La charla ya no está con el operador: el bot siguió y el pedido está en
+    # curso o cerrado. Re-ofrecerlo pregunta "¿retiro o envío?" de nuevo
+    # (C-4747, 9/10: el citrato ya estaba pedido y pagado en efectivo).
+    if session.get("estado") != "operador":
+        raise ConflictoMarca("El cliente ya siguió la compra con el bot: no se le vuelve a ofrecer")
     cantidad = next((int(p.get("cantidad") or 1) for p in session.get("_productos_receta") or []
                      if str(p.get("sku_id")) == str(sku_id)), 1)
     nombre = sku.sku_nombre_original or sku.sku_nombre

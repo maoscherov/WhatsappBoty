@@ -16,7 +16,10 @@ logger = logging.getLogger(__name__)
 
 # Detección de modo de entrega (compartida por webhook y simulate)
 _RETIRO = [r"\bretiro\b", r"\bretirar\b", r"\bsucursal\b", r"\bpaso\b", r"\bbusco\b",
-           r"\bvoy\b", r"\bretiro yo\b", r"\ben el local\b", r"\bpasar\b"]
+           r"\bvoy\b", r"\bretiro yo\b", r"\ben el local\b", r"\bpasar\b",
+           # Errores de tipeo reales: "Retito" (C-4793, 9/10) caía a una
+           # consulta y el modelo dijo "está listo para que lo retires".
+           r"\bretit\w*\b", r"\bretri\w*\b", r"\bretir\b"]
 _ENVIO  = [r"\benv[ií]o\b", r"\benviar\b", r"\benv[ií]en\b", r"\bdomicilio\b",
            r"\bmand[aá]\b", r"\bmandame\b", r"\bmanden\b", r"\bcasa\b", r"\bdelivery\b",
            r"\ba domicilio\b",
@@ -427,6 +430,10 @@ _CONFIRMACION_FANTASMA = re.compile(
     r"gracias\s+por\s+tu\s+compra|"
     r"compra\s+(?:realizada|exitosa)|"
     r"te\s+esperamos\b[^.!?…$]{0,40}\bretirar\w*|"
+    # C-4793 (9/10): "está listo para que lo retires" sin pedido ni pago.
+    r"\b(?:est[aá]|queda|qued[oó])\s+list[oa]s?\s+para\s+(?:que\s+(?:lo|la|los|las)\s+)?retir\w*|"
+    r"\bel\s+sistema\s+te\s+(?:enviar[aá]|va\s+a\s+enviar)\b|"
+    r"\bte\s+esperamos\b|"
     # Reservas/urgencia (11/9): no existe flujo de reserva; "lo reservamos" y
     # "quedan pocas, conviene reservarlo" son promesas que nadie cumple.
     r"\breserv(?:a|amos|ar\w*|ad\w+|o)\b|"
@@ -589,7 +596,8 @@ def necesita_receta(sku_svc, sku_id: str, modo: str) -> bool:
 
 
 async def derivar_si_receta(sku_svc, session_svc, cfg: dict, phone: str, sku_id: str,
-                            nombre: str = "", extras: Optional[list[dict]] = None):
+                            nombre: str = "", extras: Optional[list[dict]] = None,
+                            otros: Optional[list[str]] = None):
     """
     Si el producto recién elegido requiere receta, deriva a una persona en el
     acto (sin ofrecer link de pago) y devuelve el mensaje para el cliente.
@@ -651,17 +659,30 @@ async def derivar_si_receta(sku_svc, session_svc, cfg: dict, phone: str, sku_id:
                                for c in conservar)
             saludo = f"{nombre}, el" if nombre else "El"
             return (f"{saludo} {prod} requiere receta 🩺. Te paso con alguien del equipo "
-                    f"con todo tu pedido, así lo gestiona junto con lo demás:\n{lineas}\n\n"
-                    "¡En un momento te contactamos!")
+                    f"con todo tu pedido, así lo gestiona junto con lo demás:\n{lineas}"
+                    f"{_texto_otros(otros)}\n\n¡En un momento te contactamos!")
         if _ya_dicho:
             inicio = f"Dale {nombre}, te" if nombre else "Dale, te"
             return f"{inicio} paso con alguien del equipo para gestionarlo con vos. ¡En un momento te contactamos!"
         inicio = f"{nombre}, ese" if nombre else "Ese"
+        if otros:
+            return (f"{inicio} producto requiere receta 🩺. Te paso con alguien del equipo "
+                    f"con todo tu pedido.{_texto_otros(otros)}\n\n¡En un momento te contactamos!")
         return (
             f"{inicio} producto requiere receta 🩺. Te paso con alguien del equipo "
             "para gestionarlo con vos. ¡En un momento te contactamos!"
         )
     return None
+
+
+def _texto_otros(otros: Optional[list[str]]) -> str:
+    """Lo demás que pidió el cliente y no entra al carrito (lleva receta o no
+    se encontró): va en el mensaje para que el operador vea el pedido entero
+    (C-4207, 6/10: de 9 productos el resumen mostró uno)."""
+    vistos = list(dict.fromkeys(o for o in (otros or []) if o))
+    if not vistos:
+        return ""
+    return "\n\nTambién pediste:\n" + "\n".join(f"• {o}" for o in vistos)
 
 
 def receta_ya_mencionada(history: list) -> bool:
@@ -1592,6 +1613,10 @@ _EFECTIVO = [
     r"\bcontra\s*(entrega|reembolso)\b",
 ]
 _NO_EFECTIVO = [r"\bno\s+(tengo|uso|manejo|quiero)\s+efectivo\b", r"\bsin\s+efectivo\b",
+                # "Retiro en sucursal y pago con transferencia" (C-4660, 8/10)
+                # quedaba como efectivo por "retiro ... pago".
+                r"\btransf\w*", r"\btarjeta\b", r"\bmercado\s*pago\b", r"\bdebito\b",
+                r"\bcredito\b", r"\blink\b", r"\bqr\b",
                 # "¿o será más efectivo la laca?": eficaz, no medio de pago (1/10)
                 r"\b(mas|menos|tan|muy|bastante|igual\s+de|sera|seria|es|sea|son|resulta\w*)"
                 r"\s+efectiv[oa]s?\b"]
@@ -2330,3 +2355,110 @@ def marca_en_resultado(marca: str, nombre: str) -> bool:
     toks = [t for t in re.findall(r"[a-záéíóúñ0-9]{4,}", (marca or "").lower())]
     n = (nombre or "").lower()
     return bool(toks) and all(t in n for t in toks)
+
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Tanda 1 de bugs (14/10): confirmaciones de más, pedido para otra persona,
+# entrega y pago en el mismo mensaje, "quiero algo más".
+# ══════════════════════════════════════════════════════════════════════════════
+def _ultimo_del_bot(history: list) -> str:
+    for m in reversed(history or []):
+        if m.get("role") in ("assistant", "operator"):
+            return str(m.get("content") or "")
+    return ""
+
+
+def bot_hizo_pregunta(history: list) -> bool:
+    """¿El último mensaje del bot preguntaba algo? Un "dale gracias" después
+    de "si en algún momento querés, estoy acá" no confirma nada (C-4340)."""
+    return "?" in _ultimo_del_bot(history)
+
+
+_OFRECE_EQUIPO = re.compile(
+    r"(consult\w*|coordin\w*|averigu\w*|pregunt\w*|verific\w*)\b[^?]{0,60}"
+    r"\b(equipo|alguien|las chicas|farmac[eé]utic\w*)\b[^?]*\?|"
+    r"(te\s+paso|pasarte|pase)\s+con\s+(alguien|el\s+equipo|el\s+farmac[eé]utico)[^?]*\?",
+    re.IGNORECASE)
+
+
+def bot_ofrecio_equipo(history: list) -> bool:
+    """¿El último mensaje del bot ofrecía consultarlo con una persona? Un "sí"
+    a eso deriva — antes, con un producto pendiente, preguntaba retiro o
+    envío (C-4342, 6/10)."""
+    return bool(_OFRECE_EQUIPO.search(_ultimo_del_bot(history)))
+
+
+_ALGO_MAS = re.compile(
+    r"\b(algo|otra\s+cosa|otro\s+producto|otras\s+cosas)\s+m[aá]s\b|"
+    r"\b(quiero|quisiera|necesito|voy\s+a)\s+(agregar|sumar|pedir)\s+(algo|otra|otro|m[aá]s)\b|"
+    r"\b(te\s+)?(agrego|sumo)\s+(algo|otra\s+cosa|otro)\b",
+    re.IGNORECASE)
+_SOLO_ALGO_MAS = re.compile(
+    r"\b(s[ií]|dale|ok|y|tambi[eé]n|quiero|quisiera|necesito|algo|otra|otro|cosa|cosas|producto|"
+    r"m[aá]s|agregar|sumar|pedir|agrego|sumo|te|voy|a|pero|antes|espera|esper[aá]|por\s+favor)\b",
+    re.IGNORECASE)
+
+
+def pide_algo_mas(texto: str) -> bool:
+    """ "Sí y quiero algo más" / "quiero agregar otra cosa" SIN nombrar el
+    producto: hay que preguntar qué, no pasar a retiro/envío (C-4841, 9/10)."""
+    if not _ALGO_MAS.search(texto or ""):
+        return False
+    resto = _SOLO_ALGO_MAS.sub(" ", (texto or "").lower())
+    return len(re.sub(r"[^\wáéíóúñ]+", "", resto)) <= 3
+
+
+_SUMAR_RE = re.compile(r"\b(tambi[eé]n|adem[aá]s|sumame|sum[aá]|agregame|agreg[aá]|y\s+otr[oa])\b",
+                       re.IGNORECASE)
+
+
+def pide_sumar(texto: str) -> bool:
+    """ "Te pregunto también por la bruma": el producto se SUMA al pedido, no
+    reemplaza al anterior (C-4385, 6/10)."""
+    if re.search(r"\b(en\s+vez|mejor|cambi\w*|en\s+lugar)\b", texto or "", re.IGNORECASE):
+        return False
+    return bool(_SUMAR_RE.search(texto or ""))
+
+
+_CUENTA_DE = re.compile(
+    r"\b(?:a|en|para|de)\s+(?:la\s+)?(?:cuenta|cta\.?|cc|cuenta\s+corriente)\s+de\s+"
+    r"(?!(?:mi|m[ií]|la\s+mutual|mercado|banco|ahorro|usuario)\b)"
+    r"([a-záéíóúñ]{3,}(?:\s+[a-záéíóúñ]{3,})?)",
+    re.IGNORECASE)
+
+
+def cuenta_de_tercero(texto: str) -> Optional[str]:
+    """Nombre de la persona a cuya cuenta va el pedido ("para la cuenta de
+    Silvia Vuadens"), o None. María pidió para Silvia y el bot lo cargó a la
+    cuenta de María con su descuento de empleada (C-4232, 6/10)."""
+    m = _CUENTA_DE.search(texto or "")
+    if not m:
+        return None
+    nombre = m.group(1).strip()
+    if nombre.lower().split()[0] in ("corriente", "ella", "otra", "otro"):
+        return None
+    return nombre.title()
+
+
+_LINEA_RE = re.compile(r"\b(?:l[ií]nea|marca)\s+(?:de\s+)?([a-záéíóúñ]{3,})", re.IGNORECASE)
+
+
+def marca_de_linea(texto: str) -> Optional[str]:
+    """ "De la línea Cepage, la crema ... y protector solar f50": la marca vale
+    para todos los productos del mensaje (C-4385)."""
+    m = _LINEA_RE.search(texto or "")
+    return m.group(1).lower() if m else None
+
+
+def entrega_en_texto(texto: str) -> Optional[str]:
+    """ "retiro" / "envio" si el mensaje ya dice cómo lo recibe, None si no o
+    si nombra las dos. "Retiro en sucursal y lo anoto en la cta cte" volvía a
+    preguntar retiro o envío (C-4694, C-4531, 7-8/10)."""
+    t = (texto or "").lower()
+    r, e = match_retiro(t), match_envio(t)
+    if r and not e:
+        return "retiro"
+    if e and not r:
+        return "envio"
+    return None

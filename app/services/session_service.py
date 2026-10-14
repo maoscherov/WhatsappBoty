@@ -145,8 +145,12 @@ class SessionService:
                       "nombre": session["pending_sku_nombre"],
                       "precio": session["pending_precio"],
                       "cantidad": session.get("pending_cantidad", 1)}]
-        items.append({"sku_id": sku_id, "nombre": sku_nombre,
-                      "precio": precio, "cantidad": max(1, int(cantidad))})
+        # Ya está en el carrito: no se repite. "Listo confirmado!" volvía a
+        # sumar el Sensident y "lápiz o gel secante" (el mismo producto) iba
+        # dos veces (C-4586, C-4660). Para más unidades se cambia la cantidad.
+        if not any(str(i.get("sku_id")) == str(sku_id) for i in items):
+            items.append({"sku_id": sku_id, "nombre": sku_nombre,
+                          "precio": precio, "cantidad": max(1, int(cantidad))})
         session["pending_items"] = items
         session["estado"] = "esperando_confirmacion"
         await self.save(phone, session)
@@ -224,6 +228,8 @@ class SessionService:
                       "precio": session["pending_precio"],
                       "cantidad": session.get("pending_cantidad", 1)}]
         for e in extras:
+            if any(str(i.get("sku_id")) == str(e["sku_id"]) for i in items):
+                continue        # el mismo producto que ya está en el pedido (C-4660)
             items.append({"sku_id": e["sku_id"], "nombre": e["nombre"],
                           "precio": e["precio"], "cantidad": e.get("cantidad", 1)})
         session["pending_items"] = items
