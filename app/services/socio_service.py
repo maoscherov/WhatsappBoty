@@ -70,6 +70,12 @@ def _celda(row, col) -> str:
 
 
 def nombre_de_pila(socio: Optional[dict], orden: str = "") -> str:
+    """Nombre para saludar, o "" si es una inicial ("¡Hola S!", C-4527, 7/10)."""
+    n = _nombre_de_pila(socio, orden)
+    return n if len(n.strip(".- ")) >= 2 else ""
+
+
+def _nombre_de_pila(socio: Optional[dict], orden: str = "") -> str:
     """
     Nombre para saludar. Muchos padrones traen en la columna nombre el nombre
     completo con el apellido adelante ("Muff Claudia Beatriz"): tomar la

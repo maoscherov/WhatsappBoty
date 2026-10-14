@@ -312,7 +312,7 @@ async def _cerrar_sesiones_inactivas():
                 # respuesta" salía cuando el que esperaba era el CLIENTE, o
                 # después de que se despidió o lo atendió el operador.
                 from app.services.checkout_helper import cierre_por_inactividad
-                accion = cierre_por_inactividad(session.get("history") or [])
+                accion = cierre_por_inactividad(session.get("history") or [], con_link=con_link)
                 if accion == "derivar" and _bot_on:
                     await session_svc.set_estado(phone, "operador",
                                                  motivo="cliente_sin_respuesta")

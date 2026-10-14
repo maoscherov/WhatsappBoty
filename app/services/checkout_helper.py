@@ -2131,7 +2131,9 @@ _DESPEDIDA_RE = re.compile(
     r"\b(gracias|grax|chau|chao|adi[oó]s|nos vemos|hasta (luego|ma[nñ]ana|pronto|la pr[oó]xima)|"
     r"(lo |los |la |las )?paso a buscar|(despu[eé]s|luego|ma[nñ]ana|m[aá]s tarde) paso|"
     r"paso (despu[eé]s|luego|ma[nñ]ana|m[aá]s tarde)|lo pienso|lo voy a pensar|"
-    r"buen (d[ií]a|fin de semana)|saludos|abrazo|besos?)\b",
+    r"buen (d[ií]a|fin de semana)|saludos|abrazo|besos?|"
+    # "Nada más" (C-4736, 9/10) y parecidos también cierran la charla.
+    r"nada m[aá]s|eso (es|era) todo|nada por (ahora|el momento)|por ahora (nada|no))\b",
     re.IGNORECASE)
 
 
@@ -2139,7 +2141,7 @@ def es_despedida(t: str) -> bool:
     return bool(_DESPEDIDA_RE.search(t or ""))
 
 
-def cierre_por_inactividad(history: list) -> str:
+def cierre_por_inactividad(history: list, con_link: bool = False) -> str:
     """
     Qué hacer con una conversación inactiva, según el último mensaje:
       "derivar"  → habló el cliente y nadie le contestó: que lo vea una
@@ -2158,6 +2160,11 @@ def cierre_por_inactividad(history: list) -> str:
         return "silencio"
     ult_cliente = next((m for m in reversed(history) if m.get("role") == "user"), None)
     if ult_cliente and es_despedida(ult_cliente.get("content") or ""):
+        return "silencio"
+    # El bot no esperaba respuesta (se despidió, avisó que el pedido está
+    # listo): "damos por cerrada esta conversación" sobra (#129, #135, 9/10).
+    # Con un link de pago abierto se avisa igual: el recordatorio sirve.
+    if not con_link and "?" not in (ultimo.get("content") or ""):
         return "silencio"
     return "avisar"
 

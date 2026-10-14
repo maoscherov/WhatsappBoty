@@ -184,3 +184,30 @@ def test_aviso_fuera_de_horario_conserva_el_mensaje():
     t = ch.aviso_fuera_horario("¡Dale! Te paso con alguien del equipo que te manda la foto "
                                "del producto 📷 En un momento te contactamos.", "hoy a las 16:00")
     assert "foto del producto" in t and "En un momento" not in t
+
+
+# ── Tanda 4: mensajes ────────────────────────────────────────────────────────────
+def test_no_saluda_con_una_inicial():
+    """C-4527: "¡Hola S!"."""
+    from app.services.socio_service import nombre_de_pila
+    assert nombre_de_pila({"nombre": "S"}) == ""
+    assert nombre_de_pila({"nombre": "Gomez S."}, "apellido_nombre") == ""
+    assert nombre_de_pila({"nombre": "Perez Luciana"}, "apellido_nombre") == "Luciana"
+
+
+@pytest.mark.parametrize("hist,con_link,esperado", [
+    # C-4736: "Nada mas" → despedida del bot → no "damos por cerrada"
+    ([{"role": "user", "content": "Nada mas"},
+      {"role": "assistant", "content": "Gracias, Estefano. ¡Que tengas una buena noche!"}], False, "silencio"),
+    # C-4793: el último fue "tu pedido está listo para retirar" (no espera respuesta)
+    ([{"role": "user", "content": "Retiro"},
+      {"role": "assistant", "content": "🎉 ¡Tu pedido está listo para retirar! Código 965412"}], False, "silencio"),
+    # el bot preguntó y el cliente no contestó → aviso
+    ([{"role": "user", "content": "tenés paracetamol?"},
+      {"role": "assistant", "content": "Sí, sale $7.162. ¿Te gustaría llevarlo?"}], False, "avisar"),
+    # link de pago abierto: el recordatorio va aunque no haya pregunta
+    ([{"role": "user", "content": "retiro"},
+      {"role": "assistant", "content": "Acá te mando el link de pago. ¡Cualquier cosa me avisás!"}], True, "avisar"),
+])
+def test_cierre_por_inactividad(hist, con_link, esperado):
+    assert ch.cierre_por_inactividad(hist, con_link=con_link) == esperado
