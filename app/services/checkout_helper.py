@@ -161,6 +161,11 @@ _HUMANO = [
     r".{0,25}\b(las?\s+chicas?|los\s+chicos|las?\s+farmac[eé]utic[oa]s?|alguien\s+de\s+la\s+farmacia|"
     r"el\s+personal|una\s+empleada)\b",
     r"\bhablar\s+con\s+alguien\b",
+    # Tanda 3 (14/10): "¿cómo hago para consultar con el equipo?" (C-4397) y
+    # "consultar con el equipo por favor" (C-4793) no derivaban.
+    r"\bc[oó]mo\s+(hago|puedo|hacemos)\s+(para\s+)?(consultar\w*|hablar|comunicar\w*|contactar\w*)\b",
+    r"\b(consultar?\w*|preguntar\w*)\s+(con|a)\s+(el\s+equipo|las\s+chicas|alguien|una\s+persona|"
+    r"el\s+farmac[eé]utico|la\s+farmac[eé]utica|ustedes)\b",
 ]
 
 
@@ -1444,6 +1449,8 @@ _OS_CONOCIDAS = [
     "ospia", "osmata", "osde binario", "scis", "prensa", "andar", "boreal",
 ]
 _OS_GENERICO = r"\b(obras?\s*sociales?|prepagas?|mutual(es)?|convenios?|cobertura)\b"
+_PRODUCTO_EN_TEXTO = (r"\b(leche|formula|brick|yogur\w*|polvo|galletit\w*|panal\w*|crema|shampoo|"
+                      r"jabon|liquida|bebe|ml|grs?|gramos|litros?|caja|lata|sachet)\b")
 _OS_VERBO = r"\b(trabaj\w*|acept\w*|atiend\w*|atend\w*|tom\w*|recib\w*|tienen|tenes|tenés|hay|est[aá]n|convenio|cobertura|descuento)\b"
 
 
@@ -1466,6 +1473,10 @@ def pregunta_obra_social(t: str, lista_cfg: list[str] | None = None) -> Optional
             break
     generico = bool(re.search(_OS_GENERICO, n))
     if not mencionada and not generico:
+        return None
+    # "¿Tenés leche Sancor líquida?" (C-4917): Sancor es también la marca de
+    # la leche. Con un producto en el mensaje no es una consulta de convenio.
+    if mencionada and not generico and re.search(_PRODUCTO_EN_TEXTO, n):
         return None
     if not re.search(_OS_VERBO, n) and "?" not in s:
         return None
@@ -1921,7 +1932,9 @@ def aviso_presentacion(pedido: str, respuesta: str) -> str:
 
 # ── Fuera de horario (27/9) ─────────────────────────────────────────────────────
 _PROMESA_INMEDIATA = re.compile(
-    r"[^.!?\n]*\b(en un (momento|ratito|rato)|en breve|enseguida|en unos minutos|"
+    # El emoji corta la oración: "Te paso con alguien que te manda la foto 📷
+    # En un momento te contactamos" quedaba solo "¡Dale!" (C-4954, 13/10).
+    r"[^.!?\n\U0001F300-\U0001FAFF\u2600-\u27BF]*\b(en un (momento|ratito|rato)|en breve|enseguida|en unos minutos|"
     r"ya te (contacta|escrib|respond|atiend)\w*|aguard\w*)\b[^.!?\n]*[.!?]?[ \t]*[🙌🙏😊🙂]*",
     re.IGNORECASE)
 
@@ -2493,3 +2506,129 @@ def aviso_sin_stock_del_pedido(entidad: str, resultados: list, ofrecido: Optiona
     if ya_dice_no_disponible(respuesta):
         return None
     return f"No me figura {top['nombre']} en stock 😕"
+
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Tanda 3 de bugs (14/10): entender y derivar.
+# ══════════════════════════════════════════════════════════════════════════════
+_CUOTA_SOCIAL = re.compile(
+    r"\bcuotas?\b.{0,20}\b(soci[oa]s?|social|mutual|asociad[oa])\b|"
+    r"\b(soci[oa]|social)\b.{0,12}\bcuotas?\b|"
+    r"\b(pag\w+|abon\w+|deb\w+|pas\w+)\b.{0,20}\b(la|mi|las|mis)\s+cuotas?\b(?!\s+sin)|"
+    r"\b(la|mi|las|mis)\s+cuotas?\b(?!\s+sin).{0,25}\b(pag\w+|abon\w+|deb\w+)\b",
+    re.IGNORECASE)
+_RESTO_CUOTA = re.compile(
+    r"\b(hola|buen[oa]s?|d[ií]as?|tardes|noches|chicas|y|que|quiero|quisiera|necesito|pagar|abonar|"
+    r"la|las|mi|mis|el|de|del|cuotas?|soci[oa]s?|social|mutual|me|te|debo|si|alguna|algo|"
+    r"puedo|por|ac[aá]|pasas|pasar|decir|podes|pod[eé]s|cu[aá]nto|sale|tambi[eé]n|lo|les|"
+    r"gracias|favor|mes|octubre|septiembre|noviembre|abono)\b",
+    re.IGNORECASE)
+
+
+def consulta_cuota_social(texto: str) -> Optional[str]:
+    """ "sola" si el mensaje es sólo sobre la cuota social, "con_pedido" si
+    además pide otra cosa ("un desodorante Rexona y pagar la cuota", C-4455),
+    None si no habla de la cuota. "Pagar en cuotas" (tarjeta) no cuenta."""
+    t = _sin_tildes(texto or "").lower()
+    if not _CUOTA_SOCIAL.search(t) or re.search(r"\ben\s+\d*\s*cuotas\b|\bcuotas\s+sin\b", t):
+        return None
+    resto = re.sub(r"[^a-zñ ]+", " ", _RESTO_CUOTA.sub(" ", t))
+    return "con_pedido" if len(resto.split()) >= 2 else "sola"
+
+
+_SEGUIMIENTO_RE = re.compile(
+    r"\b(qu[eé]\s+pas\w*|novedad\w*|sigo\s+esperando|no\s+me\s+(respond|contest)\w*|"
+    r"me\s+(iban|ibas)\s+a\s+(avisar|responder|confirmar))\b.{0,40}\b(receta|pedido|encargo|consulta)\b|"
+    r"\b(receta|pedido|encargo)\b.{0,25}\b(qu[eé]\s+pas\w*|novedad\w*)\b|"
+    r"\b(ya\s+)?lleg[oó]\b.{0,30}\b(pedido|encargo|lo\s+que\s+(ped|encarg)\w*)\b|"
+    r"\b(pedido|encargo)\b.{0,30}\b(ya\s+)?lleg[oó]\b|"
+    r"\bcu[aá]ndo\s+(llega|viene|me\s+llega)\b.{0,25}\b(pedido|encargo)\b",
+    re.IGNORECASE)
+
+
+def consulta_seguimiento(texto: str) -> Optional[str]:
+    """ "receta" / "pedido" si el cliente pregunta por algo que ya pidió ("¿qué
+    pasó con la receta?", "¿ya llegó el pedido con las máscaras?"), o None.
+    C-4949 (13/10) recibió una respuesta genérica y C-4893 (9/10) un "para
+    cambios y devoluciones" que además no derivaba."""
+    t = texto or ""
+    if re.search(r"\b(link|pago|comprobante)\b", t, re.IGNORECASE):
+        return None
+    if not _SEGUIMIENTO_RE.search(t) and not _que_paso_con(t):
+        return None
+    return "receta" if re.search(r"\breceta\b", t, re.IGNORECASE) else "pedido"
+
+
+_OTRA_CONSULTA = re.compile(
+    r"^\s*(hola[,!.\s]*)?((te|les)\s+(hago|quer[ií]a\s+hacer|consulto)\s+)?"
+    r"(otra|una)\s+(consulta|pregunta|cosa)(\s+m[aá]s)?\s*[.!?,…]*\s*$|"
+    r"^\s*(te|les)\s+(hago|quer[ií]a\s+hacer)\s+(otra\s+|una\s+)?(consulta|pregunta)\s*[.!?,…]*\s*$|"
+    r"^\s*(te|les)\s+consulto\s+(algo|otra\s+cosa)\s*[.!?,…]*\s*$",
+    re.IGNORECASE)
+
+
+def anuncia_otra_consulta(texto: str) -> bool:
+    """ "Otra consulta" / "te hago otra consulta" a secas: se espera la
+    consulta, no se deriva (C-4694, 8/10)."""
+    return bool(_OTRA_CONSULTA.match(texto or ""))
+
+
+_OFRECE_RECETA = re.compile(
+    r"\b(te|les)\s+(env[ií]o|mando|paso|mand[aá]s?|enviar[ée])\s+(la\s+|mi\s+|una\s+)?(receta|foto\s+de\s+la\s+receta)\b|"
+    r"\b(sirve|vale|puedo\s+usar|se\s+puede\s+usar)\s+(mi\s+|la\s+|esta\s+)?receta\b|"
+    r"\btengo\s+(la\s+)?receta\b.{0,40}\b(sirve|vale)\b",
+    re.IGNORECASE)
+
+
+def ofrece_mandar_receta(texto: str) -> bool:
+    """ "¿Te envío la receta?" / "¿sirve mi receta?": se le pide la foto (que
+    deriva). Antes el bot daba vueltas 6 veces (C-4397, 6/10)."""
+    return bool(_OFRECE_RECETA.search(texto or ""))
+
+
+_ENVIO_ESPECIAL = re.compile(
+    r"\b(a\s+la\s+|a\s+)?sucursal\s+(de\s+)?[a-záéíóúñ]{3,}|\bes\s+para\s+(una|un)\s+(asociad|afiliad|soci)\w*|"
+    r"\bpara\s+(una|un)\s+(asociad|afiliad)\w*",
+    re.IGNORECASE)
+
+
+def envio_especial(texto: str) -> bool:
+    """Envío a otra sucursal / para una asociada (C-4954): lo coordina el
+    equipo. Antes el bot pidió "calle, número y localidad" tres veces."""
+    return bool(_ENVIO_ESPECIAL.search(texto or ""))
+
+
+_LO_PIENSO = re.compile(
+    r"\b(te|les)\s+(confirmo|aviso|digo)\s+(luego|despu[eé]s|m[aá]s\s+tarde|ma[nñ]ana)\b|"
+    r"\b(le|les)\s+paso\s+(los\s+)?precios\b|\blo\s+(voy\s+a\s+)?pens(o|ar)\b|"
+    r"\bdespu[eé]s\s+te\s+(confirmo|aviso|digo)\b",
+    re.IGNORECASE)
+
+
+def deja_para_despues(texto: str) -> bool:
+    """ "Le paso los precios a la asociada y te confirmo luego" (C-4954)."""
+    return bool(_LO_PIENSO.search(texto or ""))
+
+
+def repite_oferta(respuesta: str, history: list, veces: int = 2) -> bool:
+    """La respuesta vuelve a ofrecer los MISMOS precios que ya ofreció `veces`
+    veces en los últimos mensajes del bot: está en un bucle (Raquiferol,
+    C-4397: seis veces la misma oferta con distintas palabras)."""
+    ahora = set(precios_con_signo(respuesta or ""))
+    if not ahora:
+        return False
+    previos = [m for m in (history or []) if m.get("role") == "assistant"][-4:]
+    return sum(1 for m in previos if ahora & set(precios_con_signo(str(m.get("content") or "")))) >= veces
+
+
+def _que_paso_con(texto: str) -> bool:
+    """ "quwnpasp con la receta" (C-4949): "qué pasó" mal tipeado + receta/pedido."""
+    t = _sin_tildes(texto or "").lower()
+    m = re.search(r"([a-z]{3,10})\s*([a-z]{0,6})\s+con\s+(la|el|mi)\s+(receta|pedido|encargo)\b", t)
+    if not m:
+        return False
+    from rapidfuzz import fuzz
+    junto = (m.group(1) + m.group(2)).replace(" ", "")
+    # Empieza con "q": "paso con la receta" es "paso a buscarlo con la receta".
+    return junto.startswith("q") and fuzz.ratio(junto, "quepaso") >= 60

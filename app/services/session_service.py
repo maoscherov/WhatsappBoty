@@ -294,6 +294,8 @@ class SessionService:
             except Exception as e:
                 logger.debug(f"evento derivacion: {e}")
         session["estado"] = estado
+        if estado == "pedido_confirmado":
+            session["_pedido_at"] = time.time()     # cambio de entrega solo el día del pedido
         await self.save(phone, session)
 
     async def operador_escribio(self, phone: str, agente: str | None = None):

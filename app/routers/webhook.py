@@ -56,6 +56,8 @@ from app.services.checkout_helper import (
     separar_lista_numerada, pide_otras_opciones, tipo_de_producto,
     bot_hizo_pregunta, bot_ofrecio_equipo, pide_algo_mas, pide_sumar, cuenta_de_tercero,
     marca_de_linea, entrega_en_texto, es_consulta_generica, aviso_sin_stock_del_pedido,
+    consulta_cuota_social, consulta_seguimiento, anuncia_otra_consulta, ofrece_mandar_receta,
+    envio_especial, deja_para_despues, repite_oferta,
     nombres_inventados, es_refinamiento_de_marca, marca_en_resultado, match_envio,
     pide_cancelar_pedido, pregunta_obra_social, responder_obra_social, parsear_lista,
     pregunta_bono, responder_bono, agregar_oferta_farmaceutico, acepta_farmaceutico,
@@ -538,6 +540,15 @@ async def _sin_precios_inventados(deps, phone: str, session: dict, respuesta: st
             "¿Querés que lo consulte con el equipo?")
 
 
+async def _responder(deps, phone: str, texto: str, respuesta: str, steps: dict) -> None:
+    """Manda la respuesta y guarda el turno (los bloques fijos de la tanda 3)."""
+    _ts = _time.perf_counter()
+    await deps["wa"].send_text(phone, respuesta)
+    steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
+    await deps["session"].add_message(phone, "user", texto)
+    await deps["session"].add_message(phone, "assistant", respuesta)
+
+
 async def _entrega_dicha(deps, phone: str, session: dict, texto: str, tipo: str):
     """Cierra el pedido con la entrega que el cliente ya dijo en el mismo
     mensaje del pago: retiro, envío a la dirección escrita, o envío al
@@ -944,6 +955,14 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 _s_adj["_adjunto_at"] = _time.time()
                 await deps["session"].save(phone, _s_adj)
 
+                # La charla la tiene una persona: la foto ya quedó guardada y la
+                # ve en el backoffice. El bot no contesta encima (C-4225, 6/10).
+                if _s_adj.get("estado") == "operador" and not _bot_off:
+                    _intencion = "operador"
+                    if texto.strip():
+                        await deps["session"].add_message(phone, "user", texto)
+                    continue
+
                 if _bot_off:
                     # La foto ya quedó guardada para el operador: no se
                     # clasifica ni se responde.
@@ -1087,6 +1106,12 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     texto = _ref_adj
                     if _bot_off:
                         await _recibir_con_bot_apagado(deps, phone, _ref_adj)
+                        continue
+                    # Con un operador atendiendo, el archivo queda para él: el
+                    # bot no le dice "te paso con alguien" (C-4225, 6/10).
+                    if (await deps["session"].get(phone)).get("estado") == "operador":
+                        _intencion = "operador"
+                        await deps["session"].add_message(phone, "user", _ref_adj)
                         continue
                     await deps["session"].add_message(phone, "user", _ref_adj)
                     await deps["session"].set_estado(phone, "operador", motivo="adjunto_no_reconocido")
@@ -1252,6 +1277,29 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     await deps["session"].add_message(phone, "assistant", respuesta)
                     continue
 
+            # ── Cuota social → una persona (tanda 3, 14/10) ──────────────────
+            # "Me pasás la cuota de socio" / "¿la puedo abonar por acá?" recibían
+            # "no te entendí"; con un producto en el mismo mensaje ("un
+            # desodorante Rexona y pagar la cuota", C-4455) el producto se perdía.
+            # El bot no tiene las cuotas: las ve el equipo, junto con el pedido.
+            _cuota = consulta_cuota_social(texto)
+            if _cuota:
+                _intencion = "cuota_social"
+                _hay_ped_cuota = bool(session.get("pending_sku_id") or session.get("pending_items"))
+                await deps["session"].set_estado(phone, "operador", motivo="cuota_social")
+                _cfg_cu = await deps["config"].get_all()
+                if _cuota == "con_pedido" or _hay_ped_cuota:
+                    respuesta = _cfg_cu.get("cuota_social_pedido_message") or (
+                        "¡Dale! Te paso con alguien del equipo para ver tu cuota social junto con "
+                        "lo que pediste 🙌 La podemos sumar al pedido. En un momento te contactamos.")
+                else:
+                    respuesta = _cfg_cu.get("cuota_social_message") or (
+                        "¡Dale! Te paso con alguien del equipo para ver tu cuota social 🙌 Se puede "
+                        "pagar por transferencia o sumarla a tu próximo pedido. "
+                        "En un momento te contactamos.")
+                await _responder(deps, phone, texto, respuesta, _steps)
+                continue
+
             # ── Consulta de saldo / deuda de cuenta corriente → persona ──────
             # Antes que el flujo de cuenta corriente: "saldo de mi cuenta
             # corriente" matcheaba pide_cuenta_corriente y el bot contestaba
@@ -1270,6 +1318,42 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
                 await deps["session"].add_message(phone, "user", texto)
                 await deps["session"].add_message(phone, "assistant", respuesta)
+                continue
+
+            # ── "¿Qué pasó con la receta?" / "¿ya llegó el pedido?" → persona ──
+            # C-4949 (13/10): respuesta genérica a quien reclamaba su receta.
+            # C-4893 (9/10): "¿ya llegó el pedido con las máscaras?" salía como
+            # "cambios y devoluciones" y la charla se cerraba por inactividad.
+            _seg = consulta_seguimiento(texto)
+            if _seg:
+                _intencion = f"seguimiento_{_seg}"
+                await deps["session"].set_estado(phone, "operador", motivo=f"seguimiento_{_seg}")
+                respuesta = (("Perdón la demora 🙏 " if _seg == "receta" else "¡Dale! ") +
+                             f"Te paso con alguien del equipo para ver cómo viene tu {_seg} 🙌 "
+                             "En un momento te contactamos.")
+                await _responder(deps, phone, texto, respuesta, _steps)
+                continue
+
+            # ── "Otra consulta" a secas: se espera la consulta (C-4694) ──────
+            if anuncia_otra_consulta(texto):
+                _intencion = "otra_consulta"
+                await _responder(deps, phone, texto, "¡Dale! Decime 🙂", _steps)
+                continue
+
+            # ── "¿Te envío la receta?" / "¿sirve mi receta?" → que la mande ──
+            # C-4397 (6/10): seis vueltas sin pedirle la receta ni derivar.
+            if ofrece_mandar_receta(texto):
+                _intencion = "pide_foto_receta"
+                await _responder(deps, phone, texto,
+                                 "¡Dale! Mandame una foto de la receta por acá y la revisa alguien "
+                                 "del equipo 🙌", _steps)
+                continue
+
+            # ── "Quiero agregar otro producto" sin decir cuál (C-4586) ───────
+            if pide_algo_mas(texto) and session.get("estado") not in (
+                    "esperando_confirmacion", "esperando_entrega", "esperando_direccion"):
+                _intencion = "quiere_sumar"
+                await _responder(deps, phone, texto, "¡Dale! ¿Qué producto querés? 🙂", _steps)
                 continue
 
             # ── Pedido para la cuenta de OTRA persona → una persona ─────────
@@ -1292,8 +1376,15 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
             # ── Pedido cerrado para retiro y ahora pide envío → una persona ──
             # C-3912 (5/10): "bueno pero me lo podés enviar" con el pedido ya
             # cargado → "no te entendí". El cambio lo coordina el equipo.
-            if session.get("estado") == "pedido_confirmado" \
-                    and session.get("tipo_entrega") != "envio" and match_envio(texto.lower()):
+            # Con envío y una entrega/dirección distinta ("Tráelo al negocio",
+            # C-4207): también lo coordina una persona. Solo el día del pedido.
+            _pedido_reciente = (_time.time() - float(session.get("_pedido_at") or 0)) < 12 * 3600
+            if session.get("estado") == "pedido_confirmado" and _pedido_reciente and (
+                    (session.get("tipo_entrega") != "envio" and match_envio(texto.lower()))
+                    or (session.get("tipo_entrega") == "envio"
+                        and (match_envio(texto.lower()) or match_retiro(texto.lower())
+                             or extraer_direccion_de(texto)
+                             or _re.search(r"\b(negocio|trabajo|local|oficina)\b", texto, _re.I)))):
                 _intencion = "cambio_entrega"
                 await deps["session"].set_estado(phone, "operador", motivo="cambio_entrega")
                 respuesta = ("¡Dale! Te paso con alguien del equipo para coordinar el envío 🚚 "
@@ -1725,6 +1816,20 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     _intencion = "pedido_cancelado"
                     await deps["session"].clear_pending(phone)
                     respuesta = "Dale, sin problema. ¿En qué más te puedo ayudar?"
+                elif envio_especial(texto):
+                    # "Que lo envíen a sucursal Gral Cabrera, es para una
+                    # asociada" (C-4954): lo coordina el equipo, no se insiste
+                    # con "calle, número y localidad".
+                    _intencion = "envio_especial"
+                    await deps["session"].set_estado(phone, "operador", motivo="envio_especial")
+                    respuesta = ("¡Dale! Te paso con alguien del equipo para coordinar ese envío 🚚 "
+                                 "En un momento te contactamos.")
+                elif deja_para_despues(texto):
+                    # "Le paso los precios y te confirmo luego": el pedido queda
+                    # armado y no se le sigue pidiendo la dirección.
+                    _intencion = "lo_piensa"
+                    await deps["session"].set_estado(phone, "esperando_confirmacion")
+                    respuesta = "¡Dale! Cuando quieras seguimos 🙂"
                 elif extraer_direccion_de(texto) or parece_direccion(texto):
                     respuesta, _intencion = await capturar_direccion(
                         deps["payment"], deps["session"], phone, session, texto,
@@ -2121,6 +2226,12 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
 
                     respuesta = quitar_saludo_repetido(respuesta, session.get("history") or [])
                     respuesta = separar_lista_numerada(respuesta)
+                    # Tercera vez la misma oferta (Raquiferol, C-4397): se ofrece
+                    # una persona en vez de dar otra vuelta.
+                    if _intencion not in ("pedido_confirmado", "esperando_entrega", "item_agregado")                             and repite_oferta(respuesta, session.get("history") or []):
+                        _intencion = "repeticion_evitada"
+                        respuesta = ("Perdón, no te estoy pudiendo ayudar bien con esto 🙏 "
+                                     "¿Querés que lo vea alguien del equipo?")
                     if await cumplir_derivacion_prometida(deps["session"], phone, respuesta):
                         _intencion = "derivacion_prometida"
                     _ts = _time.perf_counter()
@@ -2191,6 +2302,9 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
 
             # Derivar postventa a humano
             if intencion == "cambio_postventa":
+                # Antes solo se mandaba el texto: la charla no quedaba con una
+                # persona y se cerraba "sin respuesta" (C-4893, 9/10).
+                await deps["session"].set_estado(phone, "operador", motivo="cambio_postventa")
                 respuesta = (
                     "Para cambios y devoluciones te paso con alguien del equipo. "
                     "En un momento te contactamos. Gracias por tu paciencia!"
@@ -2704,7 +2818,8 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
             # ayudando, se ofrece una persona.
             _ult_bot = next((m.get("content") for m in reversed(session.get("history") or [])
                              if m.get("role") == "assistant"), None)
-            if _ult_bot and respuesta and respuesta.strip() == _ult_bot.strip():
+            if respuesta and ((_ult_bot and respuesta.strip() == _ult_bot.strip())
+                              or repite_oferta(respuesta, session.get("history") or [])):
                 _intencion = "repeticion_evitada"
                 _s_rep = await deps["session"].get(phone)
                 _s_rep["derivacion_ofrecida"] = (entidad or "consulta")[:60]
