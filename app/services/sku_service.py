@@ -56,6 +56,14 @@ SINONIMOS: dict[str, list[str]] = {
     "acido acetilsalicilico": ["aspirina", "bayaspirina"],
     "amoxicilina":  ["amoxidal"],
     "paracetamol":  ["tafirol"],
+    # Tanda 2 (14/10), casos reales de "no lo tengo" con stock:
+    "tampones medianos": ["tampones medio"],          # C-4232 (traía guantes medianos)
+    "tampon mediano":    ["tampones medio"],
+    "corega tap":        ["corega tabs"],             # C-4455
+    "limpiar la protesis": ["corega tabs"],
+    "limpiar protesis":  ["corega tabs"],
+    "pastillas para la protesis": ["corega tabs"],
+    "multiforma":        ["multiestilo"],             # C-4760
 }
 
 # Lista blanca de VENTA LIBRE: drogas/marcas OTC conocidas cuyo flag de receta
@@ -510,6 +518,9 @@ class SKUService:
         clean_query = _UNIDAD_DE_RE.sub(" ", separar_guiones(query.lower()))
         clean_query = normalizar_numeros(quitar_cantidades(clean_query))
         clean_query = _re.sub(_STOP, '', clean_query)
+        # Femenino/plural de los "-dor" del catálogo: "pasta blanqueadora" no
+        # encontraba "fluorogel blanqueador" (C-4694, 8/10).
+        clean_query = _re.sub(r'\b(\w{3,}ador)(a|as|es)\b', r'\1', clean_query)
         clean_query = _re.sub(r'\s+', ' ', clean_query).strip()
         if not clean_query:
             clean_query = query.lower()
@@ -547,6 +558,9 @@ class SKUService:
         q_tokens = {t for t in _tokens(clean_query) if len(t) >= 4 and not t.isdigit()}
         q_numeros = set(numeros_de(clean_query))
         log_total = math.log(total_docs + 1)
+        _pide_barra = bool(_re.search(r"\b(barra|pan|tocador)\b", clean_query))
+        _pide_color = bool(_re.search(r"\bcolor\b", clean_query)) and \
+            not _re.search(r"\bsin\s+color\b", clean_query)
 
         def _relevancia(idx: int) -> float:
             wr = best_wr.get(idx, 0)
@@ -570,6 +584,13 @@ class SKUService:
                     bonus += 30.0
                 else:
                     bonus -= 15.0
+            # Forma pedida que el nombre contradice (tanda 2, 14/10):
+            # "jabón Dove en barra" daba el líquido (C-4736) y "protector
+            # solar con color" el Caviahue sin color (C-4299).
+            if _pide_barra and _re.search(r"\b(jli|liq\w*)\b", texto):
+                bonus -= 40.0
+            if _pide_color and not _re.search(r"color", texto):
+                bonus -= 40.0
             return base + min(bonus, 60.0)
 
         candidatos = [

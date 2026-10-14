@@ -55,7 +55,7 @@ from app.services.checkout_helper import (
     quitar_receta_inventada, quitar_saludo_repetido, pide_encargo, marcar_precio_dudoso,
     separar_lista_numerada, pide_otras_opciones, tipo_de_producto,
     bot_hizo_pregunta, bot_ofrecio_equipo, pide_algo_mas, pide_sumar, cuenta_de_tercero,
-    marca_de_linea, entrega_en_texto,
+    marca_de_linea, entrega_en_texto, es_consulta_generica, aviso_sin_stock_del_pedido,
     nombres_inventados, es_refinamiento_de_marca, marca_en_resultado, match_envio,
     pide_cancelar_pedido, pregunta_obra_social, responder_obra_social, parsear_lista,
     pregunta_bono, responder_bono, agregar_oferta_farmaceutico, acepta_farmaceutico,
@@ -1898,6 +1898,18 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                                      "o preferís cambiar algo?")
                         logger.info(f"Confirmación bloqueada (mensaje arranca con 'no'): {texto[:40]!r}")
 
+                    # "¿No tenés otra marca?" con opciones mostradas (C-4855): se
+                    # busca de nuevo el tipo de producto, sin las ya ofrecidas.
+                    _otras_pend = pide_otras_opciones(texto) and sku_index is None
+                    if _otras_pend and not _entidad_nueva:
+                        _entidad_nueva = tipo_de_producto(
+                            session.get("_ultima_busqueda") or session.get("pending_sku_nombre") or "",
+                            deps["sku"]) or None
+                    if _otras_pend and _entidad_nueva:
+                        confirmacion = None
+                        if _intencion not in INTENCIONES_CON_SKU:
+                            _intencion = "consulta_stock"
+
                     # El bot no venía preguntando nada ("si en algún momento
                     # querés, estoy acá"): un "dale gracias" es un cierre, no una
                     # compra (C-4340, 6/10).
@@ -2046,7 +2058,18 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                         await deps["session"].clear_pending(phone)
                         if nueva_entidad and nueva_intencion in INTENCIONES_CON_SKU:
                             _tsku = _time.perf_counter()
-                            resultados_nuevos = deps["sku"].buscar(nueva_entidad)
+                            resultados_nuevos = deps["sku"].buscar(
+                                nueva_entidad, top_n=8 if _otras_pend else 3)
+                            if _otras_pend:
+                                _vistos_p = set(session.get("_ultimos_ids") or []) | {
+                                    o.get("sku_id") for o in (session.get("pending_opciones") or [])}
+                                _nuevos_p = [r for r in resultados_nuevos if r["sku_id"] not in _vistos_p]
+                                if any(r.get("vendible") for r in _nuevos_p):
+                                    resultados_nuevos = _nuevos_p[:5]
+                                _s_vp = await deps["session"].get(phone)
+                                _s_vp["_ultimos_ids"] = list(dict.fromkeys(
+                                    list(_vistos_p - {None}) + [r["sku_id"] for r in resultados_nuevos]))[:30]
+                                await deps["session"].save(phone, _s_vp)
                             # Con el descuento del socio/empleado, como en la
                             # búsqueda principal: sin esto el modelo decía "ya con
                             # tu 20%" sobre el precio de lista (Otowil, Ruby Rose,
@@ -2193,7 +2216,8 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
             # el TIPO de producto de lo anterior ("polvo compacto"). Sin búsqueda
             # el modelo inventaba productos y precios (C-4939, 13/10: Fit Me
             # $3.200, L'Oréal Infallible $3.600, ninguno en el catálogo).
-            if not entidad and not ya_tiene_pending and pide_otras_opciones(texto):
+            _otras_op = pide_otras_opciones(texto)
+            if not entidad and not ya_tiene_pending and _otras_op:
                 _prev_op = session.get("_ultima_busqueda") or next(
                     (m.get("content") for m in reversed(session.get("history") or [])
                      if m.get("role") == "user" and not str(m.get("content") or "").startswith("📷")),
@@ -2228,9 +2252,23 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                         logger.info(f"Refinamiento: {_entidad_busq!r} → {_comb!r}")
                         resultados_sku, _entidad_busq = _r_comb, _comb
                 if resultados_sku is None:
-                    resultados_sku = deps["sku"].buscar(_entidad_busq)
+                    # Tipo de producto sin marca ("agua micelar") → más opciones;
+                    # "¿otra marca?" → más todavía, sin las ya mostradas. Con 3
+                    # el bot ofrecía dos y decía que no había otras marcas
+                    # habiendo Koreia y Dermaglós (C-4855, 9/10).
+                    _top_n = 8 if _otras_op else (
+                        5 if es_consulta_generica(_entidad_busq, deps["sku"]) else 3)
+                    resultados_sku = deps["sku"].buscar(_entidad_busq, top_n=_top_n)
+                    _ya_vistos = set(session.get("_ultimos_ids") or [])
+                    if _otras_op and _ya_vistos:
+                        _nuevos_r = [r for r in resultados_sku if r["sku_id"] not in _ya_vistos]
+                        if any(r.get("vendible") for r in _nuevos_r):
+                            resultados_sku = _nuevos_r[:5]
                 _s_ub = await deps["session"].get(phone)
                 _s_ub["_ultima_busqueda"] = _entidad_busq[:80]
+                _s_ub["_ultimos_ids"] = list(dict.fromkeys(
+                    ([] if not _otras_op else list(session.get("_ultimos_ids") or []))
+                    + [r["sku_id"] for r in (resultados_sku or [])]))[:30]
                 await deps["session"].save(phone, _s_ub)
                 # Fallback semántico (pgvector): si el fuzzy no encontró nada,
                 # buscar por significado ("algo para la tos", nombres coloquiales).
@@ -2344,6 +2382,13 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                         if not producto_elegido or _matches[0]["sku_id"] != producto_elegido["sku_id"]:
                             logger.info(f"SKU tomado del precio en la respuesta: {_matches[0]['nombre']}")
                         producto_elegido = _matches[0]
+                        # Lo pedido está sin stock y se ofrece OTRO: se dice
+                        # antes. "Citrato de magnesio Quelat" → "tengo Quelat
+                        # Magnesio" como si fuera lo mismo (C-4873, 9/10).
+                        _aviso_ss = aviso_sin_stock_del_pedido(
+                            entidad or "", resultados_sku, producto_elegido, respuesta)
+                        if _aviso_ss:
+                            respuesta = f"{_aviso_ss} {respuesta}"
                     elif _opciones_ofrecidas:
                         # Se ofrecieron varias opciones: guardar la lista para que
                         # "el 2" / "rubio oscuro" seleccione, pero marcar que falta

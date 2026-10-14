@@ -55,6 +55,11 @@ ABREVIATURAS: dict[str, str] = {
     "past": "pastillas",
     "grag": "grageas",
     "iny": "inyectable",
+    # Tanda 2 (14/10): "NOSOTRAS PROT.MULTIES" no salía para "nosotras
+    # multiestilo" (C-4760); "OB ORIGINAL MEDIO TAM" no era un tampón.
+    "multies": "multiestilo",
+    "prot": "protector",
+    "tam": "tampones",
 }
 
 # Palabras con las que un cliente nombra el TIPO de producto. Si las usa, el
@@ -88,7 +93,10 @@ TIPOS_PRODUCTO: dict[str, set[str]] = {
     "emulsion":       {"emulsion", "emulsión", "emu"},
     "solucion":       {"solucion", "solución"},
     "inyectable":     {"inyectable", "inyectables", "iny"},
-    "pastillas":      {"pastillas", "pastilla", "past"},
+    # "Pastillas" en boca del cliente son también tabletas y comprimidos
+    # ("pastillas para limpiar la prótesis" = Corega TABS, C-4455).
+    "pastillas":      {"pastillas", "pastilla", "past", "pastillitas", "tab", "tabs", "tabletas",
+                       "comprimidos", "com"},
     "grageas":        {"grageas", "gragea", "grag"},
     "serum":          {"serum", "sérum", "ser"},
 }

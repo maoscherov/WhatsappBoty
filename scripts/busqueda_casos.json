@@ -964,6 +964,89 @@
    ],
    "origen": "venta",
    "_nota": "C-3854"
+  },
+  {
+   "q": "nosotras multiestilo",
+   "debe": [
+    [
+     "multies"
+    ],
+    [
+     "multiestilo"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "nosotras diarios multiforma 60",
+   "debe": [
+    [
+     "multies",
+     "60"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "fluorogel pasta blanqueadora",
+   "debe": [
+    [
+     "fluorogel",
+     "blanq"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "jabon dove azul en barra",
+   "debe": [
+    [
+     "dove",
+     "jab x"
+    ],
+    [
+     "dove",
+     " jab x"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "tampones medianos",
+   "debe": [
+    [
+     "medio",
+     "tam"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "corega tap",
+   "debe": [
+    [
+     "corega tabs"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "pastillas para limpiar protesis",
+   "debe": [
+    [
+     "corega tabs"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "protector solar con color",
+   "debe": [
+    [
+     "color"
+    ]
+   ],
+   "origen": "auditoria"
   }
  ]
 }

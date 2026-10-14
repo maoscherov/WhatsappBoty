@@ -2462,3 +2462,34 @@ def entrega_en_texto(texto: str) -> Optional[str]:
     if e and not r:
         return "envio"
     return None
+
+
+
+# ── Tanda 2 (14/10): búsqueda ─────────────────────────────────────────────────
+def es_consulta_generica(consulta: str, sku_svc) -> bool:
+    """Tipo de producto sin marca ni línea ("agua micelar", "protector solar
+    con color"): conviene mostrar más opciones."""
+    tipo = tipo_de_producto(consulta, sku_svc)
+    if not tipo:
+        return False
+    sig = [t for t in re.findall(r"[a-záéíóúñ]+", (consulta or "").lower())
+           if len(t) >= 3 and t not in _PALABRAS_VACIAS]
+    return bool(sig) and set(sig) <= set(tipo.split())
+
+
+def aviso_sin_stock_del_pedido(entidad: str, resultados: list, ofrecido: Optional[dict],
+                               respuesta: str) -> Optional[str]:
+    """ "No me figura X en stock." cuando lo que pidió (el primer resultado,
+    que coincide con lo pedido) no tiene stock y la respuesta ofrece OTRO
+    producto sin decirlo. None si no hace falta."""
+    from app.services.sku_service import nombre_coincide
+    if not resultados or not ofrecido or not entidad:
+        return None
+    top = resultados[0]
+    if top.get("vendible") or top.get("sku_id") == ofrecido.get("sku_id"):
+        return None
+    if not nombre_coincide(entidad, top.get("nombre") or ""):
+        return None
+    if ya_dice_no_disponible(respuesta):
+        return None
+    return f"No me figura {top['nombre']} en stock 😕"
