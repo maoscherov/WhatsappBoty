@@ -446,7 +446,7 @@ class SessionService:
             # enviada por el operador esperando el "sí" del cliente — cerrarla
             # a los 15 min borraría el pedido cotizado (bug real, 5/9).
             if threshold_pago_secs and (
-                session.get("estado") == "esperando_pago"
+                session.get("estado") in ("esperando_pago", "esperando_comprobante")
                 or (session.get("receta_validada") and session.get("pending_sku_id"))
             ):
                 umbral = threshold_pago_secs

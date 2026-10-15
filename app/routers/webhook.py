@@ -1004,6 +1004,21 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     await deps["session"].add_message(phone, "assistant", respuesta)
                     continue
 
+                # Comprobante de un pedido por transferencia pendiente: se lee y,
+                # si cierra todo y no supera el monto máximo, se aprueba solo.
+                _s_cmp = await deps["session"].get(phone)
+                if img["tipo"] == "comprobante" or (
+                        img["tipo"] == "otro" and _s_cmp.get("estado") == "esperando_comprobante"):
+                    from app.services import transferencia as _trf_c
+                    _r_trf = await _trf_c.procesar_comprobante(
+                        deps, phone, image_bytes, mime,
+                        nombre=nombre_de_pila(deps["socios"].find_by_phone(phone)))
+                    if _r_trf:
+                        respuesta, _intencion = _r_trf
+                        await deps["wa"].send_text(phone, respuesta)
+                        await deps["session"].add_message(phone, "assistant", respuesta)
+                        continue
+
                 # Receta, credencial o comprobante → derivar a una persona
                 # (nunca vender automático; un pago solo lo confirma un humano)
                 if img["tipo"] in ("receta", "credencial", "comprobante"):
@@ -1549,6 +1564,45 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
                 await deps["session"].add_message(phone, "user", texto)
                 await deps["session"].add_message(phone, "assistant", respuesta)
+                continue
+
+            # ── Transferencia (minuta 14/10): con alias configurado, el bot pasa
+            # los datos, toma el pedido y espera el comprobante.
+            from app.services import transferencia as _trf
+            if session.get("estado") == "esperando_comprobante" and (
+                    _trf.avisa_que_transfirio(texto) or _trf.pide_transferencia(texto)):
+                _intencion = "espera_comprobante"
+                await _responder(deps, phone, texto,
+                                 "¡Genial! Mandame la foto o captura del comprobante por acá y te "
+                                 "confirmamos el pedido 🙌", _steps)
+                continue
+            if _trf.pide_transferencia(texto) and _trf.habilitada(_cfg_pm) and not pide_efectivo(texto):
+                _items_tr = session.get("pending_items") or []
+                if session.get("pending_sku_id") or _items_tr:
+                    _intencion = "transferencia"
+                    _s_tr = await deps["session"].get(phone)
+                    _s_tr["pago_metodo"] = "transferencia"
+                    await deps["session"].save(phone, _s_tr)
+                    _s_tr = await deps["session"].get(phone)
+                    _entrega_tr = entrega_ya_elegida(session)
+                    _entrega_txt_tr = entrega_en_texto(texto)
+                    if _entrega_tr:
+                        respuesta, _ = await crear_link_y_responder(
+                            deps["payment"], deps["session"], phone, _s_tr,
+                            _entrega_tr[0], _entrega_tr[1])
+                    elif _entrega_txt_tr:
+                        respuesta, _ = await _entrega_dicha(deps, phone, _s_tr, texto, _entrega_txt_tr)
+                    else:
+                        await deps["session"].set_estado(phone, "esperando_entrega")
+                        respuesta = ("¡Dale! Lo pagás por transferencia 🏦 " +
+                                     pregunta_entrega(_cfg_pm, saludo=False, phone=phone,
+                                                      socio_svc=deps["socios"]))
+                else:
+                    # "Pasame el alias" sin pedido (pagar la cuenta, la cuota):
+                    # el comprobante que llegue lo verifica una persona.
+                    _intencion = "datos_transferencia"
+                    respuesta = _trf.mensaje_datos(_cfg_pm)
+                await _responder(deps, phone, texto, respuesta, _steps)
                 continue
 
             if pide_pago_manual(texto) and _pm_mode == "solo_tarjeta":

@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 _TIPOS = ("derivacion", "derivacion_atendida", "conversacion_tomada", "conversacion_devuelta",
-          "link_enviado", "pago_aprobado", "pedido_operador", "pedido_efectivo",
+          "link_enviado", "pedido_transferencia", "pago_aprobado", "pedido_operador", "pedido_efectivo",
           "fuera_horario", "conversacion_cerrada")
 
 MOTIVOS = {
@@ -27,6 +27,7 @@ MOTIVOS = {
     "seguimiento_receta": "pregunta por su receta", "seguimiento_pedido": "pregunta por su pedido",
     "cambio_postventa": "cambio / devolución", "envio_especial": "envío especial",
     "derivacion_prometida": "el bot prometió una persona", "adjunto_no_reconocido": "archivo",
+    "comprobante_a_verificar": "comprobante a verificar",
     "bono_foto": "bono", "credencial": "credencial", "comprobante": "comprobante",
     "operador_escribio": "el operador escribió", "conversacion_larga": "conversación larga",
 }
@@ -35,13 +36,14 @@ FINALES = {
     "derivada_sin_atender": "Derivada sin atender",
     "venta": "Venta",
     "con_operador": "Con operador",
-    "link_sin_pagar": "Link sin pagar",
+    "link_sin_pagar": "Pago pendiente (link o transferencia)",
     "atendida_devuelta": "Atendida y devuelta al bot",
     "cerrada_sin_respuesta": "Cerrada sin respuesta del cliente",
     "resuelta_bot": "Resuelta por el bot",
 }
 
 _MEDIOS = {"cuenta_corriente": "a cuenta corriente", "efectivo": "en efectivo",
+           "transferencia": "por transferencia",
            "mercadopago": "pagada", "payway": "pagada"}
 
 
@@ -80,6 +82,9 @@ def armar(eventos: list[dict], operador_ts: list, desde, hasta=None) -> dict:
                         agente=None if auto else ref)
         elif t == "link_enviado":
             item.update(estado="link", etiqueta="Link de pago enviado")
+        elif t == "pedido_transferencia":
+            item.update(estado="link", etiqueta="Pedido por transferencia",
+                        detalle="esperando el comprobante")
         elif t in ("pago_aprobado", "pedido_efectivo", "pedido_operador"):
             if t == "pedido_efectivo":
                 det = "en efectivo"

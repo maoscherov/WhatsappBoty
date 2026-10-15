@@ -227,6 +227,15 @@ class OrderService:
         logger.info(f"Pedido {order_id} tomado por {agente}{' (force)' if force else ''}")
         return order, None
 
+    async def actualizar(self, order_id: str, **campos) -> Optional[dict]:
+        """Actualiza campos sueltos de un pedido (transferencia, comprobante)."""
+        order = await self.get(order_id)
+        if not order:
+            return None
+        order.update(campos)
+        await self._save(order)
+        return order
+
     async def mark_preparado(self, order_id: str, agente: Optional[str] = None) -> Optional[dict]:
         order = await self.get(order_id)
         if not order:

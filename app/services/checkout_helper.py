@@ -1194,6 +1194,13 @@ async def crear_link_y_responder(
                 link_previo=session.get("estado") == "esperando_pago")
             return await nota_envio_fuera_horario(respuesta_ef, tipo_entrega), None
 
+    if session.get("pago_metodo") == "transferencia":
+        from app.services import transferencia as _trf
+        respuesta_trf = await _trf.cerrar_venta(
+            session_svc, phone, session, tipo_entrega, direccion,
+            total=total, costo_envio=_costo_envio, cfg=_cfg)
+        return await nota_envio_fuera_horario(respuesta_trf, tipo_entrega), None
+
     if session.get("pago_metodo") == "cuenta_corriente":
         respuesta_cc = await _cerrar_venta_cc(
             session_svc, phone, session, tipo_entrega, direccion,

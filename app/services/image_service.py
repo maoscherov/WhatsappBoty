@@ -228,6 +228,61 @@ class ImageService:
         return None
 
 
+_PROMPT_COMPROBANTE = (
+    "Esta imagen es un comprobante de transferencia o pago argentino (banco, Mercado "
+    "Pago, Ualá, billetera virtual). Extraé los datos que se lean con claridad. "
+    "Respondé SOLO con un JSON (sin texto extra); dejá \"\" lo que no se lea, NUNCA "
+    "inventes un dato:\n"
+    '{"importe": "", "fecha": "", "destinatario": "", "cuenta_destino": "", '
+    '"operacion": "", "origen": ""}\n\n'
+    "- importe: el monto transferido, tal como figura (ej: '$ 26.863,96').\n"
+    "- fecha: la fecha de la operación (ej: '15/10/2026').\n"
+    "- destinatario: nombre o razón social de quien RECIBE el dinero.\n"
+    "- cuenta_destino: alias, CBU o CVU de destino.\n"
+    "- operacion: número de operación, comprobante, transacción o referencia.\n"
+    "- origen: nombre de quien envía el dinero."
+)
+
+
+async def _leer_comprobante(self, image_bytes: bytes, media_type: str = "image/jpeg") -> Optional[dict]:
+    """OCR de un comprobante de transferencia (importe, fecha, destinatario,
+    operación). Best-effort: None si no se pudo leer."""
+    b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
+    orden = [self._provider, "anthropic" if self._provider == "openai" else "openai"]
+    for prov in orden:
+        cliente = self._anthropic if prov == "anthropic" else self._openai
+        if not cliente:
+            continue
+        try:
+            if prov == "anthropic":
+                r = await self._anthropic.messages.create(
+                    model=_VISION_MODELS["anthropic"], max_tokens=400,
+                    messages=[{"role": "user", "content": [
+                        bloque_adjunto(b64, media_type),
+                        {"type": "text", "text": _PROMPT_COMPROBANTE}]}])
+                raw = r.content[0].text if getattr(r, "content", None) else ""
+            else:
+                if es_pdf(media_type):
+                    continue
+                r = await self._openai.chat.completions.create(
+                    model=_VISION_MODELS["openai"], max_tokens=400,
+                    response_format={"type": "json_object"},
+                    messages=[{"role": "user", "content": [
+                        {"type": "text", "text": _PROMPT_COMPROBANTE},
+                        {"type": "image_url", "image_url": {"url": f"data:{media_type};base64,{b64}"}}]}])
+                raw = r.choices[0].message.content or ""
+            m = re.search(r"\{.*\}", raw or "", re.DOTALL)
+            if m:
+                data = json.loads(m.group())
+                return {k: str(data.get(k) or "").strip() for k in
+                        ("importe", "fecha", "destinatario", "cuenta_destino", "operacion", "origen")}
+        except Exception as e:
+            logger.warning(f"💥 OCR comprobante {prov} falló [{type(e).__name__}]: {str(e)[:200]}")
+    return None
+
+
+ImageService.leer_comprobante = _leer_comprobante
+
 _instance: Optional[ImageService] = None
 
 

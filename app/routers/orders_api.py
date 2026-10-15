@@ -285,3 +285,62 @@ async def mark_cc_cargado(order_id: str, request: Request, _=Depends(_auth)):
     logger.info(f"Pedido {order_id} marcado como cargado en cta. cte. por {agente or '?'}")
     return order
 
+
+
+@router.patch("/{order_id}/transferencia")
+async def resolver_transferencia(order_id: str, request: Request, _=Depends(_auth)):
+    """
+    El operador resuelve un pedido por transferencia que quedó "a verificar"
+    (o pendiente de comprobante): body {"accion": "aprobar"|"rechazar",
+    "agente": "...", "mensaje": "..." (opcional, al rechazar)}. Al aprobar, al
+    cliente le llega la confirmación con el código de retiro (minuta 14/10).
+    """
+    from app.services import transferencia as trf
+    settings = get_settings()
+    svc = get_order_service(settings.redis_url)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    accion = (body.get("accion") or "").strip().lower()
+    agente = (body.get("agente") or "").strip() or None
+    if accion not in ("aprobar", "rechazar"):
+        raise HTTPException(status_code=422, detail="accion: aprobar | rechazar")
+    order = await svc.get(order_id)
+    if not order:
+        raise HTTPException(status_code=404, detail="Pedido no encontrado")
+    if order.get("pago") != "transferencia":
+        raise HTTPException(status_code=409, detail="El pedido no es por transferencia")
+    wa = get_whatsapp_service(settings.whatsapp_token, settings.whatsapp_phone_number_id)
+    if accion == "aprobar":
+        order = await svc.actualizar(order_id, transferencia=trf.APROBADA,
+                                     transferencia_resuelta_por=agente)
+        try:
+            from app.services.db import get_db
+            from app.services.metrics_store import get_metrics_store
+            await get_metrics_store(get_db(settings.database_url)).evento(
+                "pago_aprobado", phone=order["phone"], dato="transferencia", monto=order["total"],
+                ref=order_id, extra={"pasarela": "transferencia", "aprobado_por": agente})
+        except Exception:
+            pass
+        if order.get("tipo_entrega") == "envio":
+            entrega = f"🚚 Te lo enviamos a *{order.get('direccion_envio') or 'tu domicilio'}*."
+        else:
+            entrega = f"🔑 *Tu código de retiro es: {order.get('pickup_code')}*"
+        texto = (f"✅ *¡Recibimos tu transferencia!* 🙌\n\n*{order.get('sku_nombre')}* — "
+                 f"${float(order['total']):,.2f}\n{entrega}\n\n¡Muchas gracias! 💊")
+    else:
+        order = await svc.actualizar(order_id, transferencia="rechazada",
+                                     transferencia_resuelta_por=agente)
+        texto = (body.get("mensaje") or "").strip() or (
+            "No pudimos validar la transferencia 🙏 ¿Nos mandás de nuevo el comprobante, "
+            "o preferís pagar con otro medio?")
+    enviado = await wa.send_text(order["phone"], texto)
+    if enviado:
+        try:
+            from app.services.message_store import guardar_historico
+            await guardar_historico(order["phone"], "operator", texto, autor=agente)
+        except Exception:
+            pass
+    logger.info(f"Transferencia {accion} {order_id} por {agente or '?'}")
+    return {**order, "mensaje": texto, "enviado": enviado}

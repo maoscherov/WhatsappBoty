@@ -898,6 +898,11 @@ async def bo_perf_clear(_=Depends(_auth)):
 # ── Configuración del bot ──────────────────────────────────────────────────────
 
 class ConfigUpdate(BaseModel):
+    transferencia_alias: str | None = None
+    transferencia_titular: str | None = None
+    transferencia_cbu: str | None = None
+    transferencia_auto_max: str | None = None   # monto; "0" = nunca automático
+    transferencia_message: str | None = None
     send_images: str | None = None    # "always" | "on_request"
     pickup_minutes: str | None = None
     receta_mode: str | None = None    # "conservador" | "estricto"

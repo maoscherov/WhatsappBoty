@@ -26,6 +26,15 @@ DIAS_ES = {"mon": "lunes", "tue": "martes", "wed": "miércoles", "thu": "jueves"
            "fri": "viernes", "sat": "sábado", "sun": "domingo"}
 
 DEFAULTS: dict[str, str] = {
+    # ── Transferencia (minuta 14/10) ─────────────────────────────────────
+    # Sin alias el flujo no se activa (transferencia → una persona, como antes).
+    "transferencia_alias":    "",
+    "transferencia_titular":  "",
+    "transferencia_cbu":      "",
+    # Pedidos de MENOS de este monto se aprueban solos si el comprobante
+    # cierra (importe, fecha, destinatario, operación). 0 = nunca.
+    "transferencia_auto_max": "0",
+    "transferencia_message":  "",      # opcional: {cuenta} y {total}
     "send_images":    "always",
     "pickup_minutes": "30",    # tiempo estimado de preparación/retiro
     "receta_mode":    "conservador",  # "conservador" (ambiguo deriva) | "estricto" (solo "si")
