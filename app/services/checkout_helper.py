@@ -164,8 +164,8 @@ _HUMANO = [
     # Tanda 3 (14/10): "¿cómo hago para consultar con el equipo?" (C-4397) y
     # "consultar con el equipo por favor" (C-4793) no derivaban.
     r"\bc[oó]mo\s+(hago|puedo|hacemos)\s+(para\s+)?(consultar\w*|hablar|comunicar\w*|contactar\w*)\b",
-    r"\b(consultar?\w*|preguntar\w*)\s+(con|a)\s+(el\s+equipo|las\s+chicas|alguien|una\s+persona|"
-    r"el\s+farmac[eé]utico|la\s+farmac[eé]utica|ustedes)\b",
+    r"\b(consultar?\w*|preguntar\w*)\s+(con|a|al)\s+(el\s+)?(equipo|las\s+chicas|alguien|una\s+persona|"
+    r"farmac[eé]utic[oa]|la\s+farmac[eé]utica|ustedes)\b",
 ]
 
 
@@ -1859,6 +1859,12 @@ def referencia_ambigua_bloquea(texto: str, session: dict, pendiente_con_receta: 
 
 
 _DERIV_PROMETIDA = re.compile(
+    # "Lo consultaré con el equipo y te aviso", "coordinaré para que el equipo
+    # lo cargue", "te mantendré informado" (C-4996, C-5135, C-5188): nadie se
+    # enteraba. Si el modelo lo promete, se deriva.
+    r"\b(lo\s+)?consultar[ée]\b|\bvoy\s+a\s+(consultar|coordinar|averiguar|verificar)\w*|"
+    r"\bcoordinar[ée]\b|\bte\s+(avisar[ée]|mantendr[ée]\s+informad\w*)|"
+    r"\b(le|les)\s+(aviso|paso|comento|consulto)\s+(al|a\s+las|a\s+los)\s+(equipo|chicas|farmac\w+)|"
     r"\b(te\s+(paso|derivo|comunico|conecto)\s+con|ya\s+te\s+(paso|derivo)|"
     r"te\s+va\s+a\s+(atender|contactar|escribir)\s+(alguien|una\s+persona|el\s+equipo|una\s+de\s+las\s+chicas))",
     re.IGNORECASE,
@@ -2199,6 +2205,7 @@ def quitar_saludo_repetido(respuesta: str, history: list) -> str:
 _OTRAS_OPCIONES_RE = re.compile(
     r"\b(otr[oa]s?\s+(opci[oó]n|opciones|marcas?|cosas?|alternativas?|variedad|modelos?)|"
     r"algo\s+(parecido|similar|igual)|alternativas?|similar(es)?|reemplazo|"
+    r"opciones\s+m[aá]s|m[aá]s\s+opciones|otras?\s+m[aá]s|"
     r"qu[eé]\s+m[aá]s\s+(ten[eé]s|tienen|hay)|qu[eé]\s+(otra|otro)\b)",
     re.IGNORECASE)
 _PALABRAS_VACIAS = {"de", "del", "con", "sin", "para", "por", "el", "la", "los", "las", "un",
@@ -2549,6 +2556,8 @@ _SEGUIMIENTO_RE = re.compile(
     r"me\s+(iban|ibas)\s+a\s+(avisar|responder|confirmar))\b.{0,40}\b(receta|pedido|encargo|consulta)\b|"
     r"\b(receta|pedido|encargo)\b.{0,25}\b(qu[eé]\s+pas\w*|novedad\w*)\b|"
     r"\b(ya\s+)?lleg[oó]\b.{0,30}\b(pedido|encargo|lo\s+que\s+(ped|encarg)\w*)\b|"
+    # "¿Llegó mi producto?" (C-5228, 14/10)
+    r"\blleg[oó]\s+(mi|el|lo\s+m[ií]o|la)\s*(producto|remedio|crema|perfume|cosa|pedido)?\b|"
     r"\b(pedido|encargo)\b.{0,30}\b(ya\s+)?lleg[oó]\b|"
     r"\bcu[aá]ndo\s+(llega|viene|me\s+llega)\b.{0,25}\b(pedido|encargo)\b",
     re.IGNORECASE)
@@ -2639,3 +2648,45 @@ def _que_paso_con(texto: str) -> bool:
     junto = (m.group(1) + m.group(2)).replace(" ", "")
     # Empieza con "q": "paso con la receta" es "paso a buscarlo con la receta".
     return junto.startswith("q") and fuzz.ratio(junto, "quepaso") >= 60
+
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Revisión 14/10 (minuta: arreglos de 48 h)
+# ══════════════════════════════════════════════════════════════════════════════
+def no_es_sobre_el_pendiente(history: list, pendiente: Optional[str],
+                             precio: Optional[float] = None) -> bool:
+    """El último mensaje del bot preguntaba por OTRA cosa (alternativas,
+    otro producto) y no por el pedido en curso: un "no, gracias" es para
+    eso, no para el pedido (C-5000: borró la antiarrugas ya confirmada)."""
+    ultimo = _ultimo_del_bot(history)
+    if not pendiente or "?" not in ultimo:
+        return False
+    precios = precios_con_signo(ultimo)
+    try:
+        p = float(precio or 0)
+    except (TypeError, ValueError):
+        p = 0.0
+    if p and any(abs(x - p) < 1 for x in precios):
+        return False                       # habla del pedido (su precio)
+    if precios:
+        return True                        # ofrece otras cosas con precio
+    # Sin precios: por el nombre, sin la marca (que comparten las alternativas).
+    from app.services.sku_service import alguna_palabra_coincide
+    resto = " ".join((pendiente or "").split()[1:])
+    return bool(resto) and not alguna_palabra_coincide(ultimo, resto)
+
+
+_SENALA = re.compile(r"\b(es[eao]s?|aquel\w*|el\s+mismo|la\s+misma|lo\s+mismo|otr[oa]s?|el\s+\d|la\s+\d|"
+                     r"tambi[eé]n|igual|parecid\w*|similar\w*)\b", re.IGNORECASE)
+
+
+def entidad_en_mensaje(entidad: str, texto: str) -> bool:
+    """¿El producto que extrajo el modelo está en el mensaje (o el mensaje lo
+    señala: "ese", "el mismo", "otro")?"""
+    from app.services.sku_service import alguna_palabra_coincide
+    if not entidad or not texto:
+        return bool(entidad)
+    if alguna_palabra_coincide(texto, entidad) or alguna_palabra_coincide(entidad, texto):
+        return True
+    return bool(_SENALA.search(texto))

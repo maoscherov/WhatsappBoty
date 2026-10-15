@@ -19,6 +19,9 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 SESSION_TTL = 60 * 60 * 25     # red de seguridad — debe superar las 24hs del link de pago
+# Derivada a una persona: no vence en el día (minuta 14/10: "una derivación no
+# tomada no puede cerrarse sola"). A las 25 h la sesión desaparecía de la cola.
+SESSION_TTL_OPERADOR = 60 * 60 * 24 * 7
 INACTIVITY_CLOSE = 60 * 15     # inactividad que dispara el cierre con aviso
 MAX_HISTORY = 10
 
@@ -82,7 +85,8 @@ class SessionService:
         session["_last_activity"] = time.time()
         if await self._use_redis():
             try:
-                await self._redis.setex(self._key(phone), SESSION_TTL, json.dumps(session))
+                ttl = SESSION_TTL_OPERADOR if session.get("estado") == "operador" else SESSION_TTL
+                await self._redis.setex(self._key(phone), ttl, json.dumps(session))
                 return
             except Exception:
                 self._redis_ok = False
@@ -240,6 +244,13 @@ class SessionService:
 
     async def clear_pending(self, phone: str):
         session = await self.get(phone)
+        # Lo que había (2 h): "me llevo solo la antiarrugas, ponela en la
+        # cuenta" después de un "no, gracias" lo recupera (C-5000, 14/10).
+        if session.get("pending_sku_id"):
+            session["_pendiente_anterior"] = {
+                "sku_id": session["pending_sku_id"], "nombre": session.get("pending_sku_nombre"),
+                "precio": session.get("pending_precio"), "cantidad": session.get("pending_cantidad", 1),
+                "items": list(session.get("pending_items") or []), "ts": time.time()}
         session.update({
             "pending_sku_id": None,
             "pending_sku_nombre": None,
@@ -256,6 +267,26 @@ class SessionService:
         session.pop("receta_validada", None)
         session.pop("pago_metodo", None)
         await self.save(phone, session)
+
+    async def recuperar_pendiente(self, phone: str, texto: str, max_seg: int = 2 * 3600) -> bool:
+        """Vuelve a armar el pedido cancelado hace poco si el mensaje lo nombra."""
+        from app.services.sku_service import alguna_palabra_coincide
+        session = await self.get(phone)
+        prev = session.get("_pendiente_anterior") or {}
+        if session.get("pending_sku_id") or not prev.get("sku_id"):
+            return False
+        if time.time() - float(prev.get("ts") or 0) > max_seg:
+            return False
+        nombres = [prev.get("nombre") or ""] + [i.get("nombre") or "" for i in prev.get("items") or []]
+        if not any(n and alguna_palabra_coincide(texto, n) for n in nombres):
+            return False
+        await self.set_pending(phone, prev["sku_id"], prev.get("nombre") or "", float(prev.get("precio") or 0),
+                               int(prev.get("cantidad") or 1), opciones=[])
+        if len(prev.get("items") or []) > 1:
+            s2 = await self.get(phone)
+            s2["pending_items"] = prev["items"]
+            await self.save(phone, s2)
+        return True
 
     async def set_entrega(self, phone: str, tipo: str, direccion: str | None = None):
         """Guarda el modo de entrega elegido (retiro/envío) y la dirección si aplica."""

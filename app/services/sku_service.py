@@ -64,6 +64,14 @@ SINONIMOS: dict[str, list[str]] = {
     "limpiar protesis":  ["corega tabs"],
     "pastillas para la protesis": ["corega tabs"],
     "multiforma":        ["multiestilo"],             # C-4760
+    "caballero":         ["hombre"],                  # "medias para caballero" (C-5034)
+    "dama":              ["mujer"],
+    # "Perfumes importados" (C-4996, 14/10): "no tengo stock" habiendo Armani,
+    # Cacharel, Halloween… El catálogo no dice "importado": se buscan las marcas.
+    "importado":         ["armani", "cacharel", "halloween", "adolfo dominguez", "antonio banderas",
+                          "carolina herrera", "paco rabanne", "hugo boss", "calvin klein", "lacoste",
+                          "kenzo", "nina ricci", "tommy", "ralph lauren", "benetton", "shakira",
+                          "jean paul gaultier", "versace", "dolce", "bvlgari", "lancome", "issey miyake"],
 }
 
 # Lista blanca de VENTA LIBRE: drogas/marcas OTC conocidas cuyo flag de receta
@@ -511,7 +519,7 @@ class SKUService:
         _STOP = (
             r'\b(dame|quiero|necesito|ten[eé]s|tienen|hay|precio|cu[aá]nto|cuanto|sale|'
             r'en|de|para|un|una|unos|unas|el|la|los|las|me|mand[aá]s|env[ií]as|'
-            r'env)\b'
+            r'env|productos?|marca)\b'
         )
         # "una tira de famotidina" / "1 blíster de" / "una caja de": es la
         # unidad de venta, no el producto ("tira" traía las tiras reactivas, 5/10).
@@ -533,6 +541,11 @@ class SKUService:
             if generico in clean_query:
                 variantes.extend(marcas)
                 _de_sinonimo.update(_tokens(generico))
+        # Errores de tipeo DESPUÉS de los sinónimos (que se buscan con lo que
+        # escribió el cliente): "la puissange" → "la puissance".
+        _corregida = self._corregir_tipeo(clean_query)
+        if _corregida != clean_query:
+            clean_query = variantes[0] = _corregida
 
         # Se guarda el mejor score de CADA scorer por separado (entre todas las
         # variantes). Importa mantenerlos separados: con nombres largos del
@@ -656,6 +669,26 @@ class SKUService:
                           + [c for c in ventana if not c[1].vendible])
 
         return [self._to_response(s) for _i, s, _sc in candidatos[:top_n]]
+
+    def _corregir_tipeo(self, consulta: str) -> str:
+        """Palabras que no están en el catálogo y se parecen mucho a una que sí:
+        "la puissange" → "la puissance" (C-5135, 14/10: "no tengo productos de
+        La Puissange" con 60 en stock). Solo palabras de 5+ letras."""
+        vocab = getattr(self, "_vocab", None)
+        df = getattr(self, "_token_df", None) or {}
+        if vocab is None:
+            vocab = [t for t in df if len(t) >= 5 and t.isalpha()]
+            self._vocab = vocab
+        if not vocab:
+            return consulta
+        salida = []
+        for tok in consulta.split():
+            if len(tok) >= 5 and tok.isalpha() and tok not in df:
+                m = process.extractOne(tok, vocab, scorer=fuzz.ratio, score_cutoff=85)
+                if m:
+                    tok = m[0]
+            salida.append(tok)
+        return " ".join(salida)
 
     def get_by_id(self, sku_id: str) -> Optional[SKU]:
         for sku in self._skus:

@@ -43,6 +43,7 @@ from app.services.session_service import contexto_vencido
 from app.services.message_store import get_message_store
 from app.services import chat_media
 from app.services.metrics_store import get_metrics_store
+from app.services.sku_service import alguna_palabra_coincide as _alguna_palabra
 from app.services.checkout_helper import (
     confirmar_pedido, resolver_entrega, capturar_direccion,
     match_retiro, match_envio, pide_humano, derivar_si_receta, afirma_envio,
@@ -57,7 +58,8 @@ from app.services.checkout_helper import (
     bot_hizo_pregunta, bot_ofrecio_equipo, pide_algo_mas, pide_sumar, cuenta_de_tercero,
     marca_de_linea, entrega_en_texto, es_consulta_generica, aviso_sin_stock_del_pedido,
     consulta_cuota_social, consulta_seguimiento, anuncia_otra_consulta, ofrece_mandar_receta,
-    envio_especial, deja_para_despues, repite_oferta,
+    envio_especial, deja_para_despues, repite_oferta, no_es_sobre_el_pendiente,
+    entidad_en_mensaje, pide_anotar,
     nombres_inventados, es_refinamiento_de_marca, marca_en_resultado, match_envio,
     pide_cancelar_pedido, pregunta_obra_social, responder_obra_social, parsear_lista,
     pregunta_bono, responder_bono, agregar_oferta_farmaceutico, acepta_farmaceutico,
@@ -179,7 +181,7 @@ def _empieza_con_no(t: str) -> bool:
     que el cliente no quería (caso real).
     """
     return bool(_re.match(r"^\s*no\b", t or "", _re.IGNORECASE))
-_NO_FRASE  = [r"\bno quiero\b", r"\bno gracias\b", r"\bmejor no\b",
+_NO_FRASE  = [r"\bno quiero\b", r"\bno[\s,.!]+gracias\b", r"\bmejor no\b",
               r"\bcancela(r|me)?\b", r"\bnope\b",
               # Caso real 1/10: "desestimalo" / "no continúo" seguían en el
               # flujo de entrega y el bot pidió la dirección 4 veces más.
@@ -197,7 +199,10 @@ def _match_si(t: str) -> bool:
 _AFIRMACION = (r"\b(si|sí|dale|ok|okey|oka|listo|bueno|claro|obvio|perfecto|genial|va|vale|"
                r"por|favor|porfa|gracias|please|consultalo|consulta|consultá|averigualo|"
                r"averigua|averiguá|preguntalo|pregunta|encargalo|encarga|encargá|lo|la|me|"
-               r"te|eso|esa|ese|sería|seria|estaría|estaria|buenísimo|buenisimo|joya|barbaro|bárbaro)\b")
+               r"te|eso|esa|ese|sería|seria|estaría|estaria|buenísimo|buenisimo|joya|barbaro|bárbaro|"
+               # "Sí, la quiero llevar" (C-5000): quedaba en manos del modelo.
+               r"quiero|llevar|llevo|llevarlo|llevarla|compro|comprar|confirmo)\b")
+_SI_FUERTE = r"\b(si|sí|dale|listo|perfecto|confirmo|claro|obvio|vamos|manda|mandame|quiero|llevo)\b"
 
 
 def _es_afirmacion_pura(t: str) -> bool:
@@ -208,6 +213,9 @@ def _es_afirmacion_pura(t: str) -> bool:
     era una aceptación pura.
     """
     if not _match_si(t) or _match_no(t):
+        return False
+    # "Ok ok gracias" / "bueno, gracias" es un acuse, no un sí (C-5084, 14/10).
+    if _re.search(r"\bgracias\b", t, _re.I) and not _re.search(_SI_FUERTE, t, _re.I):
         return False
     resto = _re.sub(_AFIRMACION, " ", t.lower())
     resto = _re.sub(r"[^\wáéíóúñ]+", " ", resto)
@@ -230,7 +238,9 @@ def acepta_consulta_ofrecida(t: str) -> bool:
     el precio". Casos reales 1/10: esas respuestas no derivaban y la charla se
     cerraba a los 15 min como "sin respuesta" del cliente.
     """
-    if _es_afirmacion_pura(t):
+    from app.services.checkout_helper import _sin_tildes
+    t = _sin_tildes(t or "")          # "Ok consúltalo gracias" (C-5135)
+    if _es_afirmacion_pura(t) or _re.match(r"^\s*(ok|okey|dale|si|bueno)?[\s,!.]*consult\w*", t, _re.I):
         return True
     if _match_no(t):
         return False
@@ -1431,6 +1441,13 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
             # ── Efectivo (19/9): igual que cuenta corriente, el pedido entra
             # sin link; el cobro queda pendiente en el backoffice. Apagado o
             # fuera de condiciones → cae al pago manual de abajo, como siempre.
+            if (pide_efectivo(texto) or pide_cuenta_corriente(texto) or pide_anotar(texto)) \
+                    and not session.get("pending_sku_id") \
+                    and await deps["session"].recuperar_pendiente(phone, texto):
+                # "Me llevo solo la antiarrugas, me la ponés en la cuenta"
+                # después de cancelar (C-5000, 14/10): se rearma el pedido.
+                session = await deps["session"].get(phone)
+                logger.info(f"Pedido recuperado para {phone}: {session.get('pending_sku_nombre')!r}")
             if pide_efectivo(texto):
                 _items_ef = session.get("pending_items") or []
                 if _items_ef:
@@ -1735,10 +1752,20 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
             if session.get("estado") == "esperando_entrega" and session.get("pending_sku_id"):
                 texto_lower = texto.lower().strip()
                 _dir_expl = extraer_direccion_de(texto)
-                if _match_no(texto_lower):
+                if _match_no(texto_lower) and not no_es_sobre_el_pendiente(
+                        session.get("history") or [], session.get("pending_sku_nombre"),
+                        session.get("pending_precio")):
                     _intencion = "pedido_cancelado"
                     await deps["session"].clear_pending(phone)
                     respuesta = "Dale, sin problema. ¿En qué más te puedo ayudar?"
+                elif _match_no(texto_lower):
+                    # "No, gracias" a las alternativas que ofreció el bot, no
+                    # al pedido (C-5000): se sigue con lo que ya eligió.
+                    _intencion = "oferta_rechazada"
+                    _cfg_nr = await deps["config"].get_all()
+                    respuesta = (f"Dale. Seguimos con {session.get('pending_sku_nombre')} 🙂 " +
+                                 pregunta_entrega(_cfg_nr, saludo=False, phone=phone,
+                                                  socio_svc=deps["socios"]))
                 elif pide_algo_mas(texto):
                     # "Quiero algo más" eligiendo la entrega (C-4841): se vuelve
                     # al carrito y lo que nombre después se suma.
@@ -1870,6 +1897,19 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     await deps["session"].clear_pending(phone)
                     respuesta = (f"Para no equivocarme: ¿me decís el nombre del producto que "
                                  f"necesitás? Antes habíamos hablado de {_prod_dx}.")
+                    _ts = _time.perf_counter()
+                    await deps["wa"].send_text(phone, respuesta)
+                    _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
+                    await deps["session"].add_message(phone, "user", texto)
+                    await deps["session"].add_message(phone, "assistant", respuesta)
+                    continue
+                if _match_no(texto_lower) and no_es_sobre_el_pendiente(
+                        session.get("history") or [], session.get("pending_sku_nombre"),
+                        session.get("pending_precio")):
+                    # "No, gracias" a las alternativas, no al pedido (C-5000).
+                    _intencion = "oferta_rechazada"
+                    respuesta = (f"Dale. ¿Seguimos con {session.get('pending_sku_nombre')}? "
+                                 "Decime y lo preparo 🙂")
                     _ts = _time.perf_counter()
                     await deps["wa"].send_text(phone, respuesta)
                     _steps["send_ms"] = int((_time.perf_counter() - _ts) * 1000)
@@ -2262,6 +2302,14 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
             intencion = intent_result.get("intencion", "desconocido")
             _intencion = intencion
             entidad = intent_result.get("entidad_producto")
+            # El modelo arrastra productos de mensajes viejos ("¿hacen entregas
+            # a domicilio?" → "el FRUCTIS no me figura", C-4993): si nada del
+            # producto está en el mensaje (ni lo señala), no se busca.
+            if entidad and not entidad_en_mensaje(entidad, texto) and _alguna_palabra(
+                    entidad, " ".join(str(m.get("content") or "")
+                                      for m in (session.get("history") or [])[-12:])):
+                logger.info(f"Entidad descartada (no está en el mensaje): {entidad!r} ← {texto[:60]!r}")
+                entidad = None
             respuesta = quitar_confirmaciones_fantasma(
                 quitar_frases_de_espera(intent_result.get("respuesta", "")))
 
@@ -2818,8 +2866,9 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
             # ayudando, se ofrece una persona.
             _ult_bot = next((m.get("content") for m in reversed(session.get("history") or [])
                              if m.get("role") == "assistant"), None)
-            if respuesta and ((_ult_bot and respuesta.strip() == _ult_bot.strip())
-                              or repite_oferta(respuesta, session.get("history") or [])):
+            if respuesta and not _re.search(r"\bgracias\b", texto, _re.I) and (
+                    (_ult_bot and respuesta.strip() == _ult_bot.strip())
+                    or repite_oferta(respuesta, session.get("history") or [])):
                 _intencion = "repeticion_evitada"
                 _s_rep = await deps["session"].get(phone)
                 _s_rep["derivacion_ofrecida"] = (entidad or "consulta")[:60]
