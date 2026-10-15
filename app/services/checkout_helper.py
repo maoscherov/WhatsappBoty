@@ -494,6 +494,9 @@ def pide_foto(t: str) -> bool:
     negocio: eso lo atiende una persona (saca la foto real del producto y se
     la manda), no el bot.
     """
+    if re.search(r"\b(te|les)\s+(paso|mando|env[ií]o|envio|comparto)\b.{0,15}\b(foto|fotos|imagen)",
+                 t or "", re.IGNORECASE):
+        return False      # "Ahora les paso una foto": la manda el cliente (C-5485, 15/10)
     return any(re.search(p, t, re.IGNORECASE) for p in _PIDE_FOTO)
 
 
@@ -1870,6 +1873,10 @@ _DERIV_PROMETIDA = re.compile(
     # lo cargue", "te mantendré informado" (C-4996, C-5135, C-5188): nadie se
     # enteraba. Si el modelo lo promete, se deriva.
     r"\b(lo\s+)?consultar[ée]\b|\bvoy\s+a\s+(consultar|coordinar|averiguar|verificar)\w*|"
+    # "Te sugiero que consultes con nuestro equipo", "no tengo acceso al
+    # catálogo" (C-5425): mandaba al cliente a buscar a alguien.
+    r"\bte\s+(sugiero|recomiendo)\s+(que\s+)?(consult|te\s+comuniques|hables|contactes)\w*|"
+    r"\bno\s+tengo\s+acceso\s+a\w*|"
     r"\bcoordinar[ée]\b|\bte\s+(avisar[ée]|mantendr[ée]\s+informad\w*)|"
     r"\b(le|les)\s+(aviso|paso|comento|consulto)\s+(al|a\s+las|a\s+los)\s+(equipo|chicas|farmac\w+)|"
     r"\b(te\s+(paso|derivo|comunico|conecto)\s+con|ya\s+te\s+(paso|derivo)|"
@@ -2599,6 +2606,7 @@ def anuncia_otra_consulta(texto: str) -> bool:
 
 _OFRECE_RECETA = re.compile(
     r"\b(te|les)\s+(env[ií]o|mando|paso|mand[aá]s?|enviar[ée])\s+(la\s+|mi\s+|una\s+)?(receta|foto\s+de\s+la\s+receta)\b|"
+    r"\bpuedo\s+(enviar|mandar|pasar)(te|les|le)?\s+(la\s+|mi\s+|una\s+)?receta\b|"
     r"\b(sirve|vale|puedo\s+usar|se\s+puede\s+usar)\s+(mi\s+|la\s+|esta\s+)?receta\b|"
     r"\btengo\s+(la\s+)?receta\b.{0,40}\b(sirve|vale)\b",
     re.IGNORECASE)
@@ -2669,6 +2677,12 @@ def no_es_sobre_el_pendiente(history: list, pendiente: Optional[str],
     ultimo = _ultimo_del_bot(history)
     if not pendiente or "?" not in ultimo:
         return False
+    from app.services.sku_service import alguna_palabra_coincide as _apc
+    # Nombra el pedido (sin la marca): el "no" es para el pedido (C-5360:
+    # "Recordá que tenés el Dove… ¿retiro o envío?" → "no lo quiero").
+    _resto = " ".join((pendiente or "").split()[1:])
+    if _resto and _apc(ultimo, _resto) and any(len(t) >= 4 for t in _resto.split()):
+        return False
     precios = precios_con_signo(ultimo)
     try:
         p = float(precio or 0)
@@ -2686,6 +2700,16 @@ def no_es_sobre_el_pendiente(history: list, pendiente: Optional[str],
 
 _SENALA = re.compile(r"\b(es[eao]s?|aquel\w*|el\s+mismo|la\s+misma|lo\s+mismo|otr[oa]s?|el\s+\d|la\s+\d|"
                      r"tambi[eé]n|igual|parecid\w*|similar\w*)\b", re.IGNORECASE)
+
+
+def entidad_util(entidad: Optional[str]) -> bool:
+    """¿La entidad nombra algo buscable? "el que es como la foto" o
+    "necesito" no (15/10: terminaban en el perfume "Como Quieres" y en un
+    neceser)."""
+    from app.services.sku_service import _PALABRAS_COMUNES
+    toks = [t for t in re.findall(r"[a-záéíóúñ0-9]+", _sin_tildes(entidad or "").lower())]
+    return any(len(t) >= 3 and t not in _PALABRAS_COMUNES and t not in _PALABRAS_VACIAS
+               and t not in ("que", "del", "las", "los", "una", "uno", "mas") for t in toks)
 
 
 def entidad_en_mensaje(entidad: str, texto: str) -> bool:
@@ -2712,3 +2736,48 @@ def termino_que_deriva(texto: str, cfg: dict) -> Optional[str]:
         if re.search(rf"\b{re.escape(_sin_tildes(term))}\b", t):
             return term
     return None
+
+
+
+# ── Formas de pago (15/10, C-5550) ────────────────────────────────────────────
+_FORMAS_PAGO_RE = re.compile(
+    r"\b(formas?|medios?|opciones?)\s+de\s+pago\b|\bc[oó]mo\s+(puedo\s+|se\s+puede\s+)?(pag|abon)\w*|"
+    r"\bpuedo\s+pagar\s+con\b|\baceptan\s+(tarjeta|mercado|d[eé]bito|cr[eé]dito|transfer)\w*",
+    re.IGNORECASE)
+
+
+def pide_formas_de_pago(texto: str) -> bool:
+    # "¿Puedo pagar con transferencia / en efectivo / a la cuenta?" va a su
+    # propio flujo, no a la lista de medios.
+    if re.search(r"\b(efectivo|transf\w*|alias|cbu|cuenta|cta|anot\w*)\b", texto or "", re.IGNORECASE):
+        return False
+    return bool(_FORMAS_PAGO_RE.search(texto or ""))
+
+
+def formas_de_pago(cfg: dict, phone: str, socio_svc=None) -> str:
+    """Los medios habilitados, según la configuración y el cliente."""
+    medios = ["con *link de pago* (tarjeta de débito o crédito, o Mercado Pago)"]
+    if _flag(cfg, "efectivo_enabled", False):
+        medios.append("en *efectivo* al retirar")
+    if (cfg.get("transferencia_alias") or "").strip():
+        medios.append("por *transferencia*")
+    try:
+        from app.services.empleado_service import get_empleado_service
+        es_cc = bool(socio_svc and socio_svc.find_by_phone(phone)) or \
+            bool(get_empleado_service().find_by_phone(phone))
+    except Exception:
+        es_cc = False
+    if es_cc and str(cfg.get("cc_enabled", "true")).lower() == "true":
+        medios.append("o anotarlo en tu *cuenta corriente*")
+    if len(medios) > 1 and not medios[-1].startswith("o "):
+        medios[-1] = "o " + medios[-1]
+    return "Podés pagar " + ", ".join(medios) + " 🙂 ¿Qué necesitás?"
+
+
+_CATALOGO_DE = re.compile(r"\bcat[aá]logo\s+de\s+([a-záéíóúñ ]{3,40})", re.IGNORECASE)
+
+
+def catalogo_de(texto: str) -> Optional[str]:
+    """ "Catálogo de perfumes" → "perfumes"."""
+    m = _CATALOGO_DE.search(texto or "")
+    return m.group(1).strip() if m else None

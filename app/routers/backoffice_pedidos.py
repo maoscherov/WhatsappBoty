@@ -159,6 +159,11 @@ async def bo_pedido(body: PedidoIn, _=Depends(_auth)):
     # Descuento de socio / empleado (mismo criterio que el bot) sobre lo que
     # tiene precio de lista; lo que el operador fijó a mano no se toca.
     pct = 0.0
+    from app.services.checkout_helper import descuento_para as _dp
+    _pct_corresponde, _tipo_desc = _dp(phone, cfg, socios)
+    logger.info(f"Pedido operador {phone}: aplicar_descuento={body.aplicar_descuento} "
+                f"devolver_al_bot={body.devolver_al_bot} corresponde={_pct_corresponde}% "
+                f"montos={[it.monto for it in body.items]}")
     if body.aplicar_descuento:
         de_lista = [l for l in lineas if not l["_precio_fijo"]]
         # Con receta también: el operador ya la validó, y la cotización de
@@ -241,7 +246,12 @@ async def bo_pedido(body: PedidoIn, _=Depends(_auth)):
         pass
     logger.info(f"Pedido armado por operador {body.agente or '?'} para {phone}: "
                 f"{len(lineas)} ítems, {body.pago}, {body.entrega}")
+    aviso = None
+    if _pct_corresponde > 0 and pct == 0:
+        aviso = (f"Ojo: el cliente tiene {_pct_corresponde:g}% de {_tipo_desc or 'descuento'} y el "
+                 "pedido salió sin descuento (aplicar_descuento=false o precios manuales).")
     return {"ok": True, "pago": body.pago, "entrega": body.entrega, "devuelto_al_bot": devolver,
+            "descuento_corresponde_pct": _pct_corresponde, "aviso": aviso,
             "total": round(total_productos + costo_envio, 2), "costo_envio": costo_envio,
             "descuento_pct": pct, "link": link, "pedido": session.get("_ultimo_pedido"),
             "mensaje": texto, "enviado": enviado}

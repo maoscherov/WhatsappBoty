@@ -416,7 +416,11 @@ class SocioService:
             return None
         # El nombre de pila va aparte: con "Nombre: Muff Claudia Beatriz Muff"
         # el modelo saludaba por el apellido (24/9).
-        partes = [f"Nombre de pila (para saludar): {socio.get('nombre_pila') or nombre_de_pila(socio)}"]
+        _pila = socio.get('nombre_pila') or nombre_de_pila(socio)
+        if len((_pila or "").strip(".- ")) < 2:
+            _pila = ""          # "S" (de "4 S Desarrollos Srl"): sin nombre (C-5409)
+        partes = [f"Nombre de pila (para saludar): {_pila}" if _pila else
+                  "Nombre de pila: (no se sabe; saludá sin nombre)"]
         if socio.get("apellido"):
             partes.append(f"Apellido: {socio['apellido']}")
         if socio["nro_socio"]:

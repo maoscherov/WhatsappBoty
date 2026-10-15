@@ -59,7 +59,8 @@ from app.services.checkout_helper import (
     marca_de_linea, entrega_en_texto, es_consulta_generica, aviso_sin_stock_del_pedido,
     consulta_cuota_social, consulta_seguimiento, anuncia_otra_consulta, ofrece_mandar_receta,
     envio_especial, deja_para_despues, repite_oferta, no_es_sobre_el_pendiente,
-    entidad_en_mensaje, pide_anotar, termino_que_deriva,
+    entidad_en_mensaje, pide_anotar, termino_que_deriva, entidad_util, formas_de_pago,
+    pide_formas_de_pago, catalogo_de,
     nombres_inventados, es_refinamiento_de_marca, marca_en_resultado, match_envio,
     pide_cancelar_pedido, pregunta_obra_social, responder_obra_social, parsear_lista,
     pregunta_bono, responder_bono, agregar_oferta_farmaceutico, acepta_farmaceutico,
@@ -182,6 +183,7 @@ def _empieza_con_no(t: str) -> bool:
     """
     return bool(_re.match(r"^\s*no\b", t or "", _re.IGNORECASE))
 _NO_FRASE  = [r"\bno quiero\b", r"\bno[\s,.!]+gracias\b", r"\bmejor no\b",
+              r"\bno\s+(lo|la|los|las)\s+(quiero|llevo|voy\s+a\s+llevar|necesito)\b",
               r"\bcancela(r|me)?\b", r"\bnope\b",
               # Caso real 1/10: "desestimalo" / "no continúo" seguían en el
               # flujo de entrega y el bot pidió la dirección 4 veces más.
@@ -674,7 +676,17 @@ async def _responder_consulta_en_flujo(deps, phone: str, session: dict, texto: s
         )
         # "Está listo para que lo retires" sin pedido ni pago (C-4793): solo
         # el sistema anuncia pedidos.
-        return quitar_confirmaciones_fantasma((resultado.get("respuesta") or "").strip()) or fallback
+        resp = quitar_confirmaciones_fantasma((resultado.get("respuesta") or "").strip())
+        # Ni precios que no salen del pedido (C-5360: "Nivea a $2.500").
+        try:
+            cfg = await deps["config"].get_all()
+            unit, totales = referencias_de_precio(contexto, session, cfg, resp)
+            if precios_inventados(resp, unit, totales) or nombres_inventados(resp, contexto):
+                logger.warning(f"Consulta en flujo con datos inventados ({phone}): {resp[:120]!r}")
+                return fallback
+        except Exception:
+            pass
+        return resp or fallback
     except Exception as e:
         logger.warning(f"No se pudo responder la consulta en flujo para {phone}: {e}")
         return fallback
@@ -1414,6 +1426,13 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     "En un momento te contactamos."), _steps)
                 continue
 
+            # ── "¿Qué formas de pago tengo?" (C-5550): respuesta fija ────────
+            if pide_formas_de_pago(texto):
+                _intencion = "formas_de_pago"
+                await _responder(deps, phone, texto,
+                                 formas_de_pago(_cfg_dt, phone, deps["socios"]), _steps)
+                continue
+
             # ── "Otra consulta" a secas: se espera la consulta (C-4694) ──────
             if anuncia_otra_consulta(texto):
                 _intencion = "otra_consulta"
@@ -1755,7 +1774,7 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
             # El modelo inventó "como socia tenés un descuento" con un precio
             # inexistente (caso 29). La respuesta sale de la config; el
             # descuento real —si está activo— se aplica solo al armar el link.
-            if pregunta_descuento(texto):
+            if pregunta_descuento(texto) and not pregunta_obra_social(texto):
                 _intencion = "consulta_descuento"
                 _pct_emp, _tipo_emp = descuento_para(phone, _cfg_pm, deps["socios"])
                 _pct_desc = float(_cfg_pm.get("socio_discount_pct") or 0)
@@ -2202,6 +2221,12 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     # El bot no venía preguntando nada ("si en algún momento
                     # querés, estoy acá"): un "dale gracias" es un cierre, no una
                     # compra (C-4340, 6/10).
+                    # Sin ninguna palabra de aceptación no hay compra: "Busco
+                    # masculino" mandó un link de $124.000 (C-5419, 15/10).
+                    if confirmacion is True and sku_index is None and not (
+                            _match_si(texto_lower) or _re.search(_SI_FUERTE, texto_lower)):
+                        confirmacion = None
+                        logger.info(f"Confirmación bloqueada (sin un sí): {texto[:40]!r}")
                     if confirmacion is True and not bot_hizo_pregunta(session.get("history")):
                         confirmacion = None
                         logger.info(f"Confirmación bloqueada (el bot no preguntaba): {texto[:40]!r}")
@@ -2449,6 +2474,12 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
             # El modelo arrastra productos de mensajes viejos ("¿hacen entregas
             # a domicilio?" → "el FRUCTIS no me figura", C-4993): si nada del
             # producto está en el mensaje (ni lo señala), no se busca.
+            # "Catálogo de perfumes" (C-5473): se busca lo que dice.
+            if not entidad and catalogo_de(texto):
+                entidad = catalogo_de(texto)
+            if entidad and not entidad_util(entidad):
+                logger.info(f"Entidad sin producto, no se busca: {entidad!r}")
+                entidad = None
             if entidad and not entidad_en_mensaje(entidad, texto) and _alguna_palabra(
                     entidad, " ".join(str(m.get("content") or "")
                                       for m in (session.get("history") or [])[-12:])):
@@ -3013,6 +3044,13 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     sintoma=bool(intent_result.get("por_sintoma")) or _intencion == "consulta_abierta",
                     solo_precios=_intencion not in _generales)
 
+            # Sin pedido en curso, el modelo no recuerda uno ("Recordá que tenés el
+            # Dove en tu pedido" después de cancelarlo, C-5360).
+            _s_res = await deps["session"].get(phone)
+            if not _s_res.get("pending_sku_id") and not _s_res.get("pending_items"):
+                respuesta = _re.sub(r"[^.!?\n]*\brecord[aá]\s+que\s+ten[eé]s\b[^.!?\n]*[.!?]?\s*",
+                                    "", respuesta or "", flags=_re.I).strip() or respuesta
+
             # Listas "1. … 2. …" pegadas al texto: cada ítem en su renglón (8/10).
             respuesta = separar_lista_numerada(respuesta)
 
@@ -3025,11 +3063,17 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     (_ult_bot and respuesta.strip() == _ult_bot.strip())
                     or repite_oferta(respuesta, session.get("history") or [])):
                 _intencion = "repeticion_evitada"
-                _s_rep = await deps["session"].get(phone)
-                _s_rep["derivacion_ofrecida"] = (entidad or "consulta")[:60]
-                await deps["session"].save(phone, _s_rep)
-                respuesta = ("Perdón, no te estoy pudiendo ayudar bien con esto 🙏 "
-                             "¿Querés que lo vea alguien del equipo?")
+                if "no te estoy pudiendo ayudar" in (_ult_bot or ""):
+                    # Segunda vez: no se vuelve a ofrecer, se deriva (C-5550, C-5596).
+                    await deps["session"].set_estado(phone, "operador", motivo="no_entendido")
+                    respuesta = ("Te paso con alguien del equipo que lo resuelve con vos 🙌 "
+                                 "En un momento te contactamos.")
+                else:
+                    _s_rep = await deps["session"].get(phone)
+                    _s_rep["derivacion_ofrecida"] = (entidad or "consulta")[:60]
+                    await deps["session"].save(phone, _s_rep)
+                    respuesta = ("Perdón, no te estoy pudiendo ayudar bien con esto 🙏 "
+                                 "¿Querés que lo vea alguien del equipo?")
 
             # El modelo dijo "te paso con alguien del equipo": se cumple. Antes
             # quedaba solo en el texto, nadie lo veía y el producto seguía

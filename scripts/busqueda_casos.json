@@ -1047,6 +1047,61 @@
     ]
    ],
    "origen": "auditoria"
+  },
+  {
+   "q": "perfumes masculinos",
+   "debe": [
+    [
+     "men"
+    ],
+    [
+     "homme"
+    ],
+    [
+     "hombre"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "carteras",
+   "debe": [
+    [
+     "cartera"
+    ],
+    [
+     "bolso"
+    ],
+    [
+     "tote"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "diclofenac mas pridinol",
+   "debe": [
+    [
+     "flex"
+    ],
+    [
+     "pridinol"
+    ],
+    [
+     "relax"
+    ]
+   ],
+   "origen": "auditoria"
+  },
+  {
+   "q": "medias para caballero",
+   "debe": [
+    [
+     "medias",
+     "hombre"
+    ]
+   ],
+   "origen": "auditoria"
   }
  ]
 }

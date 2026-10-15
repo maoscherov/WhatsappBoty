@@ -31,6 +31,22 @@ logger = logging.getLogger(__name__)
 # 66 filtra los falsos positivos por fragmento (ej. "ibuprofeno"→"FREESTYLE LIBRE",
 # "vecetam"→"esponja VEGetal") sin perder los aciertos reales.
 SCORE_CUTOFF = 66
+
+_GENERO = [(r"\bperfumes\b", "perfume"),
+           (r"\b(masculin[oa]s?|caballeros?|varon(es)?)\b", "hombre"),
+           (r"\b(femenin[oa]s?|damas?)\b", "mujer")]
+
+# Palabras del habla que no son productos: no se corrigen como errores de
+# tipeo ni alcanzan para buscar ("necesito" → Neceser, "como la foto" → el
+# perfume "Como Quieres", 15/10).
+_PALABRAS_COMUNES = {
+    "necesito", "necesitaria", "quiero", "quisiera", "queria", "tenes", "tienen", "tendras",
+    "tendrian", "busco", "buscando", "consulta", "consultar", "pregunta", "precio", "precios",
+    "como", "foto", "fotos", "imagen", "igual", "mismo", "misma", "este", "esta", "esto", "ese",
+    "esa", "eso", "aquel", "cosa", "cosas", "producto", "productos", "algo", "otro", "otra",
+    "gracias", "hola", "buenas", "favor", "porfa", "ahora", "despues", "mañana", "manana",
+    "quieres", "podes", "podrias", "pasame", "mandame", "enviame", "decime", "saber", "tenias",
+}
 TOP_N_DEFAULT = 3
 
 # Sinónimos droga↔marca: el catálogo usa nombres de marca, así que el nombre
@@ -64,7 +80,9 @@ SINONIMOS: dict[str, list[str]] = {
     "limpiar protesis":  ["corega tabs"],
     "pastillas para la protesis": ["corega tabs"],
     "multiforma":        ["multiestilo"],             # C-4760
-    "caballero":         ["hombre"],                  # "medias para caballero" (C-5034)
+    # Carteras (C-5576, 15/10): "carteras" encontraba solo "BOOS CARTERAS".
+    "carteras":          ["cartera", "tote", "morral", "bandolera", "bolso"],
+    "cartera":           ["tote", "morral", "bandolera", "bolso"],
     "dama":              ["mujer"],
     # "Perfumes importados" (C-4996, 14/10): "no tengo stock" habiendo Armani,
     # Cacharel, Halloween… El catálogo no dice "importado": se buscan las marcas.
@@ -527,6 +545,12 @@ class SKUService:
         clean_query = _UNIDAD_DE_RE.sub(" ", separar_guiones(query.lower()))
         clean_query = normalizar_numeros(quitar_cantidades(clean_query))
         clean_query = _re.sub(_STOP, '', clean_query)
+        # Género con las palabras del catálogo: "perfume masculino" → "perfume
+        # hombre" (C-5419: "no tengo importados masculinos" con The Icon en stock).
+        if _re.search(r"perfum|colonia|fragan|\bedt\b|\bedp\b|medias|soquete|desodorante|reloj",
+                      clean_query):
+            for _de, _a in _GENERO:
+                clean_query = _re.sub(_de, _a, clean_query)
         # Femenino/plural de los "-dor" del catálogo: "pasta blanqueadora" no
         # encontraba "fluorogel blanqueador" (C-4694, 8/10).
         clean_query = _re.sub(r'\b(\w{3,}ador)(a|as|es)\b', r'\1', clean_query)
@@ -542,6 +566,12 @@ class SKUService:
             if generico in clean_query:
                 variantes.extend(marcas)
                 _de_sinonimo.update(_tokens(generico))
+        # "Importado" no figura en ningún nombre: se buscan las marcas (los
+        # sinónimos) y el resto de la consulta sin esa palabra.
+        if _re.search(r"\bimportad[oa]s?\b", clean_query):
+            _sin_imp = _re.sub(r"\s+", " ", _re.sub(r"\bimportad[oa]s?\b", "", clean_query)).strip()
+            if _sin_imp:
+                clean_query = variantes[0] = _sin_imp
         # Errores de tipeo DESPUÉS de los sinónimos (que se buscan con lo que
         # escribió el cliente): "la puissange" → "la puissance".
         _corregida = self._corregir_tipeo(clean_query)
@@ -658,6 +688,24 @@ class SKUService:
                 elegidos = con_tipo
             if elegidos:
                 candidatos = elegidos
+        # Ninguno con stock entre los primeros: se mira más hondo SOLO para
+        # sumar los que se pueden vender ("perfume hombre": los primeros 24
+        # estaban sin stock y había The Icon y Blue Seduction, 15/10).
+        if candidatos and not any(c[1].vendible for c in candidatos) and not marcas:
+            ya = {c[0] for c in candidatos}
+            extra = {}
+            for scorer in (fuzz.WRatio, fuzz.token_set_ratio):
+                for _t, score, idx in process.extract(variantes[0], self._search_index, scorer=scorer,
+                                                      limit=top_n * 60, score_cutoff=score_cutoff):
+                    if idx not in ya and self._skus[idx].vendible and not self._skus[idx].pausado:
+                        if scorer is fuzz.WRatio:
+                            best_wr[idx] = max(best_wr.get(idx, 0), score)
+                        else:
+                            best_ts[idx] = max(best_ts.get(idx, 0), score)
+                        extra[idx] = True
+            nuevos = [(i, self._skus[i], _relevancia(i)) for i in extra
+                      if resultado_coincide(variantes, self._search_index[i])]
+            candidatos += nuevos
         # Relevancia primero; disponibilidad y ventas sólo desempatan matches parejos.
         candidatos.sort(key=lambda x: (-x[2], 0 if x[1].disponible else 1, -(x[1].ventas_mes or 0)))
         # El más parecido queda primero aunque no tenga stock (el bot dice "ese
@@ -684,7 +732,11 @@ class SKUService:
             return consulta
         salida = []
         for tok in consulta.split():
-            if len(tok) >= 5 and tok.isalpha() and tok not in df:
+            # Palabras comunes nunca se "corrigen": "necesito" → "neceser" (C-5290).
+            if tok in _PALABRAS_COMUNES:
+                salida.append(tok)
+                continue
+            if len(tok) >= 6 and tok.isalpha() and tok not in df:
                 m = process.extractOne(tok, vocab, scorer=fuzz.ratio, score_cutoff=85)
                 if m:
                     tok = m[0]

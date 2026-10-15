@@ -60,6 +60,15 @@ ABREVIATURAS: dict[str, str] = {
     "multies": "multiestilo",
     "prot": "protector",
     "tam": "tampones",
+    # Perfumes (15/10, C-5419/C-5425): el catálogo dice EDT/EDP y "FOR MEN",
+    # el cliente "perfume masculino" / "perfume para mujer".
+    "edt": "perfume",
+    "edp": "perfume",
+    "men": "hombre",
+    "homme": "hombre",
+    "femme": "mujer",
+    "woman": "mujer",
+    "women": "mujer",
 }
 
 # Palabras con las que un cliente nombra el TIPO de producto. Si las usa, el
