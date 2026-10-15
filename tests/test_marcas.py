@@ -23,7 +23,7 @@ async def db(pg_dsn):
 
     d = Database(pg_dsn)
     assert await d.connect()
-    await d.execute("TRUNCATE marcas, messages RESTART IDENTITY")
+    await d.execute("TRUNCATE marcas_historial, marcas, messages RESTART IDENTITY")
     # get_message_store()/get_metrics_store() cachean un singleton: sin
     # resetear queda pegado al `db` (posiblemente sin conectar) de otro test
     # que corrió antes.
@@ -367,3 +367,35 @@ async def test_conversaciones_por_dia(db):
     assert [c["phone"] for c in solo] == ["dia2"]
     ambos = await m.conversaciones(desde=date(2026, 9, 28), hasta=date(2026, 9, 30), q="dia")
     assert {c["phone"] for c in ambos} == {"dia1", "dia2"}
+
+
+# ── Estados de las marcas (16/10) ──────────────────────────────────────────────
+async def test_ciclo_de_vida_de_una_marca(db):
+    m = await marcas_service.crear(db, "549111", "entendio_mal", "dijo que no había tampones")
+    assert m["estado"] == "abierta"
+    with pytest.raises(ValueError):
+        await marcas_service.cambiar_estado(db, [m["id"]], "resuelta")          # sin observación
+    r = (await marcas_service.cambiar_estado(
+        db, [m["id"]], "resuelta", "Búsqueda: 'medianos' → medio", autor="ScalaUp", version="b6c90ff"))[0]
+    assert r["estado"] == "resuelta" and r["version"] == "b6c90ff" and r["resuelta_at"]
+    await marcas_service.cambiar_estado(db, [m["id"]], "reabierta", "sigue sin encontrar OB", autor="claudia")
+    await marcas_service.cambiar_estado(db, [m["id"]], "resuelta", "ahora sí", version="x1")
+    await marcas_service.cambiar_estado(db, [m["id"]], "validada", autor="claudia")
+    h = await marcas_service.historial(db, m["id"])
+    assert [x["estado"] for x in h] == ["resuelta", "reabierta", "resuelta", "validada"]
+    assert h[1]["estado_anterior"] == "resuelta" and h[1]["autor"] == "claudia"
+    res = await marcas_service.resumen_estados(db)
+    assert res["reabiertas_alguna_vez"] == 1 and res["pendientes"] == 0
+
+
+async def test_resolver_varias_juntas_y_no_cuentan_como_problema(db):
+    a = await marcas_service.crear(db, "549222", "dato_incorrecto", "polvo inventado")
+    b = await marcas_service.crear(db, "549222", "dato_incorrecto", "productos viejos?")
+    assert (await marcas_service.contar_por_phones(db, ["549222"]))["549222"] == 2
+    await marcas_service.cambiar_estado(db, [a["id"], b["id"]], "resuelta",
+                                        "Otras opciones busca en catálogo", version="78f0981")
+    assert await marcas_service.contar_por_phones(db, ["549222"]) == {}
+    assert len(await marcas_service.listar(db, estado="resuelta")) == 2
+    assert await marcas_service.listar(db, estado="pendientes") == []
+    with pytest.raises(LookupError):
+        await marcas_service.cambiar_estado(db, [999999], "descartada", "operativo")

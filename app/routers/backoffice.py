@@ -1982,10 +1982,65 @@ async def bo_marcas_crear(body: MarcaIn, _=Depends(_auth)):
         raise HTTPException(status_code=503, detail=f"{e}. Reintentá en unos minutos.")
 
 
+class MarcaEstadoIn(BaseModel):
+    estado: str
+    observacion: str | None = None
+    autor: str | None = None
+    version: str | None = None
+    ids: list[int] | None = None       # solo en el cambio masivo
+
+
+def _marcas_db():
+    db = get_db(get_settings().database_url)
+    if not db.available():
+        raise HTTPException(status_code=503, detail="Postgres no disponible")
+    return db
+
+
+@router.get("/marcas/estados")
+async def bo_marcas_estados(_=Depends(_auth)):
+    """Estados posibles + resumen (cuántas en cada uno, tiempo a resolver)."""
+    from app.services import marcas_service as ms
+    return {"items": [{"estado": k, "etiqueta": v} for k, v in ms.ESTADOS.items()],
+            "resumen": await ms.resumen_estados(_marcas_db())}
+
+
+@router.post("/marcas/estado")
+async def bo_marcas_estado_masivo(body: MarcaEstadoIn, _=Depends(_auth)):
+    """Varias marcas al mismo estado con una observación (un arreglo que cubre
+    varias): {ids, estado, observacion, autor, version}."""
+    from app.services import marcas_service as ms
+    try:
+        return {"marcas": await ms.cambiar_estado(_marcas_db(), body.ids or [], body.estado,
+                                                  body.observacion, body.autor, body.version)}
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@router.patch("/marcas/{marca_id}")
+async def bo_marcas_estado(marca_id: int, body: MarcaEstadoIn, _=Depends(_auth)):
+    from app.services import marcas_service as ms
+    try:
+        return (await ms.cambiar_estado(_marcas_db(), [marca_id], body.estado,
+                                        body.observacion, body.autor, body.version))[0]
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@router.get("/marcas/{marca_id}/historial")
+async def bo_marcas_historial(marca_id: int, _=Depends(_auth)):
+    from app.services import marcas_service as ms
+    return {"historial": await ms.historial(_marcas_db(), marca_id)}
+
+
 @router.get("/marcas")
 async def bo_marcas_listar(_=Depends(_auth), phone: str | None = Query(None),
                            desde: str | None = Query(None), hasta: str | None = Query(None),
-                           categoria: str | None = Query(None)):
+                           categoria: str | None = Query(None), estado: str | None = Query(None)):
     from app.services import marcas_service
     settings = get_settings()
     db = get_db(settings.database_url)
@@ -1993,7 +2048,7 @@ async def bo_marcas_listar(_=Depends(_auth), phone: str | None = Query(None),
         raise HTTPException(status_code=503, detail="Postgres no disponible")
     marcas = await marcas_service.listar(
         db, phone=phone, desde=_fecha_query(desde, "desde"),
-        hasta=_fecha_query(hasta, "hasta"), categoria=categoria)
+        hasta=_fecha_query(hasta, "hasta"), categoria=categoria, estado=estado)
     return {"marcas": marcas}
 
 

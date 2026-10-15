@@ -32,6 +32,21 @@ CATEGORIAS: dict[str, str] = {
     "otro": "Otro",
 }
 
+# Ciclo de vida de una marca (16/10): las resuelve ScalaUp con la
+# observación del cambio y la versión; la farmacia puede validarlas o
+# reabrirlas. Las cerradas (resuelta, validada, descartada) no cuentan como
+# "con problemas" en el historial.
+ESTADOS: dict[str, str] = {
+    "abierta": "Abierta",
+    "en_revision": "En revisión",
+    "resuelta": "Resuelta",
+    "validada": "Validada",
+    "reabierta": "Reabierta",
+    "descartada": "Descartada",
+}
+CERRADAS = ("resuelta", "validada", "descartada")
+MOTIVOS_DESCARTE = ("operativo", "dato_erp", "esperado", "duplicada")
+
 PISO_DIARIO = 20
 META_PCT = 85
 DIAS_NECESARIOS = 7
@@ -51,6 +66,12 @@ def _row_a_dict(r) -> dict:
         "codigo": f"#{r['id']}",
         "conversacion_id": _campo(r, "conversacion_id"),
         "conversacion": f"C-{_campo(r, 'conversacion_id')}" if _campo(r, "conversacion_id") else None,
+        "estado": _campo(r, "estado") or "abierta",
+        "estado_etiqueta": ESTADOS.get(_campo(r, "estado") or "abierta", _campo(r, "estado")),
+        "resolucion": _campo(r, "resolucion"),
+        "resuelta_por": _campo(r, "resuelta_por"),
+        "resuelta_at": _campo(r, "resuelta_at").isoformat() if _campo(r, "resuelta_at") else None,
+        "version": _campo(r, "version"),
     }
 
 
@@ -76,7 +97,7 @@ async def crear(db, phone: str, categoria: str, observacion: str,
         "VALUES ($1, $2, $3, $4, $5, COALESCE("
         "  (SELECT conversacion_id FROM messages WHERE id = $2),"
         "  (SELECT conversacion_id FROM messages WHERE phone = $1 ORDER BY id DESC LIMIT 1))) "
-        "RETURNING id, phone, message_id, categoria, observacion, autor, created_at, conversacion_id",
+        "RETURNING id, phone, message_id, categoria, observacion, autor, created_at, conversacion_id, estado, resolucion, resuelta_por, resuelta_at, version",
         phone, message_id, categoria, observacion, (autor or None),
     )
     if row is None:
@@ -86,7 +107,8 @@ async def crear(db, phone: str, categoria: str, observacion: str,
 
 
 async def listar(db, phone: Optional[str] = None, desde: Optional[date] = None,
-                 hasta: Optional[date] = None, categoria: Optional[str] = None) -> list[dict]:
+                 hasta: Optional[date] = None, categoria: Optional[str] = None,
+                 estado: Optional[str] = None) -> list[dict]:
     """Lista de marcas, más nuevas primero. `desde`/`hasta` son fechas locales
     (Argentina) inclusive, aplicadas sobre `created_at`."""
     conds = []
@@ -97,6 +119,13 @@ async def listar(db, phone: Optional[str] = None, desde: Optional[date] = None,
     if categoria:
         args.append(categoria)
         conds.append(f"categoria = ${len(args)}")
+    if estado:
+        # "abiertas" = todas las que no están cerradas.
+        if estado == "pendientes":
+            conds.append(f"estado <> ALL(ARRAY{list(CERRADAS)})")
+        else:
+            args.append(estado)
+            conds.append(f"estado = ${len(args)}")
     if desde:
         args.append(desde)
         conds.append(f"(created_at {TZ_SQL})::date >= ${len(args)}")
@@ -105,7 +134,7 @@ async def listar(db, phone: Optional[str] = None, desde: Optional[date] = None,
         conds.append(f"(created_at {TZ_SQL})::date <= ${len(args)}")
     where = f"WHERE {' AND '.join(conds)}" if conds else ""
     rows = await db.fetch(
-        f"SELECT id, phone, message_id, categoria, observacion, autor, created_at, conversacion_id "
+        f"SELECT id, phone, message_id, categoria, observacion, autor, created_at, conversacion_id, estado, resolucion, resuelta_por, resuelta_at, version "
         f"FROM marcas {where} ORDER BY created_at DESC",
         *args,
     )
@@ -121,7 +150,7 @@ async def eliminar(db, marca_id: int) -> bool:
 async def marcas_de_phone(db, phone: str) -> list[dict]:
     """Todas las marcas de un teléfono (para /bo/history): una sola query."""
     rows = await db.fetch(
-        "SELECT id, phone, message_id, categoria, observacion, autor, created_at, conversacion_id "
+        "SELECT id, phone, message_id, categoria, observacion, autor, created_at, conversacion_id, estado, resolucion, resuelta_por, resuelta_at, version "
         "FROM marcas WHERE phone = $1 ORDER BY created_at DESC",
         phone,
     )
@@ -146,6 +175,7 @@ async def contar_por_phones(db, phones: list[str], desde: Optional[date] = None,
     if hasta:
         args.append(hasta)
         conds.append(f"{fecha} <= ${len(args)}")
+    conds.append(f"COALESCE(m.estado, 'abierta') <> ALL(ARRAY{list(CERRADAS)})")
     rows = await db.fetch(
         "SELECT m.phone, COUNT(*) AS n FROM marcas m "
         "LEFT JOIN messages msg ON msg.id = m.message_id "
@@ -366,3 +396,81 @@ async def problemas_por_phones(db, phones: list[str], desde: Optional[date] = No
     for r in rows or []:
         out.setdefault(r["phone"], {})[r["motivo"]] = int(r["n"])
     return out
+
+
+
+# ── Estados (16/10) ─────────────────────────────────────────────────────────────
+async def cambiar_estado(db, ids: list[int], estado: str, observacion: Optional[str] = None,
+                         autor: Optional[str] = None, version: Optional[str] = None) -> list[dict]:
+    """
+    Pasa una o varias marcas a `estado` y deja el paso en el historial.
+    "resuelta" exige la observación del cambio; "descartada" el motivo
+    (operativo, dato del ERP, esperado, duplicada de #N) en la observación.
+    """
+    if estado not in ESTADOS:
+        raise ValueError(f"Estado inválido: {estado}")
+    observacion = (observacion or "").strip() or None
+    if estado in ("resuelta", "descartada", "reabierta") and not observacion:
+        raise ValueError("Para resolver, descartar o reabrir hace falta una observación")
+    ids = sorted({int(i) for i in ids or []})
+    if not ids:
+        raise ValueError("Elegí al menos una marca")
+    from app.services.operadores_service import canonico
+    autor = canonico(autor) if autor else None
+    salida = []
+    async with db.transaction() as con:
+        previas = {r["id"]: r["estado"] for r in await con.fetch(
+            "SELECT id, estado FROM marcas WHERE id = ANY($1::bigint[])", ids)}
+        faltan = [i for i in ids if i not in previas]
+        if faltan:
+            raise LookupError(f"No existen las marcas {', '.join('#' + str(f) for f in faltan)}")
+        cierra = estado in ("resuelta", "validada", "descartada")
+        for i in ids:
+            r = await con.fetchrow(
+                f"""UPDATE marcas SET estado = $2, estado_at = now(),
+                        resolucion = CASE WHEN $3 THEN COALESCE($4, resolucion) ELSE resolucion END,
+                        resuelta_por = CASE WHEN $2 IN ('resuelta', 'descartada') THEN $5
+                                            ELSE resuelta_por END,
+                        resuelta_at = CASE WHEN $2 IN ('resuelta', 'descartada') THEN now()
+                                           WHEN $2 IN ('abierta', 'reabierta', 'en_revision') THEN NULL
+                                           ELSE resuelta_at END,
+                        version = CASE WHEN $2 = 'resuelta' THEN COALESCE($6, version) ELSE version END
+                    WHERE id = $1 RETURNING {", ".join(_COLS_ESTADO)}""",
+                i, estado, cierra, observacion, autor, version)
+            await con.execute(
+                "INSERT INTO marcas_historial (marca_id, estado_anterior, estado, observacion, autor, version) "
+                "VALUES ($1, $2, $3, $4, $5, $6)", i, previas[i], estado, observacion, autor, version)
+            salida.append(_row_a_dict(r))
+    return salida
+
+
+_COLS_ESTADO = ("id", "phone", "message_id", "categoria", "observacion", "autor", "created_at",
+                "conversacion_id", "estado", "resolucion", "resuelta_por", "resuelta_at", "version")
+
+
+async def historial(db, marca_id: int) -> list[dict]:
+    filas = await db.fetch(
+        "SELECT estado_anterior, estado, observacion, autor, version, created_at "
+        "FROM marcas_historial WHERE marca_id = $1 ORDER BY created_at, id", marca_id)
+    return [{"estado_anterior": f["estado_anterior"], "estado": f["estado"],
+             "etiqueta": ESTADOS.get(f["estado"], f["estado"]), "observacion": f["observacion"],
+             "autor": f["autor"], "version": f["version"], "ts": f["created_at"].isoformat()}
+            for f in filas or []]
+
+
+async def resumen_estados(db) -> dict:
+    """Cuántas hay en cada estado, tiempo medio a resolver y reabiertas."""
+    filas = await db.fetch("SELECT COALESCE(estado, 'abierta') AS estado, COUNT(*) AS n FROM marcas GROUP BY 1")
+    por_estado = {k: 0 for k in ESTADOS}
+    for f in filas or []:
+        por_estado[f["estado"]] = int(f["n"])
+    r = await db.fetchrow(
+        "SELECT AVG(EXTRACT(EPOCH FROM (resuelta_at - created_at)) / 3600) AS horas "
+        "FROM marcas WHERE resuelta_at IS NOT NULL AND estado <> 'descartada'")
+    reab = await db.fetchrow(
+        "SELECT COUNT(DISTINCT marca_id) AS n FROM marcas_historial WHERE estado = 'reabierta'")
+    return {"por_estado": [{"estado": k, "etiqueta": v, "cantidad": por_estado.get(k, 0)}
+                           for k, v in ESTADOS.items()],
+            "pendientes": sum(v for k, v in por_estado.items() if k not in CERRADAS),
+            "horas_promedio_resolucion": round(float(r["horas"]), 1) if r and r["horas"] else None,
+            "reabiertas_alguna_vez": int(reab["n"]) if reab else 0}
