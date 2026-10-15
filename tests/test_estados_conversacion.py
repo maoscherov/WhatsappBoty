@@ -102,3 +102,42 @@ async def test_cada_evento_va_a_su_conversacion(db):
     est = await ec.por_conversaciones(db, ["549000777"], convs)
     assert est[901]["estado_final"] == "derivada_sin_atender"
     assert est[902]["estado_final"] == "venta"
+
+
+# ── Al devolver la charla, el bot contesta lo que quedó sin respuesta ─────────
+def test_mensajes_sin_responder():
+    """C-4981 (14/10): "me pasás opciones de agua micelar" quedó sin respuesta
+    cuando la devolvieron al bot."""
+    from app.routers.backoffice import _sin_responder
+    hist = [{"role": "user", "content": "necesito mi saldo"},
+            {"role": "assistant", "content": "Te paso con alguien del equipo"},
+            {"role": "user", "content": "📷 /media/chat/x.jpg"},
+            {"role": "user", "content": "me pasas opciones de Agua Micelar"}]
+    assert [m["content"] for m in _sin_responder(hist)] == ["me pasas opciones de Agua Micelar"]
+    assert _sin_responder(hist[:2]) == []
+    assert _sin_responder(hist + [{"role": "operator", "content": "hola"}]) == []
+
+
+async def test_release_responde_los_pendientes(monkeypatch):
+    import asyncio
+    from app.routers import backoffice as bo
+    from app.services.session_service import SessionService
+    ss = SessionService("redis://127.0.0.1:1")
+    phone = "5490000000888"
+    await ss.set_estado(phone, "operador", motivo="consulta_cuenta_corriente")
+    await ss.add_message(phone, "assistant", "Te paso con alguien del equipo")
+    await ss.add_message(phone, "user", "me pasas opciones de Agua Micelar")
+    monkeypatch.setattr(bo, "get_session_service", lambda *a, **k: ss)
+    procesados = []
+
+    async def _proc(msgs):
+        procesados.extend(msgs)
+    import app.routers.webhook as wh
+    monkeypatch.setattr(wh, "procesar_mensajes", _proc)
+    await bo.bo_release(phone, None, agente="Luisiana-prueba")
+    await asyncio.sleep(0.05)
+    assert procesados and procesados[0]["text"] == "me pasas opciones de Agua Micelar"
+    assert procesados[0]["_ya_guardado"] is True
+    s = await ss.get(phone)
+    assert s["estado"] == "idle"
+    assert [m["content"] for m in s["history"]] == ["Te paso con alguien del equipo"]

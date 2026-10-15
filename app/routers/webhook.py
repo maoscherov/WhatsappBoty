@@ -2891,7 +2891,7 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                                              dict(_steps), _apis)
                 # Historial permanente en Postgres (best-effort, no-op sin DB)
                 try:
-                    if texto:
+                    if texto and not msg.get("_ya_guardado"):
                         await deps["msgs"].save(phone, "user", texto, origen=_origen,
                                                 media=_media_ref, media_nombre=_media_nombre)
                     if respuesta:

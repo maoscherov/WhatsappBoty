@@ -55,7 +55,10 @@ class PedidoIn(BaseModel):
     aplicar_descuento: bool = True           # socio / empleado, como el bot
     mensaje: Optional[str] = None            # texto propio antes de la confirmación
     enviar: bool = True
-    devolver_al_bot: bool = True
+    # None: si la charla la estaba atendiendo una persona, sigue con ella
+    # (C-4979, 14/10: Claudia cargó el pedido, la charla volvió sola al bot y
+    # éste contestó "¿qué producto necesitás?" con ella todavía atendiendo).
+    devolver_al_bot: Optional[bool] = None
     agente: Optional[str] = None
     alta_socio: Optional[AltaSocioIn] = None
 
@@ -112,6 +115,8 @@ async def bo_pedido(body: PedidoIn, _=Depends(_auth)):
 
     deps = _deps()
     phone = body.phone
+    _estaba_con_operador = (await deps["session"].get(phone)).get("estado") == "operador"
+    devolver = body.devolver_al_bot if body.devolver_al_bot is not None else not _estaba_con_operador
     if body.alta_socio:
         await _alta(phone, body.alta_socio)
     socios = deps["socios"]
@@ -134,10 +139,15 @@ async def bo_pedido(body: PedidoIn, _=Depends(_auth)):
             if not precio or precio <= 0:
                 raise HTTPException(status_code=422,
                                     detail=f"{sku.sku_nombre_original} no tiene precio: cargá el monto")
+            # La pantalla manda el precio de LISTA precargado en `monto`: eso no
+            # es un precio fijado a mano y el descuento va igual. Sin esto el
+            # pedido de C-5183 (14/10) se cargó sin el 20%: $6.716 de más.
+            _fijo = bool(it.monto and it.monto > 0
+                         and abs(float(it.monto) - float(sku.precio_venta or 0)) > 0.01)
             lineas.append({"sku_id": sku.sku_id, "nombre": sku.sku_nombre_original or sku.sku_nombre,
                            "precio": float(precio), "cantidad": cant,
                            "requiere_receta": sku.requiere_receta,
-                           "_precio_fijo": bool(it.monto and it.monto > 0)})
+                           "_precio_fijo": _fijo})
         else:
             if not (it.detalle or "").strip() or not it.monto or it.monto <= 0:
                 raise HTTPException(status_code=422,
@@ -205,7 +215,8 @@ async def bo_pedido(body: PedidoIn, _=Depends(_auth)):
 
     # ¿Sigue el bot o el operador?
     session = await ss.get(phone)
-    if body.devolver_al_bot:
+    _motivo_prev = session.get("derivada_motivo")
+    if devolver:
         for k in ("agente", "derivada_at", "derivada_motivo", "_handoff_avisado", "atendida_at"):
             session.pop(k, None)
     else:
@@ -213,6 +224,14 @@ async def bo_pedido(body: PedidoIn, _=Depends(_auth)):
         if body.agente:
             session["agente"] = body.agente
     await ss.save(phone, session)
+    if devolver and _estaba_con_operador:
+        # Que la devolución quede en la línea de tiempo (antes era invisible).
+        try:
+            await deps["metrics"].evento("conversacion_devuelta", phone=phone,
+                                         dato=(_motivo_prev or "pedido_armado")[:80],
+                                         ref=(body.agente or "")[:40] or None)
+        except Exception:
+            pass
 
     try:
         await deps["metrics"].evento("pedido_operador", phone=phone, dato=body.pago,
@@ -222,7 +241,7 @@ async def bo_pedido(body: PedidoIn, _=Depends(_auth)):
         pass
     logger.info(f"Pedido armado por operador {body.agente or '?'} para {phone}: "
                 f"{len(lineas)} ítems, {body.pago}, {body.entrega}")
-    return {"ok": True, "pago": body.pago, "entrega": body.entrega,
+    return {"ok": True, "pago": body.pago, "entrega": body.entrega, "devuelto_al_bot": devolver,
             "total": round(total_productos + costo_envio, 2), "costo_envio": costo_envio,
             "descuento_pct": pct, "link": link, "pedido": session.get("_ultimo_pedido"),
             "mensaje": texto, "enviado": enviado}

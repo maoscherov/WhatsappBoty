@@ -152,6 +152,37 @@ async def test_link_con_descuento_de_socio(cli, entorno):
     assert "Córdoba 1000" in j["mensaje"]                  # domicilio del socio
 
 
+async def test_precio_de_lista_precargado_lleva_el_descuento(cli, entorno):
+    """C-5183 (14/10): la pantalla manda el precio de lista en `monto` y el
+    pedido salió sin el descuento ($6.716 de más). Un monto igual al de lista
+    no es un precio fijado a mano."""
+    entorno["socios"].socios[PHONE] = {"nombre": "Ana"}
+    r = await cli.post("/bo/pedido", json={
+        "phone": PHONE, "items": [{"sku_id": "1", "monto": 1000}, {"sku_id": "2", "monto": 400}],
+        "pago": "cuenta_corriente"})
+    assert r.status_code == 200, r.text
+    # Colgate: monto = lista → con 10% (900); Dove: 400 fijado a mano → sin tocar
+    assert r.json()["total"] == 900 + 400
+
+
+async def test_con_el_operador_atendiendo_el_pedido_no_devuelve_la_charla(cli, entorno):
+    """C-4979 (14/10): Claudia cargó el pedido, la charla volvió sola al bot y
+    éste le contestó al cliente con ella todavía atendiendo."""
+    await entorno["session"].set_estado(PHONE, "operador", motivo="receta")
+    r = await cli.post("/bo/pedido", json={
+        "phone": PHONE, "items": [{"sku_id": "2"}], "pago": "cuenta_corriente", "agente": "claudia"})
+    assert r.status_code == 200, r.text
+    assert r.json()["devuelto_al_bot"] is False
+    s = await entorno["session"].get(PHONE)
+    assert s["estado"] == "operador" and s["agente"] == "claudia"
+
+
+async def test_sin_operador_el_pedido_sigue_con_el_bot(cli, entorno):
+    r = await cli.post("/bo/pedido", json={
+        "phone": PHONE, "items": [{"sku_id": "2"}], "pago": "cuenta_corriente"})
+    assert r.json()["devuelto_al_bot"] is True
+
+
 async def test_validaciones(cli):
     from app.services import checkout_helper as _ch
     _ch._ULTIMA_DIRECCION.clear()        # sin dirección recordada de otros tests

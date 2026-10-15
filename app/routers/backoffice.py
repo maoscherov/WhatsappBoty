@@ -1044,6 +1044,31 @@ async def bo_takeover(phone: str, _=Depends(_auth)):
     return {"status": "ok", "estado": "operador", "phone": phone}
 
 
+def _sin_responder(history: list) -> list[dict]:
+    """Mensajes de texto del cliente posteriores a la última respuesta (bot u
+    operador). Las fotos y archivos los ve la persona en el panel."""
+    out: list[dict] = []
+    for m in reversed(history or []):
+        if m.get("role") != "user":
+            break
+        out.append(m)
+    out.reverse()
+    return [m for m in out if (m.get("content") or "").strip()
+            and not str(m.get("content")).startswith(("📷", "["))]
+
+
+async def _responder_pendientes(phone: str, pendientes: list[dict]) -> None:
+    try:
+        import time as _t
+        from app.routers.webhook import procesar_mensajes
+        texto = "\n".join(str(m["content"]) for m in pendientes)
+        await procesar_mensajes([{"from": phone, "id": f"devuelta-{phone}-{int(_t.time())}",
+                                  "type": "text", "text": texto, "audio_id": None, "image_id": None,
+                                  "phone_number_id": "", "_ya_guardado": True}])
+    except Exception as e:
+        logger.warning(f"No se pudieron responder los pendientes de {phone}: {e}")
+
+
 @router.post("/session/{phone}/release")
 async def bo_release(phone: str, _=Depends(_auth), agente: str | None = Query(None)):
     """
@@ -1057,6 +1082,16 @@ async def bo_release(phone: str, _=Depends(_auth), agente: str | None = Query(No
     session_svc = get_session_service(settings.redis_url)
     previo = dict(await session_svc.get(phone))      # copia: liberar() la limpia
     await session_svc.liberar(phone)
+    # Lo que el cliente escribió mientras estaba derivada y nadie le contestó
+    # ("me pasás opciones de agua micelar", C-4981, 14/10): lo responde el bot.
+    pendientes = _sin_responder(previo.get("history") or [])
+    if pendientes:
+        s_lib = await session_svc.get(phone)
+        s_lib["history"] = (s_lib.get("history") or [])[:-len(pendientes)] \
+            if (s_lib.get("history") or [])[-len(pendientes):] == pendientes else s_lib.get("history") or []
+        await session_svc.save(phone, s_lib)
+        import asyncio as _aio
+        _aio.create_task(_responder_pendientes(phone, pendientes))
     try:
         await get_metrics_store(get_db(settings.database_url)).evento(
             "conversacion_devuelta", phone=phone,
@@ -1144,6 +1179,11 @@ async def _paylink_items(body: "PaylinkIn") -> dict:
             raise HTTPException(status_code=422, detail=f"{nombre}: el precio debe ser mayor a 0")
         cot = None
         unit = base
+        # Sin cotización de receta también va el descuento de socio/empleado
+        # (como en el chat), salvo que el operador haya puesto otro precio.
+        _de_lista = it.sku_id and (not it.monto or abs(float(it.monto) - float(sku.precio_venta or 0)) <= 0.01)
+        if not es_cotizacion and pct_desc > 0 and _de_lista:
+            unit = round(base * (1 - pct_desc / 100), 2)
         if es_cotizacion:
             pct_os = it.pct_os if it.pct_os is not None else (body.pct_os or 0)
             cot = cotizar_receta(base, pct_os=pct_os, es_socio=pct_desc > 0, pct_socio=pct_desc,
@@ -1267,6 +1307,13 @@ async def bo_paylink(body: PaylinkIn, _=Depends(_auth)):
                                     es_socio=_pct_socio > 0, pct_socio=_pct_socio,
                                     etiqueta=_tipo_desc or "socio")
         precio = cotizacion["precio_final"]
+    elif body.sku_id and (not body.monto or abs(float(body.monto) - float(sku.precio_venta or 0)) <= 0.01):
+        # Link de un producto de lista: el mismo descuento de socio/empleado
+        # que en el chat (antes salía a precio de lista).
+        from app.services.checkout_helper import descuento_para
+        _pct_l, _ = descuento_para(body.phone, _cfg, get_socio_service(settings.socios_path))
+        if _pct_l > 0:
+            precio = round(precio * (1 - _pct_l / 100), 2)
 
     total = round(precio * cantidad, 2)
 
