@@ -1613,7 +1613,8 @@ async def bo_conversaciones(_=Depends(_auth), days: int = Query(30, ge=1, le=365
                             q: str = Query(""), limit: int = Query(50, le=200),
                             con_marcas: bool = Query(False),
                             con_problemas: bool = Query(False),
-                            desde: str | None = Query(None), hasta: str | None = Query(None)):
+                            desde: str | None = Query(None), hasta: str | None = Query(None),
+                            estado: str | None = Query(None)):
     """
     Conversaciones históricas (Postgres): una fila por teléfono con actividad
     en el rango, ordenadas por última actividad. `q` filtra por teléfono.
@@ -1674,11 +1675,36 @@ async def bo_conversaciones(_=Depends(_auth), days: int = Query(30, ge=1, le=365
         # respuesta, respuesta bloqueada (5/10, filtro "con problemas").
         c["problemas"] = problemas.get(c["phone"], {})
         c["con_problemas"] = c["marcas"] > 0 or bool(c["problemas"])
+    # Estado final de la ÚLTIMA conversación de cada cliente (15/10): venta,
+    # derivada sin atender, con operador... Filtro opcional `estado`.
+    try:
+        from app.services import estados_conversacion as _ec
+        _db_ec = get_db(settings.database_url)
+        _ult = await _ec.ultima_conversacion_por_phone(_db_ec, [c["phone"] for c in convs])
+        _est = await _ec.por_conversaciones(_db_ec, [u["phone"] for u in _ult], _ult)
+        _por_tel = {u["phone"]: u["id"] for u in _ult}
+        for c in convs:
+            cid = _por_tel.get(c["phone"])
+            e = _est.get(cid, {}) if cid else {}
+            c["ultima_conversacion"] = f"C-{cid}" if cid else None
+            c["estado_final"] = e.get("estado_final")
+            c["estado_final_etiqueta"] = e.get("estado_final_etiqueta")
+    except Exception as e:
+        logger.warning(f"Estados de conversación no disponibles: {e}")
     if con_marcas:
         convs = [c for c in convs if c["marcas"] > 0]
     if con_problemas:
         convs = [c for c in convs if c["con_problemas"]]
+    if estado:
+        convs = [c for c in convs if c.get("estado_final") == estado]
     return {"available": get_db(settings.database_url).available(), "conversaciones": convs}
+
+
+@router.get("/conversaciones/estados")
+async def bo_conversaciones_estados(_=Depends(_auth)):
+    """Estados finales posibles (para el filtro de la lista)."""
+    from app.services.estados_conversacion import FINALES
+    return {"items": [{"codigo": k, "etiqueta": v} for k, v in FINALES.items()]}
 
 
 @router.get("/history/{phone}")
@@ -1720,7 +1746,19 @@ async def bo_history(phone: str, _=Depends(_auth), limit: int = Query(200, ge=1,
     return {"available": True, "phone": phone, **_datos_cliente(phone),
             "total": total, "hay_anteriores": hay_anteriores, "messages": mensajes,
             "marcas_conversacion": marcas_conversacion,
-            "linea_de_tiempo": await _linea_de_tiempo(db, phone)}
+            "linea_de_tiempo": await _linea_de_tiempo(db, phone),
+            "conversaciones": await _conversaciones_con_estados(db, phone, mensajes)}
+
+
+async def _conversaciones_con_estados(db, phone: str, mensajes: list[dict]) -> list[dict]:
+    """Cada conversación de los mensajes mostrados, con los estados por los
+    que pasó y el estado final (15/10). Best-effort."""
+    try:
+        from app.services.estados_conversacion import conversaciones_de_mensajes
+        return await conversaciones_de_mensajes(db, phone, mensajes)
+    except Exception as e:
+        logger.warning(f"Estados de conversación para {phone}: {e}")
+        return []
 
 
 _EVENTOS_ATENCION = {
@@ -2082,6 +2120,11 @@ async def bo_conversacion(codigo: str, _=Depends(_auth)):
     from app.services import marcas_service
     marcas = [k for k in await marcas_service.marcas_de_phone(db, phone)
               if k.get("conversacion_id") == cid]
+    _msgs = [mensaje_a_dict(f) for f in filas]
+    _conv = await _conversaciones_con_estados(db, phone, _msgs)
+    _e = next((c for c in _conv if c.get("conversacion_id") == cid), {})
     return {"conversacion": f"C-{cid}", "phone": phone, **_datos_cliente(phone),
             "desde": filas[0]["created_at"].isoformat(), "hasta": filas[-1]["created_at"].isoformat(),
-            "mensajes": [mensaje_a_dict(f) for f in filas], "marcas": marcas}
+            "mensajes": _msgs, "marcas": marcas,
+            "estados": _e.get("estados", []), "estado_final": _e.get("estado_final"),
+            "estado_final_etiqueta": _e.get("estado_final_etiqueta")}

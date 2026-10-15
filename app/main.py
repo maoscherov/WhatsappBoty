@@ -313,6 +313,17 @@ async def _cerrar_sesiones_inactivas():
                 # después de que se despidió o lo atendió el operador.
                 from app.services.checkout_helper import cierre_por_inactividad
                 accion = cierre_por_inactividad(session.get("history") or [], con_link=con_link)
+                # Para la línea de tiempo del historial (15/10).
+                try:
+                    from app.services.db import get_db as _gdb_c
+                    from app.services.metrics_store import get_metrics_store as _gms_c
+                    await _gms_c(_gdb_c(settings.database_url)).evento(
+                        "conversacion_cerrada", phone=phone,
+                        dato=accion if (accion != "avisar" or (mensaje_pago if con_link else mensaje))
+                        else "silencio",
+                        extra={"con_link": con_link})
+                except Exception:
+                    pass
                 if accion == "derivar" and _bot_on:
                     await session_svc.set_estado(phone, "operador",
                                                  motivo="cliente_sin_respuesta")
@@ -349,6 +360,14 @@ async def _cerrar_sesiones_inactivas():
                 aviso = cfg.get("auto_liberar_message") or ""
                 for phone in await session_svc.derivadas_sin_atender(libre_min * 60):
                     await session_svc.liberar(phone)
+                    try:
+                        from app.services.db import get_db as _gdb_l
+                        from app.services.metrics_store import get_metrics_store as _gms_l
+                        await _gms_l(_gdb_l(settings.database_url)).evento(
+                            "conversacion_devuelta", phone=phone, dato="sin_atender",
+                            ref="automática")
+                    except Exception:
+                        pass
                     if aviso:
                         try:
                             await wa.send_text(phone, aviso)
