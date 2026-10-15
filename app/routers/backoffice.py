@@ -898,6 +898,8 @@ async def bo_perf_clear(_=Depends(_auth)):
 # ── Configuración del bot ──────────────────────────────────────────────────────
 
 class ConfigUpdate(BaseModel):
+    derivar_terminos: str | None = None          # palabras que siempre derivan (coma)
+    derivar_terminos_message: str | None = None
     transferencia_alias: str | None = None
     transferencia_titular: str | None = None
     transferencia_cbu: str | None = None

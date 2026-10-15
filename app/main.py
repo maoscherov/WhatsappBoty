@@ -13,7 +13,7 @@ from app.middleware import log_errores
 from app.routers import (webhook, simulate, backoffice, mp_webhook, orders_api,
                          media, payway, sync_api, agent_ws, backoffice_branches,
                          backoffice_receta, backoffice_pedidos, backoffice_diccionario,
-                         backoffice_operadores)
+                         backoffice_operadores, backoffice_producto_dic)
 from app.services.sku_service import get_sku_service
 from app.services.session_service import get_session_service
 from app.services.blob_store import get_blob_store
@@ -420,7 +420,7 @@ def crear_app(settings=None) -> FastAPI:
     for modulo in (webhook, simulate, backoffice, mp_webhook, orders_api, media,
                    payway, sync_api, agent_ws, backoffice_branches,
                    backoffice_receta, backoffice_pedidos, backoffice_diccionario,
-                   backoffice_operadores):
+                   backoffice_operadores, backoffice_producto_dic):
         app.include_router(modulo.router)
 
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

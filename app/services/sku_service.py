@@ -408,6 +408,7 @@ class SKUService:
                 prom_semanal=ex.get("prom_semanal"),
                 clasificacion=(ex.get("clasificacion") or "").strip().lower(),
                 tipo_producto=ex.get("tipo_producto") or "regular",
+                siempre_derivar=bool(ex.get("siempre_derivar")),
             )
             # rubro/subrubro/droga entran al índice de búsqueda, no al modelo.
             # Alias (3/10): "Hisopos Estrella pote x 125", "cotonetes" — solo
@@ -724,6 +725,7 @@ class SKUService:
             "urgente": sku.urgente,
             "vendible": sku.vendible,
             "sin_stock": sku.sin_stock,
+            "siempre_derivar": getattr(sku, "siempre_derivar", False),
         }
 
     @property

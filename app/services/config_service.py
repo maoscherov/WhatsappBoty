@@ -35,6 +35,13 @@ DEFAULTS: dict[str, str] = {
     # cierra (importe, fecha, destinatario, operación). 0 = nunca.
     "transferencia_auto_max": "0",
     "transferencia_message":  "",      # opcional: {cuenta} y {total}
+    # ── Productos que siempre atiende una persona (15/10, tinturas) ──────
+    # Palabras (separadas por coma): si el cliente las nombra, se deriva.
+    "derivar_terminos": ("tintura, tinturas, tinte, tintes, coloracion, coloración, "
+                         "koleston, igora, imedia, nutrisse, casting creme, excellence creme, "
+                         "decolorante, reflejos"),
+    "derivar_terminos_message": ("¡Dale! Para tinturas y colores te paso con alguien del equipo "
+                                 "que te ayuda a elegir el tono 🎨 En un momento te contactamos."),
     "send_images":    "always",
     "pickup_minutes": "30",    # tiempo estimado de preparación/retiro
     "receta_mode":    "conservador",  # "conservador" (ambiguo deriva) | "estricto" (solo "si")

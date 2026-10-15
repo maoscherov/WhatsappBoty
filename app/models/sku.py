@@ -21,6 +21,7 @@ class SKU(BaseModel):
     imagen_url: Optional[str] = None  # URL pública de la imagen del producto
     requiere_receta: str = "no"       # "si" | "ambiguo" | "no"
     clasificacion: str = ""           # critico | riesgo_alto | riesgo_medio | saludable | sin_rotacion
+    siempre_derivar: bool = False     # lo atiende una persona (tinturas, 15/10)
 
     @property
     def sin_stock(self) -> bool:

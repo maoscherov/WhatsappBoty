@@ -28,6 +28,7 @@ MOTIVOS = {
     "cambio_postventa": "cambio / devolución", "envio_especial": "envío especial",
     "derivacion_prometida": "el bot prometió una persona", "adjunto_no_reconocido": "archivo",
     "comprobante_a_verificar": "comprobante a verificar",
+    "tintura_o_similar": "tintura / lo atiende una persona",
     "bono_foto": "bono", "credencial": "credencial", "comprobante": "comprobante",
     "operador_escribio": "el operador escribió", "conversacion_larga": "conversación larga",
 }

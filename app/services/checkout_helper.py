@@ -2697,3 +2697,18 @@ def entidad_en_mensaje(entidad: str, texto: str) -> bool:
     if alguna_palabra_coincide(texto, entidad) or alguna_palabra_coincide(entidad, texto):
         return True
     return bool(_SENALA.search(texto))
+
+
+
+# ── Productos que siempre atiende una persona (15/10, tinturas) ───────────────
+def termino_que_deriva(texto: str, cfg: dict) -> Optional[str]:
+    """La palabra de `derivar_terminos` que nombra el cliente, o None. Las
+    tinturas las ve una persona (color y tono): Claudia, 15/10."""
+    lista = [t.strip().lower() for t in (cfg.get("derivar_terminos") or "").split(",") if t.strip()]
+    if not lista:
+        return None
+    t = _sin_tildes(texto or "").lower()
+    for term in lista:
+        if re.search(rf"\b{re.escape(_sin_tildes(term))}\b", t):
+            return term
+    return None

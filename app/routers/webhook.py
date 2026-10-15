@@ -59,7 +59,7 @@ from app.services.checkout_helper import (
     marca_de_linea, entrega_en_texto, es_consulta_generica, aviso_sin_stock_del_pedido,
     consulta_cuota_social, consulta_seguimiento, anuncia_otra_consulta, ofrece_mandar_receta,
     envio_especial, deja_para_despues, repite_oferta, no_es_sobre_el_pendiente,
-    entidad_en_mensaje, pide_anotar,
+    entidad_en_mensaje, pide_anotar, termino_que_deriva,
     nombres_inventados, es_refinamiento_de_marca, marca_en_resultado, match_envio,
     pide_cancelar_pedido, pregunta_obra_social, responder_obra_social, parsear_lista,
     pregunta_bono, responder_bono, agregar_oferta_farmaceutico, acepta_farmaceutico,
@@ -1359,6 +1359,16 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 await _responder(deps, phone, texto, respuesta, _steps)
                 continue
 
+            # ── Productos que siempre atiende una persona (tinturas, 15/10) ──
+            _cfg_dt = await deps["config"].get_all()
+            if termino_que_deriva(texto, _cfg_dt):
+                _intencion = "derivado_por_tipo"
+                await deps["session"].set_estado(phone, "operador", motivo="tintura_o_similar")
+                await _responder(deps, phone, texto, _cfg_dt.get("derivar_terminos_message") or (
+                    "¡Dale! Para eso te paso con alguien del equipo que te asesora 🙌 "
+                    "En un momento te contactamos."), _steps)
+                continue
+
             # ── "Otra consulta" a secas: se espera la consulta (C-4694) ──────
             if anuncia_otra_consulta(texto):
                 _intencion = "otra_consulta"
@@ -2480,6 +2490,17 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                         _nuevos_r = [r for r in resultados_sku if r["sku_id"] not in _ya_vistos]
                         if any(r.get("vendible") for r in _nuevos_r):
                             resultados_sku = _nuevos_r[:5]
+                # Producto marcado "siempre derivar" desde su diccionario: lo
+                # atiende una persona (tinturas y similares, 15/10).
+                if resultados_sku and resultados_sku[0].get("siempre_derivar") \
+                        and _alguna_palabra(_entidad_busq, resultados_sku[0]["nombre"]):
+                    _intencion = "derivado_por_producto"
+                    await deps["session"].set_estado(phone, "operador", motivo="tintura_o_similar")
+                    _cfg_pd = await deps["config"].get_all()
+                    await _responder(deps, phone, texto, _cfg_pd.get("derivar_terminos_message") or (
+                        "¡Dale! Para ese producto te paso con alguien del equipo que te asesora 🙌 "
+                        "En un momento te contactamos."), _steps)
+                    continue
                 _s_ub = await deps["session"].get(phone)
                 _s_ub["_ultima_busqueda"] = _entidad_busq[:80]
                 _s_ub["_ultimos_ids"] = list(dict.fromkeys(
