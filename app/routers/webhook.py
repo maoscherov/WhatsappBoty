@@ -608,6 +608,51 @@ async def _sumar_productos_nuevos(deps, phone: str, nombres: list[str], texto: s
     return sumados, faltan, receta
 
 
+async def _otro_producto_en_entrega(deps, phone: str, session: dict, texto: str,
+                                    ctx_socio) -> "tuple[str, str] | None":
+    """
+    Eligiendo retiro/envío, el cliente pregunta por OTRO producto ("¿precio
+    del Kevin fem?", C-5360, 15/10): se busca de verdad y se ofrece sumarlo,
+    sin tocar el pedido en curso. None si el mensaje no nombra otro producto.
+    """
+    try:
+        ir = await deps["intent"].procesar_rapido(
+            mensaje=texto, history=session.get("history", []), contexto_cliente=ctx_socio)
+    except Exception as e:
+        logger.warning(f"Clasificación en entrega falló para {phone}: {e}")
+        return None
+    entidad = (ir or {}).get("entidad_producto")
+    pendiente = session.get("pending_sku_nombre") or "tu pedido"
+    if not entidad or not entidad_en_mensaje(entidad, texto) \
+            or not entidad_contradice_pendiente(entidad, pendiente):
+        return None
+    cfg = await deps["config"].get_all()
+    res = deps["sku"].buscar(entidad)
+    res, _ = aplicar_descuento_socio(res, phone, cfg)
+    res = marcar_precio_dudoso(res, cfg, deps["sku"])
+    ir2 = await deps["intent"].procesar(
+        mensaje=texto, history=session.get("history", []), resultados_sku=res or None,
+        contexto_cliente=ctx_socio,
+        situacion=(f"El cliente tiene un pedido pendiente ({pendiente}) y está eligiendo retiro o "
+                   "envío. Ahora pregunta por OTRO producto: respondé SOLO sobre ese producto con "
+                   "los datos del catálogo (si no hay stock, decilo y ofrecé consultarlo con el "
+                   "equipo). No confirmes nada ni generes links."))
+    respuesta = quitar_confirmaciones_fantasma(quitar_frases_de_espera((ir2 or {}).get("respuesta", "")))
+    respuesta = await _sin_precios_inventados(deps, phone, session, respuesta, res, cfg, entidad)
+    respuesta = quitar_cierres_vagos(respuesta)
+    ofrecidos = [p for p in productos_con_precio(respuesta, res or []) if p.get("vendible", True)]
+    s = await deps["session"].get(phone)
+    if len(ofrecidos) == 1:
+        o = ofrecidos[0]
+        s["_oferta_extra"] = {"sku_id": o["sku_id"], "nombre": o["nombre"], "precio": o["precio"]}
+        cierre = f"¿Lo sumo a tu pedido o seguimos solo con {pendiente}?"
+    else:
+        s.pop("_oferta_extra", None)
+        cierre = f"¿Seguimos con {pendiente}? ¿Lo retirás o te lo enviamos?"
+    await deps["session"].save(phone, s)
+    return f"{respuesta}\n\n{cierre}".strip(), "otro_producto_en_entrega"
+
+
 async def _responder_consulta_en_flujo(deps, phone: str, session: dict, texto: str,
                                        ctx_socio, situacion: str, fallback: str) -> str:
     """
@@ -1816,7 +1861,33 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
             if session.get("estado") == "esperando_entrega" and session.get("pending_sku_id"):
                 texto_lower = texto.lower().strip()
                 _dir_expl = extraer_direccion_de(texto)
-                if _match_no(texto_lower) and not no_es_sobre_el_pendiente(
+                _extra = session.get("_oferta_extra")
+                if _extra and _re.search(r"\b(s[ií]|dale|sum\w*|agreg\w*|tambi[eé]n|tod[oa]s?|ok|bueno)\b",
+                                         texto_lower) and not _match_no(texto_lower):
+                    # "Sí, sumalo": el otro producto que preguntó va al pedido
+                    # y se vuelve a preguntar la entrega con todo (C-5360).
+                    _intencion = "item_agregado"
+                    _items_x = await deps["session"].agregar_item(
+                        phone, _extra["sku_id"], _extra["nombre"], _extra["precio"], 1)
+                    _s_x = await deps["session"].get(phone)
+                    _s_x.pop("_oferta_extra", None)
+                    _s_x["estado"] = "esperando_entrega"
+                    await deps["session"].save(phone, _s_x)
+                    _cfg_x = await deps["config"].get_all()
+                    _lin_x = "\n".join(f"• {i['nombre']} — ${i['precio'] * i.get('cantidad', 1):,.2f}"
+                                       for i in _items_x)
+                    _tot_x = sum(i["precio"] * i.get("cantidad", 1) for i in _items_x)
+                    respuesta = (f"¡Listo, lo sumé! Tu pedido queda así:\n{_lin_x}\n"
+                                 f"Total: *${_tot_x:,.2f}*\n\n" +
+                                 pregunta_entrega(_cfg_x, saludo=False, phone=phone,
+                                                  socio_svc=deps["socios"]))
+                elif _re.fullmatch(r"\s*((muchas|mil)\s+)?gracias[\s!.👍🙏😊]*|"
+                                   r"\s*(ok|okey|bueno|dale|genial|perfecto)[\s,!.]*(muchas\s+)?gracias[\s!.👍🙏😊]*",
+                                   texto_lower):
+                    # Un "gracias" no necesita que le repitan el pedido (C-5360).
+                    _intencion = "agradecimiento"
+                    respuesta = "¡De nada! 🙂"
+                elif _match_no(texto_lower) and not no_es_sobre_el_pendiente(
                         session.get("history") or [], session.get("pending_sku_nombre"),
                         session.get("pending_precio")):
                     _intencion = "pedido_cancelado"
@@ -1826,6 +1897,10 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     # "No, gracias" a las alternativas que ofreció el bot, no
                     # al pedido (C-5000): se sigue con lo que ya eligió.
                     _intencion = "oferta_rechazada"
+                    if _extra:
+                        _s_nr = await deps["session"].get(phone)
+                        _s_nr.pop("_oferta_extra", None)
+                        await deps["session"].save(phone, _s_nr)
                     _cfg_nr = await deps["config"].get_all()
                     respuesta = (f"Dale. Seguimos con {session.get('pending_sku_nombre')} 🙂 " +
                                  pregunta_entrega(_cfg_nr, saludo=False, phone=phone,
@@ -1847,7 +1922,12 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 else:
                     _es_retiro = match_retiro(texto_lower)
                     _es_envio = match_envio(texto_lower) or afirma_envio(texto_lower)
+                    _otro = None
                     if not _es_retiro and not _es_envio:
+                        _otro = await _otro_producto_en_entrega(deps, phone, session, texto, _ctx_socio)
+                    if _otro:
+                        respuesta, _intencion = _otro
+                    elif not _es_retiro and not _es_envio:
                         # No eligió entrega: está preguntando otra cosa (precio,
                         # demora, si llega a tal zona). Se responde la consulta y
                         # se vuelve a ofrecer la elección, en lugar de repetir la

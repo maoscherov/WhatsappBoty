@@ -185,3 +185,55 @@ def test_busqueda_tolera_errores_de_tipeo():
     ids = [r["sku_id"] for r in sku.buscar("productos de la marca La Puissange")]
     assert {"4", "5"} & set(ids)                                                       # C-5135
     assert sku.buscar("medias para caballero")[0]["sku_id"] == "6"                     # C-5034
+
+
+# ── C-5360 (15/10): otro producto mientras elige la entrega ────────────────────
+async def _dove_eligiendo_entrega(deps):
+    ss = deps["session"]
+    await ss.set_pending(PHONE, "20", "DOVE JAB LQ 220 RTO ORIGINAL JLI x 220", 3145.21, 1, opciones=[])
+    await ss.set_estado(PHONE, "esperando_entrega")
+    s = await ss.get(PHONE)
+    s["history"] = [{"role": "assistant", "content": "¿Cómo preferís recibirlo: retiro o envío?"}]
+    await ss.save(PHONE, s)
+
+
+def _sku_kevin(stock_kevin):
+    return SKUService.from_rows([
+        {"external_id": "20", "name": "DOVE JAB LQ 220 RTO ORIGINAL JLI x 220", "price": 3145.21,
+         "brand": "Dove", "stock": 10},
+        {"external_id": "21", "name": "KEVIN FEMME EDP SPR x 60", "price": 10548.37,
+         "brand": "Kevin", "stock": stock_kevin}])
+
+
+async def test_otro_producto_eligiendo_la_entrega_se_busca_y_se_suma(entorno):
+    q = "Quiero saber el precio del Kevin fem el perfume"
+    deps = entorno({q: {"intencion": "consulta_precio", "entidad_producto": "kevin femme perfume",
+                        "respuesta": "El Kevin Femme EDP de 60 ml sale $10,548.37."}})
+    deps["sku"] = _sku_kevin(3)
+    await _dove_eligiendo_entrega(deps)
+    await wh.procesar_mensajes([_msg(q)])
+    assert "¿Lo sumo a tu pedido" in _ultimo(deps)
+    s = await deps["session"].get(PHONE)
+    assert s["pending_sku_id"] == "20" and s["_oferta_extra"]["sku_id"] == "21"
+    await wh.procesar_mensajes([_msg("sí, sumalo")])
+    items = (await deps["session"].get(PHONE)).get("pending_items") or []
+    assert {i["sku_id"] for i in items} == {"20", "21"}
+    assert "Tu pedido queda así" in _ultimo(deps)
+
+
+async def test_otro_producto_sin_stock_no_toca_el_pedido(entorno):
+    q = "Quiero saber el precio del Kevin fem el perfume"
+    deps = entorno({q: {"intencion": "consulta_precio", "entidad_producto": "kevin femme perfume",
+                        "respuesta": "No me figura el Kevin Femme en stock. ¿Querés que lo consulte?"}})
+    deps["sku"] = _sku_kevin(0)
+    await _dove_eligiendo_entrega(deps)
+    await wh.procesar_mensajes([_msg(q)])
+    assert "No me figura" in _ultimo(deps) and "Seguimos con" in _ultimo(deps)
+    assert (await deps["session"].get(PHONE))["pending_sku_id"] == "20"
+
+
+async def test_gracias_eligiendo_la_entrega_no_repite_el_pedido(entorno):
+    deps = entorno()
+    await _dove_eligiendo_entrega(deps)
+    await wh.procesar_mensajes([_msg("Gracias")])
+    assert _ultimo(deps) == "¡De nada! 🙂"
