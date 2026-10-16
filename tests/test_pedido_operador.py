@@ -118,8 +118,12 @@ async def test_efectivo_con_repartidor_varios_productos(cli, entorno):
     assert j["total"] == 2000 + 3000 + 2000                # productos + envío
     o = entorno["orders"].creados[-1]
     assert o["pago"] == "efectivo" and o["tipo_entrega"] == "envio"
-    assert o["extra"] == {"origen": "operador", "armado_por": "Lore", "cobra": "repartidor",
-                          "repartidor": "Juan"}
+    extra = dict(o["extra"])
+    reserva = extra.pop("items_stock")                     # lo que reserva del stock (16/10)
+    assert extra == {"origen": "operador", "armado_por": "Lore", "cobra": "repartidor",
+                     "repartidor": "Juan"}
+    assert {"sku_id": "1", "cantidad": 2} in [{"sku_id": i["sku_id"], "cantidad": i["cantidad"]}
+                                              for i in reserva if i.get("sku_id")]
     assert j["pedido"] == o["order_id"]
     assert entorno["wa"].enviados[-1] == j["mensaje"]
     assert entorno["hist"][-1] == ("operator", j["mensaje"], "Lore")

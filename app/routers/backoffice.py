@@ -945,6 +945,7 @@ class ConfigUpdate(BaseModel):
     receta_cotizacion_cierre: str | None = None  # invitación a confirmar (modo cotizar, sin link)
     receta_recibida_message: str | None = None   # respuesta del bot al recibir una receta
     comprobante_recibido_message: str | None = None   # acuse al recibir un comprobante de pago
+    comprobante_error_message: str | None = None      # comprobante que no corresponde ({motivo})
     imagen_no_reconocida_message: str | None = None   # imagen que el bot no reconoce → deriva
     obras_sociales: str | None = None            # lista (coma/renglón) de obras sociales con convenio
     obras_sociales_si_message: str | None = None       # {obra_social}

@@ -22,6 +22,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from app.config import get_settings
+from app.routers.mp_webhook import _items_de_sesion
 from app.services.payway_service import get_payway_service
 from app.services.payway_link import crear_pago_pendiente, PENDING_TTL as _PENDING_TTL
 from app.services.order_service import get_order_service
@@ -249,6 +250,7 @@ async def payway_charge(body: ChargeIn):
                 sku_nombre=nombre_producto, cantidad=int(pending["cantidad"]),
                 total=float(pending["total"]), mp_payment_id=str(data.get("id")),
                 tipo_entrega=tipo_entrega, direccion_envio=direccion_envio,
+                extra={"items_stock": _items_de_sesion(session, pending["sku_id"])},
             )
             logger.info(f"Pedido registrado (Payway): {order['order_id']} entrega={tipo_entrega}")
 

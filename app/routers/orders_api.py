@@ -332,6 +332,15 @@ async def resolver_transferencia(order_id: str, request: Request, _=Depends(_aut
     else:
         order = await svc.actualizar(order_id, transferencia="rechazada",
                                      transferencia_resuelta_por=agente)
+        # Rechazada: la operación del comprobante queda libre (16/10).
+        try:
+            from app.services.session_service import get_session_service
+            await trf.liberar_operacion(get_session_service(settings.redis_url),
+                                        trf.operacion_de(order.get("comprobante")))
+        except Exception:
+            pass
+        from app.services import reservas
+        reservas.invalidar()
         texto = (body.get("mensaje") or "").strip() or (
             "No pudimos validar la transferencia 🙏 ¿Nos mandás de nuevo el comprobante, "
             "o preferís pagar con otro medio?")

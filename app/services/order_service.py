@@ -115,12 +115,17 @@ class OrderService:
         for _k in ("armado_por", "atendido_por", "agente"):
             if order.get(_k):
                 order[_k] = canonico(order[_k])
+        # Lo que el pedido compromete del stock hasta que se retire (16/10,
+        # C-5596): los ítems del carrito o el producto único.
+        from app.services import reservas
+        order["items_stock"] = reservas.items_de(sku_id, cantidad, order.get("items_stock"))
         ts = datetime.now(timezone.utc).timestamp()
         try:
             await self._redis.setex(self._key(order_id), ORDER_TTL, json.dumps(order))
             await self._redis.zadd(ORDERS_IDX, {order_id: ts})
         except Exception as e:
             logger.error(f"OrderService.create error: {e}")
+        reservas.sumar(order["items_stock"])
         logger.info(f"Pedido creado: {order_id} phone={phone} producto={sku_nombre}")
         return order
 
@@ -277,6 +282,8 @@ class OrderService:
         if not order:
             return None
         order["estado"]       = "retirado"
+        from app.services import reservas
+        reservas.invalidar()      # retirado = facturado: lo descuenta el ERP
         order["retirado_por"] = agente or order.get("retirado_por")
         order["retirado_at"]  = _now_epoch()
         self._asignar_si_libre(order, agente)

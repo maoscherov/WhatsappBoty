@@ -54,7 +54,7 @@ from app.services.checkout_helper import (
     quitar_cierres_vagos, ya_dice_no_disponible, solo_la_pregunta,
     alternativas_con_precio, texto_alternativas, precios_inventados, referencias_de_precio,
     quitar_receta_inventada, quitar_saludo_repetido, pide_encargo, marcar_precio_dudoso,
-    separar_lista_numerada, pide_otras_opciones, tipo_de_producto,
+    separar_lista_numerada, pide_otras_opciones, tipo_de_producto, cantidad_pedida, pide_otro_igual,
     bot_hizo_pregunta, bot_ofrecio_equipo, pide_algo_mas, pide_sumar, cuenta_de_tercero,
     marca_de_linea, entrega_en_texto, es_consulta_generica, aviso_sin_stock_del_pedido,
     consulta_cuota_social, consulta_seguimiento, anuncia_otra_consulta, ofrece_mandar_receta,
@@ -847,6 +847,75 @@ async def receive_message(request: Request):
     return await procesar_mensajes(messages)
 
 
+async def _cambiar_cantidad_en_entrega(deps, phone: str, session: dict, cant: int) -> str:
+    """Cambia la cantidad del pedido y vuelve a preguntar la entrega. Si no
+    alcanza el stock (descontando lo que ya tienen pedido otros, C-5596),
+    deja lo que hay y lo dice."""
+    from app.services import reservas
+    sid = str(session["pending_sku_id"])
+    nombre = session.get("pending_sku_nombre") or "el producto"
+    precio = float(session.get("pending_precio") or 0)
+    sku = deps["sku"].get_by_id(sid) if hasattr(deps["sku"], "get_by_id") else None
+    stock = int(sku.cantidad_visible) if sku is not None and sku.stock_actual is not None else None
+    disp = reservas.disponible(stock, sid)
+    cfg = await deps["config"].get_all()
+    entrega = pregunta_entrega(cfg, saludo=False, phone=phone, socio_svc=deps["socios"])
+    if disp is not None and disp < cant:
+        if disp <= 0:
+            await deps["session"].clear_pending(phone)
+            _s = await deps["session"].get(phone)
+            _s["derivacion_ofrecida"] = nombre[:60]
+            await deps["session"].save(phone, _s)
+            return (f"Uh, de {nombre} ya no me queda stock 🙏 "
+                    "¿Querés que lo consultemos con el equipo para encargarlo?")
+        await deps["session"].set_pending(phone, sid, nombre, precio, disp, opciones=[])
+        await deps["session"].set_estado(phone, "esperando_entrega")
+        return (f"De {nombre} me {'queda' if disp == 1 else 'quedan'} *{disp}* 🙏 Te "
+                f"{'reservo esa' if disp == 1 else f'reservo esas {disp}'} y, si necesitás más, lo "
+                f"consultamos con el equipo para encargarlo. {entrega}")
+    await deps["session"].set_pending(phone, sid, nombre, precio, cant, opciones=[])
+    await deps["session"].set_estado(phone, "esperando_entrega")
+    return f"¡Dale! Serían *{cant}* × {nombre}: *${precio * cant:,.2f}*. {entrega}"
+
+
+async def _otro_igual(deps, phone: str, session: dict, cfg: dict) -> "str | None":
+    """
+    "Y quiero otro igual" con el pedido ya cerrado (C-5596): se arma un
+    pedido nuevo del mismo producto, pasando por el stock que queda (el
+    pedido anterior ya está reservado). None si no hay pedido reciente.
+    """
+    from app.services import reservas
+    if session.get("estado") == "pedido_confirmado" and session.get("pending_sku_id"):
+        # El pedido cerrado sigue en la sesión hasta el próximo.
+        prev = {"sku_id": session["pending_sku_id"], "nombre": session.get("pending_sku_nombre"),
+                "precio": session.get("pending_precio"), "items": session.get("pending_items") or [],
+                "ts": session.get("_pedido_at") or 0}
+    else:
+        prev = session.get("_pendiente_anterior") or {}
+        if session.get("pending_sku_id"):
+            return None
+    if not prev.get("sku_id") or len(prev.get("items") or []) > 1:
+        return None
+    if _time.time() - float(prev.get("ts") or 0) > 6 * 3600:
+        return None
+    sid = str(prev["sku_id"])
+    nombre = prev.get("nombre") or "el producto"
+    sku = deps["sku"].get_by_id(sid) if hasattr(deps["sku"], "get_by_id") else None
+    stock = int(sku.cantidad_visible) if sku is not None and sku.stock_actual is not None else None
+    disp = reservas.disponible(stock, sid)
+    if disp is not None and disp <= 0:
+        _s = await deps["session"].get(phone)
+        _s["derivacion_ofrecida"] = nombre[:60]
+        await deps["session"].save(phone, _s)
+        return (f"De {nombre} ya no me quedan más 🙏 "
+                "¿Querés que lo consultemos con el equipo para encargarlo?")
+    precio = float(prev.get("precio") or 0)
+    await deps["session"].set_pending(phone, sid, nombre, precio, 1, opciones=[])
+    await deps["session"].set_estado(phone, "esperando_entrega")
+    return (f"¡Dale! Otro {nombre} a *${precio:,.2f}*. " +
+            pregunta_entrega(cfg, saludo=False, phone=phone, socio_svc=deps["socios"]))
+
+
 async def procesar_mensajes(messages: list[dict]) -> dict:
     """
     Procesa los mensajes ya normalizados, venga el webhook de Meta o de Kapso.
@@ -859,6 +928,11 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
     deps = _deps(_s)
     _wa_base = deps["wa"]
     _session_base = deps["session"]
+    try:
+        from app.services import reservas as _reservas
+        await _reservas.refrescar()       # stock comprometido por pedidos (C-5596)
+    except Exception as e:
+        logger.debug(f"reservas: {e}")
 
     # Foto + texto que solo señala ("Necesito esos productos") en el mismo
     # lote: el texto se descarta — la imagen ES el pedido. Procesarlos por
@@ -1640,6 +1714,15 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                 await deps["session"].add_message(phone, "assistant", respuesta)
                 continue
 
+            # ── "Y quiero otro igual" después de cerrar el pedido (C-5596) ───
+            if pide_otro_igual(texto) and (session.get("estado") == "pedido_confirmado"
+                                           or not session.get("pending_sku_id")):
+                _r_otro = await _otro_igual(deps, phone, session, _cfg_pm)
+                if _r_otro:
+                    _intencion = "otro_igual"
+                    await _responder(deps, phone, texto, _r_otro, _steps)
+                    continue
+
             # ── Transferencia (minuta 14/10): con alias configurado, el bot pasa
             # los datos, toma el pedido y espera el comprobante.
             from app.services import transferencia as _trf
@@ -1906,6 +1989,13 @@ async def procesar_mensajes(messages: list[dict]) -> dict:
                     # Un "gracias" no necesita que le repitan el pedido (C-5360).
                     _intencion = "agradecimiento"
                     respuesta = "¡De nada! 🙂"
+                elif cantidad_pedida(texto) and len(session.get("pending_items") or []) <= 1:
+                    # "Quiero 2" eligiendo la entrega (C-5596): el bot decía
+                    # "serían 2 unidades" y el pedido seguía con 1. Se cambia la
+                    # cantidad de verdad, contra el stock que queda.
+                    _intencion = "cantidad_cambiada"
+                    respuesta = await _cambiar_cantidad_en_entrega(
+                        deps, phone, session, cantidad_pedida(texto))
                 elif _match_no(texto_lower) and not no_es_sobre_el_pendiente(
                         session.get("history") or [], session.get("pending_sku_nombre"),
                         session.get("pending_precio")):

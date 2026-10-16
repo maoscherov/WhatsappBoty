@@ -868,6 +868,74 @@ def texto_entrega(tipo: str, direccion: Optional[str], costo_envio: float = 0) -
     return "🏪 Lo retirás en la sucursal (te enviamos el código al confirmar el pago)."
 
 
+async def _frenar_por_stock(session_svc, phone: str, cfg: dict, pedido: dict, items: list,
+                            stock: Optional[int], origen: str) -> Optional[str]:
+    """
+    Frena la venta si lo que queda (stock menos lo que ya tienen pedido otros
+    clientes, C-5596) no alcanza para lo pedido. Si queda algo de un producto
+    único, se ajusta la cantidad y se ofrece llevar lo que hay (16/10).
+    None = alcanza.
+    """
+    from app.services import reservas
+    sid = str(pedido["sku_id"])
+    cant = int(pedido.get("cantidad", 1) or 1)
+    disp = reservas.disponible(stock, sid)
+    if disp is None or disp >= cant:
+        return None
+    nombre = pedido.get("nombre") or "ese producto"
+    logger.info(f"Venta frenada por stock ({origen}): {sid} stock={stock} "
+                f"reservado={reservas.reservado(sid)} pedido={cant} phone={phone}")
+    if disp > 0 and len(items) <= 1:
+        await session_svc.set_pending(phone, sid, nombre, float(pedido.get("precio") or 0), disp,
+                                      opciones=[])
+        await session_svc.set_estado(phone, "esperando_entrega")
+        return (f"De {nombre} me {'queda' if disp == 1 else 'quedan'} *{disp}* 🙏 "
+                f"¿Te {'la' if disp == 1 else 'las'} reservo? Si necesitás más, lo consultamos con "
+                "el equipo para encargarlo. Decime *retiro* o *envío* y lo cerramos.")
+    plantilla = cfg.get("live_sin_stock_message") or (
+        "Justo me fijé y no nos queda stock de {producto}. "
+        "¿Querés que lo consultemos con el equipo?")
+    await session_svc.clear_pending(phone)
+    if (cfg.get("sin_stock_mode") or "preguntar") == "derivar":
+        await session_svc.set_estado(phone, "operador", motivo="sin_stock_vivo")
+    else:
+        # "¿Querés que lo consultemos?" → el próximo "sí" deriva (mismo
+        # flag que el flujo de sin-stock del webhook). Sin esto el "sí"
+        # caía al modelo, que re-ofrecía el producto en bucle.
+        _s_off = await session_svc.get(phone)
+        _s_off["derivacion_ofrecida"] = nombre[:60]
+        await session_svc.save(phone, _s_off)
+    return plantilla.replace("{producto}", nombre)
+
+
+def _items_del_pedido(session: dict) -> list[dict]:
+    items = session.get("pending_items") or []
+    if not items and session.get("pending_sku_id"):
+        items = [{"sku_id": session["pending_sku_id"],
+                  "nombre": session.get("pending_sku_nombre") or "",
+                  "precio": session.get("pending_precio") or 0,
+                  "cantidad": session.get("pending_cantidad", 1)}]
+    return items
+
+
+async def _freno_por_reservas(session: dict, phone: str, session_svc, cfg: dict) -> Optional[str]:
+    """Sin consultar al ERP (se verificó hace menos de 10 min): igual se
+    descuenta lo que se vendió desde entonces, con el stock del catálogo."""
+    from app.config import get_settings as _gs
+    from app.services.sku_service import get_sku_service
+    sku_svc = get_sku_service(_gs().sku_csv_path)
+    items = _items_del_pedido(session)
+    for pedido in items:
+        sku = sku_svc.get_by_id(str(pedido["sku_id"]))
+        if sku is None or sku.stock_actual is None:
+            continue
+        freno = await _frenar_por_stock(session_svc, phone, cfg, pedido, items,
+                                        int(sku.cantidad_visible), "cache")
+        if freno:
+            return freno
+    return None
+
+
 async def _chequear_stock_vivo(session: dict, phone: str, session_svc,
                                cfg: dict) -> tuple[Optional[str], Optional[float]]:
     """
@@ -892,12 +960,7 @@ async def _chequear_stock_vivo(session: dict, phone: str, session_svc,
     if not branch:
         return None, None
 
-    items = session.get("pending_items") or []
-    if not items and session.get("pending_sku_id"):
-        items = [{"sku_id": session["pending_sku_id"],
-                  "nombre": session.get("pending_sku_nombre") or "",
-                  "precio": session.get("pending_precio") or 0,
-                  "cantidad": session.get("pending_cantidad", 1)}]
+    items = _items_del_pedido(session)
     if not items:
         return None, None
 
@@ -940,24 +1003,9 @@ async def _chequear_stock_vivo(session: dict, phone: str, session_svc,
             logger.warning(f"Stock en vivo: {sid} sin respuesta del ERP (missing) — "
                            "se cobra con el dato cacheado")
 
-        if stock_vivo is not None and stock_vivo < int(pedido.get("cantidad", 1)):
-            nombre = pedido.get("nombre") or "ese producto"
-            plantilla = cfg.get("live_sin_stock_message") or (
-                "Justo me fijé y no nos queda stock de {producto}. "
-                "¿Querés que lo consultemos con el equipo?")
-            await session_svc.clear_pending(phone)
-            if (cfg.get("sin_stock_mode") or "preguntar") == "derivar":
-                await session_svc.set_estado(phone, "operador", motivo="sin_stock_vivo")
-            else:
-                # "¿Querés que lo consultemos?" → el próximo "sí" deriva (mismo
-                # flag que el flujo de sin-stock del webhook). Sin esto el "sí"
-                # caía al modelo, que re-ofrecía el producto en bucle.
-                _s_off = await session_svc.get(phone)
-                _s_off["derivacion_ofrecida"] = nombre[:60]
-                await session_svc.save(phone, _s_off)
-            logger.info(f"Venta frenada por stock en vivo: {sid} stock={stock_vivo} "
-                        f"pedido={pedido.get('cantidad', 1)} phone={phone}")
-            return plantilla.replace("{producto}", nombre), None
+        _freno = await _frenar_por_stock(session_svc, phone, cfg, pedido, items, stock_vivo, "vivo")
+        if _freno:
+            return _freno, None
 
     return None, precio_erp_distinto
 
@@ -994,7 +1042,8 @@ async def _cerrar_venta_cc(session_svc, phone: str, session: dict,
         phone=phone, sku_id=sku_id,
         sku_nombre=nombre, cantidad=cantidad, total=total,
         mp_payment_id="", tipo_entrega=tipo_entrega,
-        direccion_envio=direccion, pago="cuenta_corriente", extra=extra_pedido,
+        direccion_envio=direccion, pago="cuenta_corriente",
+        extra={**(extra_pedido or {}), "items_stock": items if len(items) > 1 else None},
     )
     logger.info(f"Pedido con cuenta corriente: {order['order_id']} phone={phone} "
                 f"total=${total:,.2f}")
@@ -1163,8 +1212,10 @@ async def crear_link_y_responder(
         import time as _t
         _recien = ((_t.time() - float(session.get("_stock_ok_at") or 0)) < 600
                    and session.get("_stock_ok_para") == _clave_stock(session))
-        _msg_freno, _precio_erp = (None, None) if _recien else \
-            await _chequear_stock_vivo(session, phone, session_svc, _cfg)
+        if _recien:
+            _msg_freno = await _freno_por_reservas(session, phone, session_svc, _cfg)
+        else:
+            _msg_freno, _precio_erp = await _chequear_stock_vivo(session, phone, session_svc, _cfg)
         if _msg_freno:
             return _msg_freno, None
     except Exception as e:
@@ -1711,7 +1762,8 @@ async def _cerrar_venta_efectivo(session_svc, phone: str, session: dict,
     order = await get_order_service(settings.redis_url).create(
         phone=phone, sku_id=sku_id, sku_nombre=nombre, cantidad=cantidad, total=total,
         mp_payment_id="", tipo_entrega=tipo_entrega, direccion_envio=direccion,
-        pago="efectivo", extra=extra_pedido,
+        pago="efectivo",
+        extra={**(extra_pedido or {}), "items_stock": items if len(items) > 1 else None},
     )
     logger.info(f"Pedido en efectivo: {order['order_id']} phone={phone} total=${total:,.2f}")
 
@@ -2351,7 +2403,10 @@ def marcar_precio_dudoso(resultados: list[dict], cfg: dict, sku_svc=None) -> lis
         if precio > 0 and ((minimo > 0 and precio < minimo) or (ref and precio * 3 < ref)):
             r = dict(r, vendible=False, precio_dudoso=True)
         out.append(r)
-    return out
+    # Mismo paso para todas las búsquedas: lo que ya tienen pedido otros
+    # clientes y el ERP no descontó no se cotiza como disponible (C-5596).
+    from app.services import reservas
+    return reservas.descontar(out)
 
 
 
@@ -2781,3 +2836,32 @@ def catalogo_de(texto: str) -> Optional[str]:
     """ "Catálogo de perfumes" → "perfumes"."""
     m = _CATALOGO_DE.search(texto or "")
     return m.group(1).strip() if m else None
+
+
+# ── Cantidades (C-5596, 16/10) ─────────────────────────────────────────────────
+_NUM_PALABRA = {"una": 1, "uno": 1, "dos": 2, "tres": 3, "cuatro": 4, "cinco": 5, "seis": 6}
+_CANTIDAD_PEDIDA_RE = re.compile(
+    r"^\s*(?:y\s+)?(?:mejor\s+|en\s+realidad\s+)?(?:quiero|necesito|dame|mandame|pon[eé]me|llevo|me\s+llevo|"
+    r"ser[ií]an|que\s+sean|son)?\s*(\d{1,2}|dos|tres|cuatro|cinco|seis)\b"
+    r"(?:\s+(?:unidades?|de\s+(?:esos?|estos?|esas?|estas?)|iguales))?\s*[!.,🙏🙂😊]*\s*$",
+    re.IGNORECASE)
+
+
+def cantidad_pedida(texto: str) -> Optional[int]:
+    """ "Quiero 2", "necesito 3 unidades", "mejor dos" → la cantidad (2..20)."""
+    m = _CANTIDAD_PEDIDA_RE.match(texto or "")
+    if not m or (texto or "").strip().isdigit():
+        return None       # un "2" suelto puede ser una opción, no una cantidad
+    v = m.group(1).lower()
+    n = int(v) if v.isdigit() else _NUM_PALABRA.get(v, 0)
+    return n if 2 <= n <= 20 else None
+
+
+_OTRO_IGUAL_RE = re.compile(
+    r"\b(otr[oa]s?\s+(igual(es)?|m[aá]s|del\s+mismo|de\s+(esos?|estos?|esas?|estas?))|"
+    r"un[oa]\s+m[aá]s(\s+igual)?)\b", re.IGNORECASE)
+
+
+def pide_otro_igual(texto: str) -> bool:
+    """ "Y quiero otro igual", "dame uno más" (después de cerrar el pedido)."""
+    return bool(_OTRO_IGUAL_RE.search(texto or ""))

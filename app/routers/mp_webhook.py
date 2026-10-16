@@ -148,6 +148,17 @@ async def procesar_pago(payment_id: str) -> dict:
         return {"status": "error", "detail": str(e)[:200]}
 
 
+def _items_de_sesion(session: dict, sku_id: str):
+    """Lo que reserva del stock el pedido pagado (16/10): el carrito de la
+    sesión, o el producto con la cantidad pedida (con envío, MP trae 1 ítem
+    "producto + envío" con cantidad 1)."""
+    if session.get("pending_items") and len(session["pending_items"]) > 1:
+        return session["pending_items"]
+    if session.get("pending_sku_id") and str(session["pending_sku_id"]) == str(sku_id):
+        return [{"sku_id": sku_id, "cantidad": session.get("pending_cantidad", 1)}]
+    return None
+
+
 async def _cerrar_venta(settings, payment: dict, payment_id: str, external_ref: str) -> dict:
     """Crea la orden, avisa por WhatsApp y actualiza la sesión (pago aprobado)."""
     # external_reference = "{phone}_{sku_id}"
@@ -202,6 +213,7 @@ async def _cerrar_venta(settings, payment: dict, payment_id: str, external_ref: 
         mp_payment_id=payment_id,
         tipo_entrega=tipo_entrega,
         direccion_envio=direccion_envio,
+        extra={"items_stock": _items_de_sesion(session, sku_id)},
     )
     logger.info(f"Pedido registrado: {order['order_id']} entrega={tipo_entrega}")
 

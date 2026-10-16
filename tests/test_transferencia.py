@@ -1,6 +1,7 @@
 """
-Pago por transferencia (minuta 14/10): alias configurable, pedido pendiente de
-comprobante, OCR del comprobante y aprobación automática por debajo de un monto.
+Pago por transferencia (minuta 14/10): alias configurable, OCR del comprobante
+y aprobación automática por debajo de un monto. Desde el 16/10 el pedido se
+crea recién con el comprobante, y uno que no corresponde no crea pedido.
 """
 from datetime import date, datetime, timezone
 
@@ -122,14 +123,16 @@ async def _pedido_y_transferencia(deps):
     await wh.procesar_mensajes([_msg("Lo retiro en sucursal y pago con transferencia")])
 
 
-async def test_elegir_transferencia_crea_el_pedido_y_pasa_el_alias(entorno):
+async def test_elegir_transferencia_pasa_el_alias_sin_crear_el_pedido(entorno):
     deps = entorno()
     await _pedido_y_transferencia(deps)
-    o = list(deps["orders"].o.values())[-1]
-    assert o["pago"] == "transferencia" and o["transferencia"] == trf.PENDIENTE
-    assert o["tipo_entrega"] == "retiro"
+    assert not deps["orders"].o              # se crea con el comprobante (16/10)
+    s = await deps["session"].get(PHONE)
+    assert s["estado"] == "esperando_comprobante"
+    assert s["_transferencia"]["pedido"]["tipo_entrega"] == "retiro"
+    assert s["_transferencia"]["total"] == 9892.47
     assert "tafirol.farma" in deps["wa"].enviados[-1] and "9,892.47" in deps["wa"].enviados[-1]
-    assert (await deps["session"].get(PHONE))["estado"] == "esperando_comprobante"
+    assert "código" not in deps["wa"].enviados[-1].lower()
 
 
 async def test_comprobante_valido_aprueba_el_pedido(entorno):
@@ -143,15 +146,49 @@ async def test_comprobante_valido_aprueba_el_pedido(entorno):
     assert (await deps["session"].get(PHONE))["estado"] == "pedido_confirmado"
 
 
-async def test_comprobante_que_no_cierra_pasa_a_una_persona(entorno):
+async def test_comprobante_con_otro_importe_no_crea_el_pedido_y_deriva(entorno):
     deps = entorno(info=_info(importe="$ 5.000"))
     await _pedido_y_transferencia(deps)
     await wh.procesar_mensajes([_msg("", tipo="image", media_url="https://x/c.png", mime="image/png")])
-    o = list(deps["orders"].o.values())[-1]
-    assert o["transferencia"] == trf.A_VERIFICAR and "importe" in o["transferencia_motivo"]
+    assert not deps["orders"].o
     s = await deps["session"].get(PHONE)
-    assert s["estado"] == "operador" and s["comprobante_info"]["motivo"]
+    assert s["estado"] == "operador" and "importe" in s["comprobante_info"]["motivo"]
+    assert s["comprobante_info"]["pedido"]["total"] == 9892.47
+    assert "importe" in deps["wa"].enviados[-1] and "equipo" in deps["wa"].enviados[-1]
+
+
+async def test_comprobante_a_verificar_crea_el_pedido_a_verificar(entorno):
+    deps = entorno(cfg={"transferencia_auto_max": "0"})
+    await _pedido_y_transferencia(deps)
+    await wh.procesar_mensajes([_msg("", tipo="image", media_url="https://x/c.png", mime="image/png")])
+    o = list(deps["orders"].o.values())[-1]
+    assert o["transferencia"] == trf.A_VERIFICAR and "desactivada" in o["transferencia_motivo"]
+    assert o["comprobante"]["operacion"] == "123456789"
+    assert (await deps["session"].get(PHONE))["estado"] == "operador"
     assert "verificamos" in deps["wa"].enviados[-1]
+
+
+async def test_la_misma_operacion_no_paga_dos_pedidos(entorno):
+    deps = entorno(cfg={"transferencia_auto_max": "0"})
+    await _pedido_y_transferencia(deps)
+    await wh.procesar_mensajes([_msg("", tipo="image", media_url="https://x/c.png", mime="image/png")])
+    assert len(deps["orders"].o) == 1
+    await deps["session"].set_estado(PHONE, "inicio")
+    await _pedido_y_transferencia(deps)
+    await wh.procesar_mensajes([_msg("", tipo="image", media_url="https://x/c.png", mime="image/png")])
+    assert len(deps["orders"].o) == 1                      # el segundo no se crea
+    assert "ya se usó" in (await deps["session"].get(PHONE))["comprobante_info"]["motivo"]
+
+
+def test_clasificar():
+    hoy = HOY
+    assert trf.clasificar(_info(importe="$ 1"), 9892.47, {**CFG, "transferencia_auto_max": "0"}, hoy)[0] == "error"
+    assert trf.clasificar(_info(fecha="01/09/2026"), 9892.47, CFG, hoy)[0] == "error"
+    assert trf.clasificar(_info(destinatario="Juan Perez", cuenta_destino="juan.mp"), 9892.47,
+                          CFG, hoy)[0] == "error"
+    assert trf.clasificar(_info(destinatario="", cuenta_destino=""), 9892.47, CFG, hoy)[0] == "verificar"
+    assert trf.clasificar(None, 100, CFG, hoy)[0] == "verificar"
+    assert trf.clasificar(_info(), 9892.47, CFG, hoy) == ("ok", "ok")
 
 
 async def test_ya_transferi_pide_el_comprobante(entorno):
@@ -179,7 +216,7 @@ async def test_operador_aprueba_la_transferencia(entorno, monkeypatch):
     from httpx import ASGITransport, AsyncClient
     from app.config import get_settings
     from app.routers import orders_api
-    deps = entorno(info=_info(importe="$ 5.000"))
+    deps = entorno(cfg={"transferencia_auto_max": "0"})
     await _pedido_y_transferencia(deps)
     await wh.procesar_mensajes([_msg("", tipo="image", media_url="https://x/c.png", mime="image/png")])
     oid = list(deps["orders"].o)[-1]

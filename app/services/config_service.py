@@ -35,6 +35,11 @@ DEFAULTS: dict[str, str] = {
     # cierra (importe, fecha, destinatario, operación). 0 = nunca.
     "transferencia_auto_max": "0",
     "transferencia_message":  "",      # opcional: {cuenta} y {total}
+    # Comprobante que no corresponde al pedido (importe, cuenta, fecha u
+    # operación repetida): no se crea el pedido y pasa a una persona (16/10).
+    "comprobante_error_message": (
+        "Revisé el comprobante y {motivo} 🙏 Te paso con alguien del equipo para "
+        "revisarlo. En un momento te contactamos."),
     # ── Productos que siempre atiende una persona (15/10, tinturas) ──────
     # Palabras (separadas por coma): si el cliente las nombra, se deriva.
     "derivar_terminos": ("tintura, tinturas, tinte, tintes, coloracion, coloración, "

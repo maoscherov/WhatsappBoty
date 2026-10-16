@@ -1,15 +1,20 @@
 """
 Pago por TRANSFERENCIA (minuta 14/10, liberar el flujo).
 
-1. El cliente elige transferencia con un pedido armado: el pedido se crea como
-   "pendiente de comprobante" (la farmacia lo ve) y el bot pasa el alias
-   (configurable en Comportamiento) con el importe exacto.
+1. El cliente elige transferencia con un pedido armado: el bot pasa el alias
+   (configurable en Comportamiento) con el importe exacto y guarda el
+   carrito en la conversación. El pedido NO se crea todavía (16/10: un
+   pedido "pendiente de comprobante" con código de retiro se podía preparar
+   sin estar pago).
 2. Llega el comprobante: se lee (importe, fecha, destinatario, N° de
-   operación) y se aprueba solo si el importe coincide, el total es MENOR al
-   monto máximo configurado (transferencia_auto_max, 0 = nunca), la fecha es
-   de hoy o de ayer, el destinatario es nuestra cuenta y la operación no se
-   usó antes. Si algo no cierra, el pedido queda "a verificar" y pasa a una
-   persona con lo que se leyó.
+   operación) y se clasifica:
+   - error (importe distinto, otra cuenta, fecha vieja, operación ya usada):
+     NO se crea el pedido y pasa a una persona con lo que se leyó.
+   - a verificar (no se lee algún dato, aprobación automática apagada o el
+     total no es MENOR al máximo transferencia_auto_max): se crea el pedido
+     "a verificar" y lo aprueba una persona.
+   - ok: se crea el pedido aprobado y se manda el código de retiro.
+   La operación se registra al crear el pedido: no paga dos pedidos.
 """
 
 import logging
@@ -138,34 +143,61 @@ def es_nuestra_cuenta(info: dict, cfg: dict) -> bool:
     return False
 
 
-def validar(info: Optional[dict], total: float, cfg: dict, hoy: Optional[date] = None) -> tuple[bool, str]:
-    """(aprobado, motivo). Motivo legible para el operador cuando no aprueba."""
+def _destino_legible(info: dict) -> bool:
+    return bool(" ".join(str(info.get(k) or "") for k in ("destinatario", "cuenta_destino")).strip())
+
+
+def clasificar(info: Optional[dict], total: float, cfg: dict,
+               hoy: Optional[date] = None) -> tuple[str, str]:
+    """
+    ("ok" | "verificar" | "error", motivo legible). "error" = el comprobante
+    no corresponde al pedido (no se crea); "verificar" = falta un dato o la
+    aprobación automática no alcanza (se crea y lo aprueba una persona).
+    """
     if not info:
-        return False, "no se pudo leer el comprobante"
+        return "verificar", "no se pudo leer el comprobante"
+    importe = importe_de(info.get("importe"))
+    if importe is None:
+        return "verificar", "no se lee el importe"
+    if abs(importe - float(total)) > 1.0:
+        return "error", f"el importe (${importe:,.2f}) no coincide con el pedido (${float(total):,.2f})"
+    f = fecha_de(str(info.get("fecha") or ""))
+    hoy = hoy or (datetime.utcnow() - timedelta(hours=3)).date()
+    if f is not None and f not in (hoy, hoy - timedelta(days=1)):
+        return "error", f"la fecha ({f:%d/%m/%Y}) no es de hoy ni de ayer"
+    if _destino_legible(info) and not es_nuestra_cuenta(info, cfg):
+        return "error", "el destinatario no coincide con nuestra cuenta"
     try:
         maximo = float(cfg.get("transferencia_auto_max") or 0)
     except (TypeError, ValueError):
         maximo = 0.0
-    importe = importe_de(info.get("importe"))
-    if importe is None:
-        return False, "no se lee el importe"
-    if abs(importe - float(total)) > 1.0:
-        return False, f"el importe (${importe:,.2f}) no coincide con el pedido (${float(total):,.2f})"
     if maximo <= 0:
-        return False, "la aprobación automática está desactivada"
+        return "verificar", "la aprobación automática está desactivada"
     if float(total) >= maximo:
-        return False, f"el pedido (${float(total):,.2f}) supera el máximo automático (${maximo:,.2f})"
-    f = fecha_de(str(info.get("fecha") or ""))
-    hoy = hoy or (datetime.utcnow() - timedelta(hours=3)).date()
+        return "verificar", f"el pedido (${float(total):,.2f}) supera el máximo automático (${maximo:,.2f})"
     if f is None:
-        return False, "no se lee la fecha"
-    if f not in (hoy, hoy - timedelta(days=1)):
-        return False, f"la fecha ({f:%d/%m/%Y}) no es de hoy ni de ayer"
-    if not es_nuestra_cuenta(info, cfg):
-        return False, "el destinatario no coincide con nuestra cuenta"
+        return "verificar", "no se lee la fecha"
+    if not _destino_legible(info):
+        return "verificar", "no se lee el destinatario"
     if not str(info.get("operacion") or "").strip():
-        return False, "no se lee el número de operación"
-    return True, "ok"
+        return "verificar", "no se lee el número de operación"
+    return "ok", "ok"
+
+
+def validar(info: Optional[dict], total: float, cfg: dict, hoy: Optional[date] = None) -> tuple[bool, str]:
+    """(aprobado, motivo). Motivo legible para el operador cuando no aprueba."""
+    estado, motivo = clasificar(info, total, cfg, hoy)
+    return estado == "ok", motivo
+
+
+def operacion_de(info: Optional[dict]) -> str:
+    return re.sub(r"\s+", "", str((info or {}).get("operacion") or ""))
+
+
+async def liberar_operacion(session_svc, op: str) -> None:
+    """Transferencia rechazada: la operación queda libre para otro pedido."""
+    if op:
+        await session_svc.liberar_unico(f"trf_op:{op}")
 
 
 # ── Pedido ─────────────────────────────────────────────────────────────────────
@@ -183,48 +215,61 @@ def _nombre_pedido(session: dict) -> tuple[str, str, int]:
 async def cerrar_venta(session_svc, phone: str, session: dict, tipo_entrega: str,
                        direccion: Optional[str], total: float, costo_envio: float = 0.0,
                        cfg: Optional[dict] = None) -> str:
-    """Crea el pedido pendiente de comprobante y devuelve el mensaje con el alias."""
+    """Guarda el pedido a pagar (sin crearlo: se crea con el comprobante) y
+    devuelve el mensaje con el alias."""
     from app.config import get_settings
-    from app.services.order_service import get_order_service
     settings = get_settings()
     cfg = cfg or {}
     sku_id, nombre, cantidad = _nombre_pedido(session)
-    order = await get_order_service(settings.redis_url).create(
-        phone=phone, sku_id=sku_id, sku_nombre=nombre, cantidad=cantidad, total=total,
-        mp_payment_id="", tipo_entrega=tipo_entrega, direccion_envio=direccion,
-        pago="transferencia", extra={"transferencia": PENDIENTE})
-    logger.info(f"Pedido por transferencia: {order['order_id']} phone={phone} total=${total:,.2f}")
+    items = session.get("pending_items") or []
+    pedido = {"sku_id": sku_id, "nombre": nombre, "cantidad": cantidad,
+              "total": round(float(total), 2), "tipo_entrega": tipo_entrega,
+              "direccion": direccion, "items": items if len(items) > 1 else None}
+    logger.info(f"Pedido por transferencia a pagar: phone={phone} total=${total:,.2f}")
     try:
         from app.services.db import get_db
         from app.services.metrics_store import get_metrics_store
         await get_metrics_store(get_db(settings.database_url)).evento(
-            "pedido_transferencia", phone=phone, dato=tipo_entrega, monto=total, ref=order["order_id"])
+            "pedido_transferencia", phone=phone, dato=tipo_entrega, monto=total)
     except Exception as e:
         logger.debug(f"evento pedido_transferencia: {e}")
     await session_svc.set_entrega(phone, tipo_entrega, direccion)
     await session_svc.set_estado(phone, "esperando_comprobante")
     s = await session_svc.get(phone)
-    s["_transferencia"] = {"order_id": order["order_id"], "total": round(float(total), 2),
-                           "ts": time.time()}
-    s["_ultimo_pedido"] = order["order_id"]
+    s["_transferencia"] = {"pedido": pedido, "total": pedido["total"], "ts": time.time()}
     s.pop("pago_metodo", None)
     await session_svc.save(phone, s)
     envio = f" (incluye ${costo_envio:,.0f} de envío)" if costo_envio > 0 else ""
-    return (f"✅ *¡Listo! Tomamos tu pedido* 🙌\n\n*{nombre}* — ${total:,.2f}{envio}\n\n"
+    return (f"✅ *¡Listo!* Tu pedido 🙌\n\n*{nombre}* — ${total:,.2f}{envio}\n\n"
             + mensaje_datos(cfg, total))
 
 
-async def pedido_pendiente(session: dict, phone: str) -> Optional[dict]:
-    """El pedido por transferencia que espera comprobante: el de la sesión, o
-    (si la sesión se cerró) el último pendiente de ese teléfono en 48 h."""
+async def _crear_pedido(phone: str, pedido: dict, campos: dict) -> dict:
     from app.config import get_settings
     from app.services.order_service import get_order_service
-    svc = get_order_service(get_settings().redis_url)
+    return await get_order_service(get_settings().redis_url).create(
+        phone=phone, sku_id=pedido["sku_id"], sku_nombre=pedido["nombre"],
+        cantidad=pedido["cantidad"], total=pedido["total"], mp_payment_id="",
+        tipo_entrega=pedido.get("tipo_entrega") or "retiro", direccion_envio=pedido.get("direccion"),
+        pago="transferencia", extra={**campos, "items_stock": pedido.get("items")})
+
+
+async def pedido_pendiente(session: dict, phone: str) -> Optional[dict]:
+    """
+    Lo que espera comprobante: {"total", "pedido"} con el carrito guardado en
+    la sesión, o {"total", "order"} con un pedido ya creado "pendiente de
+    comprobante" (los de antes del 16/10, 48 h).
+    """
+    from app.config import get_settings
+    from app.services.order_service import get_order_service
     t = session.get("_transferencia") or {}
+    if t.get("pedido") and time.time() - float(t.get("ts") or 0) < 48 * 3600:
+        return {"total": t["pedido"]["total"], "pedido": t["pedido"]}
+    svc = get_order_service(get_settings().redis_url)
     if t.get("order_id"):
         o = await svc.get(t["order_id"])
         if o and o.get("transferencia") == PENDIENTE:
-            return o
+            return {"total": o["total"], "order": o}
     try:
         limite = time.time() - 48 * 3600
         for o in await svc.list_all():
@@ -235,7 +280,7 @@ async def pedido_pendiente(session: dict, phone: str) -> Optional[dict]:
             except Exception:
                 creado = 0
             if creado >= limite:
-                return o
+                return {"total": o["total"], "order": o}
     except Exception as e:
         logger.debug(f"pedido_pendiente {phone}: {e}")
     return None
@@ -250,9 +295,10 @@ async def procesar_comprobante(deps: dict, phone: str, image_bytes: bytes, mime:
     """
     from app.config import get_settings
     from app.services.order_service import get_order_service
+    from app.services.checkout_helper import personalizar_nombre
     session = await deps["session"].get(phone)
-    order = await pedido_pendiente(session, phone)
-    if not order:
+    pend = await pedido_pendiente(session, phone)
+    if not pend:
         return None
     cfg = await deps["config"].get_all()
     info = None
@@ -260,18 +306,52 @@ async def procesar_comprobante(deps: dict, phone: str, image_bytes: bytes, mime:
         info = await deps["image"].leer_comprobante(image_bytes, mime)
     except Exception as e:
         logger.warning(f"OCR de comprobante falló para {phone}: {e}")
-    ok, motivo = validar(info, order["total"], cfg)
-    if ok:
-        # Un mismo comprobante no paga dos pedidos.
-        op = re.sub(r"\s+", "", str(info.get("operacion")))
-        if not await deps["session"].adquirir_unico(f"trf_op:{op}", 120 * 24 * 3600):
-            ok, motivo = False, f"la operación {op} ya se usó en otro pedido"
-    svc = get_order_service(get_settings().redis_url)
+    estado, motivo = clasificar(info, pend["total"], cfg)
+    # Un mismo comprobante no paga dos pedidos: se controla siempre (antes
+    # solo si todo lo demás cerraba, y el comprobante de María pasó a
+    # verificar en otro pedido sin aviso, 16/10).
+    op = operacion_de(info)
+    if estado != "error" and op and not await deps["session"].adquirir_unico(
+            f"trf_op:{op}", 120 * 24 * 3600):
+        estado, motivo = "error", f"la operación {op} ya se usó en otro pedido"
     datos = {k: (info or {}).get(k) for k in ("importe", "fecha", "destinatario", "cuenta_destino",
                                                "operacion", "origen")}
-    if ok:
-        await svc.actualizar(order["order_id"], transferencia=APROBADA, comprobante=datos,
-                             mp_payment_id=f"TRF-{datos.get('operacion')}")
+
+    if estado == "error":
+        # No corresponde al pedido: no se crea (si ya existía uno de antes,
+        # queda "a verificar") y lo revisa una persona.
+        if pend.get("order"):
+            await get_order_service(get_settings().redis_url).actualizar(
+                pend["order"]["order_id"], transferencia=A_VERIFICAR, comprobante=datos,
+                transferencia_motivo=motivo)
+        await deps["session"].set_estado(phone, "operador", motivo="comprobante_con_error")
+        s = await deps["session"].get(phone)
+        s["comprobante_info"] = {**datos, "motivo": motivo, "total_pedido": pend["total"],
+                                 "pedido": pend.get("pedido"),
+                                 "order_id": (pend.get("order") or {}).get("order_id")}
+        await deps["session"].save(phone, s)
+        logger.info(f"Comprobante con error, sin pedido: {phone} — {motivo}")
+        resp = cfg.get("comprobante_error_message") or (
+            "Revisé el comprobante y {motivo} 🙏 Te paso con alguien del equipo para "
+            "revisarlo. En un momento te contactamos.")
+        return personalizar_nombre(resp.replace("{motivo}", motivo), nombre), "transferencia_con_error"
+
+    campos = {"transferencia": APROBADA if estado == "ok" else A_VERIFICAR, "comprobante": datos}
+    if estado == "ok":
+        campos["mp_payment_id"] = f"TRF-{datos.get('operacion')}"
+    else:
+        campos["transferencia_motivo"] = motivo
+    svc = get_order_service(get_settings().redis_url)
+    if pend.get("order"):
+        order = await svc.actualizar(pend["order"]["order_id"], **campos)
+    else:
+        order = await _crear_pedido(phone, pend["pedido"], campos)
+    s = await deps["session"].get(phone)
+    s.pop("_transferencia", None)
+    s["_ultimo_pedido"] = order["order_id"]
+    await deps["session"].save(phone, s)
+
+    if estado == "ok":
         try:
             from app.services.db import get_db
             from app.services.metrics_store import get_metrics_store
@@ -281,9 +361,6 @@ async def procesar_comprobante(deps: dict, phone: str, image_bytes: bytes, mime:
         except Exception as e:
             logger.debug(f"evento pago_aprobado (transferencia): {e}")
         await deps["session"].set_estado(phone, "pedido_confirmado")
-        s = await deps["session"].get(phone)
-        s.pop("_transferencia", None)
-        await deps["session"].save(phone, s)
         if order.get("tipo_entrega") == "envio":
             entrega = f"🚚 Te lo enviamos a *{order.get('direccion_envio') or 'tu domicilio'}*. " \
                       "Nos comunicamos para coordinar la entrega."
@@ -293,14 +370,11 @@ async def procesar_comprobante(deps: dict, phone: str, image_bytes: bytes, mime:
         return (f"✅ *¡Recibimos tu transferencia!* 🙌\n\n*{order.get('sku_nombre')}* — "
                 f"${float(order['total']):,.2f}\n{entrega}\n\n¡Muchas gracias! 💊"), "transferencia_aprobada"
 
-    await svc.actualizar(order["order_id"], transferencia=A_VERIFICAR, comprobante=datos,
-                         transferencia_motivo=motivo)
     await deps["session"].set_estado(phone, "operador", motivo="comprobante_a_verificar")
     s = await deps["session"].get(phone)
     s["comprobante_info"] = {**datos, "motivo": motivo, "order_id": order["order_id"]}
     await deps["session"].save(phone, s)
     logger.info(f"Transferencia a verificar: {order['order_id']} {phone} — {motivo}")
-    from app.services.checkout_helper import personalizar_nombre
     resp = cfg.get("comprobante_recibido_message") or (
         "¡Listo {nombre}! Recibimos tu comprobante 🙌 Lo verificamos y te confirmamos en un rato.")
     return personalizar_nombre(resp, nombre), "transferencia_a_verificar"

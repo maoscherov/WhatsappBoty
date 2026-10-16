@@ -80,3 +80,13 @@ def _adjuntos_en_tmp(tmp_path, monkeypatch):
     producción, el volumen /data/chat)."""
     from app.services import chat_media
     monkeypatch.setattr(chat_media, "_dir", lambda: tmp_path / "chat")
+
+
+@pytest.fixture(autouse=True)
+def _reservas_limpias():
+    """El stock reservado por pedidos (16/10) es un caché de módulo: cada test
+    arranca sin reservas de los anteriores."""
+    from app.services import reservas
+    reservas._cache.update(ts=0.0, por_sku={})
+    yield
+    reservas._cache.update(ts=0.0, por_sku={})
