@@ -183,8 +183,13 @@ async def contar_por_phones(db, phones: list[str], desde: Optional[date] = None,
     return {r["phone"]: int(r["n"]) for r in rows}
 
 
-def _filtros_marcas(desde, hasta, categoria=None, autor=None) -> tuple[str, list]:
+def _filtros_marcas(desde, hasta, categoria=None, autor=None,
+                    sin_descartadas: bool = False) -> tuple[str, list]:
     conds, args = [], []
+    if sin_descartadas:
+        # Descartada = no era un error del bot (prueba, comentario positivo,
+        # operativo, dato del ERP): no cuenta en los indicadores (17/10).
+        conds.append("COALESCE(m.estado, 'abierta') <> 'descartada'")
     fecha = f"(COALESCE(msg.created_at, m.created_at) {TZ_SQL})::date"
     if desde:
         args.append(desde)
@@ -202,8 +207,9 @@ def _filtros_marcas(desde, hasta, categoria=None, autor=None) -> tuple[str, list
 
 
 async def resumen_categorias(db, desde: Optional[date] = None, hasta: Optional[date] = None) -> dict:
-    """Errores por categoría y por quién los marcó en el período (1/10)."""
-    where, args = _filtros_marcas(desde, hasta)
+    """Errores por categoría y por quién los marcó en el período (1/10).
+    Las descartadas no cuentan; las resueltas sí (el error pasó ese día)."""
+    where, args = _filtros_marcas(desde, hasta, sin_descartadas=True)
     filas = await db.fetch(
         "SELECT m.categoria, COUNT(*) AS n FROM marcas m "
         f"LEFT JOIN messages msg ON msg.id = m.message_id {where} "
@@ -229,7 +235,8 @@ async def para_export(db, desde: Optional[date] = None, hasta: Optional[date] = 
     momento = "COALESCE(msg.created_at, m.created_at)"
     rows = await db.fetch(
         f"SELECT m.id, m.phone, m.message_id, m.categoria, m.observacion, m.autor, "
-        f"m.created_at, m.conversacion_id, msg.content AS mensaje, msg.role AS mensaje_rol, "
+        f"m.created_at, m.conversacion_id, m.estado, m.resolucion, m.resuelta_por, m.resuelta_at, "
+        f"m.version, msg.content AS mensaje, msg.role AS mensaje_rol, "
         f"msg.created_at AS mensaje_at, "
         f"(SELECT p.content FROM messages p WHERE p.phone = m.phone AND p.role = 'user' "
         f"   AND p.created_at <= {momento} AND (m.message_id IS NULL OR p.id < m.message_id) "
@@ -283,7 +290,10 @@ async def indicadores(db, desde: Optional[date] = None, hasta: Optional[date] = 
         f"(m.created_at {TZ_SQL})::date) AS fecha "
         f"FROM marcas m LEFT JOIN messages msg ON msg.id = m.message_id "
         f"WHERE COALESCE((msg.created_at {TZ_SQL})::date, "
-        f"(m.created_at {TZ_SQL})::date) BETWEEN $1 AND $2",
+        f"(m.created_at {TZ_SQL})::date) BETWEEN $1 AND $2 "
+        # Descartadas (prueba, comentario positivo, operativo, dato del
+        # ERP) no son errores del bot: no restan exitosas ni cortan la racha.
+        f"AND COALESCE(m.estado, 'abierta') <> 'descartada'",
         desde, hasta,
     )
 

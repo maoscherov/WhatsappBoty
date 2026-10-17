@@ -2088,7 +2088,7 @@ async def bo_marcas_export(_=Depends(_auth), desde: str | None = Query(None),
     writer.writerow(["fecha_mensaje", "fecha_marca", "cliente", "telefono", "tipo_cliente",
                      "categoria", "observacion", "marcado_por", "mensaje_cliente",
                      "mensaje_marcado", "quien_escribio", "motivo_derivacion", "message_id",
-                     "marca", "conversacion"])
+                     "marca", "conversacion", "estado", "resolucion", "resuelta_por", "version"])
     for m in marcas:
         cli = _datos_cliente(m["phone"])
         writer.writerow([m["mensaje_at"] or m["ts"], m["ts"], cli["nombre"] or "", m["phone"],
@@ -2097,7 +2097,8 @@ async def bo_marcas_export(_=Depends(_auth), desde: str | None = Query(None),
                          {"assistant": "bot", "operator": "operador", "user": "cliente"}.get(
                              m["mensaje_rol"] or "", "" if not m["message_id"] else m["mensaje_rol"]),
                          m["derivacion"] or "", m["message_id"] or "",
-                         m["codigo"], m.get("conversacion") or ""])
+                         m["codigo"], m.get("conversacion") or "", m["estado_etiqueta"],
+                         m["resolucion"] or "", m["resuelta_por"] or "", m["version"] or ""])
     contenido = "﻿" + buf.getvalue()
     return StreamingResponse(
         iter([contenido]), media_type="text/csv",

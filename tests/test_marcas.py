@@ -399,3 +399,21 @@ async def test_resolver_varias_juntas_y_no_cuentan_como_problema(db):
     assert await marcas_service.listar(db, estado="pendientes") == []
     with pytest.raises(LookupError):
         await marcas_service.cambiar_estado(db, [999999], "descartada", "operativo")
+
+
+async def test_descartadas_no_cuentan_en_indicadores_ni_resumen(db):
+    # 17/10: una marca descartada (prueba, operativo, dato del ERP) no es un
+    # error del bot; una resuelta sí sigue contando (el error pasó ese día).
+    dia = date(2026, 1, 16)
+    ids = await _crear_conversaciones(db, dia, 20, "tel_")
+    rec = await marcas_service.crear(db, "tel_000", "receta_sin_derivar", "prueba", message_id=ids[0])
+    otra = await marcas_service.crear(db, "tel_001", "entendio_mal", "mal", message_id=ids[1])
+    await marcas_service.cambiar_estado(db, [rec["id"]], "descartada", "Marca de prueba.")
+    await marcas_service.cambiar_estado(db, [otra["id"]], "resuelta", "arreglado", version="x")
+    r = await marcas_service.indicadores(db, desde=dia, hasta=dia)
+    assert r["recetas_sin_derivar"] == 0 and r["reinicia_conteo"] is False
+    assert r["dias"][0]["con_error"] == 1                    # la resuelta cuenta
+    res = await marcas_service.resumen_categorias(db, desde=dia, hasta=dia)
+    assert res["total"] == 1 and res["por_categoria"][0]["categoria"] == "entendio_mal"
+    exp = await marcas_service.para_export(db, desde=dia, hasta=dia)
+    assert {m["estado"] for m in exp} == {"descartada", "resuelta"}
